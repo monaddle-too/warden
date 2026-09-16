@@ -9,7 +9,7 @@ installation tokens. Actions use the installation's bot identity, not a person.
 ## Existing account setup
 
 The registered app is Monaddle Workspace (4893871), installed as 160513175 for
-punished-monaddle. Its existing selected repository is punished-monaddle/panta.
+monaddle-too. Its existing selected repository is monaddle-too/panta.
 Repository selection and app permissions were not changed.
 
 The private broker runs on OVH, at

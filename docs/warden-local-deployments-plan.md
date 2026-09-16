@@ -470,7 +470,7 @@ Progress (release track), 2026-09-16, branch `codex/wld-release` from
   linux/arm64 and darwin/arm64 (`CGO_ENABLED=0`), one tarball per target
   (`warden-<tag>-<os>-<arch>/{bin,web,config,vendor}`), `SHA256SUMS`, a
   GitHub release (tags only), and the multi-architecture server image
-  `ghcr.io/punished-monaddle/warden:<tag>` from `deploy/chat/Dockerfile`
+  `ghcr.io/monaddle-too/warden:<tag>` from `deploy/chat/Dockerfile`
   (now `TARGETARCH`-aware, base pinned by digest, build fails on
   differing binary revisions) with the index and per-platform digests in
   the run summary. `deploy/chat/compose.yaml` passes
@@ -572,7 +572,7 @@ Progress (docs track), 2026-09-16, branch `codex/wld-docs`:
       submitted: tokens expire after seven days while the app is in Testing.
 - [~] 7 Release workflow; OVH switched to the released image and config.
       First release published 2026-09-16: `v0.1.0-alpha.1` (pre-release) at
-      https://github.com/punished-monaddle/warden/releases/tag/v0.1.0-alpha.1,
+      https://github.com/monaddle-too/warden/releases/tag/v0.1.0-alpha.1,
       built locally with `scripts/release.sh --publish` from 30ab65d after
       merging main; main fast-forwarded to it. The OVH cutover to this
       release is still pending.

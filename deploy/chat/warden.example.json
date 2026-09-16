@@ -46,7 +46,7 @@
     "github": {
       "appID": 999999,
       "appSlug": "monaddle-workspace",
-      "installationOwner": "punished-monaddle",
+      "installationOwner": "monaddle-too",
       "brokerFile": "/var/lib/warden/github/broker.json"
     }
   }

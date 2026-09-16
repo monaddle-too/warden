@@ -20,7 +20,7 @@ Determine where the existing app's backend credentials/broker live. End users sh
 
 ## Implementation and live checkpoint
 - Located Monaddle Workspace app 4893871 and existing installation 160513175,
-  selected only punished-monaddle/panta. User completed GitHub access verification.
+  selected only monaddle-too/panta. User completed GitHub access verification.
 - Found existing encrypted app record on OVH; private helper reads/decrypts only
   app record and signs JWT there. No key copied to Mac or new app key generated.
 - Added WARDEN_GITHUB_APP_BROKER host configuration, automatic per-approved-request

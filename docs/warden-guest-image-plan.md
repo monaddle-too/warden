@@ -37,7 +37,7 @@ store it on GitHub, commit the way it is made, and make the server use it.
 - `.github/workflows/guest-image.yml`: on push to main touching
   `deploy/guest/**` (or manually), builds for linux/amd64 (and, since the
   two-architecture work below, linux/arm64) and pushes
-  `ghcr.io/punished-monaddle/warden-guest:sha-<commit>` and `:latest`,
+  `ghcr.io/monaddle-too/warden-guest:sha-<commit>` and `:latest`,
   printing the digests in the run summary. Uses the repository's own token;
   the package is private like the repository.
 - `deploy/guest/install.sh`: on the host, pulls by digest, checks the pulled

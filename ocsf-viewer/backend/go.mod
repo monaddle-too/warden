@@ -1,4 +1,4 @@
-module github.com/punished-monaddle/warden/ocsf-viewer/backend
+module github.com/monaddle-too/warden/ocsf-viewer/backend
 
 go 1.26.0
 

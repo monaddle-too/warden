@@ -130,7 +130,7 @@ the Python image remains possible.
 - `/var/lib/warden/github/broker.json` did run `python -m warden.github_app`
   inside the container; its command now is
   `/usr/local/bin/warden-policy github-broker --store /run/github --app-id
-  4893871 --owner punished-monaddle`.
+  4893871 --owner monaddle-too`.
 - Switched about 21:48 UTC with no running chat and one stopped sandbox;
   policy, runner and chat recreated on `warden:fcf98b6`. Policy logged
   "SBX control ready", edge 200, sharing status unchanged (Google connected
@@ -145,7 +145,7 @@ the Python image remains possible.
   bearer tokens. New sandboxes received a generated Warden CA under the
   mitmproxy file names. A shared repository was fetched by Claude with curl
   through the gateway (`sbx.github.authorized`, installation token injected,
-  answer `punished-monaddle/cf-docs` in 6 s), and a second resident turn
+  answer `monaddle-too/cf-docs` in 6 s), and a second resident turn
   answered in 2 s. Test chats were stopped and archived; the repository
   share was removed.
 ## Verifier off the chat path (2026-09-15)

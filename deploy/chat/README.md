@@ -64,7 +64,7 @@ linked in as the revision, one tarball per target
 (`warden-<tag>-<os>-<arch>.tar.gz` holding `bin/`, `web/`,
 `config/policy.template.json`, `config/warden.server.example.json` and
 `vendor/`), `SHA256SUMS`, a GitHub release, and the server image
-`ghcr.io/punished-monaddle/warden:<tag>` for linux/amd64 and linux/arm64
+`ghcr.io/monaddle-too/warden:<tag>` for linux/amd64 and linux/arm64
 (from `deploy/chat/Dockerfile`; the run summary lists the index digest to
 pin and the per-platform manifest digests). A manual run builds everything
 under a `v0.0.0-dev.<sha>` version and publishes no GitHub release. Every
@@ -137,7 +137,7 @@ sudo docker compose -f /opt/warden/current/deploy/chat/compose.yaml start policy
 ```
 
 The Warden guest image (`deploy/guest/`, published by the `Warden guest
-image` workflow to `ghcr.io/punished-monaddle/warden-guest`) ships the Codex
+image` workflow to `ghcr.io/monaddle-too/warden-guest`) ships the Codex
 bundle, the Claude executable and this CA preinstalled. Install a published
 image on the host with `sudo deploy/guest/install.sh IMAGE:TAG sha256:DIGEST`
 (pull needs `docker login ghcr.io` with `read:packages`); it loads the image
@@ -273,7 +273,7 @@ the workflow summary.
 
 1. Obtain the release. Either let the `Warden release` workflow publish it
    (needs the Actions budget) and pull the image (`docker login ghcr.io`
-   with `read:packages`; `docker pull ghcr.io/punished-monaddle/warden:<tag>`
+   with `read:packages`; `docker pull ghcr.io/monaddle-too/warden:<tag>`
    and check `docker image inspect --format '{{index .RepoDigests 0}}'`
    shows `<index-digest>`), or build it on the server from the same commit
    with the hand-build commands above and tag it `warden:<tag>`.
@@ -292,7 +292,7 @@ the workflow summary.
    unknown field or a value that disagrees with `WARDEN_GITHUB_APP_BROKER`
    makes each service exit at start naming the field; step 7 reads the logs.
 4. `.env` in the new release's `deploy/chat`: copy the current `.env`, set
-   `WARDEN_IMAGE=ghcr.io/punished-monaddle/warden:<tag>@<index-digest>`
+   `WARDEN_IMAGE=ghcr.io/monaddle-too/warden:<tag>@<index-digest>`
    (or the local `warden:<tag>`), keep `WARDEN_UID`/`WARDEN_GID` (977),
    add `WARDEN_CONFIG_HOST=/opt/warden/current/deploy/chat/warden.json`.
    `WARDEN_GUEST_*` and `WARDEN_SPARE_SANDBOXES` may stay; `compose.yaml`

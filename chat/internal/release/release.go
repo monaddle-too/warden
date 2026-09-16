@@ -120,8 +120,8 @@ var ClaudeExecutables = map[string]Runtime{
 // until the guest image workflow publishes them; the installer falls back to
 // the stock template and the runner copies runtimes in.
 var GuestImages = map[string]struct{ Ref, Digest string }{
-	AMD64: {Ref: "ghcr.io/punished-monaddle/warden-guest", Digest: ""},
-	ARM64: {Ref: "ghcr.io/punished-monaddle/warden-guest", Digest: ""},
+	AMD64: {Ref: "ghcr.io/monaddle-too/warden-guest", Digest: ""},
+	ARM64: {Ref: "ghcr.io/monaddle-too/warden-guest", Digest: ""},
 }
 
 // Public OAuth client identifiers shipped with Warden for local mode. Both
