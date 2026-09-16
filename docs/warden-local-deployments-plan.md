@@ -863,3 +863,8 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   sandboxes is transparent (`sbx exec` restarts a stopped sandbox, the
   staged runtime under `/tmp` and published ports survive; only processes
   the agent started, such as a preview server, are gone after the restart).
+- 2026-09-16: `v0.1.0-alpha.2` released for the second tester machine:
+  install/start restart Warden's daemon when it predates the sbx CLI (the
+  0.43.0 upgrade made every sbx call fail with "cannot prompt for restart:
+  stdin is not a terminal"), doctor reports the mismatch, and settings an
+  sbx build does not define are skipped.
