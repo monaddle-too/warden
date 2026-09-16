@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Write Warden's private Claude credential file from a `claude setup-token` value.
+
+Run as the Warden service user so the policy broker owns the file:
+
+    sudo -u warden /opt/warden/current/scripts/warden-claude-token /var/lib/warden/provider/claude.json
+
+The token is read from an interactive prompt without echo (or from stdin when
+not a terminal) and never appears in arguments, logs or shell history. The file
+is written privately (0600) and atomically. Claude long-lived tokens last one
+year; the recorded expiry is 364 days so Warden refuses it before Anthropic does.
+"""
+import getpass, json, os, re, sys, time
+
+def main():
+    if len(sys.argv) != 2:
+        sys.exit('usage: warden-claude-token <credential-file>')
+    path = sys.argv[1]
+    token = (getpass.getpass('Claude setup-token value: ') if sys.stdin.isatty() else sys.stdin.readline()).strip()
+    if not re.fullmatch(r'[A-Za-z0-9_.-]{16,4096}', token) or 'proxy' in token.lower() or 'placeholder' in token.lower():
+        sys.exit('that is not a Claude long-lived token; run `claude setup-token` and paste its sk-ant-oat01-... value')
+    if not token.startswith('sk-ant-oat'):
+        sys.exit('expected a `claude setup-token` value (sk-ant-oat...), not an API key or session token')
+    expires = int((time.time() + 364 * 86400) * 1000)
+    doc = json.dumps({'claudeAiOauth': {'accessToken': token, 'expiresAt': expires}}, indent=2) + '\n'
+    parent = os.path.dirname(os.path.abspath(path)) or '.'
+    tmp = os.path.join(parent, '.claude.json.%d.tmp' % os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(doc)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+    print('wrote %s (mode 0600, uid %d, expires %s)' % (path, os.getuid(), time.strftime('%Y-%m-%d', time.gmtime(expires / 1000))))
+
+if __name__ == '__main__':
+    main()

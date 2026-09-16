@@ -1,0 +1,16 @@
+[Unit]
+Description=Warden guest DNS destination policy
+After=network-online.target
+Before=dnsmasq.service
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/libexec/warden-dns-guard.py
+Restart=always
+RestartSec=1
+DynamicUser=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_VSOCK
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,187 @@
+#!/usr/bin/env node
+// Guest convenience only. The trusted proxy/host enforce every permission.
+import {spawn} from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import https from 'node:https';
+import tls from 'node:tls';
+
+const args=process.argv.slice(2), command=args.shift();
+const invocationDirectory=process.cwd();
+const has=flag=>args.includes(flag);
+function option(flag,fallback){const i=args.indexOf(flag);if(i<0)return fallback;if(!args[i+1]||args[i+1].startsWith('--'))throw Error('Missing value for '+flag);return args[i+1];}
+function fail(text){throw Error(text);}
+function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
+const waitSeconds=Number(option('--wait','600'));
+if(!Number.isInteger(waitSeconds)||waitSeconds<0||waitSeconds>3600)fail('--wait must be 0–3600 seconds');
+const caPath='/usr/local/share-warden-ca.pem';
+const env={...process.env,GIT_TERMINAL_PROMPT:'0',GCM_INTERACTIVE:'never',
+  ...(fs.existsSync(caPath)?{NODE_EXTRA_CA_CERTS:caPath,SSL_CERT_FILE:caPath,REQUESTS_CA_BUNDLE:caPath}: {})};
+async function run(argv,{quiet=false,allowFailure=false,extraEnv={}}={}){
+  return await new Promise((resolve,reject)=>{
+    const child=spawn(argv[0],argv.slice(1),{env:{...env,...extraEnv},stdio:['inherit','pipe','pipe']});
+    let stdout='',stderr='';
+    child.stdout.on('data',data=>{stdout=(stdout+data).slice(-1048576);if(!quiet)process.stdout.write(data);});
+    child.stderr.on('data',data=>{stderr=(stderr+data).slice(-65536);if(!quiet)process.stderr.write(data);});
+    child.on('error',reject);child.on('close',code=>{const result={code,stdout:stdout.trim(),stderr};if(code&&!allowFailure)reject(Error(argv[0]+' failed ('+code+'). '+stderr.trim()));else resolve(result);});
+  });
+}
+const gitArgs=['git','-c','credential.helper=','-c','http.extraHeader=','-c','http.followRedirects=false','-c','protocol.file.allow=never','-c','protocol.ext.allow=never'];
+async function git(...argv){return (await run([...gitArgs,...argv],{quiet:true})).stdout;}
+async function gated(argv){
+  const deadline=Date.now()+waitSeconds*1000;
+  while(true){
+    const result=await run(argv,{allowFailure:true});
+    if(!result.code)return result;
+    if(/requested URL returned error: (403|413)/.test(result.stderr))fail('Operation rejected. Open Warden → Traffic on the host for the reason. Check repository policy, push size, binary/submodule changes, and fast-forward ancestry.');
+    if(!/requested URL returned error: 428/.test(result.stderr))fail('Command failed. A transport error may have happened after a write reached GitHub. Inspect remote state before retrying.');
+    if(Date.now()>=deadline)fail('Approval still pending. Approve in the Warden host dashboard, then rerun this command.');
+    console.log('Waiting for host approval (HTTP 428). Open Warden → Review Requests.');
+    await sleep(4000);
+  }
+}
+function repository(value){
+  if(!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(value)||['.','..'].includes(value.split('/')[1]))fail('Use OWNER/REPO');
+  return value;
+}
+async function origin(){
+  const urls=await git('remote','get-url','--all','origin');
+  const match=/^https:\/\/github\.com\/([^\s]+)\.git$/.exec(urls);
+  if(!match)fail('Origin must be one HTTPS GitHub URL ending in .git, with no embedded credential.');
+  const repo=repository(match[1]);
+  const push=await git('remote','get-url','--push','--all','origin');
+  if(push!==urls)fail('Origin fetch and push URLs must match.');
+  return repo;
+}
+async function branch(){const name=await git('symbolic-ref','--quiet','--short','HEAD');if(!name)fail('Switch to a branch first.');return name;}
+async function clean(){if(await git('status','--porcelain'))fail('Commit or stash working-tree changes first. Nothing was discarded.');}
+function config(){
+  const file='.warden/workflow.json';
+  if(fs.existsSync(file)){
+    const value=JSON.parse(fs.readFileSync(file,'utf8'));
+    if(value.version!==1||!['npm','python','none'].includes(value.setup)||!Array.isArray(value.checks)||!value.checks.length||value.checks.some(a=>!Array.isArray(a)||!a.length||a.some(s=>typeof s!=='string'||!s)))fail('Invalid .warden/workflow.json; see docs/repository-workflow.md');
+    return value;
+  }
+  if(fs.existsSync('package-lock.json')&&fs.existsSync('package.json')){
+    const scripts=JSON.parse(fs.readFileSync('package.json','utf8')).scripts||{};
+    return {version:1,setup:'npm',checks:['lint','typecheck','test','build'].filter(k=>scripts[k]).map(k=>['npm','run',k])};
+  }
+  if(fs.existsSync('requirements.lock'))return {version:1,setup:'python',checks:[['.venv/bin/python','-m','pytest']]};
+  return {version:1,setup:'none',checks:[]};
+}
+async function receiptPath(){return await git('rev-parse','--git-path','warden-check.json');}
+async function baseRef(){return option('--base')||await git('symbolic-ref','--quiet','refs/remotes/origin/HEAD');}
+async function api(method,endpoint,value){
+  const deadline=Date.now()+waitSeconds*1000;
+  while(true){
+    let response;
+    try{response=await new Promise((resolve,reject)=>{
+      const body=value===undefined?undefined:JSON.stringify(value);
+      const request=https.request('https://api.github.com'+endpoint,{method,signal:AbortSignal.timeout(30000),
+        ...(fs.existsSync(caPath)?{ca:[...tls.rootCertificates,fs.readFileSync(caPath,'utf8')]}:{}),
+        headers:{Accept:'application/vnd.github+json','Content-Type':'application/json','User-Agent':'Warden-Repository/1',...(body?{'Content-Length':Buffer.byteLength(body)}:{})}},res=>{
+          let data='';res.setEncoding('utf8');res.on('data',chunk=>{data+=chunk;if(data.length>2*1024*1024)request.destroy(Error('Response too large'));});
+          res.on('error',reject);res.on('end',()=>resolve({status:res.statusCode,ok:res.statusCode>=200&&res.statusCode<300,text:async()=>data}));
+        });
+      request.on('error',reject);request.end(body);
+    });}
+    catch{fail('GitHub response unavailable. Inspect GitHub state before retrying a write.');}
+    const text=await response.text();let result;try{result=JSON.parse(text);}catch{fail('Unexpected GitHub response; inspect remote state before retrying.');}
+    if(response.status===428&&Date.now()<deadline){console.log('Waiting for host approval. Warden → Review Requests.');await sleep(4000);continue;}
+    if(!response.ok)fail('GitHub HTTP '+response.status+': '+(result.message||result.error||'request failed'));
+    return result;
+  }
+}
+async function main(){
+  if(!command||['help','--help','-h'].includes(command)){
+    console.log(`Warden repository workflow (run inside the guest)
+  clone OWNER/REPO [DIRECTORY]   Approve one repository read session, then clone
+  branch NAME                  Create a feature branch
+  configure                    Write .warden/workflow.json from detected tools
+  setup [--scripts]            Locked npm/Python dependencies; scripts off by default
+  check                        Run configured checks; record a receipt for this commit
+  review [--base REF]          Show outgoing commits and diff
+  publish                     Check receipt, then push one branch for host review
+  pr --base NAME --title TEXT [--body-file FILE]   Create a draft REST pull request
+  fetch                       Refresh origin using its repository read session
+  status                      Show branch, remote, and check receipt
+  doctor                      Check developer tools and the local proxy CA
+Network commands wait up to 600 seconds for approval; set --wait 0 to return immediately.
+No GitHub token or gh login is needed in the guest. See docs/repository-workflow.md.`);return;
+  }
+  if(command==='doctor'){
+    let failed=false;
+    for(const tool of [['git','--version'],['node','--version'],['npm','--version'],['gh','--version'],['brew','--version']]){
+      try{const r=await run(tool,{quiet:true});console.log(r.stdout.split('\n')[0]);}catch{failed=true;console.log(tool[0]+': unavailable');}
+    }
+    console.log('Proxy CA: '+(fs.existsSync(caPath)?caPath:'missing — run guest bootstrap'));
+    if(!fs.existsSync(caPath))failed=true;
+    if(failed)process.exitCode=1;return;
+  }
+  if(command==='clone'){
+    const repo=repository(args[0]||'');const directory=args[1]&&!args[1].startsWith('--')?args[1]:repo.split('/')[1];
+    if(fs.existsSync(directory))fail('Destination exists; refusing to replace it.');
+    await gated([...gitArgs,'clone','--','https://github.com/'+repo+'.git',directory]);
+    console.log('Checkout ready: '+directory+'. Next: warden-repo branch NAME, then warden-repo setup.');return;
+  }
+  const root=await git('rev-parse','--show-toplevel');process.chdir(root);
+  if(command==='branch'){await git('check-ref-format','--branch',args[0]||'');await run([...gitArgs,'switch','-c',args[0]]);return;}
+  if(command==='configure'){
+    if(fs.existsSync('.warden/workflow.json'))fail('Workflow configuration already exists; edit it directly.');
+    const value=config();if(!value.checks.length)value.checks=[['REPLACE_WITH_YOUR_TEST_COMMAND']];
+    fs.mkdirSync('.warden',{recursive:true});fs.writeFileSync('.warden/workflow.json',JSON.stringify(value,null,2)+'\n',{flag:'wx'});
+    console.log('Review and commit .warden/workflow.json. Commands execute only inside this guest.');return;
+  }
+  if(command==='setup'){
+    const value=config();
+    if(value.setup==='npm')await run(['npm','ci',...(has('--scripts')?[]:['--ignore-scripts']), '--no-audit','--no-fund']);
+    else if(value.setup==='python'){
+      await run(['python3','-m','venv','.venv']);
+      await run(['.venv/bin/python','-m','pip','install','--require-hashes','--only-binary=:all:','--no-deps','-r','requirements.lock']);
+    }else fail('No supported lockfile detected. Configure a project-specific setup or install dependencies explicitly in the guest.');
+    console.log('Dependencies installed. Lifecycle scripts ran only if --scripts was supplied.');return;
+  }
+  if(command==='check'){
+    await clean();const value=config();if(!value.checks.length)fail('No project checks detected. Run warden-repo configure and specify your test commands.');
+    const head=await git('rev-parse','HEAD'), file=await receiptPath();fs.rmSync(file,{force:true});
+    await git('show','--format=','--check','HEAD');
+    for(const check of value.checks){console.log('\nRunning: '+check.join(' '));await run(check,{extraEnv:{CI:'1'}});}
+    await clean();if(await git('rev-parse','HEAD')!==head)fail('HEAD changed during checks; rerun checks.');
+    fs.writeFileSync(file,JSON.stringify({head,checked_at:new Date().toISOString(),checks:value.checks},null,2)+'\n',{mode:0o600});
+    console.log('Checks passed for '+head+'. Receipt is guest-reported, not a host attestation.');return;
+  }
+  if(command==='fetch'){await origin();await gated([...gitArgs,'fetch','--prune','origin']);return;}
+  if(command==='review'){
+    const base=await baseRef();const fork=await git('merge-base',base,'HEAD');
+    await run([...gitArgs,'log','--oneline',fork+'..HEAD']);
+    await run([...gitArgs,'diff','--no-ext-diff','--no-textconv','--stat',fork,'HEAD']);
+    await run([...gitArgs,'diff','--no-ext-diff','--no-textconv',fork,'HEAD']);return;
+  }
+  if(command==='publish'){
+    await origin();await clean();const head=await git('rev-parse','HEAD'), name=await branch();
+    let receipt;try{receipt=JSON.parse(fs.readFileSync(await receiptPath(),'utf8'));}catch{fail('Run warden-repo check for this commit before publishing.');}
+    if(receipt.head!==head)fail('Checks belong to a different commit. Run warden-repo check again.');
+    await gated([...gitArgs,'-c','http.postBuffer=8388608','push','--set-upstream','--no-thin','--porcelain','--','origin','HEAD:refs/heads/'+name]);
+    console.log('Push completed. Create a draft PR with warden-repo pr --base main --title "…".');return;
+  }
+  if(command==='pr'){
+    const repo=await origin(), name=await branch(), base=option('--base'),title=option('--title');
+    if(!base||!title)fail('Specify --base and --title.');await clean();
+    const remote=await git('ls-remote','--heads','origin','refs/heads/'+name);
+    if(remote.split(/\s/)[0]!==await git('rev-parse','HEAD'))fail('Remote branch does not match HEAD. Publish first.');
+    const bodyFile=option('--body-file');const body=bodyFile?fs.readFileSync(path.resolve(invocationDirectory,bodyFile),'utf8'):'';
+    if(body.length>16000||title.length>256)fail('Pull request title or body is too long.');
+    // Read-before-create avoids duplicate PRs on an explicit rerun after a lost response.
+    const existing=await api('GET','/repos/'+repo+'/pulls?state=open&head='+encodeURIComponent(repo.split('/')[0]+':'+name)+'&base='+encodeURIComponent(base));
+    if(existing.length){console.log('Existing pull request: '+existing[0].html_url);return;}
+    const result=await api('POST','/repos/'+repo+'/pulls',{head:name,base,title,body,draft:true});
+    console.log(result.html_url);return;
+  }
+  if(command==='status'){
+    console.log('Repository: '+await origin()+'\nBranch: '+await branch()+'\nCommit: '+await git('rev-parse','HEAD'));
+    try{const r=JSON.parse(fs.readFileSync(await receiptPath(),'utf8'));console.log('Checks: '+(r.head===await git('rev-parse','HEAD')?'current':'stale')+' ('+r.checked_at+')');}catch{console.log('Checks: not recorded');}
+    await run([...gitArgs,'status','--short']);return;
+  }
+  fail('Unknown command. Run warden-repo help.');
+}
+main().catch(error=>{console.error('warden-repo: '+error.message);process.exitCode=1;});

@@ -1,0 +1,8 @@
+#!/bin/sh
+# This wrapper selects only Warden's private daemon namespace.
+export HOME=/var/lib/warden/sbx/home
+export XDG_CACHE_HOME=/var/lib/warden/sbx/cache
+export XDG_STATE_HOME=/var/lib/warden/sbx/state
+export XDG_CONFIG_HOME=/var/lib/warden/sbx/config
+export XDG_DATA_HOME=/var/lib/warden/sbx/data
+exec /usr/bin/sbx "$@"

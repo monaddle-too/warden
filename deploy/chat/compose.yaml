@@ -1,0 +1,74 @@
+# OVH Compose file: the three services read one warden.json (the host file
+# WARDEN_CONFIG_HOST from .env, bind-mounted read-only at
+# /etc/warden/warden.json) instead of flag lists. Every path in that file is
+# a container path, so the host directories are mounted at the same paths
+# they have on the host (/var/lib/warden/..., /opt/warden/..., /usr/bin/sbx);
+# the built UI, catalog and policy template are the image's /app paths. The
+# effective values equal the previous flag-configured deployment
+# (compose.legacy.yaml, kept for rollback); deploy/chat/README.md has the
+# field-by-field mapping and the cutover checklist.
+name: warden
+x-service: &service
+  image: ${WARDEN_IMAGE:?set the built Warden image}
+  user: '${WARDEN_UID:?set Warden UID}:${WARDEN_GID:?set Warden GID}'
+  network_mode: host
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: ['/tmp:mode=1777,size=256m']
+  restart: unless-stopped
+  logging:
+    driver: local
+    options: {max-size: '10m', max-file: '3'}
+x-environment: &environment
+  HOME: /var/lib/warden/sbx/home
+  XDG_CACHE_HOME: /var/lib/warden/sbx/cache
+  XDG_STATE_HOME: /var/lib/warden/sbx/state
+  XDG_CONFIG_HOME: /var/lib/warden/sbx/config
+  XDG_DATA_HOME: /var/lib/warden/sbx/data
+x-config: &config
+  '${WARDEN_CONFIG_HOST:-/opt/warden/current/deploy/chat/warden.json}:/etc/warden/warden.json:ro'
+services:
+  policy:
+    <<: *service
+    environment:
+      <<: *environment
+      # Must equal providers.github.brokerFile in warden.json (the service
+      # refuses a disagreement). The broker.json command runs inside this
+      # container; /run/github stays mounted so a command written against the
+      # previous layout (`--store /run/github/...`) keeps working.
+      WARDEN_GITHUB_APP_BROKER: /var/lib/warden/github/broker.json
+    command: [warden-policy, --config, /etc/warden/warden.json]
+    volumes:
+      - *config
+      - /var/lib/warden/policy:/var/lib/warden/policy
+      - /var/lib/warden/provider:/var/lib/warden/provider:ro
+      - /var/lib/warden/github:/var/lib/warden/github:ro
+      - /var/lib/warden/github:/run/github:ro
+      - /var/lib/warden/sbx:/var/lib/warden/sbx
+      - /usr/bin/sbx:/usr/bin/sbx:ro
+    stop_grace_period: 30s
+  runner:
+    <<: *service
+    environment: *environment
+    command: [warden-runner, --config, /etc/warden/warden.json]
+    volumes:
+      - *config
+      - /var/lib/warden/runner:/var/lib/warden/runner
+      - /var/lib/warden/policy:/var/lib/warden/policy:ro
+      - /var/lib/warden/sbx:/var/lib/warden/sbx
+      - /opt/warden/runtime:/opt/warden/runtime:ro
+      - /opt/warden/claude:/opt/warden/claude:ro
+      - /usr/bin/sbx:/usr/bin/sbx:ro
+    depends_on: [policy]
+    stop_grace_period: 45s
+  chat:
+    <<: *service
+    command: [warden-chat, --config, /etc/warden/warden.json]
+    volumes:
+      - *config
+      - /var/lib/warden/app:/var/lib/warden/app
+      - /var/lib/warden/policy:/var/lib/warden/policy:ro
+      - /var/lib/warden/runner:/var/lib/warden/runner:ro
+    depends_on: [runner]
+    stop_grace_period: 30s

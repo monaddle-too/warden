@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "artifacts": {
+    "node.tar.gz": {
+      "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
+      "sha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057"
+    },
+    "Codex.zip": {
+      "url": "https://persistent.oaistatic.com/codex-app-prod/Codex-darwin-arm64-26.623.141536.zip",
+      "sha256": "d948dc36b8358f5a2924b033fbf08398eea7860dc9e97cb5ab9b354490283a0a"
+    },
+    "Claude.zip": {
+      "url": "https://downloads.claude.ai/releases/darwin/universal/1.49585.0/Claude-41ad1dff5275eedc8af25989f59f33c5efe14063.zip",
+      "sha256": "7d52463514f505aeb9e16fa8a52a6ff25bd13c83954098bc2f868d3abe0792f4"
+    },
+    "gh.zip": {
+      "url": "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_macOS_arm64.zip",
+      "sha256": "45f9a62da2f6e641a7fad57e2ce39656dfd7ef331372d80a2a2aed65abb01642"
+    },
+    "Homebrew.pkg": {
+      "url": "https://github.com/Homebrew/brew/releases/download/6.0.22/Homebrew.pkg",
+      "sha256": "9d15f67a9478019754efd9c62ef206a6b802caad8be321db553baabd3394454d"
+    }
+  }
+}

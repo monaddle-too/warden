@@ -1,0 +1,53 @@
+#!/usr/sbin/nft -f
+# Dedicated Linux appliance only. There is deliberately no forwarding path.
+flush ruleset
+table inet warden {
+  chain prerouting {
+    type nat hook prerouting priority dstnat; policy accept;
+    iifname "lan0" ip daddr 10.77.0.1 tcp dport 8081 return
+    iifname "lan0" udp dport 53 redirect to :53
+    iifname "lan0" tcp dport 53 redirect to :53
+    # Route QUIC to INPUT for an immediate ICMP rejection even with ip_forward=0.
+    iifname "lan0" udp dport 443 redirect to :443
+    iifname "lan0" tcp dport {80,443} redirect to :8080
+  }
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iifname "lo" accept
+    ct state invalid jump deny
+    iifname "wan0" ct state established,related accept
+    iifname "wan0" udp sport 67 udp dport 68 accept
+    iifname "lan0" meta nfproto ipv6 jump deny
+    # Replies to host-initiated, fixed-port guest SSH maintenance only. This
+    # does not permit any new guest-originated connection to the appliance.
+    iifname "lan0" ip saddr 10.77.0.0/24 ip daddr 10.77.0.1 tcp sport 2222 ct state established ct direction reply accept
+    iifname "lan0" udp dport 443 jump reject_quic
+    iifname "lan0" udp dport 67 accept
+    iifname "lan0" ip saddr 10.77.0.0/24 udp dport 53 accept
+    iifname "lan0" ip saddr 10.77.0.0/24 tcp dport 53 accept
+    iifname "lan0" ip saddr 10.77.0.0/24 tcp dport 8080 ct status dnat accept
+    iifname "lan0" ip saddr 10.77.0.0/24 ip daddr 10.77.0.1 tcp dport 8081 accept
+    jump deny
+  }
+  chain deny {
+    log prefix "WARDEN_DENY " level info
+    counter drop
+  }
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    iifname "lan0" meta nfproto ipv4 udp dport 443 jump reject_quic
+    jump deny
+  }
+  chain reject_quic {
+    # Prompt browsers to retry inspected TCP HTTPS instead of timing out.
+    log prefix "WARDEN_DENY " level info
+    counter reject with icmp type port-unreachable
+  }
+  chain output {
+    type filter hook output priority filter; policy accept;
+    # Guest-triggered proxy requests cannot reach host/LAN/metadata services.
+    oifname "wan0" udp sport 68 udp dport 67 accept
+    oifname "wan0" ip daddr {0.0.0.0/8,10.0.0.0/8,100.64.0.0/10,127.0.0.0/8,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16,224.0.0.0/4,240.0.0.0/4} reject
+    oifname "wan0" meta nfproto ipv6 reject
+  }
+}

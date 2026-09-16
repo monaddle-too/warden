@@ -1,0 +1,13 @@
+[Unit]
+Description=Warden DNS and firewall audit metadata
+After=warden-firewall.service dnsmasq.service
+[Service]
+ExecStart=/opt/warden/venv/bin/python /opt/warden/proxy/telemetry.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+LimitCORE=0
+[Install]
+WantedBy=multi-user.target

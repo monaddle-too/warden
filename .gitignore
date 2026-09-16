@@ -1,0 +1,16 @@
+.local/
+.build/
+__pycache__/
+*.pyc
+.DS_Store
+dist/
+native/.build/
+*.ipsw
+*.img
+*.dmg
+*.qcow2
+*.raw
+*.pem
+*.key
+
+chat/web/node_modules/

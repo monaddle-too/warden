@@ -1,0 +1,25 @@
+[Unit]
+Description=Warden isolated sandbox daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=warden
+Group=warden
+SupplementaryGroups=kvm
+ExecStart=/opt/warden/warden-sbx daemon start --policy deny-all
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/warden/sbx
+LimitNOFILE=16384
+TasksMax=512
+MemoryMax=2500M
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

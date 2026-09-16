@@ -1,0 +1,14 @@
+[Unit]
+Description=Warden public guest bootstrap assets
+After=network-online.target warden-proxy.service
+Requires=warden-firewall.service
+[Service]
+ExecStart=/usr/bin/python3 /opt/warden/proxy/assets.py
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+LimitCORE=0
+[Install]
+WantedBy=multi-user.target

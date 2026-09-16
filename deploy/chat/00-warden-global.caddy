@@ -1,0 +1,5 @@
+{
+  on_demand_tls {
+    ask http://172.18.0.1:19081/_tls/allow
+  }
+}

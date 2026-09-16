@@ -1,0 +1,86 @@
+/* Design tokens. Every colour in the UI resolves to one of these; the dark
+   scheme only overrides tokens. Text/background pairs are ≥ 4.5:1 (AA) in
+   both schemes. */
+:root {
+  color-scheme: light dark;
+  --font:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --surface-2: #f3f1ec;
+  --surface-3: #ebe8e1;
+  --bubble: #f0eee8;
+  --line: #e2ded6;
+  --line-strong: #c8c2b6;
+
+  --text: #1c1b18;
+  --text-2: #47443e;
+  --muted: #6b675f;
+
+  --accent: #b4531e;
+  --accent-text: #9a4316;
+  --accent-soft: #fbeee4;
+  --accent-line: #ecc9b0;
+
+  --primary: #1c1b18;
+  --primary-hover: #33312c;
+  --on-primary: #ffffff;
+
+  --success: #2e7d4f;
+  --success-soft: #e6f2ea;
+  --danger: #b42318;
+  --danger-soft: #fdecea;
+
+  --info-soft: #e8eef8;
+  --info-text: #2b4a7a;
+  --add-soft: #e3f3e8;
+  --add-text: #1f6b3a;
+  --del-soft: #fde8e6;
+  --del-text: #a12d22;
+
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow: 0 1px 2px rgb(28 27 24 / 0.06), 0 8px 24px rgb(28 27 24 / 0.1);
+  --ring: 0 0 0 3px rgb(180 83 30 / 0.28);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161513;
+    --surface: #1f1e1b;
+    --surface-2: #1b1a18;
+    --surface-3: #2a2825;
+    --bubble: #262421;
+    --line: #2e2c28;
+    --line-strong: #46433d;
+
+    --text: #ecebe6;
+    --text-2: #b8b5ad;
+    --muted: #8f8b82;
+
+    --accent: #d97a45;
+    --accent-text: #e8946a;
+    --accent-soft: #2c1f16;
+    --accent-line: #5a3a26;
+
+    --primary: #ecebe6;
+    --primary-hover: #ffffff;
+    --on-primary: #161513;
+
+    --success: #5fbf87;
+    --success-soft: #16281d;
+    --danger: #f08a7e;
+    --danger-soft: #331b18;
+
+    --info-soft: #1c2634;
+    --info-text: #8fb0e0;
+    --add-soft: #16281d;
+    --add-text: #7fd19d;
+    --del-soft: #331b18;
+    --del-text: #f09a90;
+
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px rgb(0 0 0 / 0.5);
+    --ring: 0 0 0 3px rgb(217 122 69 / 0.35);
+  }
+}

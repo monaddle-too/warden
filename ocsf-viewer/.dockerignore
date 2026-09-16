@@ -1,0 +1,7 @@
+**
+!Dockerfile
+!build/
+!build/ocsf
+!dist/
+!dist/client/
+!dist/client/**

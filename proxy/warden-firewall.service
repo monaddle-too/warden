@@ -1,0 +1,14 @@
+[Unit]
+Description=Warden fail-closed guest firewall
+DefaultDependencies=no
+Before=network-pre.target warden-proxy.service
+Wants=network-pre.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/warden/proxy/load_firewall.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

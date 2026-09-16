@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:warden:audit:1.0.0",
+  "title": "Warden audit event v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "time",
+    "event_type",
+    "severity",
+    "producer",
+    "sequence",
+    "previous_hash",
+    "event_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "system.started",
+        "credential.configured",
+        "credential.cleared",
+        "policy.updated",
+        "http.request",
+        "http.request.external",
+        "http.response",
+        "http.response.started",
+        "request.allowed",
+        "request.denied",
+        "request.interrupted",
+        "approval.requested",
+        "approval.granted",
+        "approval.denied",
+        "approval.revoked",
+        "network.denied",
+        "dns.query",
+        "proxy.started",
+        "proxy.error",
+        "tls.passthrough",
+        "egress.allowed",
+        "egress.denied",
+        "approval.revoked_all",
+        "network.connected",
+        "network.disconnected"
+      ]
+    },
+    "severity": {
+      "enum": [
+        "debug",
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ]
+    },
+    "producer": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "instance_id"
+      ],
+      "properties": {
+        "name": {
+          "const": "warden"
+        },
+        "version": {
+          "type": "string"
+        },
+        "instance_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "previous_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "event_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "request_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "decision_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "grant_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/body_metadata"
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/body_metadata"
+        }
+      }
+    },
+    "actor": {
+      "type": "object"
+    },
+    "grant": {
+      "type": "object"
+    },
+    "status": {
+      "type": "integer"
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "body_metadata": {
+      "type": "object",
+      "required": [
+        "capture"
+      ],
+      "properties": {
+        "capture": {
+          "const": "omitted_policy"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

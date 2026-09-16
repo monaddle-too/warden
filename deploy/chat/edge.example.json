@@ -1,0 +1,11 @@
+{
+  "origin": "https://warden.monaddle.com",
+  "previewSuffix": "preview.monaddle.com",
+  "clientID": "730944705291-7kkjd1m1p8sknuikbdvpqis1n6gsot7s.apps.googleusercontent.com",
+  "ownerEmails": "owner@example.com",
+  "upstream": "http://127.0.0.1:18780",
+  "upstreamHost": "127.0.0.1:18780",
+  "ownerTokenFile": "/var/lib/warden/app/endpoint.json",
+  "listen": "172.18.0.1:19081",
+  "loginsFile": "/var/lib/warden/edge/logins.json"
+}

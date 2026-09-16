@@ -1,0 +1,59 @@
+# Previous OVH Compose file: the three services configured by flags, before
+# they read warden.json (compose.yaml). Kept for rollback: `docker compose -f
+# compose.legacy.yaml up -d` restores the flag-configured services with the
+# same image and state. Not maintained beyond that.
+name: warden
+x-service: &service
+  image: ${WARDEN_IMAGE:?set the built Warden image}
+  user: '${WARDEN_UID:?set Warden UID}:${WARDEN_GID:?set Warden GID}'
+  network_mode: host
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: ['/tmp:mode=1777,size=256m']
+  restart: unless-stopped
+  logging:
+    driver: local
+    options: {max-size: '10m', max-file: '3'}
+x-environment: &environment
+  HOME: /var/lib/warden/sbx/home
+  XDG_CACHE_HOME: /var/lib/warden/sbx/cache
+  XDG_STATE_HOME: /var/lib/warden/sbx/state
+  XDG_CONFIG_HOME: /var/lib/warden/sbx/config
+  XDG_DATA_HOME: /var/lib/warden/sbx/data
+services:
+  policy:
+    <<: *service
+    environment:
+      <<: *environment
+      WARDEN_GITHUB_APP_BROKER: /run/github/broker.json
+    command: [warden-policy, --state, /state, --sbx, /usr/local/bin/sbx, --manage-network, --codex-auth-file, /run/provider/auth.json, --claude-auth-file, /run/provider/claude.json, --google-config, /run/provider/google.json, --guest-image-digest, '${WARDEN_GUEST_DIGEST:-sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919}']
+    volumes:
+      - /var/lib/warden/policy:/state
+      - /var/lib/warden/provider:/run/provider:ro
+      - /var/lib/warden/github:/run/github:ro
+      - /var/lib/warden/sbx:/var/lib/warden/sbx
+      - /usr/bin/sbx:/usr/local/bin/sbx:ro
+    stop_grace_period: 30s
+  runner:
+    <<: *service
+    environment: *environment
+    command: [warden-runner, --root, /state, --socket, /state/worker.sock, --warden-socket, /run/warden/sbx-control.sock, --sbx, /usr/local/bin/sbx, --runtime-dir, /opt/warden-runtime, --claude-path, /opt/warden-claude/claude, --template, '${WARDEN_GUEST_TEMPLATE:-docker/sandbox-templates:shell-docker@sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919}', --sandbox-memory-mb, '1536', --max-resident, '2', --spare-sandboxes, '${WARDEN_SPARE_SANDBOXES:-1}']
+    volumes:
+      - /var/lib/warden/runner:/state
+      - /var/lib/warden/policy:/run/warden:ro
+      - /var/lib/warden/sbx:/var/lib/warden/sbx
+      - /opt/warden/runtime:/opt/warden-runtime:ro
+      - /opt/warden/claude:/opt/warden-claude:ro
+      - /usr/bin/sbx:/usr/local/bin/sbx:ro
+    depends_on: [policy]
+    stop_grace_period: 45s
+  chat:
+    <<: *service
+    command: [warden-chat, --state, /state, --warden-socket, /run/warden/sbx-control.sock, --runner-socket, /run/runner/worker.sock, --listen, '127.0.0.1:18780', --preview-suffix, preview.monaddle.com, --web-dir, /app/web]
+    volumes:
+      - /var/lib/warden/app:/state
+      - /var/lib/warden/policy:/run/warden:ro
+      - /var/lib/warden/runner:/run/runner:ro
+    depends_on: [runner]
+    stop_grace_period: 30s

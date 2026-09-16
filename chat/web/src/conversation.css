@@ -1,0 +1,372 @@
+/* Transcript, activity, approvals and the composer. */
+.conversation {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+.conversation-scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 28px 24px 8px;
+  min-height: 120px;
+  scrollbar-gutter: stable;
+}
+.transcript {
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.conversation-scroll .empty {
+  padding-top: 12vh;
+}
+
+/* Messages */
+.message {
+  display: flex;
+  gap: 12px;
+}
+.message-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--on-primary);
+  background: var(--primary);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.message-body {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.message header {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.message header strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.message .rich-text {
+  font-size: 15px;
+  line-height: 1.6;
+}
+.message-user {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.message-user header {
+  padding: 0 4px;
+}
+.message-user header strong {
+  color: var(--text-2);
+}
+.message-user .message-body {
+  flex: 0 1 auto;
+  max-width: min(600px, 100%);
+  padding: 12px 16px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--bubble);
+}
+.stream-label {
+  color: var(--accent-text);
+}
+.system-entry {
+  font-size: 13px;
+  text-align: center;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+/* Tool activity: one collapsed row per run of consecutive steps. */
+.activity-group {
+  align-self: flex-start;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 13px;
+  color: var(--text-2);
+}
+.activity-group summary,
+.activity-entry summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  min-width: 0;
+}
+.activity-group summary::-webkit-details-marker,
+.activity-entry summary::-webkit-details-marker {
+  display: none;
+}
+.activity-group > summary {
+  min-height: 32px;
+  padding: 4px 10px;
+}
+.activity-group > summary:hover {
+  color: var(--text);
+}
+.activity-group .chevron {
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+.activity-group[open] > summary .chevron {
+  transform: rotate(90deg);
+}
+.activity-group summary .muted {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-group pre,
+.activity-entry pre {
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px 10px;
+  margin: 0;
+  background: var(--surface-2);
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.activity-group > pre {
+  margin: 0 10px 10px;
+}
+.activity-list {
+  border-top: 1px solid var(--line);
+  padding: 6px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.activity-entry summary {
+  padding: 4px 0;
+}
+.activity-entry pre {
+  margin: 4px 0 6px;
+}
+
+/* Approval card */
+.approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+}
+.approval-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.approval-icon {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--accent-text);
+}
+.approval-head h3 {
+  font-size: 15px;
+}
+.approval-head p {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.approval-head code {
+  color: var(--muted);
+}
+.approval-params {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 13px;
+}
+.approval-params dt {
+  color: var(--muted);
+}
+.approval-params dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.approval-card > p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-2);
+}
+.approval-card details summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--accent-text);
+}
+.approval-card details pre {
+  max-height: 240px;
+  overflow: auto;
+  margin-top: 8px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.approval-card label {
+  margin: 0;
+  gap: 8px;
+  color: var(--text);
+  font-size: 14px;
+}
+.approval-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.approval-options button {
+  height: 32px;
+  font-size: 13px;
+}
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.approval-card [role="alert"] {
+  margin: 0;
+}
+
+/* Composer */
+.composer-wrap {
+  flex-shrink: 0;
+  padding: 12px 24px 16px;
+}
+.composer-wrap > * {
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.composer-wrap > .error {
+  margin-bottom: 10px;
+}
+.composer {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 3px rgb(28 27 24 / 0.08);
+  background: var(--surface);
+}
+.composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+.composer textarea {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  max-height: 240px;
+  padding: 14px 16px 4px;
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  outline: none;
+  font-size: 15px;
+}
+.composer-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 8px 8px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+/* The model picker sits in the composer, as in the desktop agent apps. */
+.composer-model select {
+  width: auto;
+  height: 30px;
+  min-height: 0;
+  padding: 0 26px 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background-color: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.composer-model select:hover:not(:disabled) {
+  background-color: var(--surface-3);
+  color: var(--text);
+}
+.composer-model select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.composer-footer > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.composer-footer > span > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-footer > div {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.send-button {
+  width: 36px;
+  padding: 0;
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+}
+.send-button:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+.composer-hint {
+  padding: 6px 4px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+@media (max-width: 650px) {
+  .conversation-scroll {
+    padding: 20px 16px 8px;
+  }
+  .composer-wrap {
+    padding: 10px 16px 12px;
+  }
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=Warden host-only maintenance and fixed guest SSH transport
+After=network-online.target
+[Service]
+ExecStart=/usr/bin/python3 /opt/warden/proxy/management.py
+Restart=always
+RestartSec=1
+UMask=0077
+LimitCORE=0
+[Install]
+WantedBy=multi-user.target

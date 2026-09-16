@@ -1,0 +1,241 @@
+{
+  "mode": "restricted",
+  "destinations": [
+    {
+      "host": "api.openai.com",
+      "methods": [
+        "GET",
+        "HEAD",
+        "POST",
+        "OPTIONS"
+      ],
+      "category": "ai"
+    },
+    {
+      "host": "chatgpt.com",
+      "methods": [
+        "GET",
+        "HEAD",
+        "POST",
+        "OPTIONS"
+      ],
+      "category": "ai"
+    },
+    {
+      "host": "auth.openai.com",
+      "methods": [
+        "GET",
+        "HEAD",
+        "POST",
+        "OPTIONS"
+      ],
+      "category": "ai"
+    },
+    {
+      "host": "api.anthropic.com",
+      "methods": [
+        "GET",
+        "HEAD",
+        "POST",
+        "OPTIONS"
+      ],
+      "category": "ai"
+    },
+    {
+      "host": "claude.ai",
+      "methods": [
+        "GET",
+        "HEAD",
+        "POST",
+        "OPTIONS"
+      ],
+      "category": "ai"
+    },
+    {
+      "host": "console.anthropic.com",
+      "methods": [
+        "GET",
+        "HEAD",
+        "POST",
+        "OPTIONS"
+      ],
+      "category": "ai"
+    },
+    {
+      "host": "registry.npmjs.org",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "dependencies"
+    },
+    {
+      "host": "pypi.org",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "dependencies"
+    },
+    {
+      "host": "files.pythonhosted.org",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "dependencies"
+    },
+    {
+      "host": "nodejs.org",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "dependencies"
+    },
+    {
+      "host": "formulae.brew.sh",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "dependencies"
+    },
+    {
+      "host": "swscan.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "swquery.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "swdownload.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "swdist.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "swcdn.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "gdmf.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "mesu.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "updates.cdn-apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "configuration.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "gdmf-ados.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "gg.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "gs.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "ig.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "oscdn.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "osrecovery.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "skl.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    },
+    {
+      "host": "xp.apple.com",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "category": "updates"
+    }
+  ]
+}

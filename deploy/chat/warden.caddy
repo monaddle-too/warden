@@ -1,0 +1,22 @@
+warden.monaddle.com {
+  encode zstd gzip
+  reverse_proxy 172.18.0.1:19081 {
+    flush_interval -1
+  }
+  header Strict-Transport-Security "max-age=31536000"
+}
+
+https:// {
+  tls {
+    on_demand
+  }
+  @warden_preview host *.preview.monaddle.com
+  handle @warden_preview {
+    reverse_proxy 172.18.0.1:19081 {
+      flush_interval -1
+    }
+  }
+  handle {
+    respond "Unknown preview" 404
+  }
+}

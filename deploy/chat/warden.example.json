@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "paths": {
+    "state": "/var/lib/warden",
+    "webAssets": "/app/web",
+    "githubCatalog": "/app/vendor",
+    "sandboxPolicyTemplate": "/app/config/policy.template.json"
+  },
+  "sbx": {
+    "executable": "/usr/bin/sbx",
+    "privateHome": "/var/lib/warden/sbx",
+    "guestImage": "docker/sandbox-templates:shell-docker",
+    "guestImageDigest": "sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919",
+    "inspectionCertMaxAgeDays": 365
+  },
+  "runtimes": {
+    "codex": "/opt/warden/runtime",
+    "claude": "/opt/warden/claude/claude"
+  },
+  "sandboxes": {
+    "memoryMB": 1536,
+    "maxRunning": 2,
+    "warmSpares": 1,
+    "stopAfterIdleMinutes": 15,
+    "keepStopped": 32
+  },
+  "chat": { "listen": "127.0.0.1:18780" },
+  "previews": {
+    "mode": "public",
+    "hostSuffix": "preview.monaddle.com",
+    "edgeListen": "172.18.0.1:19081"
+  },
+  "auth": {
+    "mode": "google",
+    "publicURL": "https://warden.monaddle.com",
+    "google": {
+      "signInClientID": "730944705291-7kkjd1m1p8sknuikbdvpqis1n6gsot7s.apps.googleusercontent.com",
+      "owners": ["owner@example.com"],
+      "signInLedger": "/var/lib/warden/edge/logins.json"
+    }
+  },
+  "providers": {
+    "codex": { "authFile": "/var/lib/warden/provider/auth.json" },
+    "claude": { "authFile": "/var/lib/warden/provider/claude.json" },
+    "google": { "docsClient": "/var/lib/warden/provider/google.json" },
+    "github": {
+      "appID": 999999,
+      "appSlug": "monaddle-workspace",
+      "installationOwner": "punished-monaddle",
+      "brokerFile": "/var/lib/warden/github/broker.json"
+    }
+  }
+}

@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Reproducible local build, provisioning, and lifecycle entry point."""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.parse
+import webbrowser
+
+ROOT=Path(__file__).resolve().parent
+STATE=Path(os.environ.get('WARDEN_STATE',ROOT/'.local')).resolve()
+os.environ['WARDEN_STATE']=str(STATE); os.environ['PYTHONPATH']=str(ROOT/'host')
+os.environ['WARDEN_PROJECT_ROOT']=str(ROOT)
+os.umask(0o077)
+STATE.mkdir(parents=True,exist_ok=True)
+BIN=(STATE/'bin/warden-vm').resolve()
+def run(*args): return subprocess.run([str(a) for a in args],cwd=ROOT,check=True)
+def background(name,argv):
+    log=open(STATE/(name+'.log'),'ab',buffering=0)
+    proc=subprocess.Popen([str(a) for a in argv],cwd=ROOT,stdout=log,stderr=log,start_new_session=True)
+    (STATE/(name+'.pid')).write_text(str(proc.pid))
+    time.sleep(.5)
+    if proc.poll() is not None: raise SystemExit(name+' exited; inspect '+str(STATE/(name+'.log')))
+    return proc
+def control_running():
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as conn:
+        try: conn.connect(str(STATE/'control.sock')); return True
+        except OSError: return False
+def start_menu(required=False):
+    binary=STATE/'Warden Menu.app/Contents/MacOS/warden-vm'
+    if not binary.exists():
+        if required: raise SystemExit('Build the menu bar with ./warden build first')
+        return
+    with (STATE/'menu.lock').open('a') as lock:
+        try: fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError: return
+    # The native helper also takes the lock, handling concurrent launches.
+    with (STATE/'menu.log').open('ab',buffering=0) as log:
+        proc=subprocess.Popen([str(binary),'menu'],cwd=ROOT,stdout=log,stderr=log,start_new_session=True)
+    (STATE/'menu.pid').write_text(str(proc.pid))
+def start_siem(required=False):
+    if not (STATE/'siem.json').exists():
+        if required: raise SystemExit('Configure .local/siem.json and a private token file; see docs/siem.md')
+        return
+    sys.path.insert(0,str(ROOT/'host'))
+    from warden.siem import running
+    if not running(STATE): background('siem',[sys.executable,'-m','warden.siem','--state',STATE])
+def open_ui():
+    if not control_running(): raise SystemExit('Start the control plane with ./warden control')
+    token=(STATE/'admin-token').read_text().strip()
+    webbrowser.open('http://127.0.0.1:18765/#session='+urllib.parse.quote(token))
+
+parser=argparse.ArgumentParser(description='Warden AI sandbox',epilog='Additional commands: guest, project, recovery, admin, setup, release, update; use COMMAND --help')
+if sys.argv[1:2]==['validate']:
+    sys.exit(subprocess.run([sys.executable,str(ROOT/'scripts/validate-security.py'),*sys.argv[2:]],env=os.environ).returncode)
+if sys.argv[1:2] and sys.argv[1] in ('project','recovery','admin','setup','services','release','update','desktop'):
+    sys.path.insert(0,str(ROOT/'host'))
+    from importlib import import_module
+    module='environments' if sys.argv[1] in ('project','recovery') else 'distribution' if sys.argv[1] in ('release','update') else 'desktop' if sys.argv[1]=='desktop' else 'operations'
+    try:sys.exit(import_module('warden.'+module).main(STATE,sys.argv[1:]))
+    except subprocess.CalledProcessError as error:raise SystemExit('warden: setup step failed (exit '+str(error.returncode)+'); see the output above')
+    except (OSError,ValueError,KeyError) as error:raise SystemExit('warden: '+str(error))
+if sys.argv[1:2]==['guest']:
+    sys.path.insert(0,str(ROOT/'host'))
+    from warden.guest import main
+    try:sys.exit(main(['--state',str(STATE),*sys.argv[2:]]))
+    except (OSError,ValueError,KeyError) as error:raise SystemExit('warden guest: '+str(error))
+parser.add_argument('command',choices=['build','doctor','control','open','menu','prepare','install-mac','stage-tools','run','proxy','sync','siem','test','status','package'])
+args=parser.parse_args()
+if args.command in ('run','proxy','install-mac','stage-tools','prepare') and (STATE/'restore-journal.json').exists():raise SystemExit('Interrupted restore: run ./warden recovery recover before starting the VM')
+if args.command=='build': run('bash',ROOT/'scripts/build-native.sh')
+elif args.command=='doctor': run(BIN,'doctor')
+elif args.command=='control':
+    if not control_running(): background('control',[sys.executable,'-m','warden.server','--state',STATE])
+    start_siem()
+    start_menu()
+    print('Control plane ready. Open it with ./warden open')
+elif args.command=='open': open_ui()
+elif args.command=='menu':
+    start_menu(required=True)
+    print('Warden menu bar launched.')
+elif args.command=='prepare':
+    if not os.environ.get('WARDEN_PACKAGED'): run('bash',ROOT/'scripts/build-native.sh')
+    elif not BIN.exists(): raise SystemExit('Packaged native launcher is missing')
+    run(sys.executable,ROOT/'scripts/prepare-tools.py')
+    if not (STATE/'proxy/disk.raw').exists(): run(sys.executable,ROOT/'scripts/prepare-proxy.py')
+    else: run(sys.executable,ROOT/'scripts/prepare-proxy.py','--sync')
+    restore=json.loads((ROOT/'config/images.lock.json').read_text())['macos']
+    target=STATE/'downloads/macos.ipsw'
+    if not target.exists():
+        if os.environ.get('WARDEN_OFFLINE')=='1':raise SystemExit('Offline mode: missing macOS restore image')
+        partial=target.with_suffix('.ipsw.part')
+        run('curl','-fL','--retry','3','-C','-',restore['url'],'-o',partial)
+        partial.replace(target)
+    digest=hashlib.sha256()
+    with target.open('rb') as stream:
+        while chunk:=stream.read(8*1024*1024): digest.update(chunk)
+    if digest.hexdigest()!=restore['sha256']: raise SystemExit('macOS restore checksum mismatch')
+    print('Inputs ready. Next: ./warden install-mac')
+elif args.command=='install-mac':
+    run(BIN,'install-mac',STATE/'downloads/macos.ipsw')
+    run(sys.executable,ROOT/'scripts/stage-mac-tools.py')
+elif args.command=='stage-tools': run(sys.executable,ROOT/'scripts/stage-mac-tools.py')
+elif args.command in ('run','proxy'):
+    if not control_running(): background('control',[sys.executable,'-m','warden.server','--state',STATE])
+    start_siem()
+    start_menu()
+    (STATE/'proxy-ready.json').unlink(missing_ok=True)
+    run(BIN,args.command)
+elif args.command=='sync': run(sys.executable,ROOT/'scripts/prepare-proxy.py','--sync')
+elif args.command=='siem':
+    start_siem(required=True)
+    print('SIEM shipper started. Use ./warden status to inspect delivery.')
+elif args.command=='test':
+    test_python=STATE/'proxy-test-venv/bin/python'
+    run(test_python if test_python.exists() else sys.executable,'-m','unittest','discover','-s','tests','-v')
+    if sys.platform=='darwin':
+        run('bash',ROOT/'scripts/test-native-paste.sh')
+        run('bash',ROOT/'scripts/test-native-menu.sh')
+elif args.command=='status':
+    print('Control plane:', 'running' if control_running() else 'stopped')
+    with (STATE/'menu.lock').open('a') as lock:
+        try: fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB); print('Menu bar: stopped')
+        except BlockingIOError: print('Menu bar: running')
+    if (STATE/'siem.json').exists():
+        sys.path.insert(0,str(ROOT/'host'))
+        from warden.siem import running
+        print('SIEM shipper:', 'running' if running(STATE) else 'stopped')
+        try: print(json.dumps(json.loads((STATE/'siem-status.json').read_text()),indent=2))
+        except (OSError,ValueError): print('SIEM status not yet available')
+    else: print('SIEM: not configured')
+    for name in ['proxy/disk.raw','mac/installed','proxy-ready.json']:
+        path=STATE/name; print(name+':','present' if path.exists() else 'missing')
+elif args.command=='package': run('bash',ROOT/'scripts/package.sh')

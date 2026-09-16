@@ -1,0 +1,7 @@
+[Unit]
+Description=Watch trusted host provisioning payload
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=10
+[Install]
+WantedBy=timers.target

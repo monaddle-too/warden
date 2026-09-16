@@ -1,0 +1,89 @@
+name: OCSF test and deploy
+on:
+  push:
+    branches: [main]
+    paths: ['ocsf-viewer/**', '.github/workflows/ocsf-deploy.yml']
+  pull_request:
+    paths: ['ocsf-viewer/**', '.github/workflows/ocsf-deploy.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: ocsf-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ocsf-viewer
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - name: Install locked dependencies
+        run: nix develop --command npm ci --no-audit --no-fund
+      - name: Test and build Go and React
+        run: nix develop --command bash scripts/build.sh
+      - name: Check deployment scripts
+        run: nix develop --command shellcheck scripts/build.sh deploy/*.sh
+      - name: Build release image
+        run: docker build --build-arg REVISION="$GITHUB_SHA" -t "ocsf-explorer:$GITHUB_SHA" .
+      - name: Test ingestion, outage recovery, and release container
+        run: |
+          export APP_IMAGE="ocsf-explorer:$GITHUB_SHA" APP_REVISION="$GITHUB_SHA" SITE_HOST=localhost
+          compose() { docker compose -p ocsf-smoke -f deploy/compose.yaml "$@"; }
+          export CLICKHOUSE_PASSWORD=ci-clickhouse-password OCSF_ADMIN_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa OCSF_READ_TOKEN=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr OCSF_INGEST_TOKEN=iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii
+          export OCSF_DATA_DIR="$RUNNER_TEMP/ocsf-data"
+          sudo install -d -m 700 -o 65532 -g 65532 "$OCSF_DATA_DIR"
+          trap 'compose logs --tail 30; compose down -v' EXIT
+          compose config --quiet
+          compose up -d --wait --wait-timeout 120 app
+          nix develop --command node scripts/integration.mjs
+          nix develop --command node scripts/smoke.mjs http://127.0.0.1:8080 "$GITHUB_SHA"
+      - name: Package tested release
+        run: |
+          docker save "ocsf-explorer:$GITHUB_SHA" | gzip -n > deploy/image.tar.gz
+          tar -C deploy -cf release.tar image.tar.gz compose.yaml Caddyfile
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ocsf-${{ github.sha }}
+          path: ocsf-viewer/release.tar
+          retention-days: 7
+          compression-level: 0
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: ovh-production
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ocsf-${{ github.sha }}
+      - name: Install deployment SSH identity
+        env:
+          DEPLOY_KEY: ${{ secrets.OVH_DEPLOY_KEY }}
+          HOST_KEYS: ${{ secrets.OVH_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/ovh_deploy
+          printf '%s\n' "$HOST_KEYS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/ovh_deploy ~/.ssh/known_hosts
+      - name: Deploy with server-side health checks and rollback
+        env:
+          OVH_HOST: ${{ vars.OVH_HOST }}
+        run: |
+          ssh -i ~/.ssh/ovh_deploy -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 "ocsf-ci@$OVH_HOST" "deploy $GITHUB_SHA" < release.tar
+      - name: Verify public revision
+        env:
+          SITE_HOST: ${{ vars.SITE_HOST }}
+        run: |
+          curl --fail --silent --show-error --max-time 20 "https://$SITE_HOST/healthz" | jq -e --arg revision "$GITHUB_SHA" '.status == "ok" and .revision == $revision'
+      - name: Remove deployment identity
+        if: always()
+        run: rm -f ~/.ssh/ovh_deploy

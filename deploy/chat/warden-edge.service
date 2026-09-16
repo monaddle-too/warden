@@ -1,0 +1,21 @@
+[Unit]
+Description=Warden authenticated HTTPS ingress
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=warden
+Group=warden
+WorkingDirectory=/opt/warden-preview
+ExecStart=/opt/warden-preview/warden-edge --config /opt/warden-preview/config.json
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/warden/edge
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

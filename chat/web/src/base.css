@@ -1,0 +1,379 @@
+/* Primitives: type, controls, dialogs, shared blocks. Layout lives in
+   chat.css, the transcript and composer in conversation.css. */
+* {
+  box-sizing: border-box;
+}
+html {
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+body {
+  margin: 0;
+}
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+a {
+  color: var(--accent-text);
+}
+code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+pre {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Controls. Three weights: outlined (default), .primary, .ghost; plus
+   .chip for the context strip and .icon for square icon buttons. */
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+button:hover {
+  background: var(--surface-3);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+button.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+}
+button.primary:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-2);
+}
+button.ghost:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+button.icon {
+  width: 36px;
+  padding: 0;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip .muted {
+  font-weight: 400;
+}
+button.chip:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.chip.attention,
+button.chip[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent-text);
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  flex-shrink: 0;
+}
+.status-dot.running {
+  background: var(--success);
+}
+.status-dot.starting,
+.status-dot.queued,
+.status-dot.stopping {
+  background: var(--accent);
+}
+.status-dot.error {
+  background: var(--danger);
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 14px;
+}
+select {
+  padding-right: 28px;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b675f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+textarea {
+  line-height: 1.5;
+  resize: vertical;
+}
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 14px 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.muted,
+time {
+  color: var(--muted);
+}
+.error,
+.danger-text,
+.server-error {
+  color: var(--danger);
+}
+.error {
+  padding: 10px 14px;
+  background: var(--danger-soft);
+  border-radius: var(--radius);
+  margin: 12px 0;
+  font-size: 14px;
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Empty states and sign-in. */
+.empty {
+  margin: auto;
+  text-align: center;
+  padding: 60px 30px;
+  max-width: 520px;
+}
+.empty svg {
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+.empty h1,
+.empty h2 {
+  font-size: 22px;
+}
+.empty p {
+  line-height: 1.6;
+  color: var(--text-2);
+  margin: 10px 0 20px;
+}
+.empty button {
+  margin: 0 auto;
+}
+.signin {
+  max-width: 420px;
+  margin: 18vh auto;
+  padding: 36px 32px;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+.signin svg {
+  color: var(--accent);
+}
+.signin h1 {
+  font-size: 24px;
+  margin: 8px 0 6px;
+}
+.signin p {
+  color: var(--text-2);
+  margin: 0 0 20px;
+}
+.signin code {
+  display: inline-block;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+/* Google renders its button left-aligned in a block wrapper; center it. */
+.signin .google-button {
+  display: flex;
+  justify-content: center;
+}
+.signin .google-button[hidden] {
+  display: none;
+}
+
+/* Dialogs: the "New chat" modal and the native <dialog> elements. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgb(28 27 24 / 0.45);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.modal,
+dialog {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow);
+}
+.modal {
+  width: min(480px, 100%);
+}
+.modal h2,
+dialog h2 {
+  font-size: 20px;
+}
+dialog::backdrop {
+  background: rgb(28 27 24 / 0.45);
+}
+.button-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+/* Markdown output. */
+.rich-text {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.rich-text > :first-child {
+  margin-top: 0;
+}
+.rich-text > :last-child {
+  margin-bottom: 0;
+}
+.rich-text p,
+.rich-text ul,
+.rich-text ol {
+  margin: 0 0 0.75em;
+}
+.rich-text h1,
+.rich-text h2,
+.rich-text h3 {
+  margin: 1.2em 0 0.5em;
+  font-size: 1.05em;
+}
+.rich-text pre {
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: auto;
+  margin: 0.75em 0;
+}
+.rich-text :not(pre) > code {
+  padding: 1px 5px;
+  background: var(--surface-2);
+  border-radius: 4px;
+}
+.rich-text table {
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.rich-text td,
+.rich-text th {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+}
+.rich-text blockquote {
+  margin: 0.75em 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--text-2);
+}
+
+.image-attachment {
+  margin: 8px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.image-attachment img {
+  display: block;
+  max-width: 100%;
+  max-height: 600px;
+  object-fit: contain;
+  margin: auto;
+}
+.image-attachment figcaption {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: pre-wrap;
+}

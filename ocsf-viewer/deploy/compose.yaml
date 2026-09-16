@@ -1,0 +1,98 @@
+name: ocsf
+services:
+  app:
+    image: ${APP_IMAGE:?set APP_IMAGE}
+    environment:
+      APP_REVISION: ${APP_REVISION:?set APP_REVISION}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ocsf
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD}
+      OCSF_ADMIN_TOKEN: ${OCSF_ADMIN_TOKEN:?set OCSF_ADMIN_TOKEN}
+      OCSF_READ_TOKEN: ${OCSF_READ_TOKEN:?set OCSF_READ_TOKEN}
+      OCSF_INGEST_TOKEN: ${OCSF_INGEST_TOKEN:?set OCSF_INGEST_TOKEN}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      OCSF_AUTH_ORIGIN: ${OCSF_AUTH_ORIGIN:-}
+      OCSF_GOOGLE_ADMIN_EMAILS: ${OCSF_GOOGLE_ADMIN_EMAILS:-}
+      OCSF_GOOGLE_READ_EMAILS: ${OCSF_GOOGLE_READ_EMAILS:-}
+      OCSF_GOOGLE_READ_DOMAINS: ${OCSF_GOOGLE_READ_DOMAINS:-}
+      OCSF_QUEUE_PATH: /app/data/queue.db
+    volumes:
+      - ${OCSF_DATA_DIR:-/opt/ocsf/data}:/app/data
+    depends_on:
+      clickhouse: {condition: service_started}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/readyz']
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 6
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    ports: ["127.0.0.1:8080:8080"]
+    mem_limit: 512m
+    cpus: 1.5
+    logging:
+      driver: local
+      options: {max-size: "10m", max-file: "3"}
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8@sha256:fa394da808cc53f76d0344429421d6c422a6ee85fe7450135c0e3cff4df9bcbb
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ocsf
+      CLICKHOUSE_USER: ocsf
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    configs:
+      - source: clickhouse_limits
+        target: /etc/clickhouse-server/config.d/limits.xml
+    mem_limit: 3g
+    cpus: 2
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    healthcheck:
+      test: [CMD-SHELL, 'clickhouse-client --user ocsf --password "$$CLICKHOUSE_PASSWORD" --query "SELECT 1" >/dev/null']
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 6
+    logging:
+      driver: local
+      options: {max-size: "10m", max-file: "3"}
+  caddy:
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    restart: unless-stopped
+    environment:
+      SITE_HOST: ${SITE_HOST:?set SITE_HOST}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    mem_limit: 256m
+    logging:
+      driver: local
+      options: {max-size: "10m", max-file: "3"}
+    depends_on:
+      app: {condition: service_healthy}
+configs:
+  clickhouse_limits:
+    content: |
+      <clickhouse>
+        <max_server_memory_usage>2500000000</max_server_memory_usage>
+        <background_pool_size>8</background_pool_size>
+        <background_schedule_pool_size>8</background_schedule_pool_size>
+        <background_message_broker_schedule_pool_size>4</background_message_broker_schedule_pool_size>
+        <background_distributed_schedule_pool_size>4</background_distributed_schedule_pool_size>
+        <merge_tree><number_of_free_entries_in_pool_to_execute_mutation>4</number_of_free_entries_in_pool_to_execute_mutation><number_of_free_entries_in_pool_to_lower_max_size_of_merge>4</number_of_free_entries_in_pool_to_lower_max_size_of_merge><number_of_free_entries_in_pool_to_execute_optimize_entire_partition>4</number_of_free_entries_in_pool_to_execute_optimize_entire_partition></merge_tree>
+        <logger><level>warning</level><console>true</console><log remove="1"/><errorlog remove="1"/></logger>
+        <query_log remove="1"/><query_thread_log remove="1"/><trace_log remove="1"/><text_log remove="1"/><metric_log remove="1"/><asynchronous_metric_log remove="1"/>
+      </clickhouse>
+volumes:
+  clickhouse_data:
+  caddy_data:
+  caddy_config:

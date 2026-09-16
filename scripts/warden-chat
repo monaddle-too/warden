@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Build, run and open Warden's standalone chat stack. No Panta checkout, Python proxy or mitmproxy required.
+
+DEPRECATED: the Go launcher `warden` (chat/cmd/warden: install, doctor, login,
+start, open; see docs/warden-local-install.md) replaces `start` and `open`,
+and was verified live on a Mac on 2026-09-15. This script stays until the
+launcher is also verified on a Linux host, then it is removed. `build` builds
+only three of the five binaries; the install guide's source build is the
+replacement.
+"""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+import webbrowser
+
+ROOT = Path(__file__).resolve().parent.parent
+p = argparse.ArgumentParser(description=__doc__)
+p.add_argument('action', choices=('build', 'start', 'open'))
+p.add_argument('--state', type=Path, default=Path.home()/'.warden-chats')
+p.add_argument('--runtime-dir', type=Path)
+p.add_argument('--sbx', default='/opt/homebrew/bin/sbx')
+p.add_argument('--google-config', type=Path)
+p.add_argument('--claude-path', type=Path)
+p.add_argument('--claude-auth-file', type=Path)
+p.add_argument('--codex-auth-file', type=Path, default=Path.home()/'.codex/auth.json')
+p.add_argument('--sandbox-memory-mb', type=int, default=1536)
+p.add_argument('--listen', default='127.0.0.1:18780')
+p.add_argument('--preview-suffix', default='')
+a = p.parse_args()
+os.umask(0o077)
+if a.action == 'build':
+    (ROOT/'dist/chat').mkdir(parents=True, exist_ok=True)
+    for command in ('warden-policy', 'warden-chat', 'warden-runner'):
+        subprocess.run(['go', '-C', str(ROOT/'chat'), 'build', '-trimpath', '-o', str(ROOT/'dist/chat'/command), './cmd/'+command], check=True)
+    subprocess.run(['pnpm', '--dir', str(ROOT/'chat/web'), 'install', '--frozen-lockfile'], check=True)
+    subprocess.run(['pnpm', '--dir', str(ROOT/'chat/web'), 'build'], check=True)
+elif a.action == 'open':
+    endpoint = json.loads((a.state/'app/endpoint.json').read_text())
+    webbrowser.open(endpoint['url']+'/?launch='+str(time.time_ns())+'#session='+endpoint['token'])
+else:
+    if not a.runtime_dir:
+        p.error('--runtime-dir requires the pinned Linux ARM64 Codex vendor bundle')
+    state = a.state.resolve()
+    if len(str(state/'warden/sbx-control.sock').encode()) > 100:
+        p.error('--state path is too long for the private Unix sockets')
+    for folder in ('warden', 'runner', 'app'):
+        (state/folder).mkdir(parents=True, exist_ok=True, mode=0o700)
+    stack_lock = (state/'launcher.lock').open('a')
+    try:
+        fcntl.flock(stack_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit('Warden is already running or shutting down in this state directory.')
+    processes = []
+    logs = []
+    def launch(name, command, ready=None):
+        previous = (ready.stat().st_ino, ready.stat().st_mtime_ns) if ready and ready.exists() else None
+        log = (state/(name+'.log')).open('ab'); logs.append(log)
+        proc = subprocess.Popen(command, cwd=ROOT, env=dict(os.environ), stdout=log, stderr=subprocess.STDOUT)
+        processes.append(proc)
+        if ready:
+            for _ in range(100):
+                if proc.poll() is not None: raise RuntimeError(name+' failed; see '+str(state/(name+'.log')))
+                if ready.exists() and (ready.stat().st_ino, ready.stat().st_mtime_ns) != previous: return
+                time.sleep(.1)
+            raise RuntimeError(name+' did not become ready')
+    def shutdown(*_): raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, shutdown)
+    try:
+        # Each service holds its own private state lock; startup never replaces another installation.
+        launch('warden', [str(ROOT/'dist/chat/warden-policy'),'--state',str(state/'warden'),'--sbx',a.sbx,'--manage-network','--vendor-dir',str(ROOT/'vendor'),'--policy-template',str(ROOT/'config/policy.template.json'),'--codex-auth-file',str(a.codex_auth_file)] + (['--claude-auth-file',str(a.claude_auth_file)] if a.claude_auth_file else []) + (['--google-config',str(a.google_config)] if a.google_config else []), state/'warden/sbx-control.sock')
+        launch('runner', [str(ROOT/'dist/chat/warden-runner'),'--root',str(state/'runner'),'--socket',str(state/'runner/worker.sock'),'--warden-socket',str(state/'warden/sbx-control.sock'),'--runtime-dir',str(a.runtime_dir.resolve()),'--sbx',a.sbx,'--sandbox-memory-mb',str(a.sandbox_memory_mb)] + (['--claude-path',str(a.claude_path.resolve())] if a.claude_path else []), state/'runner/worker.sock')
+        launch('chat', [str(ROOT/'dist/chat/warden-chat'),'--state',str(state/'app'),'--warden-socket',str(state/'warden/sbx-control.sock'),'--runner-socket',str(state/'runner/worker.sock'),'--listen',a.listen,'--preview-suffix',a.preview_suffix,'--web-dir',str(ROOT/'chat/web/dist')])
+        print('Warden chat started. Run scripts/warden-chat open with the same --state. Ctrl+C stops this stack.', flush=True)
+        while all(proc.poll() is None for proc in processes): time.sleep(.5)
+        raise RuntimeError('A Warden service stopped; inspect logs in '+str(state))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for proc in reversed(processes):
+            if proc.poll() is None:
+                proc.terminate()
+                try: proc.wait(timeout=15)
+                except subprocess.TimeoutExpired: proc.kill();proc.wait()
+        for log in logs: log.close()

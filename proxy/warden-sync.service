@@ -1,0 +1,6 @@
+[Unit]
+Description=Apply trusted host appliance source updates
+After=warden-proxy.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock /run/warden-sync.lock /bin/bash -c 'set -e; cp --reflink=never /opt/warden/proxy/sync.sh /run/warden-sync.sh; cmp /opt/warden/proxy/sync.sh /run/warden-sync.sh; exec /bin/bash /run/warden-sync.sh'

@@ -1,0 +1,3 @@
+// swift-tools-version: 5.9
+import PackageDescription
+let package = Package(name: "WardenVM", platforms: [.macOS(.v14)], products: [.executable(name: "warden-cli", targets: ["WardenCLI"]), .executable(name: "warden-desktop", targets: ["WardenDesktop"]), .executable(name: "warden-vm", targets: ["WardenVM"]), .executable(name: "warden-clipboard", targets: ["WardenClipboard"])], targets: [.executableTarget(name: "WardenCLI"), .executableTarget(name: "WardenDesktop", linkerSettings: [.linkedFramework("AppKit")]), .executableTarget(name: "WardenVM", linkerSettings: [.linkedFramework("Virtualization"), .linkedFramework("AppKit")]), .executableTarget(name: "WardenClipboard", linkerSettings: [.linkedFramework("AppKit")])])
