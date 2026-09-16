@@ -56,6 +56,15 @@ func hostChecks(s *sbxCLI) []check {
 	default:
 		out = append(out, pass("sbx version", strings.TrimSpace(firstLine(version))))
 	}
+	if cli, daemon, err := daemonVersions(s); err == nil && cli != "" && daemon != "" {
+		if cli == daemon {
+			out = append(out, pass("sbx daemon version", daemon))
+		} else {
+			out = append(out, fail("sbx daemon version", "daemon "+daemon+", CLI "+cli, "restart Warden's daemon on the new sbx: "+s.wrapper+" daemon restart (warden install and warden start do this themselves)"))
+		}
+	} else if daemonNeedsRestart(err) {
+		out = append(out, fail("sbx daemon version", "the running daemon predates the sbx CLI", "restart Warden's daemon on the new sbx: "+s.wrapper+" daemon restart (warden install and warden start do this themselves)"))
+	}
 	for _, setting := range hostSettings {
 		name := "sbx setting " + setting.key
 		fix := fmt.Sprintf("%s settings set %s %s (then %s daemon restart if it reports a restart)", s.wrapper, setting.key, setting.value, s.wrapper)

@@ -37,9 +37,10 @@ case "$*" in
 esac
 case "$*" in
   "version") echo "sbx version: v0.42.1 fixture-build" ;;
-  "daemon status") if [ -f "$D/daemon" ]; then echo "Status: running"; else echo "Status: stopped"; fi ;;
+  "daemon status") if [ -f "$D/daemon.prompt" ]; then echo "Error: ensure daemon: cannot prompt for restart: stdin is not a terminal; run the command in an interactive terminal to confirm the restart" >&2; exit 1; fi; if [ -f "$D/daemon" ]; then echo "Status: running"; else echo "Status: stopped"; fi ;;
+  "daemon inspect") if [ -f "$D/daemon.version" ]; then echo "{\"daemon_version\":\"$(cat "$D/daemon.version")\"}"; else echo "{\"daemon_version\":\"v0.42.1\"}"; fi ;;
   "daemon start --policy deny-all --detach") touch "$D/daemon"; echo "daemon started" ;;
-  "daemon restart") echo restarted ;;
+  "daemon restart") rm -f "$D/daemon.prompt" "$D/daemon.version"; touch "$D/daemon"; echo restarted ;;
   "settings get --json ssh.agentForwardingEnabled") echo "{\"key\":\"ssh.agentForwardingEnabled\",\"value\":$(setting ssh.agentForwardingEnabled)}" ;;
   "settings get --json proxy.sandbox") echo "{\"key\":\"proxy.sandbox\",\"value\":\"$(setting proxy.sandbox)\"}" ;;
   "settings set ssh.agentForwardingEnabled "*) echo "$4" > "$D/setting.ssh.agentForwardingEnabled"; echo "updated; restart the daemon to apply" ;;
@@ -242,7 +243,7 @@ func TestInstallCreatesNamespaceRuntimesAndConfig(t *testing.T) {
 		"settings get --json proxy.sandbox", "settings set proxy.sandbox direct",
 		"daemon restart",
 		"mcp ls --json", "login",
-		"version", "settings get --json ssh.agentForwardingEnabled", "settings get --json proxy.sandbox", "mcp ls --json", "policy ls --json --include-inactive", "policy check network --json example.com:443",
+		"version", "version", "daemon inspect", "settings get --json ssh.agentForwardingEnabled", "settings get --json proxy.sandbox", "mcp ls --json", "policy ls --json --include-inactive", "policy check network --json example.com:443",
 	}
 	if strings.Join(cmds, "\n") != strings.Join(expect, "\n") {
 		t.Fatalf("commands:\n%s\nwant:\n%s", strings.Join(cmds, "\n"), strings.Join(expect, "\n"))
@@ -525,7 +526,7 @@ func TestDoctorAfterInstallPassesAndReportsFailuresWithFixes(t *testing.T) {
 		t.Fatalf("summary printed despite failures:\n%s", out)
 	}
 	for _, c := range f.commands()[before:] {
-		if strings.HasPrefix(c, "settings set") || strings.HasPrefix(c, "daemon") || strings.HasPrefix(c, "policy rm") || c == "login" {
+		if strings.HasPrefix(c, "settings set") || (strings.HasPrefix(c, "daemon") && c != "daemon inspect") || strings.HasPrefix(c, "policy rm") || c == "login" {
 			t.Fatalf("doctor changed the host: %s", c)
 		}
 	}
@@ -682,7 +683,44 @@ func TestEnsureDaemonRunningStartsAStoppedDaemon(t *testing.T) {
 	if err := ensureDaemonRunning(sbx, func(string, string) {}); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.commands()[before:]; strings.Join(got, "\n") != "daemon status" {
+	if got := f.commands()[before:]; strings.Join(got, "\n") != "daemon status\nversion\ndaemon inspect" {
 		t.Fatalf("commands: %v", got)
+	}
+}
+
+// After an sbx upgrade the CLI refuses the older daemon until it restarts.
+// Warden owns the daemon and restarts it itself, whether sbx says so with
+// the terminal prompt it cannot show, or `daemon inspect` reports a version
+// other than the CLI's.
+func TestEnsureDaemonRunningRestartsADaemonOlderThanTheCLI(t *testing.T) {
+	f := newFixture(t)
+	if code, out := f.install(); code != 0 {
+		t.Fatalf("install (%d):\n%s", code, out)
+	}
+	sbx := &sbxCLI{wrapper: wrapperPath(f.state), stdin: strings.NewReader(""), stdout: &f.out, stderr: &f.out}
+	for _, c := range []struct {
+		name, marker, want string
+	}{
+		{"prompt", "daemon.prompt", "daemon status\ndaemon restart"},
+		{"version", "daemon.version", "daemon status\nversion\ndaemon inspect\ndaemon restart"},
+	} {
+		f.set(c.marker, "v0.41.0")
+		before := len(f.commands())
+		var steps []string
+		if err := ensureDaemonRunning(sbx, func(name, detail string) { steps = append(steps, name+": "+detail) }); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := f.commands()[before:]; strings.Join(got, "\n") != c.want {
+			t.Fatalf("%s commands: %v", c.name, got)
+		}
+		if len(steps) != 1 || !strings.Contains(steps[0], "restarted") {
+			t.Fatalf("%s steps: %v", c.name, steps)
+		}
+	}
+	// doctor reports a mismatch with the remediation.
+	f.set("daemon.version", "v0.41.0")
+	code, out := f.run("", "doctor", "--config", filepath.Join(f.state, "warden.json"))
+	if code == 0 || !strings.Contains(out, "FAIL sbx daemon version: daemon v0.41.0, CLI v0.42.1") {
+		t.Fatalf("doctor (%d):\n%s", code, out)
 	}
 }

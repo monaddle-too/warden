@@ -176,16 +176,83 @@ func (in *installer) ensureDaemon() error {
 // or stopped; only its "Status:" line says which. Both `warden install` and
 // `warden start` call this: the daemon is not a system service, so after a
 // reboot it is gone until something starts it again.
+//
+// After an sbx upgrade the CLI refuses to talk to the older daemon until it
+// is restarted and asks for confirmation on the terminal, which Warden never
+// gives it ("cannot prompt for restart: stdin is not a terminal"). The daemon
+// is Warden's own, and a stopped sandbox restarts on its next use, so the
+// restart is done here without asking: either because a command answered
+// with that prompt, or because `daemon inspect` reports a version other than
+// the CLI's.
 func ensureDaemonRunning(sbx *sbxCLI, step func(name, detail string)) error {
-	if out, err := sbx.command(20*time.Second, "daemon", "status"); err == nil && daemonRunning(out) {
+	out, err := sbx.command(20*time.Second, "daemon", "status")
+	if daemonNeedsRestart(err) {
+		return restartDaemon(sbx, step, "the running daemon predates the sbx CLI")
+	}
+	if err == nil && daemonRunning(out) {
+		if reason := daemonStale(sbx); reason != "" {
+			return restartDaemon(sbx, step, reason)
+		}
 		step("sbx daemon", "running")
 		return nil
 	}
-	out, err := sbx.command(3*time.Minute, "daemon", "start", "--policy", "deny-all", "--detach")
+	out, err = sbx.command(3*time.Minute, "daemon", "start", "--policy", "deny-all", "--detach")
 	if err != nil {
 		return fmt.Errorf("starting the SBX daemon in Warden's namespace: %w", err)
 	}
 	step("sbx daemon", "started with --policy deny-all"+trailer(out))
+	return nil
+}
+
+// daemonNeedsRestart recognises sbx's refusal to use a daemon older than
+// the CLI without an interactive confirmation.
+func daemonNeedsRestart(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := err.Error()
+	return strings.Contains(text, "cannot prompt for restart") || strings.Contains(text, "needs to restart")
+}
+
+// daemonStale compares the CLI's version with the running daemon's and
+// returns a reason to restart when they differ (or when asking triggers the
+// restart prompt); "" when they match or the question cannot be answered.
+func daemonStale(sbx *sbxCLI) string {
+	cli, daemon, err := daemonVersions(sbx)
+	switch {
+	case daemonNeedsRestart(err):
+		return "the running daemon predates the sbx CLI"
+	case err != nil || cli == "" || daemon == "" || cli == daemon:
+		return ""
+	default:
+		return "the daemon is " + daemon + " but the sbx CLI is " + cli
+	}
+}
+
+// daemonVersions reads the CLI version from `sbx version` ("sbx version:
+// vX.Y.Z build") and the daemon's from `daemon inspect` (daemon_version).
+func daemonVersions(sbx *sbxCLI) (cli, daemon string, err error) {
+	out, err := sbx.run([]string{"version"}, false)
+	if err != nil {
+		return "", "", err
+	}
+	if fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(firstLine(out)), sbxVersionPrefix)); len(fields) > 0 {
+		cli = fields[0]
+	}
+	info, err := sbx.jsonObject([]string{"daemon", "inspect"}, false)
+	if err != nil {
+		return cli, "", err
+	}
+	daemon, _ = info["daemon_version"].(string)
+	return cli, daemon, nil
+}
+
+func restartDaemon(sbx *sbxCLI, step func(name, detail string), reason string) error {
+	out, err := sbx.command(3*time.Minute, "daemon", "restart")
+	if err != nil {
+		return fmt.Errorf("restarting the SBX daemon in Warden's namespace (%s): %w", reason, err)
+	}
+	step("sbx daemon", "restarted: "+reason+"; its sandboxes start again on their next use"+trailer(out))
 	return nil
 }
 
