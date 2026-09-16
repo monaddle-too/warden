@@ -852,3 +852,14 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   `$WARDEN_HOME`. Alpha caveats recorded in the plan's discussion: Apple
   Silicon only verified, no second user has followed the guide, the daemon
   is not a launchd service, Google tokens expire weekly until verification.
+- 2026-09-16: the repository moved to the public
+  https://github.com/monaddle-too/warden as a single-commit history (the
+  private `ai-vm` keeps the full history); owner identifiers were scrubbed
+  from docs and example configs and the release re-published from the
+  public commit. Install, doctor and the verifier now skip an sbx setting
+  the running sbx does not define (an older tester build failed on
+  `ssh.agentForwardingEnabled`). SBX 0.43.0 verified live on the Mac: doctor,
+  Codex chat, a published preview, and its new idle auto-stop of created
+  sandboxes is transparent (`sbx exec` restarts a stopped sandbox, the
+  staged runtime under `/tmp` and published ports survive; only processes
+  the agent started, such as a preview server, are gone after the restart).

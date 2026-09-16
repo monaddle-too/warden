@@ -28,7 +28,7 @@ const Protocol = 2
 // it uses; a missing feature fails at the call that needs it, not up front.
 // SBXTestedVersion records what the acceptance runs used, for messages only.
 const (
-	SBXTestedVersion = "0.42.1"
+	SBXTestedVersion = "0.43.0"
 	CodexVersion     = "0.154.0"
 	ClaudeVersion    = "2.1.272"
 )

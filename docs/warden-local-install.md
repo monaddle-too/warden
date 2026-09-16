@@ -19,7 +19,7 @@ and unit-tested but has not been run on a fresh VM; it is marked as such.
 
 | Host | Guest architecture | Status |
 |---|---|---|
-| Apple Silicon Mac | `linux/arm64` | Verified live (SBX 0.42.1, macOS, arm64 Codex in the stock template). |
+| Apple Silicon Mac | `linux/arm64` | Verified live (SBX 0.42.1 and 0.43.0, macOS, arm64 Codex in the stock template). |
 | x86_64 Linux with KVM (`/dev/kvm` usable by you) | `linux/amd64` | Not yet verified on a fresh VM. The amd64 pins are the ones OVH runs. |
 
 Not supported: Intel Macs, Windows, Linux without KVM, more than one user
@@ -30,8 +30,9 @@ architecture with "unsupported host architecture".
 
 - **sbx (Docker Sandboxes).** Any version that answers `sbx version`; Warden
   assumes the features it uses are present and fails at the call that needs
-  a missing one. The acceptance runs used 0.42.1.
-  the policy verifier and `warden doctor` accept no other version. On a Mac
+  a missing one. A setting an older sbx does not define (it answers
+  `setting "…" is not defined`) is skipped: the feature it would disable is
+  absent. The acceptance runs used 0.42.1 and 0.43.0. On a Mac
   the sbx Homebrew cask installs it at `/opt/homebrew/bin/sbx`, one of the
   places `warden install` looks (`$PATH`, then `/opt/homebrew/bin/sbx`,
   `/usr/local/bin/sbx`, `/usr/bin/sbx`); `--sbx PATH` names it elsewhere.
