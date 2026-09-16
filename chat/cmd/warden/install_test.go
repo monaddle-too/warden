@@ -30,6 +30,11 @@ const fakeSBX = `#!/bin/sh
 D=%[1]s
 printf '%%s\n' "HOME=$HOME XDG_DATA_HOME=$XDG_DATA_HOME :: $*" >> "$D/calls.log"
 setting() { if [ -f "$D/setting.$1" ]; then cat "$D/setting.$1"; else cat "$D/initial.$1"; fi; }
+undefined() { if [ -f "$D/undefined.$1" ]; then echo "ERROR: setting \"$1\" is not defined" >&2; exit 1; fi; }
+case "$*" in
+  "settings get --json "*) undefined "$4" ;;
+  "settings set "*) undefined "$3" ;;
+esac
 case "$*" in
   "version") echo "sbx version: v0.42.1 fixture-build" ;;
   "daemon status") if [ -f "$D/daemon" ]; then echo "Status: running"; else echo "Status: stopped"; fi ;;
@@ -346,6 +351,30 @@ func TestInstallIsIdempotent(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("re-run output lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+// An sbx build without a setting (older, or one that renamed it) answers
+// `setting "…" is not defined`; the feature it governs is absent, so install
+// skips it and doctor reports it as satisfied instead of failing.
+func TestInstallAndDoctorSkipSettingsThisSbxDoesNotDefine(t *testing.T) {
+	f := newFixture(t)
+	f.set("undefined.ssh.agentForwardingEnabled", "")
+	code, out := f.install()
+	if code != 0 {
+		t.Fatalf("install (%d):\n%s", code, out)
+	}
+	if !strings.Contains(out, "ssh.agentForwardingEnabled is not defined by this sbx; skipped") {
+		t.Fatalf("install did not report the skipped setting:\n%s", out)
+	}
+	for _, call := range f.calls() {
+		if strings.Contains(call, "settings set ssh.agentForwardingEnabled") {
+			t.Fatalf("install tried to set an undefined setting: %s", call)
+		}
+	}
+	code, out = f.run("", "doctor", "--config", filepath.Join(f.state, "warden.json"))
+	if code != 0 || !strings.Contains(out, "PASS sbx setting ssh.agentForwardingEnabled: not defined by this sbx") || !strings.HasSuffix(out, "all checks passed\n") {
+		t.Fatalf("doctor (%d):\n%s", code, out)
 	}
 }
 

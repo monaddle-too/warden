@@ -17,6 +17,7 @@ type cliFixture struct {
 	uuid          string
 	mcp           []any
 	ssh           bool
+	undefined     map[string]bool // settings this sbx answers "is not defined" for
 	image         string
 	network       []map[string]any
 	globalNetwork []map[string]any
@@ -54,6 +55,9 @@ func (f *cliFixture) call(args []string, denied bool) (string, error) {
 	case joined == "version":
 		return "sbx version: v0.42.1 fixture-build", nil
 	case strings.HasPrefix(joined, "settings get --json "):
+		if f.undefined[args[3]] {
+			return "", ErrSettingUndefined
+		}
 		var value any = "direct"
 		if strings.HasPrefix(args[3], "ssh.") {
 			value = f.ssh
@@ -270,6 +274,19 @@ func TestUnexpectedPermissionsMCPOrForwardingRejected(t *testing.T) {
 			t.Fatalf("%s accepted", c.name)
 		}
 		c.reset()
+	}
+}
+
+// An sbx that does not define a governed setting has no such feature to
+// disable; the verifier treats the check as satisfied rather than refusing
+// every sandbox on that host.
+func TestSettingsThisSbxDoesNotDefineAreAccepted(t *testing.T) {
+	f := newVerifierFixture(t)
+	f.cli.undefined = map[string]bool{"ssh.agentForwardingEnabled": true, "proxy.sandbox": true}
+	f.ready("runtime")
+	f.verifier.WaitIdle()
+	if !f.ready("runtime") {
+		t.Fatal("undefined settings rejected")
 	}
 }
 

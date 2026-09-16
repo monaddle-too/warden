@@ -205,11 +205,19 @@ func (in *installer) ensureSettings() error {
 	restart := false
 	for _, setting := range hostSettings {
 		result, err := in.sbx.jsonObject([]string{"settings", "get", "--json", setting.key}, false)
+		if settingUndefined(err) {
+			in.step("sbx setting", setting.key+" is not defined by this sbx; skipped (the feature it governs is absent)")
+			continue
+		}
 		if err == nil && result["key"] == setting.key && result["value"] == setting.required {
 			in.step("sbx setting", setting.key+"="+setting.value+" already")
 			continue
 		}
 		out, err := in.sbx.command(30*time.Second, "settings", "set", setting.key, setting.value)
+		if settingUndefined(err) {
+			in.step("sbx setting", setting.key+" is not defined by this sbx; skipped (the feature it governs is absent)")
+			continue
+		}
 		if err != nil {
 			return err
 		}

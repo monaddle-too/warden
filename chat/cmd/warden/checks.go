@@ -61,6 +61,8 @@ func hostChecks(s *sbxCLI) []check {
 		fix := fmt.Sprintf("%s settings set %s %s (then %s daemon restart if it reports a restart)", s.wrapper, setting.key, setting.value, s.wrapper)
 		result, err := s.jsonObject([]string{"settings", "get", "--json", setting.key}, false)
 		switch {
+		case settingUndefined(err):
+			out = append(out, pass(name, "not defined by this sbx (the feature it governs is absent)"))
 		case err != nil:
 			out = append(out, fail(name, err.Error(), fix))
 		case result["key"] != setting.key || result["value"] != setting.required:
@@ -202,6 +204,12 @@ func firstLine(s string) string {
 
 // notSignedIn recognises the daemon's answer when its Docker session is
 // missing (HTTP 401 with "not authenticated").
+// settingUndefined reports sbx's `setting "…" is not defined` answer: the
+// running sbx has no such setting, so the feature it would disable is absent.
+func settingUndefined(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "is not defined")
+}
+
 func notSignedIn(err error) bool {
 	if err == nil {
 		return false

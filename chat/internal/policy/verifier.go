@@ -36,6 +36,12 @@ const (
 // CLIRunner executes the pinned SBX executable and returns stdout.
 type CLIRunner func(args []string, denied bool) (string, error)
 
+// ErrSettingUndefined is what the runner returns when sbx answers a
+// `settings` command with `setting "…" is not defined`: this sbx build does
+// not have the feature the setting governs, so there is nothing to disable
+// and the host check treats it as satisfied.
+var ErrSettingUndefined = errors.New("SBX setting not defined by this sbx")
+
 // GatewayHealthy probes a binding's gateway with a fresh HMAC challenge.
 // It is a variable so tests can substitute it. Callers pass a snapshot of
 // the binding's port, capability and identity.
@@ -310,6 +316,9 @@ func (v *SbxCliVerifier) run(args []string, denied bool) (string, error) {
 	if err != nil {
 		var exitErr *exec.ExitError
 		if !(denied && errors.As(err, &exitErr) && exitErr.ExitCode() == 1) {
+			if len(args) > 0 && args[0] == "settings" && strings.Contains(stderr.String(), "is not defined") {
+				return "", ErrSettingUndefined
+			}
 			return "", errors.New("SBX inspection failed")
 		}
 	}
@@ -612,6 +621,9 @@ func (v *SbxCliVerifier) hostChecks(force bool) error {
 		required any
 	}{{"ssh.agentForwardingEnabled", false}, {"proxy.sandbox", "direct"}} {
 		result, err := v.json([]string{"settings", "get", "--json", setting.key}, false)
+		if errors.Is(err, ErrSettingUndefined) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
