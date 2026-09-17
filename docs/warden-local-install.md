@@ -440,12 +440,17 @@ What the gateway lets through depends on `sandboxes.egress` in
   special-use addresses, IP literals, other ports and raw TCP (SSH,
   databases) remain unreachable in both modes.
 
-Change it in `warden.json` and restart Warden; the setting applies to
-existing sandboxes too:
+Switch it in the Admin console (sidebar), "Network access": the choice
+applies to every sandbox at once, running ones included, and is kept by
+the policy service across restarts, overriding `warden.json`. Or set the
+default in `warden.json` and restart Warden:
 
 ```json
 "sandboxes": { "egress": "open" }
 ```
+
+A console choice wins over the file until `<state>/policy/egress.json` is
+deleted.
 
 ## 9. Limits
 

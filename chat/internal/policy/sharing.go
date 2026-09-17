@@ -364,7 +364,22 @@ type Sharing struct {
 	DB               *sql.DB
 	Images           *Images
 	PullRequests     *PullRequests
+	// Egress, when set, is the registry's runtime egress switch exposed to
+	// the console (the "egress" and "egress_set" operations).
+	Egress EgressSwitch
 }
+
+// EgressSwitch is the registry as the console sees it: the current mode
+// and where it came from, and a setter that applies everywhere.
+type EgressSwitch interface {
+	EgressMode() (mode, source string)
+	SetEgressMode(mode string) error
+}
+
+// Egress mode names as the console and warden.json use them, mapped to the
+// policy document's own ("restricted" and "public").
+var egressNames = map[string]string{"restricted": "restricted", "public": "open"}
+var egressModes = map[string]string{"restricted": "restricted", "open": "public"}
 
 var validDurations = map[int64]bool{900: true, 3600: true, 86400: true, 604800: true}
 
@@ -619,6 +634,25 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		// button that can only fail.
 		google := map[string]any{"configured": s.Google != nil && s.Google.Configured(), "connected": s.Google != nil && s.Google.Connected()}
 		return map[string]any{"configured": s.Google != nil && s.Google.Configured(), "connected": s.Google != nil && s.Google.Connected(), "can_write": s.Google != nil && s.Google.CanWrite(), "google": google, "github": github}, nil
+	case "egress":
+		if s.Egress == nil {
+			return nil, errors.New("egress switch unavailable")
+		}
+		mode, source := s.Egress.EgressMode()
+		return map[string]any{"mode": egressNames[mode], "source": source}, nil
+	case "egress_set":
+		if s.Egress == nil {
+			return nil, errors.New("egress switch unavailable")
+		}
+		mode, ok := egressModes[stringField(data, "mode")]
+		if !ok {
+			return nil, errors.New("mode must be restricted or open")
+		}
+		if err := s.Egress.SetEgressMode(mode); err != nil {
+			return nil, err
+		}
+		mode, source := s.Egress.EgressMode()
+		return map[string]any{"mode": egressNames[mode], "source": source}, nil
 	case "disconnect":
 		// Forget one provider's sign-in. Everything that credential backed
 		// is revoked with it: Google document grants, GitHub repository

@@ -149,6 +149,13 @@ func run(args []string) error {
 	default:
 		return errors.New("--egress must be restricted or open")
 	}
+	// A mode chosen from the Admin console persists in the policy state and
+	// wins over warden.json until it is cleared.
+	if saved, err := policy.LoadEgressMode(*state); err != nil {
+		return errors.New("egress setting: " + err.Error())
+	} else if saved != "" {
+		egressMode = saved
+	}
 	options := policy.RegistryOptions{Operations: operations, PolicyTemplate: *template, GitHubAppConfig: s.githubBroker, GitHubAuthFile: s.githubAuthFile, DocumentAPI: documentAPI, Networks: networks, CA: ca, EgressMode: egressMode}
 	registry, err := policy.NewRegistry(*state, options)
 	if err != nil {
@@ -165,6 +172,7 @@ func run(args []string) error {
 	}
 	defer sharing.Close()
 	sharing.GitHubConfigured, sharing.GitHubAppSlug = s.githubConfigured, s.githubSlug
+	sharing.Egress = registry
 	registry.Sharing = sharing
 	if *claudeAuth != "" {
 		registry.ClaudeSource = &policy.ClaudeCredentials{Path: *claudeAuth}

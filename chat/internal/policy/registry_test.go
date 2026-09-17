@@ -449,3 +449,44 @@ func TestVersionOperationAnswersTheHandshake(t *testing.T) {
 		t.Fatalf("%+v %v", peer, err)
 	}
 }
+
+// The console's egress switch applies to live engines and later ones, is
+// persisted so a restart keeps it, and is readable with its source.
+func TestRegistryEgressSwitchAppliesEverywhereAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	clock := &testClock{now: 1000, mono: 1000}
+	registry := newTestRegistry(t, dir, clock, &fixtureVerifier{enabled: true})
+	if _, err := registry.Register(runContext(nil)); err != nil {
+		t.Fatal(err)
+	}
+	mode := func(e *Engine) string {
+		egress, _ := e.PolicyCopy()["egress"].(map[string]any)
+		m, _ := egress["mode"].(string)
+		return m
+	}
+	first := registry.Bindings["s1"].Engine
+	if m, src := registry.EgressMode(); m != "restricted" || src != "config" || mode(first) != "restricted" {
+		t.Fatalf("initial: %s %s %s", m, src, mode(first))
+	}
+	if err := registry.SetEgressMode("public"); err != nil {
+		t.Fatal(err)
+	}
+	if m, src := registry.EgressMode(); m != "public" || src != "console" || mode(first) != "public" {
+		t.Fatalf("after set: %s %s %s", m, src, mode(first))
+	}
+	if _, err := registry.Register(runContext(map[string]any{"sandboxID": "s2", "runtimeName": "sbx-two"})); err != nil {
+		t.Fatal(err)
+	}
+	if mode(registry.Bindings["s2"].Engine) != "public" {
+		t.Fatal("later engine not open")
+	}
+	if saved, err := LoadEgressMode(dir); err != nil || saved != "public" {
+		t.Fatalf("persisted: %q %v", saved, err)
+	}
+	if err := registry.SetEgressMode("everything"); err == nil {
+		t.Fatal("invalid mode accepted")
+	}
+	if err := registry.SetEgressMode("restricted"); err != nil || mode(first) != "restricted" || mode(registry.Bindings["s2"].Engine) != "restricted" {
+		t.Fatalf("back to restricted: %v", err)
+	}
+}

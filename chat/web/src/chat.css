@@ -1020,3 +1020,37 @@ button.danger:hover {
   border-color: var(--danger, #b3261e);
   background: transparent;
 }
+
+.admin-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+  margin: 8px 0 4px;
+}
+.admin-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  height: auto;
+  padding: 12px 14px;
+  text-align: left;
+  white-space: normal;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.admin-choice span {
+  color: var(--muted);
+  font-weight: 400;
+}
+.admin-choice.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.admin-choice.selected strong {
+  color: var(--accent-text);
+}

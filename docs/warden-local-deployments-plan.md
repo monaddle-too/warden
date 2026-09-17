@@ -664,7 +664,7 @@ missing `providers.github` hides the repository UI instead of failing.
 | `sandboxes.warmSpares` | Booted empty sandboxes kept ready so a new chat starts fast. | runner |
 | `sandboxes.stopAfterIdleMinutes` | Minutes without user activity before a running sandbox stops; files are kept. | runner |
 | `sandboxes.keepStopped` | Stopped sandboxes kept on disk before the oldest are deleted. | runner |
-| `sandboxes.egress` | What a sandbox may reach through its gateway besides the brokered providers: `restricted` (the template's destination list; default) or `open` (any public HTTP/HTTPS host). Credentials are injected only for approved requests in both modes; in `open`, a brokered host without a grant is reached anonymously instead of refused. | policy |
+| `sandboxes.egress` | What a sandbox may reach through its gateway besides the brokered providers: `restricted` (the template's destination list; default) or `open` (any public HTTP/HTTPS host). Credentials are injected only for approved requests in both modes; in `open`, a brokered host without a grant is reached anonymously instead of refused. The Admin console can switch it at runtime; that choice persists in the policy state and overrides this value. | policy |
 | `chat.listen` | Loopback address of the chat API and UI; the edge sits in front. | chat, edge |
 | `previews.mode` | `loopback`: served on this machine over plain HTTP. `public`: through a real domain with TLS. | chat, runner, edge |
 | `previews.hostSuffix` | Hostname tail each preview gets: `localhost` locally, `preview.monaddle.com` on OVH. | chat, edge |
@@ -896,4 +896,10 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   `anonymous: true`) instead of refusing them. sbx's own deny-all with the
   single gateway exception is unchanged, so everything still passes the
   inspecting gateway.
+- 2026-09-16: the egress mode is switchable from the Admin console
+  ("Network access"): `sharing/egress` and owner-only
+  `sharing/egress_set` reach `Registry.SetEgressMode`, which changes
+  every live engine's policy in place (grants kept, external leases
+  dropped), applies to later engines and persists `<policy>/egress.json`,
+  which overrides `sandboxes.egress` at the next start.
 

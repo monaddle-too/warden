@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   FileText,
   GitBranch,
+  Globe,
   KeyRound,
   RefreshCw,
   ShieldOff,
@@ -37,6 +38,7 @@ type Status = {
 type File = { id: string; name: string; blocked: boolean };
 type Repo = { id: number; full_name: string; private?: boolean };
 type Blocked = { id: string; name: string; blocked_at: number };
+type Egress = { mode: "restricted" | "open"; source: "config" | "console" };
 
 const when = (value: string | number) =>
   new Date(typeof value === "number" ? value * 1000 : value).toLocaleString();
@@ -53,6 +55,7 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
   const [repoPage, setRepoPage] = useState<number | null>(null);
   const [repoError, setRepoError] = useState("");
   const [blocked, setBlocked] = useState<Blocked[]>([]);
+  const [egress, setEgress] = useState<Egress>();
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState<string | boolean>(false);
@@ -83,17 +86,19 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
     setLoading(true);
     setError("");
     try {
-      const [u, s, b] = await Promise.all([
+      const [u, s, b, e] = await Promise.all([
         signIn
           ? api<{ persistent: boolean; users: LoginRecord[] }>("admin/users")
           : Promise.resolve({ persistent: true, users: [] }),
         api<Status>("sharing/status"),
         api<{ documents: Blocked[] }>("sharing/blocked"),
+        api<Egress>("sharing/egress").catch(() => undefined),
       ]);
       setUsers(u.users);
       setPersistent(u.persistent);
       setStatus(s);
       setBlocked(b.documents);
+      setEgress(e);
       await Promise.all([
         s.connected ? loadFiles() : Promise.resolve(),
         s.github?.connected ? loadRepos() : Promise.resolve(),
@@ -131,6 +136,27 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
         setRepoPage(null);
       }
       await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  // The egress switch applies to every sandbox at once, running ones
+  // included, and persists on the policy service until changed again.
+  async function setEgressMode(mode: Egress["mode"]) {
+    if (egress?.mode === mode) return;
+    setBusy("egress");
+    setError("");
+    setNotice("");
+    try {
+      const r = await api<Egress>("sharing/egress_set", { mode });
+      setEgress(r);
+      setNotice(
+        mode === "open"
+          ? "Sandboxes may now reach any public website. Credentials are still injected only for approved requests."
+          : "Sandboxes are back to the restricted destination list.",
+      );
     } catch (e) {
       setError(String(e));
     } finally {
@@ -368,6 +394,59 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
           {loading && !status && <p className="muted">Loading…</p>}
           {accounts}
         </section>
+        {egress && (
+          <section aria-labelledby="admin-network">
+            <h2 id="admin-network">
+              <Globe size={16} />
+              Network access
+            </h2>
+            <p className="muted">
+              Every sandbox talks to the internet only through its inspecting
+              gateway, which injects credentials solely for approved requests.
+              This chooses what else the gateway lets through. It applies to all
+              sandboxes immediately and{" "}
+              {egress.source === "console"
+                ? "was last set here, overriding warden.json"
+                : "currently comes from warden.json"}
+              .
+            </p>
+            <div
+              className="admin-choices"
+              role="radiogroup"
+              aria-label="Network access"
+            >
+              {(
+                [
+                  {
+                    mode: "restricted",
+                    title: "Restricted",
+                    text: "The AI providers, package registries and the policy template's destination list. GitHub, Google Docs and Figma only through a grant. Everything else is refused.",
+                  },
+                  {
+                    mode: "open",
+                    title: "Open",
+                    text: "Any public HTTP or HTTPS website. Granted GitHub, Google Docs and Figma requests are brokered as before; ungranted ones go through anonymously, with no credential attached.",
+                  },
+                ] as { mode: Egress["mode"]; title: string; text: string }[]
+              ).map((choice) => (
+                <button
+                  key={choice.mode}
+                  role="radio"
+                  aria-checked={egress.mode === choice.mode}
+                  className={
+                    "admin-choice" +
+                    (egress.mode === choice.mode ? " selected" : "")
+                  }
+                  disabled={busy === "egress"}
+                  onClick={() => void setEgressMode(choice.mode)}
+                >
+                  <strong>{choice.title}</strong>
+                  <span>{choice.text}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
         {signIn && !persistent && (
           <p className="admin-notice">
             The sign-in ledger is not persisted; it lists sign-ins since the

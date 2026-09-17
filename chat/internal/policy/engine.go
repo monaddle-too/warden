@@ -358,6 +358,45 @@ func (e *Engine) SavePolicy(policy map[string]any) error {
 	return err
 }
 
+// SetEgressMode changes only the egress mode of the stored policy
+// ("restricted" or "public"). Unlike SavePolicy it keeps every grant: they
+// cover brokered operations, which the mode does not govern. In-flight
+// external egress leases are dropped so a narrowing takes effect on open
+// connections, whose watchers then close them.
+func (e *Engine) SetEgressMode(mode string) error {
+	if mode != "restricted" && mode != "public" {
+		return errors.New("egress mode must be restricted or public")
+	}
+	policy := e.PolicyCopy()
+	egress, _ := policy["egress"].(map[string]any)
+	if egress == nil {
+		egress = map[string]any{"destinations": []any{}}
+		policy["egress"] = egress
+	}
+	if egress["mode"] == mode {
+		return nil
+	}
+	egress["mode"] = mode
+	if err := ValidatePolicy(policy); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, err := e.Audit.Emit("policy.updated", map[string]any{"policy": policy, "reason": "egress mode " + mode}); err != nil {
+		return err
+	}
+	tmp := e.policyPath + ".tmp"
+	if err := os.WriteFile(tmp, []byte(Dumps(policy)+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, e.policyPath); err != nil {
+		return err
+	}
+	e.Policy = policy
+	e.networkDecisions = map[string]float64{}
+	return nil
+}
+
 // PolicyDigest identifies the current policy for enforcement proofs.
 func (e *Engine) PolicyDigest() string {
 	e.mu.Lock()

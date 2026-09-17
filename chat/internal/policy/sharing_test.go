@@ -628,3 +628,36 @@ func TestDisconnectGitHubUserTokenDeletesTheFileAndSelections(t *testing.T) {
 		t.Fatalf("app status: %v", status["github"])
 	}
 }
+
+type fakeEgress struct{ mode, source string }
+
+func (f *fakeEgress) EgressMode() (string, string) { return f.mode, f.source }
+func (f *fakeEgress) SetEgressMode(mode string) error {
+	f.mode, f.source = mode, "console"
+	return nil
+}
+
+// The console speaks restricted/open; the policy document speaks
+// restricted/public. The sharing operations translate both ways.
+func TestEgressOperationsTranslateConsoleNames(t *testing.T) {
+	f := newSharingFixture(t)
+	if _, err := f.s.Dispatch("egress", nil); err == nil {
+		t.Fatal("egress without a switch accepted")
+	}
+	f.s.Egress = &fakeEgress{mode: "restricted", source: "config"}
+	if r := f.dispatch("egress", nil); r["mode"] != "restricted" || r["source"] != "config" {
+		t.Fatalf("egress: %v", r)
+	}
+	if r := f.dispatch("egress_set", map[string]any{"mode": "open"}); r["mode"] != "open" || r["source"] != "console" {
+		t.Fatalf("egress_set open: %v", r)
+	}
+	if f.s.Egress.(*fakeEgress).mode != "public" {
+		t.Fatal("open not translated to the policy's public")
+	}
+	if _, err := f.s.Dispatch("egress_set", map[string]any{"mode": "public"}); err == nil {
+		t.Fatal("policy vocabulary accepted from the console")
+	}
+	if r := f.dispatch("egress_set", map[string]any{"mode": "restricted"}); r["mode"] != "restricted" {
+		t.Fatalf("egress_set restricted: %v", r)
+	}
+}

@@ -322,6 +322,7 @@ func TestLoginLedgerPersistsAndAdminConsoleIsOwnerOnly(t *testing.T) {
 		{a, "GET", "/api/admin/users", 200}, {a, "POST", "/api/admin/users", 404}, {a, "GET", "/api/admin/other", 404},
 		{a, "POST", "/api/sharing/block", 204}, {a, "POST", "/api/sharing/unblock", 204},
 		{demoAuth{a}, "POST", "/api/sharing/disconnect", 403}, {a, "POST", "/api/sharing/disconnect", 204},
+		{demoAuth{a}, "POST", "/api/sharing/egress_set", 403}, {a, "POST", "/api/sharing/egress_set", 204}, {demoAuth{a}, "GET", "/api/sharing/egress", 204},
 	} {
 		s.Auth = tc.auth
 		before := count

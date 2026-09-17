@@ -126,6 +126,73 @@ type Registry struct {
 	mu            sync.Mutex
 }
 
+// egressFile persists an egress mode chosen from the console under the
+// registry state; when present it overrides the configured mode at start.
+const egressFile = "egress.json"
+
+// EgressMode reports the current egress mode ("restricted" or "public") and
+// where it came from: "console" when set through SetEgressMode and
+// persisted, else "config".
+func (r *Registry) EgressMode() (mode, source string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	mode = r.options.EgressMode
+	if mode == "" {
+		mode = "restricted"
+	}
+	source = "config"
+	if _, err := os.Stat(filepath.Join(r.State, egressFile)); err == nil {
+		source = "console"
+	}
+	return mode, source
+}
+
+// SetEgressMode applies an egress mode to every live sandbox engine and to
+// the ones created later, and persists it so the choice survives restarts
+// (it then overrides sandboxes.egress in warden.json until cleared with
+// ClearEgressMode).
+func (r *Registry) SetEgressMode(mode string) error {
+	if mode != "restricted" && mode != "public" {
+		return errors.New("egress mode must be restricted or public")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, b := range r.Bindings {
+		if b.Engine != nil {
+			if err := b.Engine.SetEgressMode(mode); err != nil {
+				return err
+			}
+		}
+	}
+	r.options.EgressMode = mode
+	tmp := filepath.Join(r.State, egressFile+".tmp")
+	if err := os.WriteFile(tmp, []byte(Dumps(map[string]any{"mode": mode})+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(r.State, egressFile))
+}
+
+// LoadEgressMode reads a mode persisted by SetEgressMode, or "" when none.
+func LoadEgressMode(state string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(state, egressFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	parsed, err := StrictJSON(raw)
+	if err != nil {
+		return "", err
+	}
+	m, _ := parsed.(map[string]any)
+	mode, _ := m["mode"].(string)
+	if mode != "restricted" && mode != "public" {
+		return "", errors.New(egressFile + ": mode must be restricted or public")
+	}
+	return mode, nil
+}
+
 // ValidateContext checks a worker-supplied run context.
 func ValidateContext(value any) (map[string]string, error) {
 	m, ok := value.(map[string]any)
