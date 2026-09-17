@@ -182,6 +182,9 @@ func (i *Inspector) awaitCanary(ctx context.Context, name string) (map[string]st
 	for {
 		var pod api.Pod
 		if err := i.o.Client.Get(ctx, api.Pods, i.o.Namespace, name, &pod); err != nil {
+			if ctx.Err() != nil {
+				return nil, errors.New("did not finish in time")
+			}
 			return nil, err
 		}
 		switch pod.Status.Phase {
