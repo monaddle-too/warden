@@ -733,9 +733,20 @@ Decisions this changes:
       `<binding>.localhost:28781` after a pod restart with the workspace
       intact. Only the Google consent itself remains, which is the owner's
       sign-in in the cluster's Admin console.
-- [ ] 8 End-to-end suite and the adversarial networking rows on gVisor
+- [~] 8 End-to-end suite and the adversarial networking rows on gVisor
       (work item 8); then the same on Kata (dev VM if step 0 says it
-      works, otherwise on the OVH server).
+      works, otherwise on the OVH server). Suite landed 2026-09-17
+      (`chat/tests/k8s`, build tag `k8s`, `scripts/k8s-dev.sh test`,
+      merged f9897cd): Codex and Claude turns, preview, stop/resume with
+      the workspace kept, a policy restart with a live binding, and the
+      adversarial rows (direct egress, proxy credentials, IP literal, IPv6,
+      DNS and DoH, CONNECT to non-HTTP, dropped trust bundle, cluster and
+      metadata addresses, another sandbox's preview, an unlabelled pod)
+      all pass under gVisor. The suite found that the shared gateway had
+      no source-pod check (decision 4's second check); implemented in
+      e424bd1 (the inspector follows sandbox pods; a credential from any
+      other address is refused with 403). Kata rows: deferred to real KVM
+      (decision 15, spike results).
 - [~] 9 Public-preview mode with an Ingress and cert-manager on a real
       cluster (Owner: which cluster; the OVH server with k3s alongside the
       Compose install is the cheapest, a managed cluster with gVisor nodes
