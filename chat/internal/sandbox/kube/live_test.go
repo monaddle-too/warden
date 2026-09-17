@@ -302,24 +302,27 @@ if __name__ == "__main__":
 		}
 		return n
 	}
+	slow := spinCount()
 	if out, err := alloc(); err == nil {
 		t.Fatalf("1.4 GiB fit in a 1 GiB pod: %q", out)
 	} else {
 		t.Logf("at %s the allocation failed as it should: %v", small, err)
 	}
 	// Under gVisor the OOM takes the container down and the kubelet
-	// restarts it on the same pod; wait for exec to work again.
+	// restarts it on the same pod; wait until exec works and keeps
+	// working (the restart settles in two steps).
 	recovered := time.Now()
-	for {
+	for good := 0; good < 3; {
 		if _, err := d.Exec(ctx, name, "/", "true"); err == nil {
-			break
-		} else if time.Since(recovered) > 2*time.Minute {
+			good++
+		} else if time.Since(recovered) > 3*time.Minute {
 			t.Fatalf("container did not come back after the OOM: %v", err)
+		} else {
+			good = 0
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(3 * time.Second)
 	}
 	t.Logf("container back %s after the OOM", time.Since(recovered).Round(time.Millisecond))
-	slow := spinCount()
 	// resize is the worker's resizeLocked: in place, else stop and the
 	// next generation at the size.
 	generation := 1

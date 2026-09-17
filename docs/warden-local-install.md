@@ -448,6 +448,35 @@ answer and who gave it land in the workspace's Access history.
   sandbox at `/home/agent/host/<name>` (a snapshot, up to 1 GiB, never
   Warden's own state), and later copy the sandbox's version back over it,
   merging file by file without deleting anything.
+- **A bigger workspace** (`request_resources`): more CPUs or memory, with
+  a reason, up to the ceiling in `warden.json`; only growth, never less.
+  See "Workspace size" below for what happens when you approve.
+
+## Workspace size
+
+A workspace has a CPU and memory size of its own. The new-chat form's
+Size fieldset (and `warden chat new --cpus N --memory 4g`) picks it for a
+fresh workspace; the default and the ceiling are `sandboxes.memoryMB`,
+`sandboxes.cpus`, `sandboxes.maxMemoryMB` and `sandboxes.maxCPUs` in
+`warden.json` (a ceiling of 0 derives from this machine: three quarters
+of its memory, all its cores). A chat that joins an existing workspace
+takes the workspace's size. The workspace panel's Resources section shows
+the size, what is used of it, and **Change…**, which sets any size within
+the ceiling, larger or smaller.
+
+Changing the size of an SBX sandbox recreates it (SBX cannot change a
+sandbox's limits): the sandbox is stopped, its filesystem saved as a
+template, and a sandbox of the same name created from it at the new size,
+so `/home/agent`, the installed runtimes and the network rule are kept and
+`/tmp` is not. That takes about twenty seconds and needs the workspace's
+chats stopped first; the panel's button says so. When an agent asks and
+you approve, the tool result tells it the sandbox restarts now, its run
+ends at that turn, and once the sandbox is back Warden posts a note in
+the chat that resumes the run at the new size. On Kubernetes the same
+request is applied to the running pod where the cluster's runtime allows
+(see docs/warden-kubernetes.md); where it does not, the restart above
+happens there too. CPUs are whole numbers on SBX and quarters on
+Kubernetes; the form offers what the runner accepts.
 
 ## Network access from a sandbox
 
@@ -514,8 +543,8 @@ deleted.
 - Idle sandboxes stop after 15 minutes; the sizing in `warden.json`
   (`sandboxes.*`, validated on load: memoryMB 512–65536,
   cpus 0.25–64, maxRunning ≥ 1; `maxMemoryMB`/`maxCPUs` cap what any one
-  workspace may be given, 0 derives them from the host)
-  can be edited by hand.
+  workspace may be given, 0 derives them from the host; see "Workspace
+  size") can be edited by hand.
 - The SBX sign-in cannot be verified non-interactively; install records it
   and `doctor` reports 401 answers as "sign in from your own terminal".
 - Verified on the Mac: restart and resume of a published preview. After a

@@ -272,3 +272,16 @@ ceiling.
   section (usage rows, Change… button, the form); the stopped usage sample
   reports the sandbox's own size. Go race suite, vet, chart goldens, web
   type-check, tests and build green.
+- 2026-09-17 (GKE): deployed to the Autopilot cluster (chart quota 4 pods
+  × 8 GiB / 4 CPUs, LimitRange max at the ceiling, runner Role with
+  `pods/resize`). `TestLiveResize` on GKE Sandbox (gVisor): the shim
+  answers pods/resize with `Unimplemented`, so every resize there is the
+  fallback: pod replaced at the size in 10–15 s, PVC kept. At 0.5 CPU ·
+  1 GiB a 1.4 GiB allocation is killed (the OOM takes the gVisor
+  container down; it restarts on the same pod in ~17 s); at 1.5 CPUs ·
+  2 GiB it is held, a two-process busy loop does 4.8× the work, and the
+  guest reports 2 CPUs and MemTotal 2 GiB (a new pod, unlike an in-place
+  resize); the decrease back replaces the pod and the allocation fails
+  again. Decision 6 amended (per-resize fallback to the restart path);
+  `watchPod` reopens a watch the API front end reset. In-app check on GKE
+  (form, panel, agent grant) still to run.
