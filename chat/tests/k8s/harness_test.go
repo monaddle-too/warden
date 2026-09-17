@@ -131,13 +131,14 @@ type rowResult struct {
 
 // harness holds the clients and everything the suite created.
 type harness struct {
-	t     *testing.T
-	s     settings
-	kube  *kube.Client
-	cfg   wardenConfig
-	token string
-	stamp string
-	jar   http.CookieJar
+	t        *testing.T
+	s        settings
+	kube     *kube.Client
+	cfg      wardenConfig
+	token    string
+	edgeHost string
+	stamp    string
+	jar      http.CookieJar
 	// api reaches the chat API through the edge with the owner capability;
 	// web is the browser stand-in for previews (cookies, *.localhost).
 	api *http.Client
@@ -164,9 +165,18 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	jar, _ := cookiejar.New(nil)
-	h := &harness{t: t, s: s, kube: client, jar: jar, stamp: time.Now().Format("15:04:05"), chats: map[string]*suiteChat{}}
+	edgeURL, err := url.Parse(s.edgeURL)
+	if err != nil {
+		t.Fatalf("WARDEN_K8S_EDGE_URL %q: %v", s.edgeURL, err)
+	}
+	h := &harness{t: t, s: s, kube: client, jar: jar, edgeHost: edgeURL.Hostname(), stamp: time.Now().Format("15:04:05"), chats: map[string]*suiteChat{}}
 	h.api = &http.Client{Timeout: 90 * time.Second, Jar: jar, Transport: &http.Transport{Proxy: nil}}
-	h.web = &http.Client{Timeout: 60 * time.Second, Jar: jar, Transport: &http.Transport{Proxy: nil, DialContext: dialLocalhost}}
+	// The browser stand-in follows the preview sign-in redirects with the
+	// preview cookies (jar) and presents the owner bearer on the edge's
+	// application origin, which authorizePreview accepts as the owner
+	// (SessionRef) the same as the browser's owner cookie. It never sends
+	// the bearer to a preview host (a guest-served origin).
+	h.web = &http.Client{Timeout: 60 * time.Second, Jar: jar, Transport: &bearerToHost{host: edgeURL.Hostname(), token: func() string { return h.token }, base: &http.Transport{Proxy: nil, DialContext: dialLocalhost}}}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	// The release's own configuration says which namespace, RuntimeClass,
@@ -207,6 +217,23 @@ func newHarness(t *testing.T) *harness {
 	}
 	t.Cleanup(h.cleanup)
 	return h
+}
+
+// bearerToHost adds the owner bearer to requests whose host is the edge's
+// application origin, and nothing to preview hosts. It makes the preview
+// sign-in recognise the owner without depending on a cookie session.
+type bearerToHost struct {
+	host  string
+	token func() string
+	base  http.RoundTripper
+}
+
+func (b *bearerToHost) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Hostname() == b.host {
+		r = r.Clone(r.Context())
+		r.Header.Set("Authorization", "Bearer "+b.token())
+	}
+	return b.base.RoundTrip(r)
 }
 
 // dialLocalhost resolves every *.localhost name to the loopback address,
@@ -485,11 +512,24 @@ func (h *harness) ensureRunning(t *testing.T, c *suiteChat, keep ...*suiteChat) 
 	h.turn(t, c, "Reply with the single word ready.", 4*time.Minute, keep...)
 }
 
-// turn sends text to the chat and follows the transcript until the agent
+// turn sends text to the chat, follows it to idle and fails the test on any
+// error. Most callers want this.
+func (h *harness) turn(t *testing.T, c *suiteChat, text string, timeout time.Duration, keep ...*suiteChat) string {
+	t.Helper()
+	answer, err := h.tryTurn(t, c, text, timeout, keep...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return answer
+}
+
+// tryTurn sends text to the chat and follows the transcript until the agent
 // is idle again, answering every approval the agent raises (tool
 // permissions, port bindings, questions) in the owner's favour, as the
-// suite is the owner. It returns the assistant's new text.
-func (h *harness) turn(t *testing.T, c *suiteChat, text string, timeout time.Duration, keep ...*suiteChat) string {
+// suite is the owner. It returns the assistant's new text, or an error when
+// the turn fails or does not settle (so a caller can retry, e.g. after a
+// policy restart where the binding re-establishes over a few seconds).
+func (h *harness) tryTurn(t *testing.T, c *suiteChat, text string, timeout time.Duration, keep ...*suiteChat) (string, error) {
 	t.Helper()
 	h.awaitCapacity(t, c, keep...)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -504,7 +544,7 @@ func (h *harness) turn(t *testing.T, c *suiteChat, text string, timeout time.Dur
 	}
 	started := time.Now()
 	if err := h.post(ctx, "chats/"+c.id+"/message", map[string]any{"text": text, "id": tui.NewMessageID()}); err != nil {
-		t.Fatalf("sending to %q: %v", c.title, err)
+		return "", fmt.Errorf("sending to %q: %w", c.title, err)
 	}
 	answered := map[string]bool{}
 	settled, replies := 0, 0
@@ -513,14 +553,14 @@ func (h *harness) turn(t *testing.T, c *suiteChat, text string, timeout time.Dur
 		s, err := h.state(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				t.Fatalf("turn on %q timed out after %s: %v", c.title, timeout, err)
+				return "", fmt.Errorf("turn on %q timed out after %s: %w", c.title, timeout, err)
 			}
 			time.Sleep(time.Second)
 			continue
 		}
 		ch := s.Chat(c.id)
 		if ch == nil {
-			t.Fatalf("chat %s vanished", c.id)
+			return "", fmt.Errorf("chat %s vanished", c.id)
 		}
 		streaming := false
 		for _, e := range ch.Conversation.Entries {
@@ -565,14 +605,14 @@ func (h *harness) turn(t *testing.T, c *suiteChat, text string, timeout time.Dur
 			settled++
 		}
 		if ch.Status == "failed" {
-			t.Fatalf("turn on %q failed: %s", c.title, ch.Error)
+			return "", fmt.Errorf("turn on %q failed: %s", c.title, ch.Error)
 		}
 		if settled >= 3 && replies > 0 {
 			t.Logf("turn on %q settled in %s (status %s)", c.title, time.Since(started).Round(time.Second), ch.Status)
-			return strings.Join(out, "\n")
+			return strings.Join(out, "\n"), nil
 		}
 		if ctx.Err() != nil {
-			t.Fatalf("turn on %q did not settle within %s (status %s, %d replies)", c.title, timeout, ch.Status, replies)
+			return "", fmt.Errorf("turn on %q did not settle within %s (status %s, %d replies)", c.title, timeout, ch.Status, replies)
 		}
 		time.Sleep(time.Second)
 	}

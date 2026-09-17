@@ -679,7 +679,14 @@ adversary has root in the guest. Compared with the SBX shapes:
   credential is minted per binding and delivered only to that pod's launch
   environment; a guest presenting another binding's credential, or
   forging another pod's address (CNI-dependent), is the row to keep
-  testing.
+  testing. The step-8 suite verified on gVisor that the source-pod check is
+  not implemented in this build: a pod that presents another binding's
+  valid credential is served, so the credential is the sole authority.
+  This is not exploitable by itself — the other rows prove a sandbox
+  cannot reach another sandbox or the credential's owner, so it cannot
+  obtain the credential — but the "second check" of plan decision 4 is a
+  hardening step still to add; the `other-binding-credential` row keeps the
+  "must be refused" assertion failing so the gap stays visible.
 - The runner may reach every TCP port of every sandbox pod (one static
   ingress policy), where SBX published one port per approval. Only the
   runner's preview proxy is admitted, and it dials only published ports.
@@ -714,8 +721,10 @@ adversary has root in the guest. Compared with the SBX shapes:
   image digest the verifier checks.
 
 **Adversarial rows the Kubernetes suite runs** (plan, work item 8;
-`tests/k8s`, Go with `-tags k8s` against `KUBECONFIG`; to be verified in
-step 8, first on gVisor in the dev VM, then on Kata where KVM is real). The
+`chat/tests/k8s`, Go with `-tags k8s` against `WARDEN_K8S_KUBECONFIG`,
+run by `scripts/k8s-dev.sh test` — see "Development"). Verified on the
+gVisor tier of the dev VM (the "Development" section lists each row and
+its result); the Kata tier runs the same suite where KVM is real. The
 test, not the verifier, execs into a sandbox pod and runs, against
 controlled destinations with unique markers:
 
@@ -881,11 +890,24 @@ What it asserts, in order (`-run TestKubernetes/<name>` runs one):
   gateway) runs first, so a row cannot pass because the lease was absent.
 - `PolicyRestart`: with the Codex chat's binding live, the policy
   Deployment is restarted (the other suite workspace is stopped first so
-  the new pod's canary proof fits the namespace quota); the gateway
-  Service IP is unchanged, the sandbox pod is untouched (same UID, egress
-  label kept), the credential the old process minted is refused (407)
-  rather than honoured, and the next turn re-establishes the lease with a
-  fresh credential at the same address.
+  the new pod's canary proof fits the namespace quota). The gateway
+  Service IP is unchanged across the roll and no binding widens. The live
+  run is fail-closed by design — while the policy service is down the
+  runner's periodic lease renewal fails, so it ends the run and stops the
+  sandbox rather than let a guest keep egress it can no longer verify — so
+  the sandbox does not survive the restart with its binding intact. The row
+  proves the binding re-establishes cleanly on the next turn (the sandbox
+  resumes, re-registers and gets a fresh credential at the same gateway
+  address) and that the pre-restart credential no longer works.
+
+The `other-binding-credential` row currently fails, and the failure is a
+finding, not a suite bug: the shared gateway authenticates by the binding
+credential alone, so a pod that presents another binding's valid credential
+is served (verified on gVisor). Decision 4's source-pod "second check" is
+not implemented in this build. It is defence in depth — the other rows
+prove a sandbox cannot reach another sandbox or the credential's owner, so
+it cannot obtain the credential — and the row keeps the "must be refused"
+assertion failing so the gap stays visible until the check is added.
 
 The suite prints one line per row at the end (`row <name> PASS|FAIL under
 tier …`) and names any expected row that did not run.

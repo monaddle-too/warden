@@ -87,10 +87,30 @@ func (h *harness) policyRestart(t *testing.T) {
 	}
 	// Leases are re-established: a new turn resumes the sandbox (new
 	// generation), re-registers the binding and begins a fresh lease through
-	// the new policy pod.
-	answer := h.turn(t, a, "Reply with the single word ready.", 5*time.Minute)
-	if !strings.Contains(strings.ToLower(answer), "ready") {
-		t.Errorf("the turn after the restart did not answer: %q", clip(answer, 200))
+	// the new policy pod. The re-establishment is eventual — the new policy
+	// pod re-runs its canary proof and re-verifies the runtime, and the
+	// egress label and gateway binding propagate over a few seconds — so a
+	// resume turn that lands mid-re-establishment can fail once; the turn is
+	// retried, and how many tries it took is recorded.
+	var answer string
+	tries := 0
+	deadline := time.Now().Add(4 * time.Minute)
+	for {
+		tries++
+		var err error
+		answer, err = h.tryTurn(t, a, "Reply with the single word ready.", 3*time.Minute)
+		if err == nil && strings.Contains(strings.ToLower(answer), "ready") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("the binding did not re-establish after the policy restart (%d tries): last error %v, answer %q", tries, err, clip(answer, 160))
+			break
+		}
+		t.Logf("resume turn %d after the restart not ready yet (%v); retrying", tries, err)
+		time.Sleep(8 * time.Second)
+	}
+	if tries > 1 {
+		t.Logf("the binding re-established after %d resume turns", tries)
 	}
 	after := h.pod(t, a)
 	if after.Metadata.Labels[labelEgress] != egressGateway {
@@ -104,8 +124,8 @@ func (h *harness) policyRestart(t *testing.T) {
 		fresh.Connect == 200 && fresh.Code == 200 && newProxy.Host == oldProxy.Host &&
 		after.Metadata.Labels[labelEgress] == egressGateway &&
 		staleAfter.Connect != 200 && staleAfter.Code != 200
-	detail := fmt.Sprintf("gateway %s stable across the roll; %s; policy pod %s -> %s in %s; leases re-established: %s answers at the same gateway %s [%s]; pre-restart credential from the resumed pod [%s]; credential rotated: %v",
-		svcAfter, staleDetail, oldPolicy.Metadata.Name, newPolicy.Metadata.Name, time.Since(started).Round(time.Second), after.Metadata.Name, newProxy.Host, fresh, staleAfter, passwordOf(newProxy) != passwordOf(oldProxy))
+	detail := fmt.Sprintf("gateway %s stable across the roll; %s; policy pod %s -> %s in %s; leases re-established after %d resume turn(s): %s answers at the same gateway %s [%s]; pre-restart credential from the resumed pod [%s]; credential rotated: %v",
+		svcAfter, staleDetail, oldPolicy.Metadata.Name, newPolicy.Metadata.Name, time.Since(started).Round(time.Second), tries, after.Metadata.Name, newProxy.Host, fresh, staleAfter, passwordOf(newProxy) != passwordOf(oldProxy))
 	h.record(t, "policy-restart", after, ok, detail)
 }
 

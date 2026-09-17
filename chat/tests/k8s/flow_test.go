@@ -117,18 +117,20 @@ func (h *harness) preview(t *testing.T) {
 		t.Errorf("preview URL %s is not a *.localhost host on the edge port %s", port.URL, edge.Port())
 	}
 	t.Logf("binding approved: %s", port.URL)
-	// The runner's availability check may lag the approval by a moment.
+	// The runner's availability check may lag the approval by a moment, and
+	// the edge only serves a binding it has seen in its 1 s port refresh.
 	var status int
-	var body string
+	var body, landed string
 	for i := 0; i < 20; i++ {
-		status, body = h.fetchPreview(t, port.URL)
+		status, body, landed = h.fetchPreview(t, port.URL)
 		if status == 200 && strings.Contains(body, m) {
 			break
 		}
+		t.Logf("preview fetch %d: status %d, landed on %s (marker present: %v)", i+1, status, landed, strings.Contains(body, m))
 		time.Sleep(2 * time.Second)
 	}
 	if status != 200 || !strings.Contains(body, m) {
-		t.Fatalf("preview %s answered %d without the marker %s: %q", port.URL, status, m, clip(body, 300))
+		t.Fatalf("preview %s answered %d (final URL %s) without the marker %s: %q", port.URL, status, landed, m, clip(body, 300))
 	}
 	t.Logf("preview %s served the page from pod %s through the runner and the edge (%d bytes)", port.URL, h.pod(t, c).Metadata.Name, len(body))
 	// The preview hostname is only reachable with the owner's session.
@@ -145,8 +147,11 @@ func (h *harness) preview(t *testing.T) {
 
 // fetchPreview opens a preview URL as the owner's browser does: the API
 // calls established the owner cookie on the edge origin, the preview host
-// redirects through /auth/preview and back with its own session cookie.
-func (h *harness) fetchPreview(t *testing.T, raw string) (int, string) {
+// redirects through /auth/preview and back with its own session cookie. It
+// returns the status, the body and the URL the redirect chain landed on
+// (the preview host on success, the app origin when the owner session was
+// not honoured).
+func (h *harness) fetchPreview(t *testing.T, raw string) (int, string, string) {
 	t.Helper()
 	res, err := h.web.Get(raw)
 	if err != nil {
@@ -154,7 +159,11 @@ func (h *harness) fetchPreview(t *testing.T, raw string) (int, string) {
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	return res.StatusCode, string(body)
+	landed := raw
+	if res.Request != nil && res.Request.URL != nil {
+		landed = res.Request.URL.String()
+	}
+	return res.StatusCode, string(body), landed
 }
 
 // stopResume stops the workspace through the API (the pod goes, the claim

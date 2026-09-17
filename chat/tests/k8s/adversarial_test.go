@@ -336,7 +336,18 @@ func (h *harness) rowOtherBinding(t *testing.T, a *suiteChat, podA *kube.Pod) {
 	fromA := h.gatewayAnswers(t, podA.Metadata.Name, proxyB.String())
 	bearer := h.curl(t, podA.Metadata.Name, "--noproxy '*' -H 'Authorization: Bearer "+proxyB.User.Username()+"."+passwordOf(proxyB)+"' http://"+proxyB.Host+"/openai/v1/models")
 	ok := fromA.Connect != 200 && fromA.Code != 200 && bearer.Code != 200
-	h.record(t, "other-binding-credential", podA, ok, fmt.Sprintf("B's credential from B %s [%s]; B's credential from A %s [%s]; B's bearer on the provider route from A [%s]", podB.Metadata.Name, fromB, podA.Metadata.Name, fromA, bearer))
+	detail := fmt.Sprintf("B's credential from B %s [%s]; B's credential from A %s [%s]; B's bearer on the provider route from A [%s]", podB.Metadata.Name, fromB, podA.Metadata.Name, fromA, bearer)
+	if !ok {
+		// The CONNECT/proxy path authenticates by the binding credential
+		// alone: the gateway served pod A when it presented pod B's
+		// credential, so the source-pod "second check" of plan decision 4 is
+		// not enforced in this build (the credential is the sole authority).
+		// Not exploitable on its own — a guest cannot obtain another pod's
+		// credential (per-pod delivery, default-deny isolation, proven by the
+		// other rows) — but the documented defence-in-depth layer is absent.
+		detail = "PRODUCT GAP: the gateway has no source-pod check; a pod presenting another binding's valid credential is served. " + detail
+	}
+	h.record(t, "other-binding-credential", podA, ok, detail)
 }
 
 func passwordOf(u *url.URL) string {
