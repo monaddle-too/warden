@@ -309,6 +309,12 @@ func (i *Inspector) checkCanaries(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	i.stopMu.Lock()
+	stopCtx := i.stopCtx
+	i.stopMu.Unlock()
+	if stopCtx != nil {
+		defer context.AfterFunc(stopCtx, cancel)()
+	}
 	return i.runCanaries(ctx)
 }
 

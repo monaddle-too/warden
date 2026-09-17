@@ -35,11 +35,25 @@ type settings struct {
 	githubAuthFile   string // providers.github.authFile (local user token)
 	chatListen       string // chat.listen; its port is the built-in Google redirect
 	egress           string // sandboxes.egress: restricted or open
+	// The kubernetes kind (docs/warden-kubernetes-plan.md, work item 5):
+	// kind is runtime.kind; kubernetes the section; the *Secret fields are
+	// providers.<p>.secret; kubeconfig is --kubeconfig or
+	// $WARDEN_KUBECONFIG (empty: the pod's own service account).
+	kind          string
+	kubernetes    *config.Kubernetes
+	codexSecret   string
+	claudeSecret  string
+	githubSecret  string
+	kubeconfig    string
+	coreNamespace string // --kube-namespace; empty: the client's own
 }
 
 type policyFlags struct {
 	configPath, state, sbx, googleConfig, claudeAuth, codexAuth, vendorDir, template, guestDigest, githubAuthFile, chatListen, egress *string
 	caMaxAge                                                                                                                          *time.Duration
+	// kubeconfig and kubeNamespace are the kubernetes kind's development
+	// flags; nil when the flag set does not define them.
+	kubeconfig, kubeNamespace *string
 }
 
 func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
@@ -66,17 +80,36 @@ func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
 	if s.template == "" {
 		s.template = defaultPath("config/policy.template.json")
 	}
-	s.caMaxAge = config.Override(o, "gateway-ca-max-age", *f.caMaxAge, "sbx.inspectionCertMaxAgeDays", time.Duration(cfg.SBX.InspectionCertMaxAgeDays)*24*time.Hour)
-	s.guestDigest = config.Override(o, "guest-image-digest", *f.guestDigest, "sbx.guestImageDigest", cfg.GuestDigest())
+	s.kind = cfg.RuntimeKind()
+	if s.kind == config.RuntimeKubernetes {
+		k := *cfg.Kubernetes
+		s.kubernetes = &k
+		s.caMaxAge = config.Override(o, "gateway-ca-max-age", *f.caMaxAge, "kubernetes.gatewayCAMaxAgeDays", time.Duration(k.GatewayCAMaxAgeDays)*24*time.Hour)
+		s.guestDigest = config.Override(o, "guest-image-digest", *f.guestDigest, "kubernetes.guestImageDigest", k.GuestImageDigest)
+		if f.kubeconfig != nil {
+			s.kubeconfig = *f.kubeconfig
+		}
+		if s.kubeconfig == "" {
+			s.kubeconfig = os.Getenv("WARDEN_KUBECONFIG")
+		}
+		if f.kubeNamespace != nil {
+			s.coreNamespace = *f.kubeNamespace
+		}
+	} else {
+		s.caMaxAge = config.Override(o, "gateway-ca-max-age", *f.caMaxAge, "sbx.inspectionCertMaxAgeDays", time.Duration(cfg.SBX.InspectionCertMaxAgeDays)*24*time.Hour)
+		s.guestDigest = config.Override(o, "guest-image-digest", *f.guestDigest, "sbx.guestImageDigest", cfg.GuestDigest())
+	}
 	s.egress = config.Override(o, "egress", *f.egress, "sandboxes.egress", cfg.Sandboxes.Egress)
 	codex := ""
 	if cfg.Providers.Codex != nil {
 		codex = cfg.Providers.Codex.AuthFile
+		s.codexSecret = cfg.Providers.Codex.Secret
 	}
 	s.codexAuth = config.Override(o, "codex-auth-file", *f.codexAuth, "providers.codex.authFile", codex)
 	claude := ""
 	if cfg.Providers.Claude != nil {
 		claude = cfg.Providers.Claude.AuthFile
+		s.claudeSecret = cfg.Providers.Claude.Secret
 	}
 	s.claudeAuth = config.Override(o, "claude-auth-file", *f.claudeAuth, "providers.claude.authFile", claude)
 	docs := ""
@@ -99,6 +132,7 @@ func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
 		s.githubSlug = g.AppSlug
 		broker = g.BrokerFile
 		authFile = g.AuthFile
+		s.githubSecret = g.Secret
 	}
 	s.githubAuthFile = config.Override(o, "github-auth-file", *f.githubAuthFile, "providers.github.authFile", authFile)
 	if o.Set("github-auth-file") {

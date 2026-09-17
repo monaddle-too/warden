@@ -29,6 +29,9 @@ func (i *Inspector) Start(ctx context.Context) error {
 		{"admission policy bindings", api.ValidatingAdmissionPolicyBindings, "", api.ListOptions{}},
 	}
 	ctx, cancel := context.WithCancel(ctx)
+	i.stopMu.Lock()
+	i.stopCtx = ctx
+	i.stopMu.Unlock()
 	var streams []<-chan api.Event
 	for _, w := range watches {
 		events, err := c.ListWatch(ctx, w.resource, w.namespace, w.opts)

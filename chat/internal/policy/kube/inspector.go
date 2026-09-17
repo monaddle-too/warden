@@ -78,6 +78,11 @@ type Inspector struct {
 	// (the shared gateway's advertised Service IP) or Canary.GatewayHost.
 	gatewayMu   sync.Mutex
 	gatewayHost string
+
+	// stopCtx ends with Start's context; a canary proof in flight is
+	// abandoned (and its pods deleted) when the service stops.
+	stopMu  sync.Mutex
+	stopCtx context.Context
 }
 
 // identityPin is one runtime's pinned identity: the workspace volume UID
