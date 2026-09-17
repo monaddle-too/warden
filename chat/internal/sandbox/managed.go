@@ -172,6 +172,18 @@ func (w *Worker) initializeManaged(ctx context.Context) error {
 		_ = w.Runtime.Remove(ctx, name)
 		delete(w.managed.Spares, name)
 	}
+	if reconciler, ok := w.Runtime.(Reconciler); ok {
+		// Every registered guest is stopped and every registered spare gone;
+		// a driver whose guests outlive the worker retires what else it finds
+		// and keeps the registered workspaces.
+		registered := make([]string, 0, len(w.managed.Sandboxes))
+		for _, s := range w.managed.Sandboxes {
+			registered = append(registered, s.RuntimeName)
+		}
+		if err = reconciler.Reconcile(ctx, registered); err != nil {
+			return fmt.Errorf("runtime reconciliation: %w", err)
+		}
+	}
 	if err = w.saveManagedLocked(); err != nil {
 		return err
 	}
@@ -387,7 +399,7 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		if err = w.saveManagedLocked(); err != nil {
 			return fail(err)
 		}
-		if err = w.Runtime.Create(ctx, RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source}); err != nil {
+		if err = w.Runtime.Create(ctx, RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source, SandboxID: s.ID, Generation: s.Generation}); err != nil {
 			return fail(err)
 		}
 		s.Created = true
@@ -1135,7 +1147,7 @@ func (w *Worker) maintainSpares(ctx context.Context) {
 		createCtx, done := context.WithTimeout(ctx, 2*time.Minute)
 		defer done()
 		var residency io.Closer
-		err := w.Runtime.Create(createCtx, RuntimeSpec{Name: name, Directory: "/home/agent/workspace"})
+		err := w.Runtime.Create(createCtx, RuntimeSpec{Name: name, Directory: "/home/agent/workspace", Spare: true})
 		if err == nil {
 			residency, err = w.Runtime.Prepare(createCtx, name)
 		}

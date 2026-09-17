@@ -94,3 +94,26 @@ func TestSBXStreamInstallsCAOnlyWhenUntrusted(t *testing.T) {
 		t.Fatal("an invalid CA must not be installed or launched past")
 	}
 }
+
+// Both drivers launch the same command line; the Kubernetes driver's gVisor
+// tier adds Codex's sandbox_mode override and nothing else (plan decision
+// 14 after the spike).
+func TestAgentCommandTierOverrideIsTheOnlyDifference(t *testing.T) {
+	run := RunSpec{Directory: "/home/agent/workspace", Broker: BrokerConfig{Provider: "codex", ProxyURL: "http://b:c@10.0.0.1:7000", APIKeyPlaceholder: "b.c", ProviderBaseURL: "http://10.0.0.1:7000/openai/v1", DocumentBaseURL: "http://10.0.0.1:7000/documents"}}
+	plain := AgentCommand(run, LaunchOptions{})
+	gvisor := AgentCommand(run, LaunchOptions{CodexSandboxMode: "danger-full-access"})
+	if len(gvisor) != len(plain)+2 || gvisor[len(gvisor)-2] != "-c" || gvisor[len(gvisor)-1] != `sandbox_mode="danger-full-access"` {
+		t.Fatalf("gvisor launch: %q", gvisor)
+	}
+	if strings.Join(gvisor[:len(plain)], "\x00") != strings.Join(plain, "\x00") {
+		t.Fatal("the override changed more than the trailing option")
+	}
+	if plain[0] != "env" || !strings.Contains(strings.Join(plain, "\n"), "\nHTTPS_PROXY=http://b:c@10.0.0.1:7000\n") || !strings.Contains(strings.Join(plain, "\n"), `model_providers.warden.base_url="http://10.0.0.1:7000/openai/v1"`) {
+		t.Fatalf("codex launch: %q", plain)
+	}
+	// Claude ignores the Codex option.
+	run.Broker.Provider = "claude"
+	if claude := AgentCommand(run, LaunchOptions{CodexSandboxMode: "danger-full-access"}); strings.Contains(strings.Join(claude, " "), "sandbox_mode") || !strings.Contains(strings.Join(claude, "\n"), "\nCLAUDE_CODE_OAUTH_TOKEN=b.c\n") {
+		t.Fatalf("claude launch: %q", claude)
+	}
+}

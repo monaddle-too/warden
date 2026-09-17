@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -121,6 +122,15 @@ func (d *testRuntime) Stop(ctx context.Context, name string) error {
 }
 func (d *testRuntime) Remove(_ context.Context, name string) error {
 	d.record("remove:" + name)
+	return nil
+}
+
+// Reconcile records the registered names a restarted worker hands the
+// driver, sorted so tests can compare them.
+func (d *testRuntime) Reconcile(_ context.Context, registered []string) error {
+	names := append([]string(nil), registered...)
+	sort.Strings(names)
+	d.record("reconcile:" + strings.Join(names, ","))
 	return nil
 }
 
@@ -1297,6 +1307,28 @@ func TestSpareSandboxIsBootedAheadAndAdoptedByTheNextEnvironment(t *testing.T) {
 	d.mu.Unlock()
 	if left != 0 || !removed {
 		t.Fatal("restart must remove stale spares")
+	}
+	// The driver is then handed the registered sandboxes (the adopted spare
+	// among them, under its runtime name) and no spare, in that order.
+	d.mu.Lock()
+	calls := append([]string(nil), d.calls...)
+	d.mu.Unlock()
+	reconciled := -1
+	for i, c := range calls {
+		if strings.HasPrefix(c, "reconcile:") {
+			reconciled = i
+			if c != "reconcile:"+spareName {
+				t.Fatalf("reconcile did not name the registered sandbox: %s", c)
+			}
+		}
+	}
+	if reconciled < 0 {
+		t.Fatal("restart did not reconcile the driver")
+	}
+	for _, c := range calls[reconciled:] {
+		if strings.HasPrefix(c, "remove:wc-spare-") || strings.HasPrefix(c, "stop:") {
+			t.Fatalf("reconcile ran before the registry pass: %v", calls)
+		}
 	}
 }
 
