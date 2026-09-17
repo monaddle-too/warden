@@ -96,7 +96,7 @@ func TestChatTransportSettings(t *testing.T) {
 	t.Setenv(config.Env, "")
 	path := filepath.Join(t.TempDir(), "warden.json")
 	os.WriteFile(path, []byte(`{"version":1,"paths":{"state":"/var/lib/warden"},
-		"services":{"policy":{"listen":"tls://0.0.0.0:7443","address":"tls://warden-policy:7443"},"runner":{"listen":"tls://0.0.0.0:7444","address":"tls://warden-runner:7444"},"chat":{"listen":"tls://0.0.0.0:7445","address":"tls://warden-chat:7445"}},
+		"services":{"policy":{"listen":"tls://0.0.0.0:7443","address":"tls://warden-policy:7443"},"runner":{"listen":"tls://0.0.0.0:7444","address":"tls://warden-runner:7444","previews":{"listen":"tls://0.0.0.0:7446","address":"tls://warden-runner:7446"}},"chat":{"listen":"tls://0.0.0.0:7445","address":"tls://warden-chat:7445"}},
 		"tls":{"caFile":"/etc/warden/tls/ca.crt","certFile":"/etc/warden/tls/tls.crt","keyFile":"/etc/warden/tls/tls.key"}}`), 0600)
 	s, err := chatSettings(t, "--config", path)
 	if err != nil {
@@ -104,6 +104,11 @@ func TestChatTransportSettings(t *testing.T) {
 	}
 	if s.listenURL != "tls://0.0.0.0:7445" || s.address != "tls://warden-chat:7445" || s.policy != "tls://warden-policy:7443" || s.runner != "tls://warden-runner:7444" || s.listen != "127.0.0.1:18780" || s.tls == nil || s.tls.KeyFile != "/etc/warden/tls/tls.key" {
 		t.Fatalf("%+v %+v", s, s.tls)
+	}
+	// The runner's shared preview server, dialed by the ports proxy as
+	// https://warden-runner:7446/<id>; its host is what config.HostOf gives.
+	if s.runnerPreviews != "tls://warden-runner:7446" || config.HostOf(s.runnerPreviews) != "warden-runner:7446" {
+		t.Fatalf("%+v", s)
 	}
 	if _, err = chatSettings(t, "--config", path, "--listen", "127.0.0.1:18780"); err == nil || !strings.Contains(err.Error(), "services.chat.listen") {
 		t.Fatal("loopback listen flag against a tls file accepted", err)

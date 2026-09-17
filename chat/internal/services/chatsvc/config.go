@@ -25,6 +25,10 @@ type settings struct {
 	suffix        string         // previews.hostSuffix; "" leaves previews unconfigured
 	previewScheme string         // from previews.mode
 	previewPort   string         // previews.edgeListen port in loopback mode
+	// runnerPreviews is services.runner.previews.address, the runner's
+	// shared mutual-TLS preview server the ports proxy dials; "" on the
+	// sbx shapes (loopback attachment URLs). File only.
+	runnerPreviews string
 }
 
 type chatFlags struct {
@@ -47,6 +51,7 @@ func resolveSettings(fs *flag.FlagSet, f chatFlags) (settings, error) {
 	if o.Set("listen") && !o.FromFile() {
 		s.address = s.listenURL
 	}
+	s.runnerPreviews = cfg.RunnerPreviewAddress()
 	s.tls = cfg.TransportTLS()
 	s.web = config.Override(o, "web-dir", *f.web, "paths.webAssets", cfg.Paths.WebAssets)
 	if s.web == "" {

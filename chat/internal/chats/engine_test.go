@@ -408,13 +408,26 @@ func TestEnvironmentsListStopAndDelete(t *testing.T) {
 }
 
 func TestPreviewURLsAndIdentity(t *testing.T) {
+	var e Engine
 	for _, value := range []struct {
 		url   string
 		valid bool
-	}{{"http://127.0.0.1:32100/", true}, {"https://evil.example/", false}, {"http://localhost:32100/", false}, {"http://user@127.0.0.1:32100/", false}, {"javascript:alert(1)", false}} {
-		err := validateAttachment(sandbox.PreviewAttachment{State: "available", URL: value.url})
+	}{{"http://127.0.0.1:32100/", true}, {"https://evil.example/", false}, {"http://localhost:32100/", false}, {"http://user@127.0.0.1:32100/", false}, {"javascript:alert(1)", false}, {"https://warden-runner:7446/abc/", false}} {
+		err := e.validateAttachment(sandbox.PreviewAttachment{State: "available", URL: value.url})
 		if (err == nil) != value.valid {
 			t.Errorf("URL validation failed for %q", value.url)
+		}
+	}
+	// With the runner's shared preview server configured, exactly that
+	// https origin is accepted beside the loopback listeners.
+	e.RunnerPreviewHost = "warden-runner:7446"
+	for _, value := range []struct {
+		url   string
+		valid bool
+	}{{"https://warden-runner:7446/abc/", true}, {"https://warden-runner:7446/abc", true}, {"http://127.0.0.1:32100/", true}, {"https://warden-runner:7447/abc/", false}, {"https://warden-runner/abc/", false}, {"http://warden-runner:7446/abc/", false}, {"https://user@warden-runner:7446/abc/", false}, {"https://warden-runner:7446/abc/?x=1", false}, {"https://evil.example:7446/abc/", false}} {
+		err := e.validateAttachment(sandbox.PreviewAttachment{State: "available", URL: value.url})
+		if (err == nil) != value.valid {
+			t.Errorf("URL validation failed for %q with the shared server", value.url)
 		}
 	}
 }
