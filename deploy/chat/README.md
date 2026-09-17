@@ -7,6 +7,8 @@ Panta worker, or shared sandbox daemon in this deployment.
 ## Services and state
 
 - `warden-sbx.service`: SBX 0.42.1, dedicated `warden` user with KVM access.
+  OVH runs release `v0.1.0-alpha.8` (cut over 2026-09-17 with the procedure
+  below; the image is built on the server from the release tarball).
   All five HOME/XDG directories are isolated under `/var/lib/warden/sbx`.
 - Docker Compose project `warden`: policy broker (`warden policy`, Go, with
   in-process loopback gateways), runner, chat/API/static UI.
@@ -295,8 +297,13 @@ the workflow summary.
    add `WARDEN_CONFIG_HOST=/opt/warden/current/deploy/chat/warden.json`.
    `WARDEN_GUEST_*` and `WARDEN_SPARE_SANDBOXES` may stay; `compose.yaml`
    ignores them and `compose.legacy.yaml` still reads them on rollback.
-5. Check `broker.json`: if its `command` uses `--store /run/github/...` it
-   keeps working (that mount is kept); nothing to change now.
+5. Check `broker.json`: its `command` must name the single binary
+   (`/usr/local/bin/warden policy github-broker --store ... --app-id ...
+   --owner ...`) and `owner` must be the account's current login (it was
+   rewritten to `monaddle-too` at the alpha.8 cutover after the account
+   rename; the old name is redirected by GitHub but the broker compares
+   logins exactly). A `--store /run/github/...` path keeps working (that
+   mount is kept).
 6. Switch: `ln -sfn /opt/warden/releases/<tag> /opt/warden/current.new && mv -T /opt/warden/current.new /opt/warden/current`
    (the previous target remains under `/opt/warden/releases/`), then
    `docker compose -f /opt/warden/current/deploy/chat/compose.yaml up -d`

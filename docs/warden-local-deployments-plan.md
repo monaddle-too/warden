@@ -570,7 +570,7 @@ Progress (docs track), 2026-09-16, branch `codex/wld-docs`:
       document read through the gateway verified 2026-09-16, an ungranted
       document refused with 403. Scope verification with Google is NOT yet
       submitted: tokens expire after seven days while the app is in Testing.
-- [~] 7 Release workflow; OVH switched to the released image and config.
+- [x] 7 Release workflow; OVH switched to the released image and config (v0.1.0-alpha.8, 2026-09-17).
       First release published 2026-09-16: `v0.1.0-alpha.1` (pre-release) at
       https://github.com/monaddle-too/warden/releases/tag/v0.1.0-alpha.1,
       built locally with `scripts/release.sh --publish` from 30ab65d after
@@ -917,4 +917,12 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   keeps a per-person indicator for 8 s after the last reported keystroke
   (clients report at most every 3 s), merged into the live state by
   `Engine.View` and shown as "Name is typing…" to everyone else.
+- 2026-09-17: OVH cut over to `v0.1.0-alpha.8` (plan step 7 done): release
+  tarball unpacked to `/opt/warden/releases/v0.1.0-alpha.8`, deploy files
+  from the tagged clone, image `warden:v0.1.0-alpha.8` built on the server
+  from the tarball's binary and UI, `warden.json` written from the example
+  with the live guest image, owners, demo domain and App ID, `.env` updated,
+  `broker.json` rewritten for the single binary and the renamed account,
+  edge binary and unit replaced. All three containers and the edge report
+  alpha.8; root 200, `/api/state` 401 signed out.
 
