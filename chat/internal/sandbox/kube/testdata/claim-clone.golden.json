@@ -1,0 +1,30 @@
+{
+  "metadata": {
+    "name": "wc-fork",
+    "namespace": "warden-sandboxes",
+    "labels": {
+      "app.kubernetes.io/managed-by": "warden-runner",
+      "warden.monaddle.com/sandbox": "wc-fork"
+    },
+    "annotations": {
+      "warden.monaddle.com/sandbox-id": "sandbox-two"
+    }
+  },
+  "spec": {
+    "accessModes": [
+      "ReadWriteOnce"
+    ],
+    "storageClassName": "local-path",
+    "resources": {
+      "requests": {
+        "storage": "4Gi"
+      }
+    },
+    "dataSource": {
+      "apiGroup": null,
+      "kind": "PersistentVolumeClaim",
+      "name": "wc-0123456789abcdef01234567"
+    }
+  },
+  "status": {}
+}
