@@ -861,6 +861,13 @@ the repository and in the chart values.
 ## Progress
 
 - 2026-09-16: plan drafted from the a45aeaf inventory; no code yet.
+- 2026-09-17 (evening): step 4 merged in three tracks, step 7's milestone
+  verified live on the dev cluster (see the step notes), the preview hop
+  redesigned onto the runner's mutual-TLS listener. Running now: step 8
+  (the `tests/k8s` suite and the adversarial rows, `k8s/track-d`) and the
+  release half of step 10 (chart publishing, feature map, `k8s/track-c`).
+  The owner added `AGENTS.md` and `docs/feature-map.md` on this branch;
+  the map is updated as part of step 10.
 - 2026-09-17 (later): step 2 merged (eb44e63), the chart (6f7d88e) and
   the Kubernetes docs (12b489e) merged; plan reconciled with both. Step 4
   runs as three parallel tracks: the runner driver (`k8s/track-a`,
