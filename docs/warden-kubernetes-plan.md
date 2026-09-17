@@ -661,8 +661,21 @@ Decisions this changes:
       VM (`warden-guest-base:dev`, manifest digest
       `sha256:cd77d0ff2af115f3cb700414c7c54840c2c1c87c3322ea0a98c17880ef07b63e`
       for linux/arm64) and exercised under both tiers.
-- [ ] 6 Chart (work item 7); the static hardening objects, RBAC and
-      NetworkPolicies after step 0, the Deployments after step 4.
+- [~] 6 Chart (work item 7); the static hardening objects, RBAC and
+      NetworkPolicies after step 0, the Deployments after step 4. Chart
+      landed 2026-09-17 (track C, merged 6f7d88e): all objects render, lint
+      is clean, four goldens under `deploy/helm/warden/testdata`, 46/46
+      objects accepted by the dev API server, a real install into a scratch
+      namespace issued the four mTLS Secrets through the bootstrap Job and
+      the admission policy rejected each forbidden pod shape. Remaining for
+      this step: reconcile the rendered `warden.json` with the kind
+      `kubernetes` schema once step 4 lands (the services currently refuse
+      the `kubernetes` field, as expected), and the two Go-side decisions
+      the chart assumes: the guest trust ConfigMap lives in the sandbox
+      namespace and is chart-created (the policy service updates it, never
+      creates it), and in owner auth mode the edge mints its own sign-in
+      capability into `/var/lib/warden/edge/endpoint.json` and logs the
+      launch URL, because chat writes no `endpoint.json` over `tls://`.
 - [ ] 7 First milestone on the Mac: chat → gVisor pod → loopback preview
       through the Lima port forward, Codex and Claude, Google Docs and
       GitHub through the gateway.
