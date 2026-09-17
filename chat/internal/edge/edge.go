@@ -159,7 +159,7 @@ func New(c Config) (*Server, error) {
 				return nil, errors.New("loopback mode listens on the origin's port")
 			}
 		}
-		s.Auth = newOwnerAuth(s.token, false)
+		s.Auth = newOwnerAuth(s.token, false, ownerCookie+"-"+s.previewPort)
 		s.logins, _ = newLedger("")
 	default:
 		return nil, errors.New("https origins use Google sign-in; owner mode is loopback http only")
