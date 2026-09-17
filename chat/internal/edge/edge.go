@@ -62,7 +62,11 @@ type Config struct {
 	// (RotateOwnerCapability), in owner mode over a tls:// upstream.
 	OwnerTokenFile string `json:"ownerTokenFile"`
 	LoginsFile     string `json:"loginsFile"`
-	Listen         string `json:"listen"`
+	// SessionsFile keeps the Google sign-in sessions across restarts;
+	// empty puts it beside the ledger (sessions.json), or, without a
+	// ledger, keeps them in memory.
+	SessionsFile string `json:"sessionsFile,omitempty"`
+	Listen       string `json:"listen"`
 }
 type previewSession struct {
 	Parent, Binding string
@@ -166,7 +170,11 @@ func New(c Config) (*Server, error) {
 		if !strings.Contains(c.PreviewSuffix, ".") {
 			return nil, errors.New("public previews need a dotted hostname suffix")
 		}
-		auth, err := browserauth.New(browserauth.Config{ClientID: c.ClientID, Origin: c.Origin, AdminEmails: c.OwnerEmails, DemoDomains: c.DemoDomains})
+		sessions := c.SessionsFile
+		if sessions == "" && c.LoginsFile != "" {
+			sessions = filepath.Join(filepath.Dir(c.LoginsFile), "sessions.json")
+		}
+		auth, err := browserauth.New(browserauth.Config{ClientID: c.ClientID, Origin: c.Origin, AdminEmails: c.OwnerEmails, DemoDomains: c.DemoDomains, SessionsFile: sessions})
 		if err != nil {
 			return nil, err
 		}

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -336,5 +338,55 @@ func TestSessionCarriesGoogleName(t *testing.T) {
 	}
 	if principal, email, name, ok := a.Identity(r); !ok || principal != "google-subject" || email != "admin@gmail.com" || name != "Ada Lovelace" {
 		t.Fatalf("identity: %q %q %q %v", principal, email, name, ok)
+	}
+}
+
+// With a sessions file a session outlives the process: a new Auth reads it
+// back and still admits the cookie; an expired one and one whose account
+// lost its role are dropped on the way; a logout removes it from the file.
+func TestSessionsSurviveARestartThroughTheFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "sessions.json")
+	cfg := Config{ClientID: "siem-client", Origin: origin, AdminEmails: "admin@gmail.com", SessionsFile: file}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := random()
+	a.mu.Lock()
+	a.sessions[live] = session{User: User{Subject: "sub", Email: "admin@gmail.com", Role: "admin"}, CSRF: "csrf", Expires: time.Now().Add(time.Hour)}
+	a.sessions[random()] = session{User: User{Subject: "old", Email: "admin@gmail.com", Role: "admin"}, CSRF: "csrf", Expires: time.Now().Add(-time.Second)}
+	a.sessions[random()] = session{User: User{Subject: "gone", Email: "removed@gmail.com", Role: "admin"}, CSRF: "csrf", Expires: time.Now().Add(time.Hour)}
+	a.saveLocked()
+	a.mu.Unlock()
+	if info, err := os.Stat(file); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("sessions file: %v %v", info, err)
+	}
+	again, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("GET", origin+"/api/v1/status", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: live})
+	if again.Role(r) != "admin" {
+		t.Fatal("session not read back")
+	}
+	again.mu.Lock()
+	n := len(again.sessions)
+	again.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("%d sessions read back, want the live one", n)
+	}
+	w := httptest.NewRecorder()
+	lr := httptest.NewRequest("POST", origin+"/api/v1/auth/logout", nil)
+	lr.Header.Set("Origin", origin)
+	lr.Header.Set("X-Warden-CSRF", "csrf")
+	lr.AddCookie(&http.Cookie{Name: sessionCookie, Value: live})
+	again.logout(w, lr)
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	third, _ := New(cfg)
+	if third.Role(r) != "" {
+		t.Fatal("logged-out session read back")
 	}
 }

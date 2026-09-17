@@ -10,9 +10,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/mail"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -27,7 +29,11 @@ const sessionTTL = 8 * time.Hour
 const challengeTTL = 10 * time.Minute
 const maxEntries = 4096
 
-type Config struct{ ClientID, Origin, AdminEmails, ReadEmails, DemoDomains string }
+// Config is the sign-in configuration. SessionsFile, when set, keeps the
+// browser sessions across restarts (a JSON file with the session IDs and
+// their users, mode 0600), so a redeploy does not sign everyone out; unset
+// they live in memory only.
+type Config struct{ ClientID, Origin, AdminEmails, ReadEmails, DemoDomains, SessionsFile string }
 type User struct {
 	Subject string `json:"sub"`
 	Email   string `json:"email"`
@@ -44,7 +50,8 @@ type session struct {
 }
 
 // Login is a verified sign-in that created a session. OnLogin observers record
-// it durably; sessions themselves stay in memory and revocable.
+// it durably; sessions themselves are revocable and, with SessionsFile,
+// survive a restart.
 type Login struct {
 	User
 	HostedDomain string
@@ -106,6 +113,7 @@ func New(c Config) (*Auth, error) {
 	ctx := oidc.ClientContext(context.Background(), &http.Client{Timeout: 10 * time.Second})
 	keys := oidc.NewRemoteKeySet(ctx, "https://www.googleapis.com/oauth2/v3/certs")
 	a.verify = oidc.NewVerifier("https://accounts.google.com", keys, &oidc.Config{ClientID: c.ClientID, SupportedSigningAlgs: []string{oidc.RS256}}).Verify
+	a.load()
 	return a, nil
 }
 
@@ -318,6 +326,7 @@ func (a *Auth) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.sessions[id] = s
+	a.saveLocked()
 	a.mu.Unlock()
 	if a.OnLogin != nil {
 		a.OnLogin(Login{User: s.User, HostedDomain: s.HostedDomain, At: time.Now()})
@@ -338,6 +347,7 @@ func (a *Auth) logout(w http.ResponseWriter, r *http.Request) {
 		c, _ := r.Cookie(sessionCookie)
 		a.mu.Lock()
 		delete(a.sessions, c.Value)
+		a.saveLocked()
 		a.mu.Unlock()
 	}
 	cookie(w, sessionCookie, "", -time.Second)
@@ -368,4 +378,58 @@ func (a *Auth) ActiveSession(id string) bool {
 	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: id})
 	_, ok := a.current(r)
 	return ok
+}
+
+// saveLocked writes the live sessions to SessionsFile (nothing without
+// one); a failure is logged and the sessions stay in memory.
+func (a *Auth) saveLocked() {
+	if a.config.SessionsFile == "" {
+		return
+	}
+	now := time.Now()
+	live := map[string]session{}
+	for id, s := range a.sessions {
+		if now.Before(s.Expires) {
+			live[id] = s
+		}
+	}
+	data, err := json.Marshal(live)
+	if err == nil {
+		tmp := a.config.SessionsFile + ".tmp"
+		if err = os.WriteFile(tmp, data, 0o600); err == nil {
+			err = os.Rename(tmp, a.config.SessionsFile)
+		}
+	}
+	if err != nil {
+		log.Printf("browser sessions not saved to %s: %v", a.config.SessionsFile, err)
+	}
+}
+
+// load reads SessionsFile at start, dropping expired sessions and those
+// whose role the allowlists no longer give. A missing file is fine.
+func (a *Auth) load() {
+	if a.config.SessionsFile == "" {
+		return
+	}
+	data, err := os.ReadFile(a.config.SessionsFile)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("browser sessions not read from %s: %v", a.config.SessionsFile, err)
+		}
+		return
+	}
+	var saved map[string]session
+	if err := json.Unmarshal(data, &saved); err != nil {
+		log.Printf("browser sessions in %s ignored: %v", a.config.SessionsFile, err)
+		return
+	}
+	now := time.Now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for id, s := range saved {
+		if len(id) == len(random()) && now.Before(s.Expires) && s.CSRF != "" && a.roleFor(s.User.Email, s.HostedDomain) == s.User.Role && len(a.sessions) < maxEntries {
+			a.sessions[id] = s
+		}
+	}
+	a.saveLocked()
 }
