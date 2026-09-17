@@ -89,12 +89,13 @@ export function DocumentSharing({
     (selecting && access === "write");
   const ready = status.connected && (!needsWrite || status.can_write);
   // Grants belong to the workspace: every chat on the sandbox can use them.
-  const grants = requests.filter(
+  const mine = requests.filter(
     (r) =>
       (sandboxID ? r.sandboxID === sandboxID : r.chatID === chatID) &&
-      r.status === "granted" &&
-      (r.expires_at || 0) > Date.now() / 1000,
+      r.status === "granted",
   );
+  const grants = mine.filter((r) => (r.expires_at || 0) > Date.now() / 1000);
+  const expired = mine.filter((r) => (r.expires_at || 0) <= Date.now() / 1000);
   const scope = siblings.length
     ? `this chat's workspace, which is also used by ${siblings.map((s) => `“${s}”`).join(", ")}`
     : "this chat's workspace";
@@ -462,6 +463,22 @@ export function DocumentSharing({
                   >
                     Revoke access
                   </button>
+                </div>
+              ))}
+              {expired.map((r) => (
+                <div key={r.request_id} className="expired">
+                  {r.documents.map((d) => (
+                    <p key={d.id}>
+                      <a href={d.url} target="_blank" rel="noreferrer">
+                        {d.title}
+                      </a>
+                    </p>
+                  ))}
+                  <p>
+                    Access expired{" "}
+                    {new Date((r.expires_at || 0) * 1000).toLocaleString()}.
+                    Share it again to renew.
+                  </p>
                 </div>
               ))}
             </div>

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 	"warden/chat/internal/agent"
 	"warden/chat/internal/sandbox"
 )
@@ -101,6 +102,10 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		for _, value := range grants {
 			r := agent.Map(value)
 			if agent.String(r["sandboxID"]) == c.SandboxID && agent.String(r["status"]) == "granted" {
+				// An expired grant stays listed, marked, so people see that
+				// access ended rather than wondering where the document went.
+				expires, _ := r["expires_at"].(float64)
+				r["expired"] = expires > 0 && expires <= float64(time.Now().UnixNano())/1e9
 				env.Documents = append(env.Documents, r)
 			}
 		}

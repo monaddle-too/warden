@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -409,6 +410,9 @@ func NewSharing(root string, google GoogleSharing, clock Clock, github GitHubCre
 		`CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, chat TEXT, sandbox TEXT, reason TEXT, status TEXT, created REAL, expires REAL, documents TEXT, delivered INTEGER DEFAULT 0)`,
 		`CREATE TABLE IF NOT EXISTS repositories (chat TEXT, sandbox TEXT, owner TEXT, app INTEGER, name TEXT, id INTEGER, grant_id TEXT, PRIMARY KEY(chat,sandbox,name))`,
 		`CREATE TABLE IF NOT EXISTS blocked_documents (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', blocked REAL)`,
+		// Who shared which repositories with a sandbox, and when: the
+		// repositories table holds only the current selection.
+		`CREATE TABLE IF NOT EXISTS repository_events (id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL, sandbox TEXT, actor TEXT, kind TEXT, detail TEXT)`,
 	} {
 		if _, err = db.Exec(statement); err != nil {
 			db.Close()
@@ -419,7 +423,9 @@ func NewSharing(root string, google GoogleSharing, clock Clock, github GitHubCre
 	// approved (decision 8). Rows from before the column existed were the
 	// owner's, so the default back-fills them.
 	for table, columns := range map[string][][2]string{
-		"requests":     {{"access", "read"}, {"title", ""}, {"principal", OwnerPrincipal}},
+		// resolved/resolved_by: when and by whom a request left "pending"
+		// (approval, denial, revocation), for the access history.
+		"requests":     {{"access", "read"}, {"title", ""}, {"principal", OwnerPrincipal}, {"resolved", ""}, {"resolved_by", ""}},
 		"repositories": {{"principal", OwnerPrincipal}, {"access", "contents,pull_requests"}},
 	} {
 		if err = ensureTextColumns(db, table, columns); err != nil {
@@ -517,19 +523,21 @@ type sharingRow struct {
 	created                                                     float64
 	expires                                                     sql.NullFloat64
 	delivered                                                   int64
+	resolved, resolvedBy                                        string // resolved: unix seconds as text, "" while pending
 }
 
-const sharingColumns = "id,chat,sandbox,reason,status,created,expires,documents,delivered,access,title"
+const sharingColumns = "id,chat,sandbox,reason,status,created,expires,documents,delivered,access,title,resolved,resolved_by"
 
 func scanSharing(scanner interface{ Scan(...any) error }) (*sharingRow, error) {
 	var r sharingRow
-	var reason, documents, access, title sql.NullString
+	var reason, documents, access, title, resolved, resolvedBy sql.NullString
 	var created sql.NullFloat64
-	err := scanner.Scan(&r.id, &r.chat, &r.sandbox, &reason, &r.status, &created, &r.expires, &documents, &r.delivered, &access, &title)
+	err := scanner.Scan(&r.id, &r.chat, &r.sandbox, &reason, &r.status, &created, &r.expires, &documents, &r.delivered, &access, &title, &resolved, &resolvedBy)
 	if err != nil {
 		return nil, err
 	}
 	r.reason, r.documents, r.access, r.title, r.created = reason.String, documents.String, access.String, title.String, created.Float64
+	r.resolved, r.resolvedBy = resolved.String, resolvedBy.String
 	return &r, nil
 }
 
@@ -564,7 +572,29 @@ func (s *Sharing) result(r *sharingRow) map[string]any {
 	if r.expires.Valid {
 		expires = r.expires.Float64
 	}
-	return map[string]any{"request_id": r.id, "chatID": r.chat, "sandboxID": r.sandbox, "reason": r.reason, "status": r.status, "expires_at": expires, "documents": documents, "access": r.access, "title": r.title}
+	out := map[string]any{"request_id": r.id, "chatID": r.chat, "sandboxID": r.sandbox, "reason": r.reason, "status": r.status, "expires_at": expires, "documents": documents, "access": r.access, "title": r.title,
+		"created_at": r.created, "resolved_by": r.resolvedBy}
+	if n, err := strconv.ParseFloat(r.resolved, 64); err == nil {
+		out["resolved_at"] = n
+	} else {
+		out["resolved_at"] = nil
+	}
+	return out
+}
+
+// actorOf is the person a console operation names ("" for the agent or an
+// unattributed caller); the chat fills data["actor"] from the edge's identity.
+func actorOf(data map[string]any) string {
+	a, _ := data["actor"].(string)
+	if len(a) > 200 {
+		a = a[:200]
+	}
+	return a
+}
+
+// resolvedNow marks rows as resolved at this moment by actor.
+func (s *Sharing) resolvedNow(actor string) (string, string) {
+	return strconv.FormatFloat(s.Clock(), 'f', 3, 64), actor
 }
 
 func resultsOf(s *Sharing, rows []*sharingRow) []any {
@@ -666,7 +696,8 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 			if err := s.Google.Disconnect(); err != nil {
 				return nil, err
 			}
-			if _, err := s.DB.Exec("UPDATE requests SET status='revoked' WHERE status='granted'"); err != nil {
+			at, by := s.resolvedNow("Google disconnected")
+			if _, err := s.DB.Exec("UPDATE requests SET status='revoked',resolved=?,resolved_by=? WHERE status='granted'", at, by); err != nil {
 				return nil, err
 			}
 		case "github":
@@ -678,6 +709,9 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 				return nil, err
 			}
 			if _, err := s.DB.Exec("DELETE FROM repositories"); err != nil {
+				return nil, err
+			}
+			if _, err := s.DB.Exec("INSERT INTO repository_events (at,sandbox,actor,kind,detail) VALUES (?,?,?,?,?)", s.Clock(), "", actorOf(data), "github_disconnected", "{}"); err != nil {
 				return nil, err
 			}
 		default:
@@ -701,7 +735,8 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 			return nil, err
 		}
 		// A reconnected Google account must never inherit old grants.
-		if _, err := s.DB.Exec("UPDATE requests SET status='revoked' WHERE status='granted'"); err != nil {
+		at, by := s.resolvedNow("Google reconnected")
+		if _, err := s.DB.Exec("UPDATE requests SET status='revoked',resolved=?,resolved_by=? WHERE status='granted'", at, by); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
@@ -787,8 +822,12 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 					}
 				}
 			}
+			at, by := s.resolvedNow(actorOf(data))
+			if by == "" {
+				by = "document tagged unsharable"
+			}
 			for _, rid := range revoked {
-				if _, err = s.DB.Exec("UPDATE requests SET status='revoked' WHERE id=?", rid); err != nil {
+				if _, err = s.DB.Exec("UPDATE requests SET status='revoked',resolved=?,resolved_by=? WHERE id=?", at, by, rid); err != nil {
 					return nil, err
 				}
 			}
@@ -947,7 +986,8 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		if docs == nil {
 			docs = []any{}
 		}
-		if _, err = s.DB.Exec("UPDATE requests SET status=?,expires=?,documents=? WHERE id=?", status, expiry, string(mustJSON(docs)), r.id); err != nil {
+		at, by := s.resolvedNow(actorOf(data))
+		if _, err = s.DB.Exec("UPDATE requests SET status=?,expires=?,documents=?,resolved=?,resolved_by=? WHERE id=?", status, expiry, string(mustJSON(docs)), at, by, r.id); err != nil {
 			return nil, err
 		}
 		r, err = s.rowLocked(r.id)
@@ -956,10 +996,55 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		}
 		return s.result(r), nil
 	case "revoke":
-		if _, err := s.DB.Exec("UPDATE requests SET status='revoked' WHERE id=? AND status='granted'", stringField(data, "id")); err != nil {
+		at, by := s.resolvedNow(actorOf(data))
+		if _, err := s.DB.Exec("UPDATE requests SET status='revoked',resolved=?,resolved_by=? WHERE id=? AND status='granted'", at, by, stringField(data, "id")); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
+	case "history":
+		// Everything that ever granted or removed access for a sandbox:
+		// document requests in every state and repository selections, newest
+		// first, capped. Read-only; the console shows it as "Access history".
+		sandbox := stringField(data, "sandboxID")
+		if !validIdentifier(sandbox) {
+			return nil, errors.New("invalid environment")
+		}
+		rows, err := s.rowsLocked("SELECT "+sharingColumns+" FROM requests WHERE sandbox=? ORDER BY created DESC LIMIT 200", sandbox)
+		if err != nil {
+			return nil, err
+		}
+		now := s.Clock()
+		events := []any{}
+		for _, r := range rows {
+			e := s.result(r)
+			e["kind"] = "document_request"
+			e["expired"] = r.status == "granted" && r.expires.Valid && r.expires.Float64 <= now
+			events = append(events, e)
+		}
+		repoRows, err := s.DB.Query("SELECT at,actor,kind,detail FROM repository_events WHERE sandbox=? OR sandbox='' ORDER BY at DESC LIMIT 200", sandbox)
+		if err != nil {
+			return nil, err
+		}
+		defer repoRows.Close()
+		for repoRows.Next() {
+			var at float64
+			var actor, kind, detail string
+			if err = repoRows.Scan(&at, &actor, &kind, &detail); err != nil {
+				return nil, err
+			}
+			var parsed any
+			_ = json.Unmarshal([]byte(detail), &parsed)
+			events = append(events, map[string]any{"kind": kind, "created_at": at, "resolved_by": actor, "repositories": parsed})
+		}
+		if err = repoRows.Err(); err != nil {
+			return nil, err
+		}
+		sort.SliceStable(events, func(i, j int) bool {
+			a, _ := events[i].(map[string]any)["created_at"].(float64)
+			b, _ := events[j].(map[string]any)["created_at"].(float64)
+			return a > b
+		})
+		return map[string]any{"events": events}, nil
 	case "list":
 		rows, err := s.rowsLocked("SELECT "+sharingColumns+" FROM requests WHERE sandbox=? AND status='granted' AND expires>?", stringField(data, "sandboxID"), s.Clock())
 		if err != nil {
@@ -1154,6 +1239,15 @@ func (s *Sharing) githubDispatch(op string, data map[string]any) (map[string]any
 				s.mu.Unlock()
 				return nil, err
 			}
+		}
+		detail := map[string]any{}
+		for _, repo := range found {
+			detail[lowerString(repo["full_name"])] = access[lowerString(repo["full_name"])]
+		}
+		if _, err = tx.Exec("INSERT INTO repository_events (at,sandbox,actor,kind,detail) VALUES (?,?,?,?,?)", s.Clock(), sandbox, actorOf(data), "repositories_selected", string(mustJSON(detail))); err != nil {
+			tx.Rollback()
+			s.mu.Unlock()
+			return nil, err
 		}
 		if err = tx.Commit(); err != nil {
 			s.mu.Unlock()

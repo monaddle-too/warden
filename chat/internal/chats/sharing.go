@@ -244,7 +244,7 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 	op := strings.TrimPrefix(path, "sharing/")
 	data := map[string]any{}
 	if r.Method == "GET" {
-		if op != "state" && op != "status" && op != "files" && op != "blocked" && op != "github_repositories" && op != "github_list" && op != "pr_state" && op != "pr_preview" && op != "egress" {
+		if op != "state" && op != "status" && op != "files" && op != "blocked" && op != "github_repositories" && op != "github_list" && op != "pr_state" && op != "pr_preview" && op != "egress" && op != "history" {
 			http.Error(w, "not found", 404)
 			return
 		}
@@ -262,6 +262,9 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 		}
 		if op == "github_list" {
 			data["chatID"] = r.URL.Query().Get("chatID")
+		}
+		if op == "history" {
+			data["sandboxID"] = r.URL.Query().Get("sandboxID")
 		}
 		if op == "pr_preview" {
 			data["id"] = r.URL.Query().Get("id")
@@ -281,6 +284,19 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(&data); err != nil {
 			http.Error(w, "invalid request", 400)
 			return
+		}
+		// Console decisions are attributed to the person the edge identified
+		// (name, else email); a client cannot claim an actor itself.
+		who := requester(r)
+		switch {
+		case who.Name != "":
+			data["actor"] = who.Name
+		case who.Email != "":
+			data["actor"] = who.Email
+		case who.PrincipalID == "owner":
+			data["actor"] = "owner"
+		default:
+			data["actor"] = who.PrincipalID
 		}
 	} else {
 		http.Error(w, "not found", 404)

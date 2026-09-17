@@ -661,3 +661,43 @@ func TestEgressOperationsTranslateConsoleNames(t *testing.T) {
 		t.Fatalf("egress_set restricted: %v", r)
 	}
 }
+
+// The access history lists every document request for a sandbox with who
+// resolved it and when, marks lapsed grants as expired, and records
+// repository selections; expired grants are not dropped.
+func TestAccessHistoryRecordsResolutionsAndExpiry(t *testing.T) {
+	f := newSharingFixture(t)
+	r := f.request(nil)
+	granted := f.dispatch("resolve", map[string]any{"id": r["request_id"], "allow": true, "documents": []any{"doc-a"}, "duration": 900, "actor": "Ada Lovelace"})
+	if granted["resolved_by"] != "Ada Lovelace" || granted["resolved_at"] != f.clock.wall() {
+		t.Fatalf("resolution not recorded: %v", granted)
+	}
+	f.clock.now += 5
+	denied := f.request(map[string]any{"callID": "tool2", "reason": "Also this one"})
+	f.dispatch("resolve", map[string]any{"id": denied["request_id"], "allow": false, "actor": "bob@example.com"})
+	history := f.dispatch("history", map[string]any{"sandboxID": "sbx-a"})["events"].([]any)
+	if len(history) != 2 {
+		t.Fatalf("history: %v", history)
+	}
+	newest := history[0].(map[string]any)
+	if newest["status"] != "denied" || newest["resolved_by"] != "bob@example.com" || newest["kind"] != "document_request" || newest["expired"] != false {
+		t.Fatalf("newest: %v", newest)
+	}
+	// The grant lapses: still granted, now flagged expired; a later revoke
+	// by a person is recorded as such.
+	f.clock.now += 1000
+	history = f.dispatch("history", map[string]any{"sandboxID": "sbx-a"})["events"].([]any)
+	if e := history[1].(map[string]any); e["status"] != "granted" || e["expired"] != true {
+		t.Fatalf("expired grant: %v", e)
+	}
+	if _, err := f.s.Dispatch("history", map[string]any{"sandboxID": ""}); err == nil {
+		t.Fatal("history without a sandbox accepted")
+	}
+	// Disconnecting Google revokes with a system actor and shows up too.
+	f.clock.now -= 1000
+	f.dispatch("disconnect", map[string]any{"provider": "google"})
+	history = f.dispatch("history", map[string]any{"sandboxID": "sbx-a"})["events"].([]any)
+	if e := history[1].(map[string]any); e["status"] != "revoked" || e["resolved_by"] != "Google disconnected" {
+		t.Fatalf("revoked by disconnect: %v", e)
+	}
+}

@@ -49,7 +49,22 @@ export type DocumentGrant = {
   access: string;
   title: string;
   expires_at: number | null;
+  expired?: boolean;
   documents: { id: string; title: string; url: string }[];
+};
+export type AccessEvent = {
+  kind: string; // document_request | repositories_selected | github_disconnected
+  status?: string;
+  created_at: number;
+  resolved_at?: number | null;
+  resolved_by?: string;
+  expired?: boolean;
+  expires_at?: number | null;
+  access?: string;
+  title?: string;
+  reason?: string;
+  documents?: { id: string; title: string; url: string }[];
+  repositories?: Record<string, string> | null;
 };
 export type Environment = {
   id: string;

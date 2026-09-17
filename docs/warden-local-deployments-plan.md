@@ -925,4 +925,13 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   `broker.json` rewritten for the single binary and the renamed account,
   edge binary and unit replaced. All three containers and the edge report
   alpha.8; root 200, `/api/state` 401 signed out.
+- 2026-09-17: expired document grants stay in the workspace panel and the
+  sharing dialog marked "access expired" instead of vanishing. Requests
+  record who resolved them and when (`resolved`, `resolved_by`; console
+  decisions are attributed from the edge identity, system revocations say
+  "Google disconnected"/"reconnected"/"document tagged unsharable");
+  repository selections are logged in `repository_events`. `sharing/history`
+  (GET, per sandbox) feeds a collapsible "Access history" in the workspace
+  panel listing every document request, grant, denial, revocation and
+  repository selection, newest first.
 
