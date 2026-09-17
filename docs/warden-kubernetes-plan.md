@@ -1,10 +1,12 @@
 # Warden on Kubernetes
 
-Status: plan, drafted September 16, 2026 and revised the same day after a
-review for single-host assumptions carried into the design. Awaiting owner
-decisions (marked "Owner:" below). Branch `plan/warden-kubernetes`, started
-from origin/main a45aeaf (v0.1.0-alpha.8). This document records the
-inventory, decisions, work, the development environment and progress.
+Status: implemented on the dev cluster, September 17, 2026. Steps 0 to 8
+are done and verified live; what remains is the owner's: a real cluster
+for public previews (step 9), the Google Docs consent in the cluster's
+Admin console, the Kata rows on a host with real KVM, and the first chart
+publication (step 10). Branch `plan/warden-kubernetes`, started from
+origin/main a45aeaf (v0.1.0-alpha.8), not pushed. This document records
+the inventory, decisions, work, the development environment and progress.
 
 ## Objective
 
@@ -884,7 +886,38 @@ either tier; Kata adds the guest kernel's memory per sandbox. The VM is
 disposable (`limactl delete warden-k8s`); all state that matters lives in
 the repository and in the chart values.
 
+## Handoff (what the owner does next)
+
+1. Review and push `plan/warden-kubernetes` (about 100 commits on top of
+   a45aeaf; `cd chat && GOPROXY=off GOFLAGS=-mod=mod go test -race ./...`
+   is green, `deploy/helm/warden/test.sh` passes, `scripts/k8s-dev.sh test`
+   passes on the dev VM).
+2. Google Docs on the cluster: open the cluster's Admin console (launch
+   URL in `kubectl -n warden logs deploy/warden-edge`) and complete "Sign
+   in with Google"; the redirect returns through the edge origin.
+3. Kata tier: install the chart with `runtime.tier: kata` on a host with
+   real KVM (the OVH server with k3s, or a bare-metal node) and run the
+   suite there; under nested virtualization on this Mac Kata works but
+   half its boots stall for minutes.
+4. Public previews (step 9): choose the cluster, point a domain with
+   wildcard DNS at its ingress, register a Google sign-in web client, and
+   install with `auth.mode: google`, `previews.mode: public` and
+   cert-manager or a wildcard certificate Secret.
+5. Publish (step 10): tag a release; `release.yml` pushes
+   `ghcr.io/monaddle-too/warden:<tag>`, the guest images and
+   `oci://ghcr.io/monaddle-too/charts/warden`; without Actions minutes,
+   `helm registry login ghcr.io` then `scripts/release.sh --publish`.
+6. The dev VM `warden-k8s` keeps running with the release installed;
+   `scripts/k8s-dev.sh down` stops it, `delete` removes it. Two pods in the
+   `default` namespace (`ctl-*`, `resize-*`) were started by another
+   session and were left alone.
+
 ## Progress
+
+- 2026-09-17 (night): step 8's suite passes in full under gVisor after
+  the source-pod check landed (e424bd1); the guide's verification markers
+  are resolved; the four track worktrees are merged and removed. Steps 9
+  and 10 wait on the owner (see Handoff).
 
 - 2026-09-16: plan drafted from the a45aeaf inventory; no code yet.
 - 2026-09-17 (evening): step 4 merged in three tracks, step 7's milestone
