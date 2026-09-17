@@ -105,7 +105,7 @@ cmd_up() {
   helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace \
     --set crds.enabled=true --set global.leaderElection.namespace=cert-manager \
     --set "serviceAccount.annotations.iam\.gke\.io/gcp-service-account=${GSA}" --wait --timeout 10m
-  sed -e "s/__PROJECT__/${PROJECT}/g" -e "s/__EMAIL__/${OWNER}/g" "$ROOT/deploy/k8s/gke/cluster-issuer.yaml" | kubectl apply -f -
+  sed -e "s/__PROJECT__/${PROJECT}/g" -e "s/__EMAIL__/${OWNER}/g" -e "s/__ZONE__/${ZONE}/g" "$ROOT/deploy/k8s/gke/cluster-issuer.yaml" | kubectl apply -f -
   cmd_dns
   echo "export KUBECONFIG=\"$KUBECONFIG\""
 }

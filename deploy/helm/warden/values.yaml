@@ -297,11 +297,16 @@ networkPolicy:
   # (sandbox namespace). The policy service refuses a cluster where they
   # are not enforced, so turning this off only makes sense for debugging.
   enabled: true
-  # How the policy and runner pods reach cluster DNS.
+  # How the service pods reach cluster DNS: the resolver pods, and a CIDR
+  # for a node-local DNS cache, which answers from a host-network address
+  # no pod selector matches (GKE's NodeLocal DNSCache is 169.254.20.10/32;
+  # it is on by default on Autopilot, and without the CIDR the pods have
+  # no DNS at all).
   dns:
     namespace: kube-system
     podSelector:
       k8s-app: kube-dns
+    cidr: ""
   # How the policy and runner pods reach the API server: kube-apiserver is
   # not a pod, so it is an ipBlock. Restrict the CIDR to the control plane
   # where it is known.

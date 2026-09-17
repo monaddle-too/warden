@@ -14,7 +14,12 @@ signing keys in Google mode.
 {{- $sandboxNS := include "warden.sandboxNamespace" . }}
 {{- $dns := .Values.networkPolicy.dns }}
 {{- $api := .Values.networkPolicy.apiServer }}
-{{- $dnsEgress := list (dict "to" (list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" $dns.namespace)) "podSelector" (dict "matchLabels" $dns.podSelector))) "ports" (list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53))) }}
+{{- $dnsPeers := list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" $dns.namespace)) "podSelector" (dict "matchLabels" $dns.podSelector)) }}
+{{- /* A node-local DNS cache (GKE's NodeLocal DNSCache at 169.254.20.10) is
+       a host-network address, not a pod, so it needs an ipBlock beside the
+       pod selector. */ -}}
+{{- if $dns.cidr }}{{ $dnsPeers = append $dnsPeers (dict "ipBlock" (dict "cidr" $dns.cidr)) }}{{ end }}
+{{- $dnsEgress := list (dict "to" $dnsPeers "ports" (list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53))) }}
 {{- $apiPorts := list }}
 {{- range $p := $api.ports }}{{ $apiPorts = append $apiPorts (dict "protocol" "TCP" "port" (int $p)) }}{{ end }}
 {{- $apiEgress := list (dict "to" (list (dict "ipBlock" (dict "cidr" $api.cidr))) "ports" $apiPorts) }}

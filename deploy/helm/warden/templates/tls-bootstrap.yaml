@@ -208,6 +208,10 @@ spec:
           podSelector:
             matchLabels:
               {{- toYaml .Values.networkPolicy.dns.podSelector | nindent 14 }}
+        {{- if .Values.networkPolicy.dns.cidr }}
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.dns.cidr }}
+        {{- end }}
       ports:
         - protocol: UDP
           port: 53

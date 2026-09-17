@@ -50,6 +50,10 @@ storage:
   workspaceGi: 5
 
 networkPolicy:
+  # Autopilot resolves through NodeLocal DNSCache on the node, not through
+  # the kube-dns pods the pod selector admits.
+  dns:
+    cidr: 169.254.20.10/32
   # Only the ingress controller reaches the edge.
   edgeIngressFrom:
     - namespaceSelector:

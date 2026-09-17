@@ -1,8 +1,11 @@
 # Let's Encrypt issuers for the GKE test cluster: DNS-01 in Cloud DNS, so the
 # certificate can cover the wildcard preview host. cert-manager's pod acts
 # as the Google service account scripts/k8s-gke.sh up binds to it through
-# Workload Identity (no key Secret). The script substitutes __PROJECT__ and
-# __EMAIL__ and applies the file.
+# Workload Identity (no key Secret). hostedZoneName names the zone outright:
+# without it cert-manager finds the zone by SOA lookups, which land on the
+# parent domain until the delegation exists, and the failure is then
+# retried on a backoff that reaches half an hour. The script substitutes
+# __PROJECT__, __EMAIL__ and __ZONE__ and applies the file.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -17,6 +20,7 @@ spec:
       - dns01:
           cloudDNS:
             project: __PROJECT__
+            hostedZoneName: __ZONE__
 ---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -32,3 +36,4 @@ spec:
       - dns01:
           cloudDNS:
             project: __PROJECT__
+            hostedZoneName: __ZONE__
