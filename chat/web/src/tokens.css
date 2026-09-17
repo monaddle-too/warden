@@ -40,6 +40,14 @@
   --del-soft: #fde8e6;
   --del-text: #a12d22;
 
+  --code-comment: #6b675f;
+  --code-keyword: #7c3aad;
+  --code-string: #1f6b3a;
+  --code-number: #9a4316;
+  --code-title: #2b4a7a;
+  --code-type: #0e6b8a;
+  --code-attr: #6b5a00;
+
   --radius: 8px;
   --radius-lg: 12px;
   --shadow: 0 1px 2px rgb(28 27 24 / 0.06), 0 8px 24px rgb(28 27 24 / 0.1);
@@ -79,6 +87,14 @@
     --add-text: #7fd19d;
     --del-soft: #331b18;
     --del-text: #f09a90;
+
+    --code-comment: #8f8b82;
+    --code-keyword: #c792ea;
+    --code-string: #7fd19d;
+    --code-number: #e8946a;
+    --code-title: #8fb0e0;
+    --code-type: #6fc3d8;
+    --code-attr: #d8c46a;
 
     --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px rgb(0 0 0 / 0.5);
     --ring: 0 0 0 3px rgb(217 122 69 / 0.35);

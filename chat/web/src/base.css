@@ -328,14 +328,6 @@ dialog::backdrop {
   margin: 1.2em 0 0.5em;
   font-size: 1.05em;
 }
-.rich-text pre {
-  padding: 12px 14px;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  overflow: auto;
-  margin: 0.75em 0;
-}
 .rich-text :not(pre) > code {
   padding: 1px 5px;
   background: var(--surface-2);
@@ -355,6 +347,119 @@ dialog::backdrop {
   padding-left: 12px;
   border-left: 2px solid var(--line-strong);
   color: var(--text-2);
+}
+
+/* Fenced code (CodeBlock.tsx): header with the language, wrap and copy;
+   blocks over COLLAPSE_LINES start folded behind a fade. */
+.code-block {
+  margin: 0.75em 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.code-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.code-lang {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+}
+.code-head button,
+.code-expand {
+  height: 26px;
+  padding: 0 8px;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.code-head button[aria-pressed="true"] {
+  color: var(--accent-text);
+}
+.code-block pre {
+  padding: 12px 14px;
+  overflow: auto;
+}
+.code-block.wrap pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.code-block.collapsed pre {
+  max-height: calc(13px * 1.5 * 40 + 12px);
+  overflow-y: hidden;
+  mask-image: linear-gradient(#000 85%, transparent);
+}
+.code-expand {
+  width: 100%;
+  border-radius: 0;
+  border-top: 1px solid var(--line);
+}
+
+/* highlight.js scopes, mapped onto the code tokens so both schemes stay
+   readable on --surface-2. */
+.hljs-comment,
+.hljs-quote {
+  color: var(--code-comment);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-template-tag,
+.hljs-doctag {
+  color: var(--code-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-char.escape_,
+.hljs-addition {
+  color: var(--code-string);
+}
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link {
+  color: var(--code-number);
+}
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--code-title);
+}
+.hljs-type,
+.hljs-built_in,
+.hljs-class {
+  color: var(--code-type);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-meta,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-property,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: var(--code-attr);
+}
+.hljs-deletion {
+  color: var(--del-text);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
 }
 
 .image-attachment {

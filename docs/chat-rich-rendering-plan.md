@@ -41,7 +41,7 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
 | # | Step | Status | Notes |
 |---|---|---|---|
 | 0 | Worktree, plan, add `mermaid`, `rehype-highlight`, `remark-math`, `rehype-katex`, `katex` | done | build 454.6 kB before any use |
-| 1 | Code component: syntax highlighting, language label, copy button, wrap toggle, collapse over ~40 lines | pending | one `code`/`pre` override in `RichText.tsx`; highlighter lazy-loaded; theme via tokens for light and dark |
+| 1 | Code component: syntax highlighting, language label, copy button, wrap toggle, collapse over ~40 lines | done | one `code`/`pre` override in `RichText.tsx`; highlighter lazy-loaded; theme via tokens for light and dark |
 | 2 | Mermaid fences rendered client-side | pending | `securityLevel: "strict"`, `startOnLoad: false`, lazy import; render only once the fence is closed (not while `isStreaming`); parse error → keep the code block with a small error line |
 | 3 | Inline images in markdown | pending | `![alt](relative/path)` → fetch via `chats/{id}/file`, normalise server-side with imageguard (new `image-file`-style handling or reuse `attachImage` path), show through `ImageAttachment`-like element with lightbox; `http(s)` and `data:` sources stay as alt text |
 | 4 | Diff rendering | pending | detect unified diff in activity `detail` and in ```` ```diff ```` fences; +/- line colouring, file header, hunk collapse |
@@ -70,3 +70,4 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
 ## Progress log
 
 - 2026-09-17: step 0 done.
+- 2026-09-17: step 1 done — "Render fenced code with highlighting, copy, wrap and collapse" (`CodeBlock.tsx`, `code.ts`; highlighter is a 167 kB lazy chunk, main chunk 454.6 → 458.8 kB).
