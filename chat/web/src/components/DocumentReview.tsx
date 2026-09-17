@@ -302,7 +302,10 @@ export function DocumentReview({
   }
   const p = preview?.proposal,
     draft = preview?.draft,
-    view = preview?.view;
+    view = preview?.view && {
+      hunks: preview.view.hunks ?? [],
+      rejected: preview.view.rejected ?? [],
+    };
   const editable = awaiting(status) && status !== "applying";
   /* Reject a current change: put the base paragraphs back in the draft. */
   const reject = (h: DocHunk) => {

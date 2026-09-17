@@ -33,7 +33,7 @@ func documentHunks(base, after []DocParagraph) []DocHunk {
 			return diffParagraphs(base, after, 0, 0)
 		}
 	}
-	var hunks []DocHunk
+	hunks := []DocHunk{}
 	a, b := 0, 0
 	for i := 0; i <= len(anchorsA); i++ {
 		endA, endB := len(base), len(after)
@@ -91,7 +91,8 @@ func diffParagraphs(base, after []DocParagraph, offsetA, offsetB int) []DocHunk 
 	} else {
 		ops = lcsOps(core, other)
 	}
-	var hunks []DocHunk
+	// Never nil: an empty list must reach the UI and the agent as [].
+	hunks := []DocHunk{}
 	var current *DocHunk
 	for _, op := range ops {
 		if op.kind == '=' {

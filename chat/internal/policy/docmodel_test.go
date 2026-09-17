@@ -577,6 +577,9 @@ func TestCompiledWriteReproducesTheDraft(t *testing.T) {
 	for _, c := range cases {
 		compileCase(t, c.name, append([]DocParagraph{}, base...), c.draft)
 	}
+	if hunks := documentHunks(base, base); hunks == nil || len(hunks) != 0 {
+		t.Fatalf("an unchanged document must diff to an empty, non-nil list: %#v", hunks)
+	}
 	frozenTop := []DocParagraph{F("table"), P("text", "x")}
 	projection, _ := ProjectDocument(docFixture("r1", frozenTop...))
 	if _, _, err := CompileDocumentUpdate(projection, []DocParagraph{F("table"), P("text", "x")}); err == nil || !strings.Contains(err.Error(), "nothing to write") {
