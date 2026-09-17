@@ -336,15 +336,40 @@ func (b *channelBuffer) Close() {
 // container ends or ctx is cancelled, which ends reads with ctx's error.
 // The caller closes the reader.
 func (c *Client) Logs(ctx context.Context, namespace, pod, container string, follow bool) (io.ReadCloser, error) {
+	return c.LogsWith(ctx, namespace, pod, LogOptions{Container: container, Follow: follow})
+}
+
+// LogOptions select what LogsWith reads: one container (the pod's only
+// one when empty), the previous instance after a restart, the last
+// TailLines lines, with a timestamp before each line.
+type LogOptions struct {
+	Container  string
+	Follow     bool
+	Previous   bool
+	Timestamps bool
+	TailLines  int
+}
+
+// LogsWith reads a container's log with the options; see Logs.
+func (c *Client) LogsWith(ctx context.Context, namespace, pod string, opts LogOptions) (io.ReadCloser, error) {
 	if namespace == "" || pod == "" {
 		return nil, errors.New("kube: Logs needs a namespace and a pod")
 	}
 	q := url.Values{}
-	if container != "" {
-		q.Set("container", container)
+	if opts.Container != "" {
+		q.Set("container", opts.Container)
 	}
-	if follow {
+	if opts.Follow {
 		q.Set("follow", "true")
+	}
+	if opts.Previous {
+		q.Set("previous", "true")
+	}
+	if opts.Timestamps {
+		q.Set("timestamps", "true")
+	}
+	if opts.TailLines > 0 {
+		q.Set("tailLines", strconv.Itoa(opts.TailLines))
 	}
 	// The API server negotiates the Accept header against its object
 	// serializers before it reaches the log streamer, so "text/plain" alone

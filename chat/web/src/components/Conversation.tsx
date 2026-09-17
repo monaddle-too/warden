@@ -11,6 +11,7 @@ import { ArrowUp, Bot, Square } from "lucide-react";
 import { readLocalAttempt, messageAttempt, type Attempt } from "../drafts";
 import { api, me, newID, downloadFile } from "../api";
 import type { Chat, Entry } from "../types";
+import { chatStatusLabel, startupLine } from "../stages";
 import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
 import { ModelSelect } from "./ModelSelect";
@@ -85,10 +86,10 @@ export function Conversation({
     (t) => t.principalID !== me.principalID && t.until > clock,
   );
   useEffect(() => {
-    if (!chat.typing?.length) return;
+    if (!chat.typing?.length && !chat.startup) return;
     const id = setInterval(() => setClock(Date.now() / 1000), 1000);
     return () => clearInterval(id);
-  }, [chat.typing]);
+  }, [chat.typing, chat.startup]);
   const typingLine =
     others.length === 0
       ? ""
@@ -271,17 +272,18 @@ export function Conversation({
                   label="Model for the next turn"
                 />
               </span>
-              <span className={`status-dot ${chat.status}`} />
-              <span>
-                {chat.status === "running"
-                  ? "Agent is running"
-                  : chat.status === "queued"
-                    ? "Message queued"
-                    : chat.status === "stopping"
-                      ? "Stopping…"
-                      : chat.archived
-                        ? "Archived"
-                        : "Agent is idle"}
+              <span
+                className={`status-dot ${chat.startup && running ? "starting" : chat.status}`}
+              />
+              <span
+                className={chat.startup && running ? "composer-startup" : ""}
+                title={chat.startup?.detail}
+              >
+                {chat.startup && running
+                  ? startupLine(chat.startup, clock)
+                  : chat.archived && !running
+                    ? "Archived"
+                    : chatStatusLabel(chat)}
               </span>
             </span>
             <div>

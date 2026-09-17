@@ -29,6 +29,9 @@ type Driver struct {
 	mu         sync.Mutex
 	runtimes   map[string]*runtime
 	trustReady bool
+	// cache is what Cluster and Pod answered last (cluster.go).
+	cacheMu sync.Mutex
+	cache   clusterCache
 	// exec retries and waits are shortened by tests.
 	execRetry time.Duration
 }
@@ -130,6 +133,7 @@ func (d *Driver) Create(ctx context.Context, spec sandbox.RuntimeSpec) error {
 	if _, err := d.run(ctx, spec.Name, nil, 0, "test", "-d", spec.Directory); err == nil {
 		return nil
 	}
+	sandbox.Report(ctx, "copying the workspace from "+spec.Source)
 	if err := d.copyHome(ctx, spec.Source, spec.Name); err != nil {
 		return err
 	}
@@ -159,10 +163,21 @@ func (d *Driver) ensureRunning(ctx context.Context, spec sandbox.RuntimeSpec) er
 	if err := validName(spec.Name); err != nil {
 		return err
 	}
+	d.mu.Lock()
+	trusted := d.trustReady
+	d.mu.Unlock()
+	if !trusted {
+		sandbox.Report(ctx, "waiting for the guest trust bundle")
+	}
 	if err := d.awaitTrust(ctx); err != nil {
 		return err
 	}
 	rt := d.record(spec.Name)
+	if spec.Source != "" {
+		sandbox.Report(ctx, "cloning the workspace volume from "+spec.Source)
+	} else {
+		sandbox.Report(ctx, "preparing the workspace volume")
+	}
 	claim, err := d.ensureClaim(ctx, spec)
 	if err != nil {
 		return err
@@ -178,6 +193,7 @@ func (d *Driver) ensureRunning(ctx context.Context, spec sandbox.RuntimeSpec) er
 	if spec.Source != "" {
 		workspace = WorkspaceClone
 	}
+	sandbox.Report(ctx, "creating the sandbox pod")
 	pod, err := d.ensurePod(ctx, spec, workspace)
 	if err != nil {
 		return err
@@ -190,6 +206,7 @@ func (d *Driver) ensureRunning(ctx context.Context, spec sandbox.RuntimeSpec) er
 	known := rt.podUID == pod.Metadata.UID
 	d.mu.Unlock()
 	if !known {
+		sandbox.Report(ctx, "checking the guest image manifest")
 		if err = d.checkManifest(ctx, spec.Name); err != nil {
 			return err
 		}
@@ -322,12 +339,83 @@ func (d *Driver) awaitRunning(ctx context.Context, name, uid string) (*kube.Pod,
 				last = c.Reason + ": " + c.Message
 			}
 		}
+		sandbox.Report(ctx, StartupDetail(pod))
 		return false, nil
 	})
 	if err != nil && errors.Is(err, ctx.Err()) && last != "" {
 		return nil, fmt.Errorf("sandbox %s: pod did not start (%s): %w", name, strings.TrimSpace(last), err)
 	}
 	return pod, err
+}
+
+// StartupDetail says, in the owner's words, what a pod that is not yet
+// running with an address is waiting for: the scheduler (with its reason,
+// which names a node being provisioned or a resource shortfall), the
+// image pull, the container runtime (a Kata VM booting shows here), or
+// an address. It is the chat's startup detail and the cluster page's
+// reason column.
+func StartupDetail(pod *kube.Pod) string {
+	if pod == nil {
+		return ""
+	}
+	if pod.Metadata.DeletionTimestamp != nil {
+		return "the previous pod is still terminating"
+	}
+	scheduled := false
+	for _, c := range pod.Status.Conditions {
+		if c.Type == "PodScheduled" {
+			scheduled = c.Status == "True"
+			if !scheduled {
+				// The scheduler's first sentence says what is missing; the
+				// rest is its preemption reasoning.
+				if message, _, _ := strings.Cut(strings.TrimSpace(c.Message), ". "); message != "" {
+					return "waiting for a node: " + strings.TrimSuffix(message, ".")
+				}
+				return "waiting for a node"
+			}
+		}
+	}
+	for _, c := range pod.Status.ContainerStatuses {
+		if w := c.State.Waiting; w != nil {
+			switch w.Reason {
+			case "ContainerCreating":
+				return "starting the container"
+			case "PodInitializing":
+				return "initialising the pod"
+			case "":
+				return "waiting for the container"
+			}
+			if strings.Contains(w.Reason, "Image") || strings.Contains(w.Reason, "Pull") {
+				if w.Message != "" {
+					return "waiting for the container image: " + strings.TrimSpace(w.Message)
+				}
+				return "pulling the container image"
+			}
+			if w.Message != "" {
+				return strings.TrimSpace(w.Reason + ": " + w.Message)
+			}
+			return w.Reason
+		}
+		if t := c.State.Terminated; t != nil {
+			return fmt.Sprintf("container exited (%d %s)", t.ExitCode, strings.TrimSpace(t.Reason))
+		}
+	}
+	switch pod.Status.Phase {
+	case "Running":
+		if pod.Status.PodIP == "" {
+			return "waiting for the pod's address"
+		}
+		return ""
+	case "Pending":
+		if !scheduled {
+			return "waiting for a node"
+		}
+		if len(pod.Status.ContainerStatuses) == 0 {
+			return "waiting for the kubelet to start the container"
+		}
+		return "waiting for the container"
+	}
+	return strings.TrimSpace(pod.Status.Phase + " " + pod.Status.Reason)
 }
 
 // awaitPod watches one pod until done says so. The current state comes

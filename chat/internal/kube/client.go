@@ -34,6 +34,11 @@ var (
 	RuntimeClasses                    = Resource{"node.k8s.io", "v1", "runtimeclasses", "RuntimeClass"}
 	ValidatingAdmissionPolicies       = Resource{"admissionregistration.k8s.io", "v1", "validatingadmissionpolicies", "ValidatingAdmissionPolicy"}
 	ValidatingAdmissionPolicyBindings = Resource{"admissionregistration.k8s.io", "v1", "validatingadmissionpolicybindings", "ValidatingAdmissionPolicyBinding"}
+	Nodes                             = Resource{"", "v1", "nodes", "Node"}
+	// NodeMetrics and PodMetrics are the metrics server's live usage
+	// (metrics.k8s.io); absent on a cluster without one.
+	NodeMetrics = Resource{"metrics.k8s.io", "v1beta1", "nodes", "NodeMetrics"}
+	PodMetrics  = Resource{"metrics.k8s.io", "v1beta1", "pods", "PodMetrics"}
 )
 
 // APIVersion is the group/version string of the resource.

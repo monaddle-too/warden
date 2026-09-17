@@ -762,6 +762,29 @@ spec:
 
 ---
 # Source: warden/templates/rbac.yaml
+# The Cluster section's node table: names, readiness, allocatable
+# resources and live usage. Read-only and cluster-scoped, so it is a value.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: warden-warden-sandboxes-runner-view
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v1.2.3"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+  - apiGroups: [metrics.k8s.io]
+    resources: [nodes]
+    verbs: [get, list]
+
+---
+# Source: warden/templates/rbac.yaml
 # Read-only view of the cluster-scoped hardening the policy service proves
 # is in place (decision 12): the sandbox Namespace's labels, the
 # RuntimeClass it pins, and the admission policy and binding.
@@ -787,6 +810,28 @@ rules:
   - apiGroups: [admissionregistration.k8s.io]
     resources: [validatingadmissionpolicies, validatingadmissionpolicybindings]
     verbs: [get, list, watch]
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: warden-warden-sandboxes-runner-view
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v1.2.3"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: warden-warden-sandboxes-runner-view
+subjects:
+  - kind: ServiceAccount
+    name: warden-runner
+    namespace: warden
 
 ---
 # Source: warden/templates/rbac.yaml
@@ -845,6 +890,12 @@ rules:
     resources: [configmaps]
     resourceNames: [warden-guest-trust]
     verbs: [get, list, watch]
+  # Live CPU and memory of the sandbox pods for the workspace panel and the
+  # admin console's Cluster section (docs/warden-startup-visibility-plan.md);
+  # absent metrics leave those columns empty.
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods]
+    verbs: [get, list]
 
 ---
 # Source: warden/templates/rbac.yaml
@@ -907,6 +958,34 @@ rules:
     resources: [secrets]
     resourceNames: ["warden-codex-login","warden-claude-login","warden-github-login"]
     verbs: [get, list, watch, update, patch]
+
+---
+# Source: warden/templates/rbac.yaml
+# The admin console's Cluster section also lists the four Warden service
+# pods and reads their logs: the runner's read-only view of its own
+# namespace's pods.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-runner-view
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v1.2.3"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods]
+    verbs: [get, list]
 
 ---
 # Source: warden/templates/rbac.yaml
@@ -975,6 +1054,29 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: warden-policy
+    namespace: warden
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-runner-view
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v1.2.3"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-runner-view
+subjects:
+  - kind: ServiceAccount
+    name: warden-runner
     namespace: warden
 
 ---

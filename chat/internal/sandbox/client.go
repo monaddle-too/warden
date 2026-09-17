@@ -45,6 +45,13 @@ type Request struct {
 	CallID          string   `json:"callID,omitempty"`
 	AttachmentID    string   `json:"attachmentID,omitempty"`
 	Port            int      `json:"port,omitempty"`
+	// Namespace, Pod, Container, Tail and Previous select pod logs
+	// (cluster.logs).
+	Namespace string `json:"namespace,omitempty"`
+	Pod       string `json:"pod,omitempty"`
+	Container string `json:"container,omitempty"`
+	Tail      int    `json:"tail,omitempty"`
+	Previous  bool   `json:"previous,omitempty"`
 	Path            string   `json:"path,omitempty"`
 	Title           string   `json:"title,omitempty"`
 	NewSession      bool     `json:"newSession,omitempty"`
@@ -72,6 +79,11 @@ type Response struct {
 	Revision          string                 `json:"revision,omitempty"`
 	Workers           []WorkerStatus         `json:"workers,omitempty"`
 	Stats             *hoststats.Sample      `json:"stats,omitempty"`
+	Usage             *SandboxUsage          `json:"usage,omitempty"`
+	Progress          *Progress              `json:"progress,omitempty"`
+	Pod               *PodInfo               `json:"pod,omitempty"`
+	Cluster           *ClusterStatus         `json:"cluster,omitempty"`
+	Logs              *PodLogs               `json:"logs,omitempty"`
 	ActiveSessions    int                    `json:"activeSessions"`
 	SessionLimit      int                    `json:"sessionLimit"`
 	ErrorCode         string                 `json:"errorCode,omitempty"`
@@ -140,7 +152,12 @@ func (c *Client) Open(ctx context.Context, r Request) (io.ReadWriteCloser, Respo
 	}
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Minute))
+	deadline := 5 * time.Minute
+	if r.Operation == "prepare" {
+		// Creation may wait for a node to join (the runner's PrepareTimeout).
+		deadline = 15 * time.Minute
+	}
+	_ = conn.SetDeadline(time.Now().Add(deadline))
 	if err = json.NewEncoder(conn).Encode(r); err != nil {
 		conn.Close()
 		return nil, Response{}, err

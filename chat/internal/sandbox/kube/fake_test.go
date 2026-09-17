@@ -52,6 +52,15 @@ type fakeAPI struct {
 	forbidden map[string]bool
 	// refuseClone refuses a claim created with a dataSource.
 	refuseClone bool
+	// nodes, nodeMetrics and podMetrics are the cluster view (cluster_test.go):
+	// nodes under /api/v1/nodes, usage under metrics.k8s.io when metrics is
+	// set (otherwise that group is not served, as without a metrics server);
+	// logs are what pods/log answers per pod, one line each.
+	nodes       []map[string]any
+	metrics     bool
+	nodeMetrics map[string]map[string]string
+	podMetrics  map[string]map[string]string
+	logs        map[string][]string
 
 	guest *fakeGuest
 }
@@ -233,6 +242,9 @@ func (api *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if api.serveCluster(w, r, parts) {
+		return
+	}
 	// api/v1/namespaces/<ns>/<resource>[/<name>[/<sub>]]
 	if len(parts) < 5 || parts[0] != "api" || parts[1] != "v1" || parts[2] != "namespaces" || parts[3] != testNamespace {
 		writeStatus(w, http.StatusNotFound, "NotFound", "unknown path "+r.URL.Path)
@@ -251,6 +263,8 @@ func (api *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case sub == "exec":
 		verb = "exec"
+	case sub == "log":
+		verb = "log"
 	case r.Method == http.MethodGet && q.Get("watch") == "true":
 		verb = "watch"
 	case r.Method == http.MethodGet && name == "":
@@ -272,6 +286,8 @@ func (api *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	switch verb {
 	case "exec":
 		api.serveExec(w, r, name)
+	case "log":
+		api.serveLog(w, name, q)
 	case "watch":
 		api.serveWatch(w, r, resource)
 	case "list":
@@ -282,6 +298,88 @@ func (api *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		api.serveCreate(w, resource, body)
 	case "delete":
 		api.serveDelete(w, resource, name, body)
+	}
+}
+
+// serveCluster answers the cluster-wide and metrics paths the cluster view
+// reads: /version, /api/v1/nodes and metrics.k8s.io. It reports whether
+// it handled the request.
+func (api *fakeAPI) serveCluster(w http.ResponseWriter, r *http.Request, parts []string) bool {
+	path := strings.Join(parts, "/")
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	switch {
+	case path == "version":
+		writeJSON(w, http.StatusOK, map[string]any{"major": "1", "minor": "36", "gitVersion": "v1.36.4-fake"})
+	case path == "api/v1/nodes":
+		if api.forbidden["list nodes"] {
+			writeStatus(w, http.StatusForbidden, "Forbidden", "nodes is forbidden")
+			return true
+		}
+		items := api.nodes
+		if items == nil {
+			items = []map[string]any{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"kind": "NodeList", "items": items})
+	case strings.HasPrefix(path, "apis/metrics.k8s.io/v1beta1/"):
+		if !api.metrics {
+			writeStatus(w, http.StatusNotFound, "NotFound", "the server could not find the requested resource")
+			return true
+		}
+		rest := strings.TrimPrefix(path, "apis/metrics.k8s.io/v1beta1/")
+		switch {
+		case rest == "nodes":
+			var items []map[string]any
+			for name, usage := range api.nodeMetrics {
+				items = append(items, map[string]any{"metadata": map[string]any{"name": name}, "usage": usage})
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"kind": "NodeMetricsList", "items": items})
+		case rest == "namespaces/"+testNamespace+"/pods":
+			var items []map[string]any
+			for name, usage := range api.podMetrics {
+				items = append(items, map[string]any{"metadata": map[string]any{"name": name}, "containers": []any{map[string]any{"name": ContainerName, "usage": usage}}})
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"kind": "PodMetricsList", "items": items})
+		case strings.HasPrefix(rest, "namespaces/"+testNamespace+"/pods/"):
+			name := strings.TrimPrefix(rest, "namespaces/"+testNamespace+"/pods/")
+			usage, ok := api.podMetrics[name]
+			if !ok {
+				writeNotFound(w, "pods.metrics.k8s.io", name)
+				return true
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"metadata": map[string]any{"name": name}, "containers": []any{map[string]any{"name": ContainerName, "usage": usage}}})
+		default:
+			writeStatus(w, http.StatusNotFound, "NotFound", "unknown path "+path)
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+// serveLog answers pods/log with the pod's scripted lines, the last
+// tailLines of them, each stamped when timestamps is asked for.
+func (api *fakeAPI) serveLog(w http.ResponseWriter, name string, q url.Values) {
+	api.mu.Lock()
+	_, exists := api.objects["pods/"+name]
+	lines := append([]string(nil), api.logs[name]...)
+	api.mu.Unlock()
+	if !exists {
+		writeNotFound(w, "pods", name)
+		return
+	}
+	if q.Get("previous") == "true" {
+		lines = []string{"previous instance"}
+	}
+	if n, err := strconv.Atoi(q.Get("tailLines")); err == nil && n < len(lines) {
+		lines = lines[len(lines)-n:]
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	for _, line := range lines {
+		if q.Get("timestamps") == "true" {
+			line = "2026-09-17T00:00:00Z " + line
+		}
+		fmt.Fprintln(w, line)
 	}
 }
 

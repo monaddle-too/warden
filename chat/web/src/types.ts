@@ -33,13 +33,19 @@ export type Chat = {
   conversation: { threadID?: string; entries: Entry[] };
   approvals: Approval[];
   typing?: { principalID: string; name: string; until: number }[];
+  startup?: Startup;
 };
+/* Where a chat's start is while its message waits for the agent: the
+   stage (stages.ts names them), the runtime's detail for it, and when the
+   stage began (unix seconds). Absent once the turn is running. */
+export type Startup = { stage: string; detail?: string; since: number };
 export type State = { version: number; chats: Chat[] };
 export type EnvironmentChat = {
   id: string;
   title: string;
   status: string;
   archived: boolean;
+  stage?: string;
 };
 export type DocumentGrant = {
   request_id: string;
@@ -51,12 +57,92 @@ export type DocumentGrant = {
   expires_at: number | null;
   documents: { id: string; title: string; url: string }[];
 };
+/* What the sandbox was given and what it is using, as the guest reports it.
+   The used figures only mean something while running; cpuPercent needs two
+   samples and is null until then. Totals of 0 are unknown (stopped disk). */
+export type SandboxUsage = {
+  at: string;
+  running: boolean;
+  cpus: number;
+  memoryTotal: number;
+  diskTotal: number;
+  cpuPercent: number | null;
+  memoryUsed: number;
+  diskUsed: number;
+};
+/* CPU in millicores and memory in bytes; 0 is unset. */
+export type Resources = { cpuMilli: number; memoryBytes: number };
+/* One pod as the owner sees it (Kubernetes). usage is null without a
+   metrics server. */
+export type PodInfo = {
+  namespace: string;
+  name: string;
+  uid?: string;
+  node?: string;
+  phase: string;
+  reason: string;
+  ready: boolean;
+  ip?: string;
+  started?: string;
+  restarts: number;
+  runtimeClass?: string;
+  containers: string[];
+  sandboxID?: string;
+  spare?: boolean;
+  component?: string;
+  requests: Resources;
+  limits: Resources;
+  usage: Resources | null;
+};
+export type NodeInfo = {
+  name: string;
+  ready: boolean;
+  roles: string[];
+  kubeletVersion?: string;
+  containerRuntime?: string;
+  os?: string;
+  architecture?: string;
+  created?: string;
+  unschedulable?: boolean;
+  capacity: Resources;
+  allocatable: Resources;
+  usage: Resources | null;
+  sandboxPods: number;
+};
+export type Cluster = {
+  available: boolean;
+  at: string;
+  server?: string;
+  sandboxNamespace?: string;
+  serviceNamespace?: string;
+  tier?: string;
+  runtimeClass?: string;
+  metrics: boolean;
+  metricsError?: string;
+  nodes: NodeInfo[];
+  nodesError?: string;
+  sandboxPods: PodInfo[];
+  servicePods: PodInfo[];
+  servicePodsError?: string;
+  workspaces: Record<string, string>;
+};
+export type PodLogs = {
+  namespace: string;
+  pod: string;
+  container: string;
+  containers: string[];
+  lines: string[];
+  truncated: boolean;
+  at: string;
+};
 export type Environment = {
   id: string;
   name: string;
   repository: string;
   chats: EnvironmentChat[];
   runtime: { state: string; runtimeName: string } | null;
+  usage: SandboxUsage | null;
+  pod: PodInfo | null;
   documents: DocumentGrant[];
   repositories: {
     id: number;

@@ -104,6 +104,11 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.events(w, r)
 		return
 	}
+	if r.Method == "GET" && (path == "cluster" || path == "cluster/logs") {
+		// Owner-only at the edge (ownerOnly lists api/cluster).
+		h.clusterHTTP(w, r, path)
+		return
+	}
 	parts := strings.Split(path, "/")
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "runtime" {
 		res, err := h.Engine.Runtime(r.Context(), parts[1], "status")

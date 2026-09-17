@@ -34,6 +34,8 @@ identifiers were kept stable). Grep for the right-hand column.
 | **cluster facts** (what the policy service reads back about the cluster before trusting it) | `policy/kube/clusterfacts.go`, `policy/kube/inspector.go` |
 | **trust bundle** (system CAs plus the gateway CA, mounted into every sandbox) | `policy/kube/trust.go` (`TrustPublisher`, `TrustBundleKey`), ConfigMap `warden-guest-trust` (`kubernetes.trustConfigMap`) |
 | **shared gateway** (one credentialed egress listener for every sandbox) | `policy/sharedgateway.go` (`SharedGateway`), Service `warden-gateway`, config `kubernetes.gatewayService`/`gatewayPort`, `config.GatewayShared` |
+| **startup stage** (what the chat's status line says while its sandbox starts) | `sandbox.Progress` / `Stage*` (`sandbox/progress.go`), `chats.Startup` (`chats/startup.go`), `Chat.startup`, labels in `web/src/stages.ts` |
+| **Cluster** (the admin console section: nodes, sandbox pods, service pods, logs) | `sandbox.ClusterInspector` / `ClusterStatus` / `PodInfo` (`sandbox/cluster.go`), `sandbox/kube/cluster.go`, `chats/cluster.go`, `ClusterView.tsx` |
 
 ## Processes and layout
 
@@ -81,9 +83,12 @@ Legacy macOS-VM stack (pre-SBX, still in tree): `warden` (Python launcher),
 | Claude agent stream (SDK control protocol) | `agent/claude.go`, `sandbox/runtime.go` `Stream` | | | `agent/claude_test.go` | [warden-resident-claude-plan](warden-resident-claude-plan.md) |
 | Approvals in the transcript (agent questions, tool permission) | `chats/engine.go` `ResolveAs` | `chats/{id}/approvals/{rid}` | `Approvals.tsx`; TUI `tui/watch.go` | | |
 | Workspace panel: status, Stop / Archive / Delete, sibling chats, documents, repositories, PRs, previews, access history | `chats/environments.go` | `GET environments`, `environments/{id}/stop|archive|delete`, `sharing/history` | `WorkspacePanel.tsx` | `chats/engine_test.go`, `chats/sharing_test.go` | [warden-environments-plan](warden-environments-plan.md) § Workspace panel |
+| Startup stages: the chat says which stage its start is at (queued with the blocker, binding, preparing, waiting, creating / resuming with the driver's detail, attesting, probing, installing, cloning, launching, connecting); runner reads never queue behind a creation | `sandbox/progress.go` (`progress` op, `Report`/`WithProgress`), `sandbox/snapshot.go` (`status`/`usage`/`pod` while `prepare` holds the lock), `sandbox/managed.go` `prepareLocked`, `sandbox/kube/driver.go` `StartupDetail`, `chats/startup.go` (`followProgress`), `Worker.PrepareTimeout` | `GET state` / `events` → `chat.startup`; `GET environments` → `chats[].stage` | `Conversation.tsx` status line, `ChatShell.tsx` sidebar dot, `WorkspacePanel.tsx` chat list, `stages.ts`; TUI `tui/render.go` `RenderStatus` | `sandbox/progress_test.go`, `sandbox/kube/cluster_test.go` (`TestStartupDetail`), `chats/startup_test.go`, `web/src/stages.test.ts` | [warden-startup-visibility-plan](warden-startup-visibility-plan.md) |
+| Cluster visibility (Kubernetes): the workspace's pod in the panel; admin console Cluster section with nodes, sandbox pods, Warden service pods, live usage from metrics.k8s.io, and pod logs | `sandbox/cluster.go` (`ClusterInspector`, ops `pod`, `cluster.status`, `cluster.logs`), `sandbox/kube/cluster.go`, `kube/quantity.go`, `kube/exec.go` `LogsWith`, `chats/cluster.go`; chart `templates/rbac.yaml` (`warden-runner-view`, value `rbac.runnerClusterView`) | `GET environments` → `pod`; `GET cluster`; `GET cluster/logs?namespace=&pod=&container=&tail=&previous=` (owner-only at the edge) | `WorkspacePanel.tsx` `Pod`, `ClusterView.tsx`, `units.ts` | `sandbox/kube/cluster_test.go`, `kube/quantity_test.go`, `edge/edge_test.go`, `deploy/helm/warden/test.sh` | [warden-startup-visibility-plan](warden-startup-visibility-plan.md) |
 | Sandbox lifecycle (create from template, clone, keep-alive, idle stop, remove) | `sandbox/managed.go`, `sandbox/runtime.go` (`RuntimeDriver` = the only sbx adapter), `sandbox/lock.go` | runner protocol `sandbox/client.go` | | `sandbox/managed_test.go`, `worker_test.go` | [sbx-integration-plan](sbx-integration-plan.md), [stop-status-plan](stop-status-plan.md) |
 | Spare (warm) sandboxes | `sandbox/pool.go` | | | `sandbox/pool_test.go` | [warden-spare-sandbox-plan](warden-spare-sandbox-plan.md) |
 | Sandbox memory / CPU sizing | `sandbox/runtime.go` `Create` (`--cpus 1 --memory`), config `sandboxes.memoryMB`; on Kubernetes also `sandboxes.cpuMillis` (`runnersvc/main.go` `kubernetesOptions`) | | | | |
+| Workspace resources: provisioned and used CPU / memory / disk (guest-reported, 3 s cache) | `sandbox/usage.go` (`usage` op, `SandboxUsage`), `chats/environments.go` (`Environment.Usage`) | `GET environments` → `usage` | `WorkspacePanel.tsx` `Resources` | `sandbox/usage_test.go` | [warden-environments-plan](warden-environments-plan.md) § Workspace resources |
 | Host resource stats (runner's own host) | `hoststats/`, surfaced in `sandbox.Response.Stats` / `pool.go` | `chats/{id}/runtime` (status) | | | |
 | Previews: bind a port, loopback `*.localhost` or public hostnames, unpublish; on Kubernetes the runner's shared mTLS preview server (config `services.runner.previews.{listen,address}`, chart `services.runner.previewPort`) | `sandbox/preview.go`, `sandbox/ports.go`, `chats/ports.go`, `chats/preview.go`, `runnersvc/main.go`, `deploy/helm/warden/templates/{services,networkpolicies}.yaml` | `GET ports`, `ports/{id}/revoke`, `ports/{id}/proxy/*`; edge `/auth/preview`; runner `https://warden-runner:7446/{publicationID}/*` | `Previews.tsx`, `WorkspacePanel.tsx` | `sandbox/preview_shared_test.go`, `chats/ports_test.go` | [warden-public-previews-plan](warden-public-previews-plan.md), [warden-kubernetes-plan](warden-kubernetes-plan.md) § decisions 5, 10 |
 | Agent tools: `preview_attach`, `sandbox_bind_port`, `attach_image` | `chats/preview.go`, `chats/images.go` | MCP server `warden` in `sandbox/runtime.go` / `agent/claude.go` | | | |
@@ -119,14 +124,16 @@ Chat service (`chat/internal/chats/http.go`, all under `/api/`, bearer token
 from the edge): `state`, `events`, `environments`, `environments/{id}/{stop,
 archive,delete}`, `chats`, `chats/{id}/{agent,message,typing,edit,stop,
 activity,runtime,file}`, `chats/{id}/approvals/{rid}`, `chats/{id}/images/*`,
-`ports`, `ports/{id}/{revoke,proxy/*}`, `sharing/*` (forwarded to the policy
+`ports`, `ports/{id}/{revoke,proxy/*}`, `cluster`, `cluster/logs`, `sharing/*` (forwarded to the policy
 service: `status, files, select, request, get, resolve, revoke, history,
 blocked, block, connect, callback, disconnect, github_list,
 github_repositories, github_select, github_write, network_allow, egress,
 egress_set, pr_preview, pr_get`).
 
 Runner protocol (`chat/internal/sandbox/client.go`): versioned request/response
-over a private socket; responses may carry `Stats` (`hoststats.Sample`).
+over a private socket; responses may carry `Stats` (`hoststats.Sample`, the
+runner's host), `Usage` (`SandboxUsage`, one guest), `Progress` (a startup
+stage), `Pod`, `Cluster` or `Logs` (the cluster view).
 
 Policy service internal endpoints (`chat/internal/policy/registry.go`):
 `register, check, begin, end, gateway, configureProvider, bindGateway, proxy,

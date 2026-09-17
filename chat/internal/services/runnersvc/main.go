@@ -127,6 +127,10 @@ func run(args []string) error {
 	return nil
 }
 
+// kubernetesPrepareTimeout bounds one prepare on Kubernetes: a node may
+// have to be provisioned and the guest image pulled before the pod runs.
+const kubernetesPrepareTimeout = 10 * time.Minute
+
 // runtimeDriver selects the RuntimeDriver of the configured runtime kind.
 // The sbx shapes get the SBX driver over the worker's executable and
 // template; the Kubernetes kind gets the pod driver over the in-cluster
@@ -161,7 +165,13 @@ func runtimeDriver(s settings, kubeconfig string) (func(*sandbox.Worker) sandbox
 		if err != nil {
 			return nil, err
 		}
-		return func(*sandbox.Worker) sandbox.RuntimeDriver { return driver }, nil
+		return func(w *sandbox.Worker) sandbox.RuntimeDriver {
+			// The driver is also the cluster view the owner sees, and a
+			// pod may wait for a node to join before it can start.
+			w.Cluster = driver
+			w.PrepareTimeout = kubernetesPrepareTimeout
+			return driver
+		}, nil
 	default:
 		return nil, errors.New("unknown runtime.kind " + kind)
 	}

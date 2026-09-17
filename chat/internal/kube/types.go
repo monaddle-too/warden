@@ -578,6 +578,64 @@ type IPBlock struct {
 
 // RuntimeClass is a node.k8s.io/v1 RuntimeClass; Handler is the container
 // runtime handler (runsc, kata-qemu) the verifier checks against the tier.
+// Node is a cluster node with the fields the cluster page shows.
+type Node struct {
+	TypeMeta
+	Metadata ObjectMeta `json:"metadata"`
+	Spec     NodeSpec   `json:"spec,omitempty"`
+	Status   NodeStatus `json:"status,omitempty"`
+}
+
+// NodeSpec is the part of a node spec Warden reads.
+type NodeSpec struct {
+	Unschedulable bool `json:"unschedulable,omitempty"`
+}
+
+// NodeStatus is the observed state of a node.
+type NodeStatus struct {
+	Capacity    ResourceList    `json:"capacity,omitempty"`
+	Allocatable ResourceList    `json:"allocatable,omitempty"`
+	Conditions  []NodeCondition `json:"conditions,omitempty"`
+	NodeInfo    NodeSystemInfo  `json:"nodeInfo,omitempty"`
+}
+
+// NodeCondition is one node condition (Ready, MemoryPressure, ...).
+type NodeCondition struct {
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// NodeSystemInfo identifies the node's software.
+type NodeSystemInfo struct {
+	KubeletVersion          string `json:"kubeletVersion,omitempty"`
+	ContainerRuntimeVersion string `json:"containerRuntimeVersion,omitempty"`
+	OSImage                 string `json:"osImage,omitempty"`
+	KernelVersion           string `json:"kernelVersion,omitempty"`
+	Architecture            string `json:"architecture,omitempty"`
+	OperatingSystem         string `json:"operatingSystem,omitempty"`
+}
+
+// NodeMetricsItem is one node's live usage from metrics.k8s.io.
+type NodeMetricsItem struct {
+	Metadata ObjectMeta   `json:"metadata"`
+	Usage    ResourceList `json:"usage,omitempty"`
+}
+
+// PodMetricsItem is one pod's live usage from metrics.k8s.io, per
+// container.
+type PodMetricsItem struct {
+	Metadata   ObjectMeta         `json:"metadata"`
+	Containers []ContainerMetrics `json:"containers,omitempty"`
+}
+
+// ContainerMetrics is one container's usage.
+type ContainerMetrics struct {
+	Name  string       `json:"name"`
+	Usage ResourceList `json:"usage,omitempty"`
+}
+
 type RuntimeClass struct {
 	TypeMeta
 	Metadata   ObjectMeta  `json:"metadata"`

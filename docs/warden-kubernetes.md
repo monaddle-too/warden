@@ -406,7 +406,7 @@ when the two differ.
 | `resources` | Requests and limits per service container: `policy`, `runner`, `chat`, `edge`. | policy and runner 250m/256Mi, limit 1Gi; chat 100m/128Mi, limit 512Mi; edge 100m/64Mi, limit 256Mi |
 | `nodeSelector`, `tolerations`, `affinity` | Scheduling of the four service pods (not the sandboxes). | `{}`, `[]`, `{}` |
 | `networkPolicy` | `enabled` (off only for debugging: the policy service refuses an unenforced cluster anyway); `dns.namespace`, `dns.podSelector` and `dns.cidr` (how the pods reach cluster DNS: the resolver pods, plus a CIDR for a node-local cache such as GKE's NodeLocal DNSCache at `169.254.20.10/32`, which is on by default on Autopilot); `apiServer.cidr` and `apiServer.ports` (kube-apiserver is not a pod; restrict the CIDR where known); `providerEgress.cidr` and `.ports` (the policy pod's egress to provider hosts); `edgeIngressFrom` (empty admits every source; otherwise NetworkPolicyPeer objects such as the Ingress controller's namespace); `edgeEgress` (Google's signing keys in Google mode). | `true`, `kube-system`/`k8s-app: kube-dns`, `0.0.0.0/0`/`[443, 6443]`, `0.0.0.0/0`/`[443]`, `[]`, `0.0.0.0/0`/`[443]` |
-| `rbac` | `policyClusterFacts`: a read-only ClusterRole for the policy service on the cluster-scoped hardening it verifies (the sandbox Namespace, RuntimeClasses, ValidatingAdmissionPolicies and bindings). | `true` |
+| `rbac` | `policyClusterFacts`: a read-only ClusterRole for the policy service on the cluster-scoped hardening it verifies (the sandbox Namespace, RuntimeClasses, ValidatingAdmissionPolicies and bindings). `runnerClusterView`: a read-only ClusterRole for the runner on nodes and their metrics, for the admin console's Cluster section. | `true`, `true` |
 | `extraEnv` | Extra environment variables per service container: `policy`, `runner`, `chat`, `edge`. | `[]` each |
 
 What the chart renders into `warden.json` from these (plan, appendix A):
@@ -508,6 +508,35 @@ other shapes, every service answers `--version` with `<name> <revision>
 protocol=<n>`, the chat logs the three revisions it handshaked with at
 start, and it refuses to run beside a runner or policy service on another
 protocol number.
+
+**The Cluster section of the admin console.** The owner sees the same
+picture without kubectl: the admin console's Cluster section lists the
+nodes (readiness, roles, kubelet version, allocatable CPU and memory, live
+usage, how many sandbox pods each holds), the sandbox pods (which
+workspace each belongs to, or spare; phase and what a pending pod is
+waiting for; node; isolation RuntimeClass; requests, limits and usage;
+restarts), the four Warden service pods, and a log viewer for any of them
+(container, last N lines, previous instance, auto-refresh). The workspace
+panel names each workspace's pod beside its guest-reported Resources. The
+runner serves all of it from its ServiceAccount: `pods` and `pods/log` in
+the sandbox namespace as before, plus `pods.metrics.k8s.io` there, a
+read-only Role on the release namespace's pods and their logs, and, with
+`rbac.runnerClusterView` (default `true`), a ClusterRole on `nodes` and
+`nodes.metrics.k8s.io`. Without a metrics server (`metrics.k8s.io` not
+served) the usage columns stay empty and the section says so; with
+`rbac.runnerClusterView: false` the node table is replaced by that reason.
+Service pod logs contain what the services print to stdout, including the
+edge's launch URL, which the owner already holds.
+
+**Startup stages.** While a chat's first message waits for its sandbox,
+the chat's status line says which stage the start is at, with the
+runtime's detail — `Resuming the sandbox · waiting for a node: 0/1 nodes
+are available: 1 Insufficient cpu`, `Creating the sandbox · pulling the
+container image`, `Installing the agent runtime` — so a node being
+provisioned or a slow image pull is visible where the wait is felt. The
+runner's prepare operation allows ten minutes for that on this shape (two
+on the sbx shapes); a pod that cannot be scheduled in that time fails the
+chat with the scheduler's reason.
 
 **The cluster facts and the canary proof.** At start, on any watch event on
 the sandbox namespace's NetworkPolicies, Namespace, RuntimeClass or

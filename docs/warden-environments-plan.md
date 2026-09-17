@@ -152,3 +152,27 @@ while no chat was running; root 200, signed-out `/api/state` 401, served
 assets `index-DXH6kQ8u.css` / `index-D0aGNZMU.js` match the build. Rollback:
 `ln -sfn /opt/warden/releases/b78844b /opt/warden/current` and
 `docker compose … up -d --no-deps chat`.
+
+## Workspace resources (2026-09-17)
+
+The panel shows what the sandbox was given and what it is using: CPU
+(percent of its CPUs), memory and disk (used of provisioned), refreshed with
+the panel's 5 s environments poll.
+
+- Figures come from inside the guest (`nproc`, `/proc/stat`, `/proc/meminfo`,
+  `df` of the workspace) through one fixed `sh -c` exec — that is what the
+  agent actually has, and `sbx inspect` reports no sizing. A stopped sandbox
+  reports the runner's sizing (`sandboxCPUs`, `sandboxes.memoryMB`) and no
+  usage; its disk size is unknown until it boots.
+- New runner operation `usage` (control slot, `chat/internal/sandbox/usage.go`).
+  The exec runs outside the worker lock; the sample is cached 3 s per sandbox
+  so several callers share one exec; CPU percent is the delta between two
+  samples of the guest's counters, so the first sample after a boot has none.
+  Guest output is parsed strictly and bounded (4 KiB); anything malformed is
+  an error, not a partial sample.
+- `Environment.usage` is filled next to `runtime` in `GET environments`; the
+  preview proxy's per-request `status` call is untouched so proxied traffic
+  never execs into the guest.
+- Not done: history/sparklines, and the same figures on the Kubernetes runtime
+  (the driver there can read the pod's cgroup instead of exec).
+
