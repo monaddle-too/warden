@@ -736,11 +736,24 @@ Decisions this changes:
 - [ ] 8 End-to-end suite and the adversarial networking rows on gVisor
       (work item 8); then the same on Kata (dev VM if step 0 says it
       works, otherwise on the OVH server).
-- [ ] 9 Public-preview mode with an Ingress and cert-manager on a real
+- [~] 9 Public-preview mode with an Ingress and cert-manager on a real
       cluster (Owner: which cluster; the OVH server with k3s alongside the
       Compose install is the cheapest, a managed cluster with gVisor nodes
-      the most representative).
-- [ ] 10 Documentation and chart release (work item 9).
+      the most representative). 2026-09-17: the chart's public mode
+      (`auth.mode: google`, `previews.mode: public`, Ingress with the app
+      host and `*.<hostSuffix>`, TLS Secret or cert-manager annotations)
+      renders, lints, has goldens and passes a server-side dry run on the
+      dev cluster. The live run needs the owner's cluster, a domain with
+      wildcard DNS, and the Google sign-in web client (the built-in Desktop
+      client is for Docs, not sign-in), so it waits for the owner.
+- [~] 10 Documentation and chart release (work item 9). Docs merged
+      12b489e (`docs/warden-kubernetes.md`, chart README, architecture and
+      README links); chart publishing merged 9a7a8b1 (`release.yml`
+      packages and pushes `oci://ghcr.io/monaddle-too/charts/warden`,
+      `scripts/release.sh --chart|--publish`, `scripts/package-chart.sh`);
+      feature map updated per AGENTS.md. Remaining: the docs' "to be
+      verified" markers that step 8's suite resolves, and the first
+      published chart, which is the owner's tag and GHCR login.
 
 Tracks after step 0. Track A: steps 1, 2 then 4, the critical path. Track
 B: step 3, independent. Track C: step 5, independent. Track D: step 6's
