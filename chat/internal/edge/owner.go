@@ -15,12 +15,13 @@ const ownerSessionTTL = 8 * time.Hour
 
 // ownerAuth is the auth.mode "owner" authenticator: one person, identified
 // by the launcher capability from endpoint.json exactly as warden-chat
-// identifies them. API calls carry it as a bearer token. Because the preview
-// ticket flow starts with a plain navigation that carries no header, a
-// bearer-authenticated request also mints a host-only cookie session; that
-// session is only ever accepted for reads and expires with the capability
-// (the chat rotates it at every start), so a stale browser cannot outlive a
-// restart.
+// identifies them (the chat's file on the loopback shape, the edge's own
+// over a tls:// upstream; see capability.go). API calls carry it as a
+// bearer token. Because the preview ticket flow starts with a plain
+// navigation that carries no header, a bearer-authenticated request also
+// mints a host-only cookie session; that session is only ever accepted for
+// reads and expires with the capability (whichever service holds it
+// rotates it at every start), so a stale browser cannot outlive a restart.
 //
 // Only a browser can present a cookie back, and only browsers send fetch
 // metadata, so a request without Sec-Fetch-Site (curl, the TUI, a test

@@ -1,0 +1,2039 @@
+---
+# Source: warden/templates/sandbox-namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: warden-sandboxes
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    warden.monaddle.com/role: sandboxes
+    warden.monaddle.com/core-namespace: warden
+  annotations:
+    helm.sh/resource-policy: keep
+
+---
+# Source: warden/templates/networkpolicies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+# Source: warden/templates/networkpolicies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: warden-policy
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: warden
+      app.kubernetes.io/instance: warden
+      warden.monaddle.com/component: policy
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Control: the chat and the runner.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: warden
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: warden
+              app.kubernetes.io/instance: warden
+              warden.monaddle.com/component: chat
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: warden
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: warden
+              app.kubernetes.io/instance: warden
+              warden.monaddle.com/component: runner
+      ports:
+        - protocol: TCP
+          port: 7443
+    # The gateway: sandbox pods that hold the egress label (decision 4).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: warden-sandboxes
+          podSelector:
+            matchLabels:
+              warden.monaddle.com/egress: gateway
+      ports:
+        - protocol: TCP
+          port: 7000
+  egress:
+    - ports:
+      - port: 53
+        protocol: UDP
+      - port: 53
+        protocol: TCP
+      to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+    - ports:
+      - port: 443
+        protocol: TCP
+      - port: 6443
+        protocol: TCP
+      to:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+    # Provider egress through the gateway.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# Source: warden/templates/networkpolicies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: warden-runner
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: warden
+      app.kubernetes.io/instance: warden
+      warden.monaddle.com/component: runner
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Control, and the shared preview server the chat dials for every
+    # published preview.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: warden
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: warden
+              app.kubernetes.io/instance: warden
+              warden.monaddle.com/component: chat
+      ports:
+        - protocol: TCP
+          port: 7444
+        - protocol: TCP
+          port: 7446
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: warden
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: warden
+              app.kubernetes.io/instance: warden
+              warden.monaddle.com/component: policy
+      ports:
+        - protocol: TCP
+          port: 7443
+    # The preview proxy dials published guest ports (decision 10); exec
+    # goes through the API server, not the pod network.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: warden-sandboxes
+      ports:
+        - protocol: TCP
+    - ports:
+      - port: 53
+        protocol: UDP
+      - port: 53
+        protocol: TCP
+      to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+    - ports:
+      - port: 443
+        protocol: TCP
+      - port: 6443
+        protocol: TCP
+      to:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+
+---
+# Source: warden/templates/networkpolicies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: warden-chat
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: chat
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: warden
+      app.kubernetes.io/instance: warden
+      warden.monaddle.com/component: chat
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: warden
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: warden
+              app.kubernetes.io/instance: warden
+              warden.monaddle.com/component: edge
+      ports:
+        - protocol: TCP
+          port: 7445
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: warden
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: warden
+              app.kubernetes.io/instance: warden
+              warden.monaddle.com/component: runner
+      ports:
+        - protocol: TCP
+          port: 7444
+        - protocol: TCP
+          port: 7446
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: warden
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: warden
+              app.kubernetes.io/instance: warden
+              warden.monaddle.com/component: policy
+      ports:
+        - protocol: TCP
+          port: 7443
+    - ports:
+      - port: 53
+        protocol: UDP
+      - port: 53
+        protocol: TCP
+      to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+
+---
+# Source: warden/templates/networkpolicies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: warden-edge
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: edge
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: warden
+      app.kubernetes.io/instance: warden
+      warden.monaddle.com/component: edge
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Browsers, through the Ingress controller or a port-forward.
+    - ports:
+        - protocol: TCP
+          port: 18781
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: warden
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: warden
+              app.kubernetes.io/instance: warden
+              warden.monaddle.com/component: chat
+      ports:
+        - protocol: TCP
+          port: 7445
+    - ports:
+      - port: 53
+        protocol: UDP
+      - port: 53
+        protocol: TCP
+      to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+
+---
+# Source: warden/templates/sandbox-networkpolicies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: warden-sandboxes
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: sandboxes
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+# Source: warden/templates/sandbox-networkpolicies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-egress
+  namespace: warden-sandboxes
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: sandboxes
+spec:
+  podSelector:
+    matchLabels:
+      warden.monaddle.com/egress: gateway
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: warden
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: warden
+              app.kubernetes.io/instance: warden
+              warden.monaddle.com/component: policy
+      ports:
+        - protocol: TCP
+          port: 7000
+
+---
+# Source: warden/templates/sandbox-networkpolicies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runner-ingress
+  namespace: warden-sandboxes
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: sandboxes
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: warden
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: warden
+              app.kubernetes.io/instance: warden
+              warden.monaddle.com/component: runner
+      ports:
+        - protocol: TCP
+
+---
+# Source: warden/templates/tls-bootstrap.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: warden-tls-bootstrap
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: tls-bootstrap
+spec:
+  podSelector:
+    matchLabels:
+      warden.monaddle.com/component: tls-bootstrap
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+
+---
+# Source: warden/templates/sandbox-quota.yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: warden-sandboxes
+  namespace: warden-sandboxes
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: sandboxes
+spec:
+  hard:
+    pods: "8"
+    requests.memory: "17664Mi"
+    limits.memory: "17664Mi"
+    requests.cpu: "18000m"
+    limits.cpu: "18000m"
+    persistentvolumeclaims: "24"
+    requests.storage: "480Gi"
+    # Sandboxes get nothing else: no Services, no Secrets of their own.
+    services: "0"
+    secrets: "0"
+
+---
+# Source: warden/templates/sandbox-quota.yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: warden-sandboxes
+  namespace: warden-sandboxes
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: sandboxes
+spec:
+  limits:
+    - type: Container
+      default:
+        memory: "2048Mi"
+        cpu: "2000m"
+      defaultRequest:
+        memory: "2048Mi"
+        cpu: "2000m"
+      max:
+        memory: "2048Mi"
+        cpu: "2000m"
+    - type: PersistentVolumeClaim
+      max:
+        storage: "20Gi"
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: warden-policy
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+automountServiceAccountToken: false
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: warden-runner
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+automountServiceAccountToken: false
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: warden-chat
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: chat
+automountServiceAccountToken: false
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: warden-edge
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: edge
+automountServiceAccountToken: false
+
+---
+# Source: warden/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: warden-config
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+data:
+  warden.json: |-
+    {
+      "auth": {
+        "mode": "owner",
+        "publicURL": "http://127.0.0.1:18781"
+      },
+      "chat": {
+        "listen": "127.0.0.1:18780"
+      },
+      "kubernetes": {
+        "gatewayPort": 7000,
+        "gatewayService": "warden-gateway",
+        "guestImage": "ghcr.io/monaddle-too/warden-guest-base",
+        "guestImageDigest": "sha256:cd77d0ff2af115f3cb700414c7c54840c2c1c87c3322ea0a98c17880ef07b63e",
+        "namespace": "warden-sandboxes",
+        "nodeSelector": {
+          "warden.monaddle.com/pool": "kata"
+        },
+        "runtimeClass": "kata-qemu",
+        "storageClass": "",
+        "tier": "kata",
+        "trustConfigMap": "warden-guest-trust",
+        "workspaceSizeGi": 20
+      },
+      "paths": {
+        "githubCatalog": "/app/vendor",
+        "sandboxPolicyTemplate": "/app/config/policy.template.json",
+        "state": "/var/lib/warden",
+        "webAssets": "/app/web"
+      },
+      "previews": {
+        "edgeListen": "0.0.0.0:18781",
+        "hostSuffix": "localhost",
+        "mode": "loopback"
+      },
+      "providers": {
+        "claude": {
+          "secret": "warden-claude-login"
+        },
+        "codex": {
+          "secret": "warden-codex-login"
+        },
+        "github": {
+          "secret": "warden-github-login"
+        },
+        "google": {
+          "docsClient": "builtin"
+        }
+      },
+      "runtime": {
+        "kind": "kubernetes"
+      },
+      "sandboxes": {
+        "cpuMillis": 2000,
+        "egress": "restricted",
+        "keepStopped": 16,
+        "maxRunning": 4,
+        "memoryMB": 2048,
+        "stopAfterIdleMinutes": 15,
+        "warmSpares": 2
+      },
+      "services": {
+        "chat": {
+          "address": "tls://warden-chat:7445",
+          "listen": "tls://0.0.0.0:7445"
+        },
+        "policy": {
+          "address": "tls://warden-policy:7443",
+          "listen": "tls://0.0.0.0:7443"
+        },
+        "runner": {
+          "address": "tls://warden-runner:7444",
+          "listen": "tls://0.0.0.0:7444",
+          "previews": {
+            "address": "tls://warden-runner:7446",
+            "listen": "tls://0.0.0.0:7446"
+          }
+        }
+      },
+      "tls": {
+        "caFile": "/etc/warden/tls/ca.crt",
+        "certFile": "/etc/warden/tls/tls.crt",
+        "keyFile": "/etc/warden/tls/tls.key"
+      },
+      "version": 1
+    }
+
+---
+# Source: warden/templates/sandbox-namespace.yaml
+# The guest trust bundle (decision 9): created empty here so the policy
+# service only ever updates it (create cannot be scoped to a name in RBAC),
+# and living in the sandbox namespace because a pod can mount only a
+# ConfigMap of its own namespace. Helm's three-way merge leaves the data
+# the policy service writes alone on upgrade.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: warden-guest-trust
+  namespace: warden-sandboxes
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+
+---
+# Source: warden/templates/pvcs.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: warden-policy-state
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# Source: warden/templates/pvcs.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: warden-runner-state
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# Source: warden/templates/pvcs.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: warden-app-state
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: chat
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Source: warden/templates/pvcs.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: warden-edge-state
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: edge
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# Source: warden/templates/rbac.yaml
+# The Cluster section's node table: names, readiness, allocatable
+# resources and live usage. Read-only and cluster-scoped, so it is a value.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: warden-warden-sandboxes-runner-view
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+  - apiGroups: [metrics.k8s.io]
+    resources: [nodes]
+    verbs: [get, list]
+
+---
+# Source: warden/templates/rbac.yaml
+# Read-only view of the cluster-scoped hardening the policy service proves
+# is in place (decision 12): the sandbox Namespace's labels, the
+# RuntimeClass it pins, and the admission policy and binding.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: warden-warden-sandboxes-policy-facts
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [warden-sandboxes]
+    verbs: [get, list, watch]
+  - apiGroups: [node.k8s.io]
+    resources: [runtimeclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [validatingadmissionpolicies, validatingadmissionpolicybindings]
+    verbs: [get, list, watch]
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: warden-warden-sandboxes-runner-view
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: warden-warden-sandboxes-runner-view
+subjects:
+  - kind: ServiceAccount
+    name: warden-runner
+    namespace: warden
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: warden-warden-sandboxes-policy-facts
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: warden-warden-sandboxes-policy-facts
+subjects:
+  - kind: ServiceAccount
+    name: warden-policy
+    namespace: warden
+
+---
+# Source: warden/templates/rbac.yaml
+# The runner owns sandbox pods and workspace PVCs and runs exec sessions
+# in them; nothing outside the sandbox namespace. pods/log is for the
+# guest-init output of a sandbox that failed to start (decision 6 lists it
+# among the client's verbs).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-runner
+  namespace: warden-sandboxes
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+rules:
+  - apiGroups: [""]
+    resources: [pods, persistentvolumeclaims]
+    verbs: [create, get, list, watch, delete]
+  # exec over WebSocket is an HTTP GET (verb get); SPDY clients POST (create).
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  # The trust-bundle readiness gate (decision 9): the runner creates no
+  # sandbox until the guest trust ConfigMap holds a bundle.
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [warden-guest-trust]
+    verbs: [get, list, watch]
+  # Live CPU and memory of the sandbox pods for the workspace panel and the
+  # admin console's Cluster section (docs/warden-startup-visibility-plan.md);
+  # absent metrics leave those columns empty.
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods]
+    verbs: [get, list]
+
+---
+# Source: warden/templates/rbac.yaml
+# The policy service verifies sandbox pods and grants egress by label
+# (get/list/watch/patch on pods), reads the NetworkPolicies that select
+# them, runs the two canary pods of decision 12 (create/delete, pods/log
+# for their verdicts) and publishes the trust bundle into the ConfigMap the
+# chart pre-created (update/patch by name).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-policy
+  namespace: warden-sandboxes
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, patch, create, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  # The runtime identity is the workspace claim's UID (decision 3).
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [warden-guest-trust]
+    verbs: [get, list, watch, update, patch]
+
+---
+# Source: warden/templates/rbac.yaml
+# In the core namespace the policy service is the credential store
+# (decision 8): the named provider login Secrets, read and written through
+# the API (Codex refreshes its token), watched so a rotation is picked up.
+# list and watch on named Secrets need a metadata.name field selector.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-policy-credentials
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: ["warden-codex-login","warden-claude-login","warden-github-login"]
+    verbs: [get, list, watch, update, patch]
+
+---
+# Source: warden/templates/rbac.yaml
+# The admin console's Cluster section also lists the four Warden service
+# pods and reads their logs: the runner's read-only view of its own
+# namespace's pods.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-runner-view
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods]
+    verbs: [get, list]
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-runner
+  namespace: warden-sandboxes
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-runner
+subjects:
+  - kind: ServiceAccount
+    name: warden-runner
+    namespace: warden
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-policy
+  namespace: warden-sandboxes
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-policy
+subjects:
+  - kind: ServiceAccount
+    name: warden-policy
+    namespace: warden
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-policy-credentials
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-policy-credentials
+subjects:
+  - kind: ServiceAccount
+    name: warden-policy
+    namespace: warden
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-runner-view
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-runner-view
+subjects:
+  - kind: ServiceAccount
+    name: warden-runner
+    namespace: warden
+
+---
+# Source: warden/templates/services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: warden-policy
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    warden.monaddle.com/component: policy
+  ports:
+    - name: control
+      port: 7443
+      targetPort: control
+      protocol: TCP
+
+---
+# Source: warden/templates/services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: warden-gateway
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    warden.monaddle.com/component: policy
+  ports:
+    - name: gateway
+      port: 7000
+      targetPort: gateway
+      protocol: TCP
+
+---
+# Source: warden/templates/services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: warden-runner
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    warden.monaddle.com/component: runner
+  ports:
+    - name: control
+      port: 7444
+      targetPort: control
+      protocol: TCP
+    - name: previews
+      port: 7446
+      targetPort: previews
+      protocol: TCP
+
+---
+# Source: warden/templates/services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: warden-chat
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: chat
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    warden.monaddle.com/component: chat
+  ports:
+    - name: control
+      port: 7445
+      targetPort: control
+      protocol: TCP
+
+---
+# Source: warden/templates/services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: warden-edge
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: edge
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    warden.monaddle.com/component: edge
+  ports:
+    - name: http
+      port: 18781
+      targetPort: http
+      protocol: TCP
+
+---
+# Source: warden/templates/deployments.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warden-policy
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: warden
+      app.kubernetes.io/instance: warden
+      warden.monaddle.com/component: policy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: warden
+        app.kubernetes.io/instance: warden
+        app.kubernetes.io/version: "v0.0.0-dev"
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: warden-0.0.0-dev
+        warden.monaddle.com/component: policy
+      annotations:
+        checksum/config: f4b235b31ba2019a01a55f454d13a6425d9d530aaf8faa04f3d12f9938aeb327
+    spec:
+      serviceAccountName: warden-policy
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 1000
+        runAsUser: 1000
+      # Provisioners hand over the state volume root-owned (local-path makes
+      # it world-writable); the services refuse a state directory they do
+      # not own privately, so one root step fixes ownership and mode once.
+      initContainers:
+        - name: own-state
+          image: "ghcr.io/monaddle-too/warden:v0.0.0-dev"
+          imagePullPolicy: IfNotPresent
+          command: [sh, -c, "chown 1000:1000 /var/lib/warden/policy && chmod 0700 /var/lib/warden/policy"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, FOWNER, DAC_OVERRIDE]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/policy
+      containers:
+        - name: policy
+          image: "ghcr.io/monaddle-too/warden:v0.0.0-dev"
+          imagePullPolicy: IfNotPresent
+          args: [warden, policy, --config, /etc/warden/warden.json]
+          env:
+            - name: HOME
+              value: /var/lib/warden/policy
+          ports:
+            - name: gateway
+              containerPort: 7000
+              protocol: TCP
+            - name: control
+              containerPort: 7443
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: gateway
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: gateway
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/policy
+            - name: config
+              mountPath: /etc/warden
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: warden-policy-state
+        - name: config
+          projected:
+            defaultMode: 0440
+            sources:
+              - configMap:
+                  name: warden-config
+                  items:
+                    - key: warden.json
+                      path: warden.json
+              - secret:
+                  name: warden-policy-tls
+                  items:
+                    - key: ca.crt
+                      path: tls/ca.crt
+                    - key: tls.crt
+                      path: tls/tls.crt
+                    - key: tls.key
+                      path: tls/tls.key
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+
+---
+# Source: warden/templates/deployments.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warden-runner
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: warden
+      app.kubernetes.io/instance: warden
+      warden.monaddle.com/component: runner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: warden
+        app.kubernetes.io/instance: warden
+        app.kubernetes.io/version: "v0.0.0-dev"
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: warden-0.0.0-dev
+        warden.monaddle.com/component: runner
+      annotations:
+        checksum/config: f4b235b31ba2019a01a55f454d13a6425d9d530aaf8faa04f3d12f9938aeb327
+    spec:
+      serviceAccountName: warden-runner
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 1000
+        runAsUser: 1000
+      # Provisioners hand over the state volume root-owned (local-path makes
+      # it world-writable); the services refuse a state directory they do
+      # not own privately, so one root step fixes ownership and mode once.
+      initContainers:
+        - name: own-state
+          image: "ghcr.io/monaddle-too/warden:v0.0.0-dev"
+          imagePullPolicy: IfNotPresent
+          command: [sh, -c, "chown 1000:1000 /var/lib/warden/runner && chmod 0700 /var/lib/warden/runner"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, FOWNER, DAC_OVERRIDE]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/runner
+      containers:
+        - name: runner
+          image: "ghcr.io/monaddle-too/warden:v0.0.0-dev"
+          imagePullPolicy: IfNotPresent
+          args: [warden, runner, --config, /etc/warden/warden.json]
+          env:
+            - name: HOME
+              value: /var/lib/warden/runner
+          ports:
+            - name: control
+              containerPort: 7444
+              protocol: TCP
+            - name: previews
+              containerPort: 7446
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: control
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: control
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/runner
+            - name: config
+              mountPath: /etc/warden
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: warden-runner-state
+        - name: config
+          projected:
+            defaultMode: 0440
+            sources:
+              - configMap:
+                  name: warden-config
+                  items:
+                    - key: warden.json
+                      path: warden.json
+              - secret:
+                  name: warden-runner-tls
+                  items:
+                    - key: ca.crt
+                      path: tls/ca.crt
+                    - key: tls.crt
+                      path: tls/tls.crt
+                    - key: tls.key
+                      path: tls/tls.key
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+
+---
+# Source: warden/templates/deployments.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warden-chat
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: chat
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: warden
+      app.kubernetes.io/instance: warden
+      warden.monaddle.com/component: chat
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: warden
+        app.kubernetes.io/instance: warden
+        app.kubernetes.io/version: "v0.0.0-dev"
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: warden-0.0.0-dev
+        warden.monaddle.com/component: chat
+      annotations:
+        checksum/config: f4b235b31ba2019a01a55f454d13a6425d9d530aaf8faa04f3d12f9938aeb327
+    spec:
+      serviceAccountName: warden-chat
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 1000
+        runAsUser: 1000
+      # Provisioners hand over the state volume root-owned (local-path makes
+      # it world-writable); the services refuse a state directory they do
+      # not own privately, so one root step fixes ownership and mode once.
+      initContainers:
+        - name: own-state
+          image: "ghcr.io/monaddle-too/warden:v0.0.0-dev"
+          imagePullPolicy: IfNotPresent
+          command: [sh, -c, "chown 1000:1000 /var/lib/warden/app && chmod 0700 /var/lib/warden/app"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, FOWNER, DAC_OVERRIDE]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/app
+      containers:
+        - name: chat
+          image: "ghcr.io/monaddle-too/warden:v0.0.0-dev"
+          imagePullPolicy: IfNotPresent
+          args: [warden, serve, --config, /etc/warden/warden.json]
+          env:
+            - name: HOME
+              value: /var/lib/warden/app
+          ports:
+            - name: control
+              containerPort: 7445
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: control
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: control
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/app
+            - name: config
+              mountPath: /etc/warden
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: warden-app-state
+        - name: config
+          projected:
+            defaultMode: 0440
+            sources:
+              - configMap:
+                  name: warden-config
+                  items:
+                    - key: warden.json
+                      path: warden.json
+              - secret:
+                  name: warden-chat-tls
+                  items:
+                    - key: ca.crt
+                      path: tls/ca.crt
+                    - key: tls.crt
+                      path: tls/tls.crt
+                    - key: tls.key
+                      path: tls/tls.key
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+
+---
+# Source: warden/templates/deployments.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warden-edge
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: edge
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: warden
+      app.kubernetes.io/instance: warden
+      warden.monaddle.com/component: edge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: warden
+        app.kubernetes.io/instance: warden
+        app.kubernetes.io/version: "v0.0.0-dev"
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: warden-0.0.0-dev
+        warden.monaddle.com/component: edge
+      annotations:
+        checksum/config: f4b235b31ba2019a01a55f454d13a6425d9d530aaf8faa04f3d12f9938aeb327
+    spec:
+      serviceAccountName: warden-edge
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 1000
+        runAsUser: 1000
+      # Provisioners hand over the state volume root-owned (local-path makes
+      # it world-writable); the services refuse a state directory they do
+      # not own privately, so one root step fixes ownership and mode once.
+      initContainers:
+        - name: own-state
+          image: "ghcr.io/monaddle-too/warden:v0.0.0-dev"
+          imagePullPolicy: IfNotPresent
+          command: [sh, -c, "chown 1000:1000 /var/lib/warden/edge && chmod 0700 /var/lib/warden/edge"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, FOWNER, DAC_OVERRIDE]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/edge
+      containers:
+        - name: edge
+          image: "ghcr.io/monaddle-too/warden:v0.0.0-dev"
+          imagePullPolicy: IfNotPresent
+          args: [warden, edge, --config, /etc/warden/warden.json]
+          env:
+            - name: HOME
+              value: /var/lib/warden/edge
+          ports:
+            - name: http
+              containerPort: 18781
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/edge
+            - name: config
+              mountPath: /etc/warden
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: warden-edge-state
+        - name: config
+          projected:
+            defaultMode: 0440
+            sources:
+              - configMap:
+                  name: warden-config
+                  items:
+                    - key: warden.json
+                      path: warden.json
+              - secret:
+                  name: warden-edge-tls
+                  items:
+                    - key: ca.crt
+                      path: tls/ca.crt
+                    - key: tls.crt
+                      path: tls/tls.crt
+                    - key: tls.key
+                      path: tls/tls.key
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+
+---
+# Source: warden/templates/runtimeclass.yaml
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-qemu
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: sandboxes
+handler: kata-qemu
+overhead:
+  podFixed:
+    memory: "160Mi"
+    cpu: "250m"
+scheduling:
+  nodeSelector:
+    warden.monaddle.com/pool: kata
+
+---
+# Source: warden/templates/sandbox-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: warden-warden-sandboxes-sandbox-pods
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: sandboxes
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+  variables:
+    - name: containers
+      expression: >-
+        object.spec.containers
+        + object.spec.?initContainers.orValue([])
+        + object.spec.?ephemeralContainers.orValue([])
+  validations:
+    - expression: "object.spec.?runtimeClassName.orValue('') == 'kata-qemu'"
+      message: "sandbox pods must set runtimeClassName kata-qemu"
+      reason: Forbidden
+    - expression: "has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false"
+      message: "sandbox pods must set automountServiceAccountToken: false"
+      reason: Forbidden
+    - expression: "has(object.metadata.labels) && 'warden.monaddle.com/sandbox' in object.metadata.labels && object.metadata.labels['warden.monaddle.com/sandbox'] != ''"
+      message: "sandbox pods must carry the warden.monaddle.com/sandbox label"
+      reason: Forbidden
+    - expression: "!object.spec.?hostNetwork.orValue(false) && !object.spec.?hostPID.orValue(false) && !object.spec.?hostIPC.orValue(false)"
+      message: "sandbox pods may not share host namespaces"
+      reason: Forbidden
+    - expression: "variables.containers.all(c, !c.?securityContext.?privileged.orValue(false))"
+      message: "sandbox pods may not run privileged containers"
+      reason: Forbidden
+    - expression: "object.spec.?volumes.orValue([]).all(v, has(v.persistentVolumeClaim) || has(v.configMap) || has(v.emptyDir))"
+      message: "sandbox pods may use only persistentVolumeClaim, configMap and emptyDir volumes"
+      reason: Forbidden
+
+---
+# Source: warden/templates/sandbox-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: warden-warden-sandboxes-sandbox-pods
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: sandboxes
+spec:
+  policyName: warden-warden-sandboxes-sandbox-pods
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: warden-sandboxes
+---
+# Source: warden/templates/tls-bootstrap.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: warden-tls-bootstrap
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: tls-bootstrap
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+automountServiceAccountToken: false
+
+---
+# Source: warden/templates/tls-bootstrap.yaml
+# get and patch by name, create unscoped (a create cannot name its object).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-tls-bootstrap
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: tls-bootstrap
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [warden-policy-tls, warden-runner-tls, warden-chat-tls, warden-edge-tls]
+    verbs: [get, patch]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+
+---
+# Source: warden/templates/tls-bootstrap.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-tls-bootstrap
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: tls-bootstrap
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-tls-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: warden-tls-bootstrap
+    namespace: warden
+
+---
+# Source: warden/templates/tls-bootstrap.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: warden-tls-bootstrap
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: tls-bootstrap
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: warden
+        app.kubernetes.io/instance: warden
+        app.kubernetes.io/version: "v0.0.0-dev"
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: warden-0.0.0-dev
+        warden.monaddle.com/component: tls-bootstrap
+    spec:
+      restartPolicy: Never
+      serviceAccountName: warden-tls-bootstrap
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+        - name: issue
+          image: "ghcr.io/monaddle-too/warden:v0.0.0-dev"
+          imagePullPolicy: IfNotPresent
+          command: [/usr/local/bin/warden, tls, bootstrap, --out, /work/tls, --days, "90"]
+          env:
+            - name: HOME
+              value: /work
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      containers:
+        - name: store
+          image: "docker.io/alpine/k8s:1.34.1"
+          imagePullPolicy: IfNotPresent
+          command: [sh, -eu, -c]
+          args:
+            - |
+              ns="$NAMESPACE"
+              ids="warden-policy warden-runner warden-chat warden-edge"
+              existing=0
+              for id in $ids; do
+                if kubectl -n "$ns" get secret "$id-tls" >/dev/null 2>&1; then
+                  existing=$((existing + 1))
+                fi
+              done
+              if [ "$existing" -eq 4 ]; then
+                echo "all four TLS Secrets exist; nothing to do"
+                exit 0
+              fi
+              if [ "$existing" -ne 0 ]; then
+                echo "only $existing of the four TLS Secrets exist; they must share a CA, so delete all four to re-issue" >&2
+                exit 1
+              fi
+              for id in $ids; do
+                kubectl -n "$ns" create secret generic "$id-tls" --type=kubernetes.io/tls \
+                  --from-file=ca.crt="/work/tls/$id/ca.crt" \
+                  --from-file=tls.crt="/work/tls/$id/tls.crt" \
+                  --from-file=tls.key="/work/tls/$id/tls.key"
+                kubectl -n "$ns" label secret "$id-tls" \
+                  app.kubernetes.io/name=warden \
+                  app.kubernetes.io/instance="$RELEASE" \
+                  warden.monaddle.com/component="${id#warden-}"
+              done
+              echo "issued a CA and four certificates valid 90 days"
+          env:
+            - name: HOME
+              value: /work
+            - name: NAMESPACE
+              value: warden
+            - name: RELEASE
+              value: warden
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      volumes:
+        - name: work
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Mi
+

@@ -18,6 +18,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"warden/chat/internal/release"
 )
 
 type managedSandbox struct {
@@ -37,8 +39,12 @@ type managedSandbox struct {
 	// pendingReport is a guest report captured while the guest was a spare;
 	// fresh marks a guest this worker just created or adopted, which cannot
 	// hold port publications yet. Neither is persisted.
-	pendingReport  string
-	fresh          bool
+	pendingReport string
+	fresh         bool
+	// paths is the guest layout the last guest report described (the
+	// manifest's paths object, or the SBX template's defaults); it is
+	// taken again at every prepare, so it is not persisted.
+	paths          GuestPaths
 	LastActivity   time.Time
 	Grant          GrantContext
 	Active         *managedRun
@@ -99,10 +105,11 @@ func (w *Worker) defaultsLocked() {
 		w.MaxResident = 3
 	}
 	if w.Gate == nil {
-		w.Gate = &UnixEnforcement{}
+		w.Gate = &PolicyEnforcement{}
 	}
 }
 func (w *Worker) saveManagedLocked() error {
+	w.refreshSnapshotsLocked()
 	return atomicJSON(filepath.Join(w.Root, "managed-v2.json"), w.managed)
 }
 func (w *Worker) initializeManaged(ctx context.Context) error {
@@ -143,6 +150,15 @@ func (w *Worker) initializeManaged(ctx context.Context) error {
 		}
 		p.server = nil
 		p.listener = nil
+		if p.Address == "" && p.HostPort != 0 {
+			// Written before publications recorded their address: the
+			// driver in use then published on the address it publishes on now.
+			if s := w.managed.Sandboxes[p.SandboxID]; s != nil {
+				if p.Address, err = w.Runtime.Address(ctx, s.RuntimeName); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	for _, a := range w.managed.Attachments {
 		if a.State != "removed" {
@@ -158,6 +174,18 @@ func (w *Worker) initializeManaged(ctx context.Context) error {
 		// than proving what state this one is in.
 		_ = w.Runtime.Remove(ctx, name)
 		delete(w.managed.Spares, name)
+	}
+	if reconciler, ok := w.Runtime.(Reconciler); ok {
+		// Every registered guest is stopped and every registered spare gone;
+		// a driver whose guests outlive the worker retires what else it finds
+		// and keeps the registered workspaces.
+		registered := make([]string, 0, len(w.managed.Sandboxes))
+		for _, s := range w.managed.Sandboxes {
+			registered = append(registered, s.RuntimeName)
+		}
+		if err = reconciler.Reconcile(ctx, registered); err != nil {
+			return fmt.Errorf("runtime reconciliation: %w", err)
+		}
 	}
 	if err = w.saveManagedLocked(); err != nil {
 		return err
@@ -215,30 +243,8 @@ func (w *Worker) bindLocked(r Request) (Response, error) {
 		hash := sha256.Sum256([]byte(r.SandboxID))
 		s = &managedSandbox{SandboxInfo: SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID, RuntimeName: "wc-" + hex.EncodeToString(hash[:12]), Directory: "/home/agent/workspace", State: "stopped"}, PrincipalID: r.PrincipalID, LastActivity: w.now()}
 		if r.SessionID != "" {
-			if !validIdentity(r.SessionID) {
-				return Response{}, errors.New("invalid legacy session")
-			}
-			b, err := os.ReadFile(filepath.Join(w.Root, "sessions", r.SessionID+".json"))
-			if err != nil {
-				return Response{}, errors.New("legacy execution association is unavailable")
-			}
-			var old session
-			if json.Unmarshal(b, &old) != nil || old.ProjectID != r.ProjectID {
-				return Response{}, errors.New("legacy sandbox belongs to another project")
-			}
-			for _, other := range w.managed.Sandboxes {
-				if other.RuntimeName == "ws-"+strings.ToLower(r.SessionID) {
-					return Response{}, errors.New("legacy runtime is already registered")
-				}
-			}
-			s.RuntimeName = "ws-" + strings.ToLower(r.SessionID)
-			s.Directory = old.Directory
-			s.Base = old.Base
-			s.Created = true
-			s.Installed = false
-			s.ProxyCA = ""
-			c.RolloutPath = old.RolloutPath
-			c.ThreadID = r.ThreadID
+			// The protocol 1 worker whose ws-* sandboxes this adopted is gone.
+			return Response{}, errors.New("legacy sandbox adoption is no longer supported")
 		}
 	}
 	if err := w.bindRepositoryLocked(s, r.Repository); err != nil {
@@ -287,9 +293,8 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 	if err := ValidateAgent(r.Provider, r.Model); err != nil {
 		return Response{}, err
 	}
-	if r.Provider == "claude" && w.ClaudePath == "" {
-		return Response{}, errors.New("Claude runtime is not configured")
-	}
+	// Without a host copy the guest image must ship Claude; that is checked
+	// against the guest manifest once the sandbox reports.
 	s, c, err := w.bindingLocked(r)
 	if err != nil {
 		return Response{}, err
@@ -322,9 +327,6 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 	if s.Active != nil {
 		return w.statusLocked(r), nil
 	}
-	if w.RuntimeDir == "" {
-		return Response{}, errors.New("worker requires --runtime-dir with the pinned Linux Codex vendor bundle")
-	}
 	if r.OpenAIAPIKey != "" {
 		return Response{}, errors.New("personal keys must be registered with Warden; sandbox secret injection is disabled")
 	}
@@ -345,6 +347,14 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		return Response{}, err
 	}
 	defer releaseControl()
+	// The startup stage the chat shows while this runs (progress.go); the
+	// drivers add their own detail through the context.
+	report := func(stage, detail string) context.Context {
+		w.setProgress(s.ID, stage, detail)
+		return WithProgress(ctx, func(detail string) { w.setProgress(s.ID, stage, detail) })
+	}
+	defer w.clearProgress(s.ID)
+	adopted := false
 	if !s.Created && !s.Creating && s.Source == "" {
 		// A booted spare becomes this sandbox's runtime before its identity is
 		// registered, so the policy service only ever sees the final name.
@@ -354,8 +364,10 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 			s.residency = spare.residency
 			s.pendingReport = spare.report
 			s.fresh = true
+			adopted = true
 		}
 	}
+	w.setProgress(s.ID, StageWaiting, "registering with the policy service")
 	grant := GrantContext{Provider: r.Provider, ProjectID: s.ProjectID, SandboxID: s.ID, RuntimeName: s.RuntimeName, Generation: s.Generation, ChatID: c.ID, RunID: r.RunID, PrincipalID: s.PrincipalID}
 	if err = w.Gate.Register(ctx, grant); err != nil {
 		w.failEnforcementLocked(s)
@@ -364,7 +376,28 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 	phase := "runtime"
 	if !s.Created {
 		phase = "create"
+	} else {
+		stage, detail := StageResuming, ""
+		if adopted {
+			stage, detail = StageCreating, "adopting a warm spare sandbox"
+		}
+		// The panel reads the state from the registry snapshot meanwhile:
+		// say the resume has begun, and take it back if the pod never came.
+		previous := s.State
+		s.State = "starting"
+		_ = w.saveManagedLocked()
+		if err = w.ensureResidencyLocked(report(stage, detail), s); err != nil {
+			s.State = previous
+			_ = w.saveManagedLocked()
+		}
 	}
+	if err != nil {
+		// A stopped pod-based sandbox has no runtime to attest until its pod
+		// is back (under the namespace's default deny); see the same call
+		// after creation below.
+		return Response{}, err
+	}
+	w.setProgress(s.ID, StageAttesting, "")
 	if err = w.Gate.Check(ctx, grant, phase); err != nil {
 		w.failEnforcementLocked(s)
 		return Response{}, err
@@ -396,7 +429,7 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		if err = w.saveManagedLocked(); err != nil {
 			return fail(err)
 		}
-		if err = w.Runtime.Create(ctx, RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source}); err != nil {
+		if err = w.Runtime.Create(report(StageCreating, ""), RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source, SandboxID: s.ID, Generation: s.Generation}); err != nil {
 			return fail(err)
 		}
 		s.Created = true
@@ -406,15 +439,24 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 			return fail(err)
 		}
 	}
+	// The runtime must exist before its networking can be attested: a
+	// pod-based driver recreates a stopped sandbox's pod here (under the
+	// namespace's default deny), the SBX driver opens its residency session.
+	if err = w.ensureResidencyLocked(report(StageCreating, ""), s); err != nil {
+		return fail(err)
+	}
 	// Creation authorization is distinct from attested runtime networking.
+	w.setProgress(s.ID, StageAttesting, "")
 	if err = w.Gate.Check(ctx, grant, "runtime"); err != nil {
 		return fail(err)
 	}
-	report, err := w.probeGuestLocked(ctx, s)
+	w.setProgress(s.ID, StageProbing, "")
+	guestReport, err := w.probeGuestLocked(ctx, s)
 	if err != nil {
 		return fail(err)
 	}
-	guest := parseGuestReport(report)
+	guest := parseGuestReport(guestReport)
+	s.paths = guest.paths()
 	if !guest.ca {
 		s.ProxyCA = ""
 	}
@@ -423,14 +465,27 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		s.GuestCA = guest.manifest.CA.Sha256
 	}
 	if !s.Installed && guest.codex && guest.manifest != nil {
-		if host, herr := codexBundleMetadata(w.RuntimeDir); herr == nil && guest.manifest.Codex.Version == host.Version && guest.manifest.Codex.Target == host.Target {
+		// The image ships the pinned Codex release (its digest is verified by
+		// the policy service), or it ships the same bundle the host holds.
+		if guest.manifest.Codex.Version == release.CodexVersion && pinnedCodexTarget(guest.manifest.Codex.Target) {
+			s.Installed = true
+		} else if host, herr := codexBundleMetadata(w.RuntimeDir); w.RuntimeDir != "" && herr == nil && guest.manifest.Codex.Version == host.Version && guest.manifest.Codex.Target == host.Target {
 			s.Installed = true
 		}
+	}
+	if !s.Installed && w.RuntimeDir == "" {
+		return fail(errors.New("the guest image does not ship the pinned Codex runtime and no host bundle is configured (runtimes.codex)"))
 	}
 	if err = w.unpublishRemovedLocked(ctx, s); err != nil {
 		return fail(err)
 	}
-	if r.Provider == "claude" {
+	if r.Provider == "claude" && w.ClaudePath == "" {
+		// No host copy: the image must ship the pinned executable.
+		if !(guest.claude && guest.manifest != nil && guest.manifest.Claude.Version == release.ClaudeVersion && pinnedClaudeDigest(guest.manifest.Claude.Sha256)) {
+			return fail(errors.New("the guest image does not ship the pinned Claude executable and no host copy is configured (runtimes.claude)"))
+		}
+		s.ClaudeInstalled = "image:" + guest.manifest.Claude.Sha256
+	} else if r.Provider == "claude" {
 		// The executable is large; copy it once per guest and again only when
 		// the host file changes or the guest copy is missing.
 		fingerprint, ferr := claudeFingerprint(w.ClaudePath)
@@ -445,31 +500,41 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		present := s.ClaudeInstalled == fingerprint && guest.claude
 		if !present {
 			s.ClaudeInstalled = ""
-			if err = w.Runtime.Copy(ctx, s.RuntimeName, w.ClaudePath, "/tmp/warden-claude"); err != nil {
+			w.setProgress(s.ID, StageInstalling, "copying the Claude executable into the sandbox")
+			if err = w.Runtime.Copy(ctx, s.RuntimeName, w.ClaudePath, s.paths.Claude); err != nil {
 				return fail(err)
 			}
-			if _, err = w.Runtime.Exec(ctx, s.RuntimeName, "/tmp", "sudo", "chmod", "755", "/tmp/warden-claude"); err != nil {
+			if _, err = w.Runtime.Exec(ctx, s.RuntimeName, "/tmp", "sudo", "chmod", "755", s.paths.Claude); err != nil {
 				return fail(err)
 			}
 			s.ClaudeInstalled = fingerprint
 		}
 	}
 	if !s.Installed {
-		if _, err = w.Runtime.Exec(ctx, s.RuntimeName, s.Directory, "sudo", "rm", "-rf", "--", "/tmp/warden-runtime-stage"); err != nil {
+		// The bundle is staged beside its final path and moved into place
+		// once its executables are verified; both paths are the manifest's
+		// (or the template's), validated by guestPath and passed as data.
+		stage := s.paths.Codex + "-stage"
+		w.setProgress(s.ID, StageInstalling, "copying the Codex runtime bundle into the sandbox")
+		if _, err = w.Runtime.Exec(ctx, s.RuntimeName, s.Directory, "sudo", "rm", "-rf", "--", stage); err != nil {
 			return fail(err)
 		}
-		if err = w.Runtime.Copy(ctx, s.RuntimeName, w.RuntimeDir, "/tmp/warden-runtime-stage"); err != nil {
+		if err = w.Runtime.Copy(ctx, s.RuntimeName, w.RuntimeDir, stage); err != nil {
 			return fail(fmt.Errorf("could not provision pinned Linux runtime bundle: %w", err))
 		}
-		if _, err = w.Runtime.Exec(ctx, s.RuntimeName, s.Directory, "sudo", "sh", "-c", "chmod -R a+rX /tmp/warden-runtime-stage && test -x /tmp/warden-runtime-stage/bin/codex && test -x /tmp/warden-runtime-stage/bin/codex-code-mode-host && test -x /tmp/warden-runtime-stage/codex-path/rg && test -x /tmp/warden-runtime-stage/codex-resources/bwrap && rm -rf -- /tmp/warden-runtime && mv /tmp/warden-runtime-stage /tmp/warden-runtime"); err != nil {
+		if _, err = w.Runtime.Exec(ctx, s.RuntimeName, s.Directory, "sudo", "sh", "-c", `chmod -R a+rX "$0" && test -x "$0/bin/codex" && test -x "$0/bin/codex-code-mode-host" && test -x "$0/codex-path/rg" && test -x "$0/codex-resources/bwrap" && rm -rf -- "$1" && mv "$0" "$1"`, stage, s.paths.Codex); err != nil {
 			return fail(err)
 		}
 		s.Installed = true
 	}
 
+	if s.Repository != "" && !s.RepositoryReady {
+		w.setProgress(s.ID, StageCloning, "fetching "+s.Repository)
+	}
 	if err = w.prepareRepositoryLocked(ctx, s); err != nil {
 		return fail(err)
 	}
+	w.setProgress(s.ID, StageAttesting, "")
 	if err = w.Gate.Check(ctx, grant, "runtime"); err != nil {
 		return fail(err)
 	}
@@ -517,7 +582,27 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	if r.Operation == "cancel" {
 		return Response{}, w.cancelManaged(r)
 	}
-	w.mu.Lock()
+	if r.Operation == "usage" {
+		return w.usage(ctx, r)
+	}
+	switch r.Operation {
+	case "progress":
+		return w.progressOp(r)
+	case "cluster.status", "cluster.logs":
+		return w.clusterOp(ctx, r)
+	}
+	if r.Operation == "pod" {
+		// The pod read is a cluster call; it never holds the registry.
+		return w.snapshotOp(ctx, r)
+	}
+	if r.Operation == "status" {
+		// The read the workspace panel polls: never behind a creation.
+		if !w.mu.TryLock() {
+			return w.snapshotOp(ctx, r)
+		}
+	} else {
+		w.mu.Lock()
+	}
 	defer w.mu.Unlock()
 	w.defaultsLocked()
 	if r.Operation == "bind-chat" {
@@ -571,6 +656,22 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 			return Response{}, errors.New("invalid sandbox file response")
 		}
 		return result, nil
+	case "paths":
+		if s.State != "running" {
+			return Response{}, errors.New("sandbox is stopped; resume the chat before completing paths")
+		}
+		if err = w.Gate.Check(ctx, s.Grant, "runtime"); err != nil {
+			return Response{}, err
+		}
+		return w.completePathsLocked(ctx, s, r)
+	case "attachment-write":
+		if s.State != "running" {
+			return Response{}, errors.New("sandbox is stopped; resume the chat before sending files")
+		}
+		if err = w.Gate.Check(ctx, s.Grant, "runtime"); err != nil {
+			return Response{}, err
+		}
+		return w.writeAttachmentLocked(ctx, s, r)
 	case "host.import", "host.export":
 		// Owner-approved copy of a host directory into the sandbox, or of
 		// the sandbox's copy back over it (local installs only; the chat
@@ -602,7 +703,9 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 func (w *Worker) handle(parent context.Context, c net.Conn) {
 	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	reader := bufio.NewReader(c)
-	line, err := readLine(reader, 1<<20)
+	// Room for an attachment-write's 8 MiB of content as base64; the socket
+	// is the backend's only, so the larger line costs nothing in exposure.
+	line, err := readLine(reader, 12<<20)
 	var r Request
 	if err == nil {
 		err = json.Unmarshal(line, &r)
@@ -619,7 +722,7 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	}
 	_ = c.SetReadDeadline(time.Time{})
 	slots := w.ordinarySlots
-	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" {
+	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" {
 		slots = w.controlSlots
 	}
 	select {
@@ -703,8 +806,8 @@ func (w *Worker) streamManaged(parent context.Context, conn net.Conn, reader *bu
 		broker.ThreadID = w.managed.Chats[r.ChatID].ThreadID
 		if r.Provider != s.Grant.Provider || ValidateAgent(r.Provider, r.Model) != nil {
 			err = errors.New("agent selection mismatch")
-		} else if err = w.ensureProxyCALocked(ctx, s, broker.CACertificate); err == nil {
-			stream, err = w.Runtime.Stream(ctx, s.RuntimeName, s.Directory, broker)
+		} else {
+			stream, err = w.launchLocked(ctx, s, broker)
 		}
 	}
 	if err != nil {
@@ -1008,39 +1111,49 @@ func (w *Worker) execOK(ctx context.Context, name, dir string, args ...string) (
 	return out, err == nil
 }
 
-// ensureProxyCALocked installs the broker's gateway CA into the guest once,
-// and again only when the CA changes (rotation) or the guest lost its copy.
-// A guest image that ships this exact certificate needs no install at all.
-func (w *Worker) ensureProxyCALocked(ctx context.Context, s *managedSandbox, certificate string) error {
-	if certificate == "" {
-		return nil
+// launchLocked starts the agent stream with the guest layout the last
+// report described and the trust decision for the broker's gateway CA: the
+// guest already trusts it when its image shipped this exact certificate or
+// an earlier run installed it and the guest still has the file, so the
+// driver installs it once per guest, and again only after a rotation or a
+// loss. The fingerprint is recorded once the launch succeeded, since the
+// driver delivers trust as part of it.
+func (w *Worker) launchLocked(ctx context.Context, s *managedSandbox, broker BrokerConfig) (io.ReadWriteCloser, error) {
+	fingerprint := ""
+	trusted := true
+	if broker.CACertificate != "" {
+		fingerprint = hex.EncodeToString(func() []byte { sum := sha256.Sum256([]byte(broker.CACertificate)); return sum[:] }())
+		trusted = s.ProxyCA == fingerprint || s.GuestCA == fingerprint
+		if !trusted {
+			s.ProxyCA = ""
+		}
 	}
-	fingerprint := hex.EncodeToString(func() []byte { sum := sha256.Sum256([]byte(certificate)); return sum[:] }())
-	if s.ProxyCA == fingerprint {
-		return nil
+	stream, err := w.Runtime.Stream(ctx, s.RuntimeName, RunSpec{Directory: s.Directory, Broker: broker, Paths: s.paths.orDefaults(), TrustsCA: trusted})
+	if err != nil {
+		return nil, err
 	}
-	if s.GuestCA == fingerprint {
+	if fingerprint != "" {
 		s.ProxyCA = fingerprint
-		return nil
 	}
-	s.ProxyCA = ""
-	if err := w.Runtime.InstallCA(ctx, s.RuntimeName, certificate); err != nil {
-		return err
-	}
-	s.ProxyCA = fingerprint
-	return nil
+	return stream, nil
 }
 
 // guestManifestPath is written by the Warden guest image build
 // (deploy/guest) and lists what the image preinstalled.
 const guestManifestPath = "/opt/warden/guest-manifest.json"
 
-// guestReportScript runs as one guest round-trip during prepare.
+// guestReportScript runs as one guest round-trip during prepare. The
+// runtime presence checks look where the manifest's paths object says the
+// runtimes are (the one-line manifest written by deploy/guest/write-manifest.sh)
+// and fall back to the SBX template's /tmp layout, the same resolution
+// guestReport.paths applies on the host side.
 const guestReportScript = `mkdir -p "$0" || exit 1
 echo WARDEN-GUEST-BEGIN; cat ` + guestManifestPath + ` 2>/dev/null; echo; echo WARDEN-GUEST-END
+codex=$(sed -n 's/.*"paths": *{[^}]*"codex": *"\([^"]*\)".*/\1/p' ` + guestManifestPath + ` 2>/dev/null); [ -n "$codex" ] || codex=` + defaultCodexPath + `
+claude=$(sed -n 's/.*"paths": *{[^}]*"claude": *"\([^"]*\)".*/\1/p' ` + guestManifestPath + ` 2>/dev/null); [ -n "$claude" ] || claude=` + defaultClaudePath + `
 test -f ` + guestCAPath + ` && echo ca-present || echo ca-absent
-test -x /tmp/warden-runtime/bin/codex && echo codex-present || echo codex-absent
-test -x /tmp/warden-claude && echo claude-present || echo claude-absent`
+test -x "$codex/bin/codex" && echo codex-present || echo codex-absent
+test -x "$claude" && echo claude-present || echo claude-absent`
 
 type guestManifest struct {
 	Codex struct {
@@ -1054,10 +1167,25 @@ type guestManifest struct {
 	CA struct {
 		Sha256 string `json:"sha256"`
 	} `json:"ca"`
+	Paths GuestPaths `json:"paths"`
+	User  struct {
+		Name string `json:"name"`
+	} `json:"user"`
 }
 type guestReport struct {
 	manifest          *guestManifest
 	ca, codex, claude bool
+}
+
+// paths is the guest layout: the manifest's paths object with the SBX
+// template's defaults filling whatever it leaves out or names unusably.
+func (g guestReport) paths() GuestPaths {
+	var p GuestPaths
+	if g.manifest != nil {
+		p = g.manifest.Paths
+		p.User = g.manifest.User.Name
+	}
+	return p.orDefaults()
 }
 
 // parseGuestReport reads the prepare round-trip output. Anything the guest
@@ -1125,9 +1253,10 @@ func (w *Worker) maintainSpares(ctx context.Context) {
 		createCtx, done := context.WithTimeout(ctx, 2*time.Minute)
 		defer done()
 		var residency io.Closer
-		err := w.Runtime.Create(createCtx, RuntimeSpec{Name: name, Directory: "/home/agent/workspace"})
+		spec := RuntimeSpec{Name: name, Directory: "/home/agent/workspace", Spare: true}
+		err := w.Runtime.Create(createCtx, spec)
 		if err == nil {
-			residency, err = w.Runtime.KeepAlive(name)
+			residency, err = w.Runtime.Prepare(createCtx, spec)
 		}
 		report := ""
 		if err == nil {
@@ -1152,19 +1281,36 @@ func (w *Worker) maintainSpares(ctx context.Context) {
 }
 
 // probeGuestLocked performs the guest round-trips a run needs before its
-// stream, concurrently: the guest report (workspace, manifest, presence of
-// the CA and runtimes), the port-publication check, and the keep-alive
-// session that holds the guest resident. Each is skipped when it is already
-// known: a spare's report was taken at boot, a guest this worker just
-// created or adopted cannot hold publications, and an adopted spare already
-// has its keep-alive.
+// stream: first the driver's preparation when the guest is not resident
+// (for SBX the keep-alive session that boots and holds the VM; for a pod
+// driver the pod of this generation), then, concurrently, the guest report
+// (workspace, manifest, presence of the CA and runtimes) and the
+// port-publication check. Each is skipped when it is already known: a
+// spare's report was taken at boot, a guest this worker just created or
+// adopted cannot hold publications, and an adopted spare is already
+// resident.
+// ensureResidencyLocked prepares the runtime (the SBX keep-alive session, or
+// the pod of the current generation) once per residency.
+func (w *Worker) ensureResidencyLocked(ctx context.Context, s *managedSandbox) error {
+	if s.residency != nil {
+		return nil
+	}
+	residency, err := w.Runtime.Prepare(ctx, RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source, SandboxID: s.ID, Generation: s.Generation})
+	if residency != nil {
+		s.residency = residency // owned by the sandbox now, so a later failure releases it
+	}
+	return err
+}
+
 func (w *Worker) probeGuestLocked(ctx context.Context, s *managedSandbox) (string, error) {
 	report, haveReport := s.pendingReport, s.pendingReport != ""
 	fresh := s.fresh
 	s.pendingReport, s.fresh = "", false
+	if err := w.ensureResidencyLocked(ctx, s); err != nil {
+		return "", err
+	}
 	var wg sync.WaitGroup
-	var reportErr, mappingErr, keepErr error
-	var residency io.Closer
+	var reportErr, mappingErr error
 	if !haveReport {
 		wg.Add(1)
 		go func() {
@@ -1179,23 +1325,35 @@ func (w *Worker) probeGuestLocked(ctx context.Context, s *managedSandbox) (strin
 			mappingErr = w.verifyMappingsLocked(ctx, s, nil, false)
 		}()
 	}
-	if s.residency == nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			residency, keepErr = w.Runtime.KeepAlive(s.RuntimeName)
-		}()
-	}
 	wg.Wait()
-	if residency != nil {
-		s.residency = residency // owned by the sandbox now, so a later failure releases it
-	}
-	for _, err := range []error{reportErr, mappingErr, keepErr} {
+	for _, err := range []error{reportErr, mappingErr} {
 		if err != nil {
 			return "", err
 		}
 	}
 	return report, nil
+}
+
+// pinnedCodexTarget reports whether a guest manifest's Codex target is one
+// of the release's published bundles.
+func pinnedCodexTarget(target string) bool {
+	for _, bundle := range release.CodexBundles {
+		if target != "" && strings.Contains(bundle.URL, "codex-package-"+target+".tar.gz") {
+			return true
+		}
+	}
+	return false
+}
+
+// pinnedClaudeDigest reports whether a guest manifest's Claude executable is
+// one of the release's published builds.
+func pinnedClaudeDigest(sha256 string) bool {
+	for _, exe := range release.ClaudeExecutables {
+		if sha256 != "" && exe.SHA256 == sha256 {
+			return true
+		}
+	}
+	return false
 }
 
 // hostDirectoryLimit bounds what request_host_directory may copy.

@@ -1,0 +1,229 @@
+{{- /*
+Mutual-TLS material without cert-manager (plan decision 5): a pre-install
+and pre-upgrade hook Job. Its init container runs `warden tls bootstrap`
+from the server image into an emptyDir; its main container (an image with
+kubectl and a shell; the server image has no HTTP client) stores each
+identity's directory as the Secret <identity>-tls. The Job does nothing
+when all four Secrets exist, and fails when only some do, because the
+four must share a CA. The Secrets are not release objects, so they
+survive uninstall; delete all four to re-issue on the next upgrade.
+
+The hook's ServiceAccount, Role and RoleBinding are hooks too and go away
+with the Job. The NetworkPolicy is a release object: on an upgrade the
+namespace's default deny is already in force and the Job must reach the
+API server and DNS.
+*/ -}}
+{{- if .Values.tls.bootstrap }}
+{{- $job := .Values.tls.bootstrapJob }}
+{{- $labels := include "warden.labels" . }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: warden-tls-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+    warden.monaddle.com/component: tls-bootstrap
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+automountServiceAccountToken: false
+---
+# get and patch by name, create unscoped (a create cannot name its object).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-tls-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+    warden.monaddle.com/component: tls-bootstrap
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [warden-policy-tls, warden-runner-tls, warden-chat-tls, warden-edge-tls]
+    verbs: [get, patch]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-tls-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+    warden.monaddle.com/component: tls-bootstrap
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-tls-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: warden-tls-bootstrap
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: warden-tls-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+    warden.monaddle.com/component: tls-bootstrap
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        {{- $labels | nindent 8 }}
+        warden.monaddle.com/component: tls-bootstrap
+    spec:
+      restartPolicy: Never
+      serviceAccountName: warden-tls-bootstrap
+      automountServiceAccountToken: true
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        runAsUser: {{ .Values.podSecurityContext.runAsUser }}
+        runAsGroup: {{ .Values.podSecurityContext.runAsGroup }}
+        fsGroup: {{ .Values.podSecurityContext.fsGroup }}
+      initContainers:
+        - name: issue
+          image: {{ include "warden.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/usr/local/bin/warden, tls, bootstrap, --out, /work/tls, --days, {{ int $job.days | quote }}]
+          env:
+            - name: HOME
+              value: /work
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      containers:
+        - name: store
+          image: {{ $job.kubectlImage | quote }}
+          imagePullPolicy: {{ $job.kubectlPullPolicy }}
+          command: [sh, -eu, -c]
+          args:
+            - |
+              ns="$NAMESPACE"
+              ids="warden-policy warden-runner warden-chat warden-edge"
+              existing=0
+              for id in $ids; do
+                if kubectl -n "$ns" get secret "$id-tls" >/dev/null 2>&1; then
+                  existing=$((existing + 1))
+                fi
+              done
+              if [ "$existing" -eq 4 ]; then
+                echo "all four TLS Secrets exist; nothing to do"
+                exit 0
+              fi
+              if [ "$existing" -ne 0 ]; then
+                echo "only $existing of the four TLS Secrets exist; they must share a CA, so delete all four to re-issue" >&2
+                exit 1
+              fi
+              for id in $ids; do
+                kubectl -n "$ns" create secret generic "$id-tls" --type=kubernetes.io/tls \
+                  --from-file=ca.crt="/work/tls/$id/ca.crt" \
+                  --from-file=tls.crt="/work/tls/$id/tls.crt" \
+                  --from-file=tls.key="/work/tls/$id/tls.key"
+                kubectl -n "$ns" label secret "$id-tls" \
+                  app.kubernetes.io/name=warden \
+                  app.kubernetes.io/instance="$RELEASE" \
+                  warden.monaddle.com/component="${id#warden-}"
+              done
+              echo "issued a CA and four certificates valid {{ int $job.days }} days"
+          env:
+            - name: HOME
+              value: /work
+            - name: NAMESPACE
+              value: {{ .Release.Namespace }}
+            - name: RELEASE
+              value: {{ .Release.Name }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      volumes:
+        - name: work
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: warden-tls-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+    warden.monaddle.com/component: tls-bootstrap
+spec:
+  podSelector:
+    matchLabels:
+      warden.monaddle.com/component: tls-bootstrap
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dns.podSelector | nindent 14 }}
+        {{- if .Values.networkPolicy.dns.cidr }}
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.dns.cidr }}
+        {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.apiServer.cidr }}
+      ports:
+        {{- range $p := .Values.networkPolicy.apiServer.ports }}
+        - protocol: TCP
+          port: {{ int $p }}
+        {{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,15 @@
+{{- /*
+warden.json for all four services (plan decision 13, appendix A), rendered
+from values by the warden.config helper. Each Deployment carries a
+checksum of it so a change rolls the pods.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: warden-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+data:
+  warden.json: |-
+    {{- include "warden.config" . | nindent 4 }}

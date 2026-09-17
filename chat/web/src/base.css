@@ -164,7 +164,8 @@ select {
   background-repeat: no-repeat;
   background-position: right 8px center;
 }
-input[type="checkbox"] {
+input[type="checkbox"],
+input[type="radio"] {
   width: 16px;
   height: 16px;
   min-height: 0;
@@ -328,14 +329,6 @@ dialog::backdrop {
   margin: 1.2em 0 0.5em;
   font-size: 1.05em;
 }
-.rich-text pre {
-  padding: 12px 14px;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  overflow: auto;
-  margin: 0.75em 0;
-}
 .rich-text :not(pre) > code {
   padding: 1px 5px;
   background: var(--surface-2);
@@ -357,6 +350,287 @@ dialog::backdrop {
   color: var(--text-2);
 }
 
+/* A link an agent wrote (RichText.tsx AgentLink): the external-link glyph
+   marks it as leaving Warden and the real host follows the label when the
+   label would mislead (links.ts). */
+.rich-text .agent-link svg {
+  display: inline-block;
+  vertical-align: -0.1em;
+  margin-left: 0.2em;
+}
+.rich-text .link-host {
+  margin-left: 0.3em;
+  font-size: 0.85em;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.rich-text .link-host::before {
+  content: "→ ";
+}
+
+/* KaTeX output (katex.ts chunk): a wide equation scrolls inside its line
+   instead of pushing the bubble out; the stylesheet itself is lazy. */
+.rich-text .katex-display {
+  margin: 0.75em 0;
+  padding: 2px 0;
+  overflow: auto hidden;
+}
+.rich-text .katex-error {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+/* Fenced code (CodeBlock.tsx): header with the language, wrap and copy;
+   blocks over COLLAPSE_LINES start folded behind a fade. */
+.code-block {
+  margin: 0.75em 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.code-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.code-lang {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+}
+.code-head button,
+.code-expand {
+  height: 26px;
+  padding: 0 8px;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.code-head button[aria-pressed="true"] {
+  color: var(--accent-text);
+}
+.code-block pre {
+  padding: 12px 14px;
+  overflow: auto;
+}
+.code-block.wrap pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* COLLAPSE_LINES lines of the <code> inside (0.9em of the pre's 13px, at
+   its line height) plus the pre's padding. */
+.code-block.collapsed pre {
+  max-height: calc(13px * 0.9 * 1.5 * 40 + 24px);
+  overflow-y: hidden;
+  mask-image: linear-gradient(#000 85%, transparent);
+}
+.code-expand {
+  width: 100%;
+  border-radius: 0;
+  border-top: 1px solid var(--line);
+}
+
+/* A rendered ```mermaid fence (Mermaid.tsx) sits where the <pre> would; the
+   SVG carries its own width, capped to the block. */
+.mermaid-diagram {
+  padding: 12px 14px;
+  overflow: auto;
+  text-align: center;
+}
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.code-error {
+  margin: 0;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--danger);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* A unified diff (DiffView.tsx), in a ```diff fence or a step's detail:
+   a header per file, a fold button per hunk, +/- rows on the add/del
+   tokens. Numbers and marks are ::before content so a selection copies only
+   the code. */
+.diff-view pre {
+  margin: 0;
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff-view pre + .diff-file,
+.diff-file + .diff-file,
+.diff-file + pre {
+  border-top: 1px solid var(--line);
+}
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-3);
+  font: 12px/18px var(--mono);
+}
+.diff-path {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.diff-status {
+  color: var(--muted);
+}
+.diff-count {
+  white-space: nowrap;
+}
+.diff-plus {
+  color: var(--add-text);
+}
+.diff-minus {
+  color: var(--del-text);
+}
+.diff-hunk {
+  overflow-x: auto;
+  font: 12px/20px var(--mono);
+}
+.diff-fold {
+  display: flex;
+  width: 100%;
+  min-width: max-content;
+  height: 26px;
+  justify-content: flex-start;
+  border-radius: 0;
+  padding: 0 8px;
+  background: var(--info-soft);
+  color: var(--info-text);
+  font: inherit;
+}
+.diff-fold:hover {
+  background: var(--info-soft);
+  color: var(--text);
+}
+.diff-fold .muted {
+  font-size: 11px;
+}
+.diff-line {
+  display: flex;
+  min-width: max-content;
+}
+.diff-no {
+  flex: 0 0 44px;
+  width: 44px;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--muted);
+  border-right: 1px solid var(--line);
+}
+.diff-no::before {
+  content: attr(data-no);
+}
+.diff-line code {
+  flex: 1;
+  white-space: pre;
+  padding: 0 12px 0 6px;
+  font-size: inherit;
+}
+.diff-line code::before {
+  content: attr(data-mark);
+  display: inline-block;
+  width: 14px;
+  color: var(--muted);
+}
+.diff-add {
+  background: var(--add-soft);
+}
+.diff-add code::before {
+  color: var(--add-text);
+}
+.diff-del {
+  background: var(--del-soft);
+}
+.diff-del code::before {
+  color: var(--del-text);
+}
+.diff-meta {
+  color: var(--muted);
+}
+.code-block.wrap .diff-line {
+  min-width: 0;
+}
+.code-block.wrap .diff-line code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* highlight.js scopes, mapped onto the code tokens so both schemes stay
+   readable on --surface-2. */
+.hljs-comment,
+.hljs-quote {
+  color: var(--code-comment);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-template-tag,
+.hljs-doctag {
+  color: var(--code-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-char.escape_,
+.hljs-addition {
+  color: var(--code-string);
+}
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link {
+  color: var(--code-number);
+}
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--code-title);
+}
+.hljs-type,
+.hljs-built_in,
+.hljs-class {
+  color: var(--code-type);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-meta,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-property,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: var(--code-attr);
+}
+.hljs-deletion {
+  color: var(--del-text);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
 .image-attachment {
   margin: 8px 0;
   padding: 12px;
@@ -376,4 +650,74 @@ dialog::backdrop {
   color: var(--muted);
   font-size: 13px;
   white-space: pre-wrap;
+}
+.image-attachment .inline-image {
+  display: block;
+  margin: auto;
+  border: 0;
+}
+
+/* Inline images from the workspace (`![alt](path)`): a bordered thumbnail
+   in the flow of the text that opens the lightbox; the alt text stands in
+   while loading or when the file could not be shown. */
+.inline-image {
+  display: inline-block;
+  max-width: 100%;
+  height: auto;
+  margin: 4px 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  vertical-align: top;
+  cursor: zoom-in;
+}
+.inline-image:hover {
+  background: var(--surface);
+  border-color: var(--line-strong);
+}
+.inline-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 480px;
+  object-fit: contain;
+  border-radius: inherit;
+}
+.inline-image-pending {
+  color: var(--muted);
+  font-style: italic;
+}
+.inline-image-missing {
+  color: var(--muted);
+  text-decoration: underline dotted;
+}
+
+/* Lightbox: the image alone over a dimmed page. */
+.lightbox {
+  max-width: 96vw;
+  max-height: 96vh;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+.lightbox::backdrop {
+  background: rgb(28 27 24 / 0.75);
+}
+.lightbox img {
+  display: block;
+  max-width: 96vw;
+  max-height: 96vh;
+  object-fit: contain;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.lightbox-close {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  background: var(--surface);
+  color: var(--text);
 }

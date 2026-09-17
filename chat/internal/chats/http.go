@@ -11,11 +11,29 @@ import (
 	"strings"
 	"time"
 	"warden/chat/internal/conversation"
+	"warden/chat/internal/transport"
 )
 
+// HTTP is the chat API and web UI. Requests are admitted by Token, the
+// owner capability rotated at every start that the edge reads from
+// endpoint.json (the sbx shapes), or, when Peer is set, by the mutual-TLS
+// client certificate carrying that identity (Kubernetes, where the edge's
+// certificate is its authority to forward the X-Warden-* identity headers
+// and no capability exists).
 type HTTP struct {
 	Engine                      *Engine
 	Token, Host, Origin, WebDir string
+	Peer                        string
+}
+
+// admitted reports whether the request carries the capability or, with
+// Peer set, was made over a connection whose client certificate is Peer's.
+func (h *HTTP) admitted(r *http.Request) bool {
+	if h.Peer != "" {
+		return r.TLS != nil && transport.IdentityOf(*r.TLS) == h.Peer
+	}
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return h.Token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(h.Token)) == 1
 }
 
 func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -51,8 +69,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.FileServer(http.Dir(h.WebDir)).ServeHTTP(w, r)
 		return
 	}
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if h.Token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(h.Token)) != 1 {
+	if !h.admitted(r) {
 		http.Error(w, "Warden sign-in required", 401)
 		return
 	}
@@ -91,11 +108,34 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.events(w, r)
 		return
 	}
+	if r.Method == "GET" && (path == "cluster" || path == "cluster/logs") {
+		// Owner-only at the edge (ownerOnly lists api/cluster).
+		h.clusterHTTP(w, r, path)
+		return
+	}
 	parts := strings.Split(path, "/")
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "runtime" {
 		res, err := h.Engine.Runtime(r.Context(), parts[1], "status")
 		respond(w, res, err)
 		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "image-file" {
+		h.imageFileHTTP(w, r, parts[1])
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "paths" {
+		h.pathsHTTP(w, r, parts[1])
+		return
+	}
+	if len(parts) >= 3 && parts[0] == "chats" && parts[2] == "attachments" {
+		switch {
+		case r.Method == "POST" && len(parts) == 3:
+			h.attachmentUpload(w, r, parts[1])
+			return
+		case r.Method == "GET" && len(parts) == 4:
+			h.attachmentHTTP(w, r, parts[1], parts[3])
+			return
+		}
 	}
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "file" {
 		name := r.URL.Query().Get("path")
@@ -136,6 +176,8 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Archived   bool                `json:"archived"`
 		Allow      bool                `json:"allow"`
 		Answers    map[string][]string `json:"answers"`
+		// Attachments are upload IDs a message sends along.
+		Attachments []string `json:"attachments"`
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
 	dec.DisallowUnknownFields()
@@ -167,7 +209,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "agent":
 			err = h.Engine.ConfigureAgentAndRelease(r.Context(), parts[1], body.Provider, body.Model)
 		case "message":
-			err = h.Engine.MessageFrom(parts[1], body.Text, body.ID, requester(r))
+			err = h.Engine.MessageFrom(parts[1], body.Text, body.ID, requester(r), body.Attachments...)
 		case "typing":
 			err = h.Engine.Typing(parts[1], requester(r))
 			result = map[string]bool{"ok": true}
@@ -183,6 +225,8 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "approvals":
 		err = h.Engine.ResolveAs(parts[1], parts[3], body.Allow, body.Answers, requester(r))
+	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "attachments" && parts[4] == "remove":
+		err = h.Engine.removeAttachment(parts[1], parts[3])
 	default:
 		http.Error(w, "not found", 404)
 		return

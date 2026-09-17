@@ -37,6 +37,9 @@ type Chat struct {
 	// Typing is who is composing a message right now. It is filled in for
 	// clients by Engine.View and never stored.
 	Typing []Typist `json:"typing,omitempty"`
+	// Startup is where the chat's start is while its message waits for the
+	// agent (startup.go); filled in by Engine.View, never stored.
+	Startup *Startup `json:"startup,omitempty"`
 }
 
 // Typist is one person composing a message in a chat.
@@ -118,6 +121,9 @@ func Open(root string) (*Store, error) {
 	return s, nil
 }
 func (s *Store) Close() { s.unlock() }
+
+// dir is the private state directory; attachments live beside chats.json.
+func (s *Store) dir() string { return filepath.Dir(s.path) }
 func (s *Store) save() error {
 	b, err := json.Marshal(s.state)
 	if err != nil {

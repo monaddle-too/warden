@@ -1,0 +1,66 @@
+{{- /*
+Admission hardening of the sandbox namespace (plan decision 11): every pod
+there must use the configured RuntimeClass, carry the Warden sandbox
+label, mount no ServiceAccount token, share no host namespace, run no
+privileged container and use only the workspace PVC, ConfigMap and
+emptyDir volume types. Pod Security Admission at baseline covers the rest
+(hostPorts, sysctls, AppArmor/seccomp overrides, added capabilities). The
+policy service reads these objects back as cluster facts (decision 12).
+Both objects are cluster-scoped, so they carry the sandbox namespace name.
+*/ -}}
+{{- $name := printf "%s-sandbox-pods" (include "warden.clusterPrefix" .) }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: sandboxes
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+  variables:
+    - name: containers
+      expression: >-
+        object.spec.containers
+        + object.spec.?initContainers.orValue([])
+        + object.spec.?ephemeralContainers.orValue([])
+  validations:
+    - expression: {{ printf "object.spec.?runtimeClassName.orValue('') == '%s'" (include "warden.runtimeClassName" .) | quote }}
+      message: "sandbox pods must set runtimeClassName {{ include "warden.runtimeClassName" . }}"
+      reason: Forbidden
+    - expression: "has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false"
+      message: "sandbox pods must set automountServiceAccountToken: false"
+      reason: Forbidden
+    - expression: "has(object.metadata.labels) && 'warden.monaddle.com/sandbox' in object.metadata.labels && object.metadata.labels['warden.monaddle.com/sandbox'] != ''"
+      message: "sandbox pods must carry the warden.monaddle.com/sandbox label"
+      reason: Forbidden
+    - expression: "!object.spec.?hostNetwork.orValue(false) && !object.spec.?hostPID.orValue(false) && !object.spec.?hostIPC.orValue(false)"
+      message: "sandbox pods may not share host namespaces"
+      reason: Forbidden
+    - expression: "variables.containers.all(c, !c.?securityContext.?privileged.orValue(false))"
+      message: "sandbox pods may not run privileged containers"
+      reason: Forbidden
+    - expression: "object.spec.?volumes.orValue([]).all(v, has(v.persistentVolumeClaim) || has(v.configMap) || has(v.emptyDir))"
+      message: "sandbox pods may use only persistentVolumeClaim, configMap and emptyDir volumes"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: sandboxes
+spec:
+  policyName: {{ $name }}
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ include "warden.sandboxNamespace" . }}

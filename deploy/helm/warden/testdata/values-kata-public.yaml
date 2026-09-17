@@ -1,0 +1,46 @@
+# Golden input: Kata tier under an explicit RuntimeClass name, public
+# previews, Google sign-in, an external CA ClusterIssuer, the GitHub App
+# mode, Google Docs off, images pinned by digest, open egress.
+image:
+  digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+imagePullSecrets:
+  - name: ghcr-pull
+guestImage:
+  digest: sha256:cd77d0ff2af115f3cb700414c7c54840c2c1c87c3322ea0a98c17880ef07b63e
+runtime:
+  tier: kata
+  runtimeClassName: kata-clh
+egress: open
+sandboxNamespace:
+  name: warden-prod-sandboxes
+auth:
+  mode: google
+  publicURL: https://warden.example.com
+  google:
+    signInClientID: 730944705291-example.apps.googleusercontent.com
+    owners: [owner@example.com, second@example.com]
+previews:
+  mode: public
+  hostSuffix: preview.example.com
+  ingress:
+    host: warden.example.com
+    tls:
+      secretName: warden-public-tls
+providers:
+  google:
+    enabled: false
+  github:
+    appID: 999999
+    appSlug: monaddle-workspace
+    installationOwner: monaddle-too
+secrets:
+  github: warden-github-app
+tls:
+  certManager:
+    enabled: true
+    issuerRef:
+      name: corp-ca
+      kind: ClusterIssuer
+      group: cert-manager.io
+rbac:
+  policyClusterFacts: false

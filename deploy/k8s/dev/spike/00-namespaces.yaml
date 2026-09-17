@@ -1,0 +1,15 @@
+# Step 0 spike (docs/warden-kubernetes-plan.md): the sandbox namespace as the
+# chart will create it, hardened by Pod Security Admission at baseline.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: warden-spike
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: warden-spike-sandboxes
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    warden.monaddle.com/role: sandboxes

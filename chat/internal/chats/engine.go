@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"warden/chat/internal/agent"
 	cv "warden/chat/internal/conversation"
 	"warden/chat/internal/sandbox"
+	"warden/chat/internal/transport"
 )
 
 type Worker interface {
@@ -33,10 +35,32 @@ type activeRun struct {
 	idle     atomic.Bool
 	release  context.CancelFunc
 	done     chan struct{}
+	// The agent process reports token usage as a running total for its
+	// lifetime (a resident session spans turns), so a turn's usage is how
+	// much the total grew: `usage` is the last total seen and `usageBase`
+	// the total when `usageTurn` began. Only the run's goroutine touches
+	// them.
+	usage, usageBase cv.Usage
+	usageTurn        string
 }
 type Engine struct {
-	WardenSocket        string
+	// PolicyAddress is the policy service's control endpoint (a unix:// or
+	// tls:// URL; "" leaves sharing unconfigured), dialed with PolicyTLS on
+	// tls://.
+	PolicyAddress       string
+	PolicyTLS           *transport.TLS
 	PublicPreviewSuffix string
+	// RunnerPreviewHost is the host:port of the runner's shared preview
+	// server (services.runner.previews.address; docs/warden-kubernetes-plan.md,
+	// decisions 5 and 10), the only https:// origin an attachment URL may
+	// name, dialed with RunnerPreviewTLS (this service's certificate; the
+	// runner admits only warden-chat). "" on the sbx shapes, where the
+	// runner hands out http://127.0.0.1:<port>/ loopback URLs and nothing
+	// else is accepted.
+	RunnerPreviewHost string
+	RunnerPreviewTLS  *transport.TLS
+	previewMu         sync.Mutex
+	previewTransport  *http.Transport
 	// PreviewScheme and PreviewPort shape approved binding URLs:
 	// <scheme>://<binding-id>.<suffix>[:port]/path. The scheme defaults to
 	// https (public previews); loopback previews use http and the edge port.
@@ -59,10 +83,13 @@ type Engine struct {
 	// typing: chat id -> principal -> indicator, see Typing.
 	typingMu sync.Mutex
 	typing   map[string]map[string]Typist
-	mu       sync.Mutex
-	active   map[string]*activeRun
-	wake     chan struct{}
-	done     chan struct{}
+	// startup: chat id -> where its start is, see startup.go.
+	startupMu sync.Mutex
+	startup   map[string]Startup
+	mu        sync.Mutex
+	active    map[string]*activeRun
+	wake      chan struct{}
+	done      chan struct{}
 }
 
 const runSlots = 2
@@ -145,7 +172,7 @@ func (e *Engine) Wake() {
 }
 func (e *Engine) Serve(ctx context.Context) {
 	defer close(e.done)
-	if e.WardenSocket != "" {
+	if e.PolicyAddress != "" {
 		deliveryCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
 		go func() { defer close(done); e.sharingDelivery(deliveryCtx) }()
@@ -158,27 +185,31 @@ func (e *Engine) Serve(ctx context.Context) {
 	for {
 		for _, c := range e.Store.Snapshot().Chats {
 			if c.Status != "queued" || ctx.Err() != nil {
+				if _, own := running[c.ID]; !own {
+					e.clearStartup(c.ID) // stopped or failed before its run began
+				}
 				continue
 			}
 			if _, own := running[c.ID]; own {
 				continue // the chat's live resident session takes the message itself
 			}
-			blocked := false
+			blocked := ""
 			for id, sandboxID := range running {
 				if sandboxID == c.SandboxID {
-					blocked = true
+					blocked = "another chat on this workspace is running"
 					e.releaseIdle(id) // an idle session on this sandbox yields to the waiting chat
 				}
 			}
-			if !blocked && len(running) >= runSlots {
-				blocked = true
+			if blocked == "" && len(running) >= runSlots {
+				blocked = "waiting for a free agent slot"
 				for id := range running {
 					if e.releaseIdle(id) {
 						break
 					}
 				}
 			}
-			if blocked {
+			if blocked != "" {
+				e.setStartup(c.ID, stageQueued, blocked)
 				continue
 			}
 			id := c.ID
@@ -248,13 +279,15 @@ func (e *Engine) Message(id, text, messageID string) error {
 
 // MessageFrom appends a user message attributed to actor (the person the
 // edge identified, or the owner) and clears that person's typing indicator.
-func (e *Engine) MessageFrom(id, text, messageID string, actor cv.Actor) error {
+// attachments names uploads (storeAttachment) the message sends along; a
+// message may be attachments alone.
+func (e *Engine) MessageFrom(id, text, messageID string, actor cv.Actor, attachments ...string) error {
 	if actor.PrincipalID == "" {
 		actor.PrincipalID = "owner"
 	}
 	defer e.stopTyping(id, actor.PrincipalID)
 	text = strings.TrimSpace(text)
-	if text == "" || len(text) > 128<<10 || len(messageID) != 32 {
+	if text == "" && len(attachments) == 0 || len(text) > 128<<10 || len(messageID) != 32 {
 		return errors.New("valid message and message ID required")
 	}
 	err := e.Store.update(func(st *State) error {
@@ -276,11 +309,16 @@ func (e *Engine) MessageFrom(id, text, messageID string, actor cv.Actor) error {
 		if c.Archived || c.Status == "stopping" {
 			return errors.New("chat is archived or stopping")
 		}
+		files, err := e.claimAttachments(c, attachments)
+		if err != nil {
+			return err
+		}
 		v := cv.NewEntry("user", text)
 		v.ID = messageID
 		sender := actor
 		v.Sender = &sender
 		v.Delivery = "queued"
+		v.Attachments = files
 		c.Conversation.Entries = append(c.Conversation.Entries, v)
 		if c.Status != "running" && c.Status != "queued" {
 			// A live resident session picks the message up under its own run ID;
@@ -343,11 +381,19 @@ func (e *Engine) now() time.Time {
 	return time.Now()
 }
 
+// at is the time as entries record it: unix seconds.
+func (e *Engine) at() float64 { return float64(e.now().UnixMilli()) / 1000 }
+
 // View is the state clients see: the stored snapshot plus who is typing
 // in each chat, expired indicators dropped.
 func (e *Engine) View() State {
 	st := e.Store.Snapshot()
 	now := float64(e.now().UnixNano()) / 1e9
+	for _, c := range st.Chats {
+		if c.Status == "queued" || c.Status == "running" {
+			c.Startup = e.startupOf(c.ID)
+		}
+	}
 	e.typingMu.Lock()
 	defer e.typingMu.Unlock()
 	for _, c := range st.Chats {
@@ -466,6 +512,7 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 		}
 		return nil
 	})
+	e.Wake() // the sandbox is free: a chat queued on it re-evaluates now
 	return err
 }
 func (e *Engine) Runtime(ctx context.Context, id, op string) (sandbox.Response, error) {
@@ -483,7 +530,7 @@ func (e *Engine) Runtime(ctx context.Context, id, op string) (sandbox.Response, 
 		if a.ChatID != c.ID || a.SandboxID != c.SandboxID {
 			return sandbox.Response{}, errors.New("preview binding mismatch")
 		}
-		if invalid := validateAttachment(a); invalid != nil {
+		if invalid := e.validateAttachment(a); invalid != nil {
 			return sandbox.Response{}, invalid
 		}
 	}
@@ -515,6 +562,8 @@ func (e *Engine) run(parent context.Context, id string) {
 	e.active[id] = a
 	e.mu.Unlock()
 	defer close(a.done)
+	e.setStartup(id, stageBinding, "")
+	defer e.clearStartup(id)
 	defer func() {
 		if err != nil {
 			cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
@@ -543,6 +592,7 @@ func (e *Engine) run(parent context.Context, id string) {
 				}
 			}
 			c.Conversation.ActiveTurnID = nil
+			c.Conversation.EndTurns(e.at())
 			for i := range c.Conversation.Entries {
 				v := &c.Conversation.Entries[i]
 				v.IsStreaming = false
@@ -581,6 +631,12 @@ func (e *Engine) run(parent context.Context, id string) {
 		r.ThreadID = *current.Conversation.ThreadID
 	}
 	var prep sandbox.Response
+	// The runner reports its stages (sandbox creation, the boot, the guest
+	// provisioning) while prepare runs; a follower copies them to the chat.
+	e.setStartup(id, stagePreparing, "")
+	following := make(chan struct{})
+	followed := make(chan struct{})
+	go func() { defer close(followed); e.followProgress(ctx, &current, following) }()
 	// A resident session released moments ago may still be finishing on the
 	// worker; wait briefly for the sandbox instead of failing the chat.
 	for start := time.Now(); ; {
@@ -588,13 +644,18 @@ func (e *Engine) run(parent context.Context, id string) {
 		if err == nil || !errors.Is(err, sandbox.ErrBusy) || time.Since(start) > 15*time.Second {
 			break
 		}
+		e.setStartup(id, stageWaiting, busyDetail(err))
 		select {
 		case <-ctx.Done():
 			err = ctx.Err()
+			close(following)
+			<-followed
 			return
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+	close(following)
+	<-followed
 	if err != nil {
 		return
 	}
@@ -602,6 +663,7 @@ func (e *Engine) run(parent context.Context, id string) {
 		err = errors.New("worker returned no sandbox workspace")
 		return
 	}
+	e.setStartup(id, stageLaunching, "starting the agent in the sandbox")
 	r = request(&current, "stream")
 	r.Directory = prep.Directory
 	var stream io.ReadWriteCloser
@@ -653,6 +715,11 @@ func (e *Engine) run(parent context.Context, id string) {
 			params["path"] = prep.RolloutPath
 		}
 	}
+	if method == "thread/resume" {
+		e.setStartup(id, stageConnecting, "resuming the agent session")
+	} else {
+		e.setStartup(id, stageConnecting, "starting the agent session")
+	}
 	var response map[string]any
 	response, err = client.Call(ctx, method, params)
 	if err != nil {
@@ -677,7 +744,11 @@ func (e *Engine) run(parent context.Context, id string) {
 		err = errors.New("no pending message")
 		return
 	}
-	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": input(*message)})
+	var items []any
+	if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
+		return
+	}
+	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 	if err != nil {
 		return
 	}
@@ -690,8 +761,9 @@ func (e *Engine) run(parent context.Context, id string) {
 	if err = e.confirm(id, message.ID, turnID); err != nil {
 		return
 	}
+	e.clearStartup(id)
 	for {
-		if err = e.turn(ctx, id, &current, client, frames, threadID, turnID, turn); err != nil || !a.resident {
+		if err = e.turn(ctx, id, &current, client, frames, threadID, turnID, prep.Directory, turn); err != nil || !a.resident {
 			return
 		}
 		// The turn finished but the session stays open: settle the transcript,
@@ -701,7 +773,10 @@ func (e *Engine) run(parent context.Context, id string) {
 		if message == nil {
 			return // released, timed out, stopped or ended by the worker: a clean end
 		}
-		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": input(*message)})
+		if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
+			return
+		}
+		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 		if err != nil {
 			return
 		}
@@ -720,7 +795,7 @@ func (e *Engine) run(parent context.Context, id string) {
 // turn drives one agent turn to completion. It returns nil once the turn
 // completed and an error when it failed, the run was cancelled or the agent
 // stream ended.
-func (e *Engine) turn(ctx context.Context, id string, current *Chat, client *agent.Client, frames chan agent.Frame, threadID, turnID string, turn map[string]any) error {
+func (e *Engine) turn(ctx context.Context, id string, current *Chat, client *agent.Client, frames chan agent.Frame, threadID, turnID, cwd string, turn map[string]any) error {
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -757,7 +832,11 @@ func (e *Engine) turn(ctx context.Context, id string, current *Chat, client *age
 				return err
 			}
 			if message != nil {
-				result, callErr := client.Call(ctx, "turn/steer", map[string]any{"threadId": threadID, "expectedTurnId": turnID, "clientUserMessageId": message.ID, "input": input(*message)})
+				items, err := e.input(ctx, current, cwd, *message)
+				if err != nil {
+					return err
+				}
+				result, callErr := client.Call(ctx, "turn/steer", map[string]any{"threadId": threadID, "expectedTurnId": turnID, "clientUserMessageId": message.ID, "input": items})
 				if callErr == nil && agent.String(result["turnId"]) == turnID {
 					if err = e.confirm(id, message.ID, turnID); err != nil {
 						return err
@@ -790,6 +869,7 @@ func (e *Engine) settleTurn(parent context.Context, id string, a *activeRun) {
 			}
 		}
 		c.Conversation.ActiveTurnID = nil
+		c.Conversation.EndTurns(e.at())
 		for i := range c.Conversation.Entries {
 			c.Conversation.Entries[i].IsStreaming = false
 		}
@@ -818,6 +898,9 @@ func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *
 	a.release = release
 	a.idle.Store(true)
 	e.mu.Unlock()
+	// A chat queued on this sandbox, or waiting for a run slot, was blocked
+	// while the turn ran; the loop only re-evaluates when woken.
+	e.Wake()
 	defer func() {
 		e.mu.Lock()
 		a.idle.Store(false)
@@ -883,9 +966,6 @@ func (e *Engine) resume(id string) (*cv.Entry, error) {
 	})
 	return message, err
 }
-func input(m cv.Entry) []any {
-	return []any{map[string]any{"type": "text", "text": m.Text, "text_elements": []any{}}}
-}
 func (e *Engine) attempt(id, turn string) (*cv.Entry, error) {
 	var message *cv.Entry
 	err := e.Store.update(func(st *State) error {
@@ -913,6 +993,7 @@ func (e *Engine) attempt(id, turn string) (*cv.Entry, error) {
 func (e *Engine) confirm(id, message, turn string) error {
 	return e.Store.update(func(st *State) error {
 		c := st.chat(id)
+		c.Conversation.Begin(turn, e.at())
 		for i := range c.Conversation.Entries {
 			v := &c.Conversation.Entries[i]
 			if v.ID == message {
@@ -924,7 +1005,35 @@ func (e *Engine) confirm(id, message, turn string) error {
 		return nil
 	})
 }
+
+// turnUsage reads a `thread/tokenUsage/updated` notification into the usage
+// of the turn it names: the growth of the process's running total since
+// that turn began (see activeRun). Nil when the notification names no turn
+// or the run is gone.
+func (e *Engine) turnUsage(id string, p map[string]any) (string, *cv.Usage) {
+	turn := agent.String(p["turnId"])
+	e.mu.Lock()
+	a := e.active[id]
+	e.mu.Unlock()
+	if turn == "" || a == nil {
+		return "", nil
+	}
+	total := cv.UsageFrom(agent.Map(agent.Map(p["tokenUsage"])["total"]))
+	if a.usageTurn != turn {
+		a.usageTurn, a.usageBase = turn, a.usage
+	}
+	a.usage = total
+	usage := total.Sub(a.usageBase)
+	return turn, &usage
+}
 func (e *Engine) notification(id string, f agent.Frame) error {
+	// Looked up before the store is locked: the engine lock is taken around
+	// store updates elsewhere, never inside one.
+	var usage *cv.Usage
+	var usageTurn string
+	if f.Method == "thread/tokenUsage/updated" {
+		usageTurn, usage = e.turnUsage(id, f.Params)
+	}
 	return e.Store.update(func(st *State) error {
 		c := &st.chat(id).Conversation
 		p := f.Params
@@ -945,7 +1054,11 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 			for _, v := range agent.Array(agent.Map(p["turn"])["items"]) {
 				c.Upsert(agent.Map(v), turn, true)
 			}
-			c.Finish(turn)
+			c.Finish(turn, e.at())
+		case "thread/tokenUsage/updated":
+			if usage != nil {
+				c.Report(usageTurn, *usage)
+			}
 		case "error":
 			if p["willRetry"] != true {
 				c.Entries = append(c.Entries, cv.NewEntry("system", agent.String(agent.Map(p["error"])["message"])))

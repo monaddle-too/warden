@@ -6,7 +6,6 @@ package sandbox
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"time"
 	"warden/chat/internal/hoststats"
 	"warden/chat/internal/release"
+	"warden/chat/internal/transport"
 )
 
 // ProtocolVersion is the worker protocol number carried in every request and
@@ -23,16 +23,35 @@ const ProtocolVersion = release.Protocol
 
 var ErrBusy = errors.New("sandbox worker is busy")
 
+// WorkerStatus is one runner's reported state.
+type WorkerStatus struct {
+	ID         string            `json:"id"`
+	Name       string            `json:"name"`
+	Online     bool              `json:"online"`
+	Compatible bool              `json:"compatible"`
+	Active     int               `json:"active"`
+	Capacity   int               `json:"capacity"`
+	Revision   string            `json:"revision,omitempty"`
+	Stats      *hoststats.Sample `json:"stats,omitempty"`
+}
+
 type Request struct {
-	Provider        string   `json:"provider,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	ChatID          string   `json:"chatID,omitempty"`
-	SandboxID       string   `json:"sandboxID,omitempty"`
-	RunID           string   `json:"runID,omitempty"`
-	PrincipalID     string   `json:"principalID,omitempty"`
-	CallID          string   `json:"callID,omitempty"`
-	AttachmentID    string   `json:"attachmentID,omitempty"`
-	Port            int      `json:"port,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+	ChatID       string `json:"chatID,omitempty"`
+	SandboxID    string `json:"sandboxID,omitempty"`
+	RunID        string `json:"runID,omitempty"`
+	PrincipalID  string `json:"principalID,omitempty"`
+	CallID       string `json:"callID,omitempty"`
+	AttachmentID string `json:"attachmentID,omitempty"`
+	Port         int    `json:"port,omitempty"`
+	// Namespace, Pod, Container, Tail and Previous select pod logs
+	// (cluster.logs).
+	Namespace       string   `json:"namespace,omitempty"`
+	Pod             string   `json:"pod,omitempty"`
+	Container       string   `json:"container,omitempty"`
+	Tail            int      `json:"tail,omitempty"`
+	Previous        bool     `json:"previous,omitempty"`
 	Path            string   `json:"path,omitempty"`
 	Title           string   `json:"title,omitempty"`
 	NewSession      bool     `json:"newSession,omitempty"`
@@ -51,6 +70,8 @@ type Request struct {
 	Directory       string   `json:"directory,omitempty"`
 	Args            []string `json:"args,omitempty"`
 	Expected        string   `json:"expected,omitempty"`
+	// Bytes is the content an attachment-write puts into the sandbox.
+	Bytes []byte `json:"bytes,omitempty"`
 }
 type Response struct {
 	PublishPlan       *RepositoryPublishPlan `json:"publishPlan,omitempty"`
@@ -60,6 +81,11 @@ type Response struct {
 	Revision          string                 `json:"revision,omitempty"`
 	Workers           []WorkerStatus         `json:"workers,omitempty"`
 	Stats             *hoststats.Sample      `json:"stats,omitempty"`
+	Usage             *SandboxUsage          `json:"usage,omitempty"`
+	Progress          *Progress              `json:"progress,omitempty"`
+	Pod               *PodInfo               `json:"pod,omitempty"`
+	Cluster           *ClusterStatus         `json:"cluster,omitempty"`
+	Logs              *PodLogs               `json:"logs,omitempty"`
 	ActiveSessions    int                    `json:"activeSessions"`
 	SessionLimit      int                    `json:"sessionLimit"`
 	ErrorCode         string                 `json:"errorCode,omitempty"`
@@ -77,6 +103,8 @@ type Response struct {
 	Diff              string                 `json:"diff,omitempty"`
 	Bundle            []byte                 `json:"bundle,omitempty"`
 	Bytes             []byte                 `json:"bytes,omitempty"`
+	// Paths is a "paths" completion: workspace paths matching the query.
+	Paths []string `json:"paths,omitempty"`
 }
 type SandboxInfo struct {
 	ID          string `json:"id"`
@@ -98,22 +126,20 @@ type PreviewAttachment struct {
 	State     string `json:"state"`
 }
 
+// Client reaches a runner at Address, a unix:// socket (the sbx shapes) or
+// a tls:// host:port (Kubernetes, with TLS naming this service's material;
+// the runner admits only warden-chat).
 type Client struct {
-	Socket  string
 	Address string
-	TLS     *tls.Config
-	Pool    bool
-	Legacy  bool // Explicit compatibility with existing protocol 1 task workers.
+	TLS     *transport.TLS
 }
 
 func (c *Client) dial(ctx context.Context) (net.Conn, error) {
-	if c.Address != "" {
-		if c.TLS == nil {
-			return nil, fmt.Errorf("remote workers require mutual TLS")
-		}
-		return (&tls.Dialer{NetDialer: &net.Dialer{Timeout: 3 * time.Second}, Config: c.TLS}).DialContext(ctx, "tcp", c.Address)
+	o := transport.DialOptions{TLS: c.TLS}
+	if transport.IsTLS(c.Address) {
+		o.Timeout = 3 * time.Second
 	}
-	return (&net.Dialer{}).DialContext(ctx, "unix", c.Socket)
+	return transport.Dial(ctx, c.Address, o)
 }
 
 type connection struct {
@@ -124,19 +150,18 @@ type connection struct {
 func (c *connection) Read(p []byte) (int, error) { return c.reader.Read(p) }
 func (c *Client) Open(ctx context.Context, r Request) (io.ReadWriteCloser, Response, error) {
 	r.Version = ProtocolVersion
-	if c.Legacy || c.Pool {
-		if r.ChatID != "" || r.SandboxID != "" || r.PrincipalID != "" {
-			return nil, Response{}, fmt.Errorf("managed chat requests require a Warden protocol 2 worker")
-		}
-		r.Version = 1
-	}
 	conn, err := c.dial(ctx)
 	if err != nil {
 		return nil, Response{}, fmt.Errorf("execution worker unavailable: %w", err)
 	}
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Minute))
+	deadline := 5 * time.Minute
+	if r.Operation == "prepare" {
+		// Creation may wait for a node to join (the runner's PrepareTimeout).
+		deadline = 15 * time.Minute
+	}
+	_ = conn.SetDeadline(time.Now().Add(deadline))
 	if err = json.NewEncoder(conn).Encode(r); err != nil {
 		conn.Close()
 		return nil, Response{}, err
@@ -153,7 +178,7 @@ func (c *Client) Open(ctx context.Context, r Request) (io.ReadWriteCloser, Respo
 	} else {
 		err = json.Unmarshal(line, &response)
 	}
-	if err == nil && (r.Version == ProtocolVersion && response.Version != ProtocolVersion || r.Version == 1 && response.Version != 0 && response.Version != 1) {
+	if err == nil && response.Version != ProtocolVersion {
 		err = fmt.Errorf("execution worker protocol mismatch")
 	}
 	if err == nil && response.Error != "" {

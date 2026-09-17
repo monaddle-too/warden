@@ -345,12 +345,12 @@ func TestPrivateProtocolRoundtripDuplicateJSONAndGenericErrors(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "control.sock")
-	server, err := ListenControl(path, f.registry)
+	server, err := ListenControl("unix://"+path, nil, f.registry)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	result, err := ControlRPC(path, map[string]any{"version": 1, "operation": "check", "context": f.value, "phase": "runtime"})
+	result, err := ControlRPC("unix://"+path, nil, map[string]any{"version": 1, "operation": "check", "context": f.value, "phase": "runtime"})
 	if err != nil || !ready(result) {
 		t.Fatalf("rpc: %v %v", result, err)
 	}
@@ -369,7 +369,7 @@ func TestPrivateProtocolRoundtripDuplicateJSONAndGenericErrors(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("socket mode %o", info.Mode().Perm())
 	}
-	if _, err := ControlRPC(path, map[string]any{"version": 1, "operation": "sharing", "action": "state", "data": map[string]any{}}); err == nil {
+	if _, err := ControlRPC("unix://"+path, nil, map[string]any{"version": 1, "operation": "sharing", "action": "state", "data": map[string]any{}}); err == nil {
 		t.Fatal("sharing without service accepted")
 	}
 	// Sharing refusals travel back with their wording (the chat service
@@ -454,12 +454,12 @@ func TestVersionOperationAnswersTheHandshake(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 	path := filepath.Join(dir, "control.sock")
-	server, err := ListenControl(path, f.registry)
+	server, err := ListenControl("unix://"+path, nil, f.registry)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	peer, err := handshake.Policy(context.Background(), path)
+	peer, err := handshake.Policy(context.Background(), "unix://"+path, nil)
 	if err != nil || peer != (handshake.Peer{Name: "warden-policy", Revision: release.Revision, Protocol: release.Protocol}) {
 		t.Fatalf("%+v %v", peer, err)
 	}

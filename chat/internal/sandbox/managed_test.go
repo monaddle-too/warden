@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -62,6 +63,8 @@ type testRuntime struct {
 	stopHook      func(context.Context, string) error
 	execHook      func([]string) error
 	execOutput    string
+	runs          []RunSpec // every Stream launch, in order
+	requestURI    string    // the last request the fake guest service saw
 }
 
 func (d *testRuntime) record(s string) {
@@ -71,6 +74,7 @@ func (d *testRuntime) record(s string) {
 }
 func (d *testRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 	d.record("create:" + s.Name)
+	Report(ctx, "creating the VM")
 	if d.createStarted != nil {
 		close(d.createStarted)
 	}
@@ -100,11 +104,17 @@ func (d *testRuntime) CopyOut(_ context.Context, name, source, target string) er
 	d.record("copyout:" + name + ":" + source + ":" + target)
 	return nil
 }
-func (d *testRuntime) InstallCA(_ context.Context, name, _ string) error {
-	d.record("ca:" + name)
-	return nil
-}
-func (d *testRuntime) Stream(ctx context.Context, _, _ string, _ BrokerConfig) (io.ReadWriteCloser, error) {
+func (d *testRuntime) Address(context.Context, string) (string, error) { return "127.0.0.1", nil }
+
+// Stream records the launch and, like the SBX driver, installs the broker
+// CA the guest does not trust yet ("ca:<name>").
+func (d *testRuntime) Stream(ctx context.Context, name string, run RunSpec) (io.ReadWriteCloser, error) {
+	d.mu.Lock()
+	d.runs = append(d.runs, run)
+	d.mu.Unlock()
+	if run.Broker.CACertificate != "" && !run.TrustsCA {
+		d.record("ca:" + name)
+	}
 	a, b := net.Pipe()
 	go func() { <-ctx.Done(); b.Close() }()
 	return a, nil
@@ -120,30 +130,63 @@ func (d *testRuntime) Remove(_ context.Context, name string) error {
 	d.record("remove:" + name)
 	return nil
 }
-func (d *testRuntime) Publish(_ context.Context, _ string, port, host int) error {
+
+// Reconcile records the registered names a restarted worker hands the
+// driver, sorted so tests can compare them.
+func (d *testRuntime) Reconcile(_ context.Context, registered []string) error {
+	names := append([]string(nil), registered...)
+	sort.Strings(names)
+	d.record("reconcile:" + strings.Join(names, ","))
+	return nil
+}
+
+// Publish serves a fake guest service on a fresh loopback port, the same
+// contract as the SBX driver: the mapping is reserved with the caller
+// before it takes effect. publishAt restores a known mapping (SBX brings
+// a stopped guest's publications back on resume).
+func (d *testRuntime) Publish(_ context.Context, _ string, guestPort int, reserve func(PortMapping) error) (PortMapping, error) {
 	d.record("publish")
-	l, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", fmtInt(host)))
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return PortMapping{}, err
+	}
+	m := PortMapping{Address: "127.0.0.1", Port: l.Addr().(*net.TCPAddr).Port, GuestPort: guestPort}
+	if reserve != nil {
+		if err = reserve(m); err != nil {
+			l.Close()
+			return PortMapping{}, err
+		}
+	}
+	d.serve(l, m)
+	return m, nil
+}
+func (d *testRuntime) publishAt(m PortMapping) error {
+	l, err := net.Listen("tcp4", net.JoinHostPort(m.Address, fmtInt(m.Port)))
 	if err != nil {
 		return err
 	}
+	d.serve(l, m)
+	return nil
+}
+func (d *testRuntime) serve(l net.Listener, m PortMapping) {
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.mu.Lock()
 		d.headers = r.Header.Clone()
+		d.requestURI = r.URL.RequestURI()
 		d.mu.Unlock()
 		w.Header().Set("Set-Cookie", "bad=secret")
 		_, _ = io.WriteString(w, "counter")
 	})}
 	d.mu.Lock()
-	d.servers[host] = server
+	d.servers[m.Port] = server
 	d.mu.Unlock()
 	go server.Serve(l)
-	return nil
 }
-func (d *testRuntime) Unpublish(_ context.Context, _ string, port, host int) error {
+func (d *testRuntime) Unpublish(_ context.Context, _ string, m PortMapping) error {
 	d.record("unpublish")
 	d.mu.Lock()
-	server := d.servers[host]
-	delete(d.servers, host)
+	server := d.servers[m.Port]
+	delete(d.servers, m.Port)
 	d.mu.Unlock()
 	if server != nil {
 		server.Close()
@@ -156,9 +199,17 @@ func (d *testRuntime) Mappings(_ context.Context, name string) ([]PortMapping, e
 	d.calls = append(d.calls, "mappings:"+name)
 	out := []PortMapping{}
 	for host := range d.servers {
-		out = append(out, PortMapping{"127.0.0.1", host, 3000, "tcp4"})
+		out = append(out, PortMapping{Address: "127.0.0.1", Port: host, GuestPort: 3000})
 	}
 	return out, nil
+}
+func (d *testRuntime) lastRun() RunSpec {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.runs) == 0 {
+		return RunSpec{}
+	}
+	return d.runs[len(d.runs)-1]
 }
 func fmtInt(n int) string { b, _ := json.Marshal(n); return string(b) }
 func managedFixture(t *testing.T) (*Worker, *testRuntime, *testGate, Request) {
@@ -550,7 +601,7 @@ func TestRunnerRootLockPreventsSecondOwner(t *testing.T) {
 		t.Fatal("second runner acquired root")
 	}
 }
-func TestUnixEnforcementRejectsRegistrationAsReadiness(t *testing.T) {
+func TestPolicyEnforcementRejectsRegistrationAsReadiness(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "wg-")
 	if err != nil {
 		t.Fatal(err)
@@ -573,7 +624,7 @@ func TestUnixEnforcementRejectsRegistrationAsReadiness(t *testing.T) {
 			c.Close()
 		}
 	}()
-	gate := &UnixEnforcement{Socket: socket}
+	gate := &PolicyEnforcement{Address: "unix://" + socket}
 	if err = gate.Register(context.Background(), GrantContext{}); err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +636,7 @@ func TestUnixEnforcementRejectsRegistrationAsReadiness(t *testing.T) {
 func TestParseInstalledSBXPortInventory(t *testing.T) {
 	good := `[{"host_ip":"127.0.0.1","host_port":49484,"sandbox_port":8080,"protocol":"tcp4"}]`
 	mappings, err := parsePortMappings([]byte(good))
-	if err != nil || len(mappings) != 1 || mappings[0].HostPort != 49484 {
+	if err != nil || len(mappings) != 1 || mappings[0] != (PortMapping{Address: "127.0.0.1", Port: 49484, GuestPort: 8080}) {
 		t.Fatal(mappings, err)
 	}
 	if empty, err := parsePortMappings([]byte(`[]`)); err != nil || len(empty) != 0 {
@@ -776,7 +827,7 @@ func TestRevokedMappingIdentitySurvivesRuntimeRestoration(t *testing.T) {
 		t.Fatal("revoked mapping identity forgotten", got)
 	}
 	// SBX can restore its saved loopback publication when the VM starts again.
-	if err = d.Publish(context.Background(), "", 3000, host); err != nil {
+	if err = d.publishAt(PortMapping{Address: "127.0.0.1", Port: host, GuestPort: 3000}); err != nil {
 		t.Fatal(err)
 	}
 	if err = w.reconcileRemovedLocked(context.Background(), w.managed.Sandboxes[r.SandboxID]); err != nil {
@@ -819,7 +870,8 @@ func TestUnpublishedPreviewAllowsIdleStop(t *testing.T) {
 type testResidency struct{ runtime *testRuntime }
 
 func (p *testResidency) Close() error { p.runtime.record("release-residency"); return nil }
-func (d *testRuntime) KeepAlive(name string) (io.Closer, error) {
+func (d *testRuntime) Prepare(_ context.Context, spec RuntimeSpec) (io.Closer, error) {
+	name := spec.Name
 	d.record("hold-residency:" + name)
 	return &testResidency{runtime: d}, nil
 }
@@ -1067,20 +1119,22 @@ func TestProxyCAInstalledOncePerGuestAndAgainOnRotationOrLoss(t *testing.T) {
 	w.mu.Lock()
 	s := w.managed.Sandboxes[r.SandboxID]
 	ctx := context.Background()
-	if err := w.ensureProxyCALocked(ctx, s, "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"); err != nil {
-		t.Fatal(err)
+	launch := func(certificate string) {
+		t.Helper()
+		stream, err := w.launchLocked(ctx, s, BrokerConfig{CACertificate: certificate, ProxyURL: "http://gateway"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream.Close()
 	}
-	if err := w.ensureProxyCALocked(ctx, s, "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"); err != nil {
-		t.Fatal(err)
-	}
+	launch("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
+	launch("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
 	w.mu.Unlock()
 	if installs() != 1 {
 		t.Fatalf("same CA installed %d times", installs())
 	}
 	w.mu.Lock()
-	if err := w.ensureProxyCALocked(ctx, s, "-----BEGIN CERTIFICATE-----\nBBBB\n-----END CERTIFICATE-----\n"); err != nil {
-		t.Fatal(err)
-	}
+	launch("-----BEGIN CERTIFICATE-----\nBBBB\n-----END CERTIFICATE-----\n")
 	w.mu.Unlock()
 	if installs() != 2 {
 		t.Fatal("rotated CA was not installed")
@@ -1097,9 +1151,7 @@ func TestProxyCAInstalledOncePerGuestAndAgainOnRotationOrLoss(t *testing.T) {
 	if s.ProxyCA != "" {
 		t.Fatal("prepare did not clear the fingerprint after the guest lost the CA")
 	}
-	if err := w.ensureProxyCALocked(ctx, s, "-----BEGIN CERTIFICATE-----\nBBBB\n-----END CERTIFICATE-----\n"); err != nil {
-		t.Fatal(err)
-	}
+	launch("-----BEGIN CERTIFICATE-----\nBBBB\n-----END CERTIFICATE-----\n")
 	w.mu.Unlock()
 	if installs() != 3 {
 		t.Fatal("lost guest CA was not reinstalled")
@@ -1107,8 +1159,12 @@ func TestProxyCAInstalledOncePerGuestAndAgainOnRotationOrLoss(t *testing.T) {
 	if s.ProxyCA == "" {
 		t.Fatal("fingerprint not recorded after reinstall")
 	}
-	if err := w.Runtime.(*testRuntime).InstallCA(ctx, "x", ""); err != nil {
-		t.Fatal(err)
+	// A launch without a broker CA neither installs nor forgets anything.
+	w.mu.Lock()
+	launch("")
+	w.mu.Unlock()
+	if installs() != 3 || s.ProxyCA == "" {
+		t.Fatal("a CA-less launch changed the trust record")
 	}
 }
 
@@ -1142,9 +1198,11 @@ func TestGuestImageManifestSkipsRuntimeAndCACopies(t *testing.T) {
 	if !s.Installed || s.ClaudeInstalled == "" || s.GuestCA != hex.EncodeToString(certSum[:]) {
 		t.Fatalf("manifest not recorded: installed=%v claude=%q guestCA=%q", s.Installed, s.ClaudeInstalled, s.GuestCA)
 	}
-	if err := w.ensureProxyCALocked(context.Background(), s, cert); err != nil {
+	stream, err := w.launchLocked(context.Background(), s, BrokerConfig{CACertificate: cert, Provider: "claude"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	stream.Close()
 	w.mu.Unlock()
 	d.mu.Lock()
 	for _, c := range d.calls {
@@ -1258,6 +1316,28 @@ func TestSpareSandboxIsBootedAheadAndAdoptedByTheNextEnvironment(t *testing.T) {
 	if left != 0 || !removed {
 		t.Fatal("restart must remove stale spares")
 	}
+	// The driver is then handed the registered sandboxes (the adopted spare
+	// among them, under its runtime name) and no spare, in that order.
+	d.mu.Lock()
+	calls := append([]string(nil), d.calls...)
+	d.mu.Unlock()
+	reconciled := -1
+	for i, c := range calls {
+		if strings.HasPrefix(c, "reconcile:") {
+			reconciled = i
+			if c != "reconcile:"+spareName {
+				t.Fatalf("reconcile did not name the registered sandbox: %s", c)
+			}
+		}
+	}
+	if reconciled < 0 {
+		t.Fatal("restart did not reconcile the driver")
+	}
+	for _, c := range calls[reconciled:] {
+		if strings.HasPrefix(c, "remove:wc-spare-") || strings.HasPrefix(c, "stop:") {
+			t.Fatalf("reconcile ran before the registry pass: %v", calls)
+		}
+	}
 }
 
 func TestSpareIsNotUsedForRepositoryClonesOrWhenDisabled(t *testing.T) {
@@ -1353,5 +1433,108 @@ func TestAdoptedSpareNeedsNoGuestRoundTrips(t *testing.T) {
 	}
 	if s.pendingReport != "" || s.fresh || !s.Installed {
 		t.Fatalf("report not consumed: pending=%q fresh=%v installed=%v", s.pendingReport, s.fresh, s.Installed)
+	}
+}
+
+// A guest whose manifest names other runtime paths gets the copies there
+// and is launched from there; a guest without a manifest keeps the SBX
+// template's /tmp layout.
+func TestGuestManifestPathsDriveCopiesAndLaunch(t *testing.T) {
+	w, d, _, r := managedFixture(t)
+	claude := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(claude, []byte("claude release"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.ClaudePath = claude
+	d.execOutput = "WARDEN-GUEST-BEGIN\n" + `{"codex":{"version":"0.0.0","target":"none"},"claude":{"version":"0","sha256":""},"ca":{"sha256":""},"paths":{"codex":"/opt/warden/runtime","claude":"/opt/warden/claude/claude","trust":"/opt/warden/trust/ca-certificates.crt","home":"/home/agent"},"user":{"name":"agent","uid":1000,"gid":1000}}` + "\nWARDEN-GUEST-END\nca-absent\ncodex-absent\nclaude-absent\n"
+	r.Provider = "claude"
+	prepareFixture(t, w, r)
+	var copies []string
+	d.mu.Lock()
+	for _, c := range d.calls {
+		if strings.HasPrefix(c, "copy:") {
+			copies = append(copies, c)
+		}
+	}
+	d.mu.Unlock()
+	if len(copies) != 2 || !strings.HasSuffix(copies[0], ":/opt/warden/claude/claude") || !strings.HasSuffix(copies[1], ":/opt/warden/runtime-stage") {
+		t.Fatalf("copies did not follow the manifest: %v", copies)
+	}
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	stream, err := w.launchLocked(context.Background(), s, BrokerConfig{Provider: "claude"})
+	w.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream.Close()
+	if run := d.lastRun(); run.Paths.Codex != "/opt/warden/runtime" || run.Paths.Claude != "/opt/warden/claude/claude" || run.Paths.Trust != "/opt/warden/trust/ca-certificates.crt" || run.Paths.Home != "/home/agent" || run.Paths.User != "agent" || run.Directory != s.Directory {
+		t.Fatalf("launch did not carry the manifest paths: %+v", run)
+	}
+	// No manifest: the template layout.
+	w2, d2, _, r2 := managedFixture(t)
+	w2.ClaudePath = claude
+	d2.execOutput = "ca-absent\ncodex-absent\nclaude-absent\n"
+	r2.Provider = "claude"
+	prepareFixture(t, w2, r2)
+	d2.mu.Lock()
+	var defaults []string
+	for _, c := range d2.calls {
+		if strings.HasPrefix(c, "copy:") {
+			defaults = append(defaults, c)
+		}
+	}
+	d2.mu.Unlock()
+	if len(defaults) != 2 || !strings.HasSuffix(defaults[0], ":/tmp/warden-claude") || !strings.HasSuffix(defaults[1], ":/tmp/warden-runtime-stage") {
+		t.Fatalf("default copies: %v", defaults)
+	}
+	w2.mu.Lock()
+	stream, err = w2.launchLocked(context.Background(), w2.managed.Sandboxes[r2.SandboxID], BrokerConfig{Provider: "claude"})
+	w2.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream.Close()
+	if run := d2.lastRun(); run.Paths.Codex != defaultCodexPath || run.Paths.Claude != defaultClaudePath {
+		t.Fatalf("default launch paths: %+v", run.Paths)
+	}
+}
+
+// A worker state file written before publications recorded their address
+// gets the driver's address on load, so the availability proxy still
+// reaches the guest and the mapping check still matches.
+func TestPublicationAddressBackfilledFromDriverOnLoad(t *testing.T) {
+	w, d, _, r := managedFixture(t)
+	prepareFixture(t, w, r)
+	a := attachFixture(t, w, r)
+	if a.State != "available" {
+		t.Fatal(a)
+	}
+	path := filepath.Join(w.Root, "managed-v2.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err = json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range saved["Publications"].(map[string]any) {
+		delete(p.(map[string]any), "Address")
+	}
+	raw, _ = json.Marshal(saved)
+	if err = os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh := NewWorker(w.Root, "/never-host-exec", "template")
+	fresh.Runtime, fresh.Gate, fresh.RuntimeDir = d, w.Gate, w.RuntimeDir
+	if err := fresh.initializeManaged(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fresh.mu.Lock()
+	p := fresh.managed.Publications[pubKey(r.SandboxID, 3000)]
+	fresh.mu.Unlock()
+	if p == nil || p.Address != "127.0.0.1" || p.HostPort == 0 {
+		t.Fatalf("address not backfilled: %+v", p)
 	}
 }

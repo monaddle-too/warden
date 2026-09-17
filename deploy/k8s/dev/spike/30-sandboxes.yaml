@@ -1,0 +1,43 @@
+# One sandbox per tier with the egress label, one gvisor sandbox without it.
+# Each serves a "preview" on 8080 so runner ingress can be tested.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sb-gvisor
+  namespace: warden-spike-sandboxes
+  labels: {warden.monaddle.com/sandbox: sb-gvisor, warden.monaddle.com/egress: gateway}
+spec:
+  runtimeClassName: gvisor
+  automountServiceAccountToken: false
+  containers:
+  - name: guest
+    image: docker.io/library/busybox:1.37
+    command: ["sh", "-c", "mkdir -p /www && echo preview-gvisor > /www/index.html && exec httpd -f -p 8080 -h /www"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sb-gvisor-denied
+  namespace: warden-spike-sandboxes
+  labels: {warden.monaddle.com/sandbox: sb-gvisor-denied}
+spec:
+  runtimeClassName: gvisor
+  automountServiceAccountToken: false
+  containers:
+  - name: guest
+    image: docker.io/library/busybox:1.37
+    command: ["sleep", "infinity"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sb-kata
+  namespace: warden-spike-sandboxes
+  labels: {warden.monaddle.com/sandbox: sb-kata, warden.monaddle.com/egress: gateway}
+spec:
+  runtimeClassName: kata-qemu
+  automountServiceAccountToken: false
+  containers:
+  - name: guest
+    image: docker.io/library/busybox:1.37
+    command: ["sh", "-c", "mkdir -p /www && echo preview-kata > /www/index.html && exec httpd -f -p 8080 -h /www"]

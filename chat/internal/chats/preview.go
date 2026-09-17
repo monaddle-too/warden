@@ -58,7 +58,7 @@ func (e *Engine) tool(ctx context.Context, c *Chat, client *agent.Client, f agen
 			if res.Attachment == nil || res.Attachment.ChatID != c.ID || res.Attachment.SandboxID != c.SandboxID {
 				err = errors.New("preview binding mismatch")
 			} else {
-				err = validateAttachment(*res.Attachment)
+				err = e.validateAttachment(*res.Attachment)
 			}
 		}
 	}
@@ -71,13 +71,25 @@ func (e *Engine) tool(ctx context.Context, c *Chat, client *agent.Client, f agen
 	}
 	return client.Reply(f.ID, map[string]any{"success": err == nil, "contentItems": []any{map[string]any{"type": "inputText", "text": text}}})
 }
-func validateAttachment(a sandbox.PreviewAttachment) error {
+
+// validateAttachment accepts only the two origins the runner is allowed to
+// hand out: its own loopback listeners (http://127.0.0.1:<port>) and, when
+// configured, its shared preview server (https://<RunnerPreviewHost>/<id>),
+// so a worker answer can never make the chat present its certificate to
+// another host.
+func (e *Engine) validateAttachment(a sandbox.PreviewAttachment) error {
 	if a.State != "available" {
 		return nil
 	}
 	u, err := url.Parse(a.URL)
-	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" || u.User != nil {
+	if err != nil || u.User != nil {
 		return errors.New("invalid worker preview URL")
 	}
-	return nil
+	switch {
+	case u.Scheme == "http" && u.Hostname() == "127.0.0.1" && u.Port() != "":
+		return nil
+	case u.Scheme == "https" && e.RunnerPreviewHost != "" && u.Host == e.RunnerPreviewHost && strings.HasPrefix(u.Path, "/") && u.RawQuery == "" && u.Fragment == "":
+		return nil
+	}
+	return errors.New("invalid worker preview URL")
 }

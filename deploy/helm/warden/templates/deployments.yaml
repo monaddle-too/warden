@@ -1,0 +1,149 @@
+{{- /*
+Four Deployments (plan decision 5): one replica each with Recreate, since
+their state PVCs are ReadWriteOnce. Each pod runs the warden image as a
+non-root user on a read-only root filesystem with every capability
+dropped and the runtime's default seccomp profile, mounts its own state
+PVC at /var/lib/warden/<state>, and gets warden.json and its own TLS
+material through one projected volume at /etc/warden (the transport reads
+the key pair per handshake, so a rotated Secret is picked up in place).
+There is no provider volume: logins are Secrets the policy service reads
+through the API (decision 8). Only the policy service and the runner
+mount an API token.
+*/ -}}
+{{- $config := include "warden.config" . }}
+{{- range $c := include "warden.components" . | fromJsonArray }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warden-{{ $c.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "warden.labels" $ | nindent 4 }}
+    warden.monaddle.com/component: {{ $c.name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "warden.selectorLabels" (dict "root" $ "component" $c.name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "warden.labels" $ | nindent 8 }}
+        warden.monaddle.com/component: {{ $c.name }}
+      annotations:
+        checksum/config: {{ $config | sha256sum }}
+    spec:
+      serviceAccountName: warden-{{ $c.name }}
+      automountServiceAccountToken: {{ $c.token }}
+      terminationGracePeriodSeconds: {{ $c.grace }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      # Provisioners hand over the state volume root-owned (local-path makes
+      # it world-writable); the services refuse a state directory they do
+      # not own privately, so one root step fixes ownership and mode once.
+      initContainers:
+        - name: own-state
+          image: {{ include "warden.image" $ | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: [sh, -c, "chown {{ $.Values.podSecurityContext.runAsUser }}:{{ $.Values.podSecurityContext.runAsGroup }} /var/lib/warden/{{ $c.state }} && chmod 0700 /var/lib/warden/{{ $c.state }}"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, FOWNER, DAC_OVERRIDE]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/{{ $c.state }}
+      containers:
+        - name: {{ $c.name }}
+          image: {{ include "warden.image" $ | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args: [warden, {{ $c.subcommand }}, --config, /etc/warden/warden.json]
+          env:
+            - name: HOME
+              value: /var/lib/warden/{{ $c.state }}
+            {{- with (index $.Values.extraEnv $c.name) }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            {{- range $p := $c.ports }}
+            - name: {{ $p.name }}
+              containerPort: {{ $p.port }}
+              protocol: TCP
+            {{- end }}
+          readinessProbe:
+            tcpSocket:
+              port: {{ (index $c.ports 0).name }}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: {{ (index $c.ports 0).name }}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml (index $.Values.resources $c.name) | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/{{ $c.state }}
+            - name: config
+              mountPath: /etc/warden
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: warden-{{ $c.state }}-state
+        - name: config
+          projected:
+            defaultMode: 0440
+            sources:
+              - configMap:
+                  name: warden-config
+                  items:
+                    - key: warden.json
+                      path: warden.json
+              - secret:
+                  name: warden-{{ $c.name }}-tls
+                  items:
+                    - key: ca.crt
+                      path: tls/ca.crt
+                    - key: tls.crt
+                      path: tls/tls.crt
+                    - key: tls.key
+                      path: tls/tls.key
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

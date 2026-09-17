@@ -2,13 +2,18 @@ name: Warden release
 # Builds one Warden release from a tag: the frontend, the five binaries for
 # linux/amd64, linux/arm64 and darwin/arm64 with the revision linked in,
 # one tarball per target with SHA256SUMS, a GitHub release holding them,
-# and the multi-architecture server image at ghcr.io/<owner>/warden:<tag>.
-# A manual run builds and pushes the image and keeps the tarballs as a
-# workflow artifact under a dev version; it publishes no GitHub release.
+# the multi-architecture server image at ghcr.io/<owner>/warden:<tag>, and
+# the Helm chart at oci://ghcr.io/<owner>/charts/warden (chart version =
+# the tag without its v, appVersion = the tag, values pinned to the image
+# by digest; scripts/package-chart.sh). A manual run builds and pushes the
+# image, packages the chart without pushing it, and keeps the tarballs and
+# the chart as workflow artifacts under a dev version; it publishes no
+# GitHub release.
 #
 # Runs on the self-hosted macOS runner (docs/ci-mac-runner.md): the build
 # and packaging are scripts/release.sh, which handles BSD tar; Docker is the
-# runner's Lima VM, reached through DOCKER_HOST from the runner's .env.
+# runner's Lima VM, reached through DOCKER_HOST from the runner's .env;
+# helm is the runner's Homebrew one.
 on:
   push:
     tags: ['v*']
@@ -23,6 +28,8 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/warden
+  # helm push appends /<chart name>: the chart is oci://…/charts/warden.
+  CHARTS: oci://ghcr.io/${{ github.repository_owner }}/charts
   PNPM_VERSION: 11.27.0
 
 jobs:
@@ -110,11 +117,52 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
 
+      # The chart is versioned with the binary and the image (plan decision
+      # 17): chart version <tag without v>, appVersion <tag>, and its values
+      # default to the image just pushed, by index digest. The runner's
+      # Homebrew helm packages and pushes it.
+      - name: Package the chart
+        id: chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          INDEX_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -eu
+          helm version --short
+          tgz="$(scripts/package-chart.sh --version "$VERSION" --image-digest "$INDEX_DIGEST" --image-repository "$IMAGE" --out dist/release)"
+          (cd dist/release && { command -v sha256sum >/dev/null 2>&1 && sha256sum -- "$(basename "$tgz")" || shasum -a 256 -- "$(basename "$tgz")"; } >> SHA256SUMS && cat SHA256SUMS)
+          echo "tgz=$tgz" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.ref_type != 'tag'
+        with:
+          name: warden-${{ steps.version.outputs.version }}-chart
+          path: ${{ steps.chart.outputs.tgz }}
+          if-no-files-found: error
+      - name: Push the chart
+        id: chartpush
+        if: github.ref_type == 'tag'
+        env:
+          TGZ: ${{ steps.chart.outputs.tgz }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          # The same GHCR login the image push uses (packages: write).
+          printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm push "$TGZ" "$CHARTS" > push.txt 2>&1 || { cat push.txt; exit 1; }
+          cat push.txt
+          digest="$(sed -n 's/^Digest: //p' push.txt)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Record the digests
         env:
           VERSION: ${{ steps.version.outputs.version }}
           REF: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
           INDEX_DIGEST: ${{ steps.image.outputs.digest }}
+          CHART_REF: ${{ env.CHARTS }}/warden
+          CHART_VERSION: ${{ steps.chart.outputs.version }}
+          CHART_TGZ: ${{ steps.chart.outputs.tgz }}
+          CHART_DIGEST: ${{ steps.chartpush.outputs.digest }}
         run: |
           set -eu
           docker buildx imagetools inspect "$REF" \
@@ -132,7 +180,19 @@ jobs:
               echo "| $platform | \`$digest\` |"
             done < platforms.txt
             echo
-            echo "### Tarballs"
+            echo "### Helm chart"
+            echo
+            if [ -n "$CHART_DIGEST" ]; then
+              echo "\`$CHART_REF\` version \`$CHART_VERSION\` (OCI digest \`$CHART_DIGEST\`; also \`$(basename "$CHART_TGZ")\` below). Its values default to the image above by digest; see docs/warden-kubernetes.md."
+              echo
+              echo '```'
+              echo "helm install warden $CHART_REF --version $CHART_VERSION -n warden --create-namespace -f values.yaml"
+              echo '```'
+            else
+              echo "Packaged as \`$(basename "$CHART_TGZ")\` (workflow artifact) and not pushed: only a tag build pushes to \`$CHART_REF\`."
+            fi
+            echo
+            echo "### Tarballs and chart"
             echo
             echo '```'
             cat dist/release/SHA256SUMS
@@ -147,7 +207,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+          CHART_TGZ: ${{ steps.chart.outputs.tgz }}
         run: |
           set -eu
           gh release create "$VERSION" --title "Warden $VERSION" --notes-file notes.md --verify-tag \
-            dist/release/*.tar.gz dist/release/SHA256SUMS
+            dist/release/*.tar.gz dist/release/SHA256SUMS "$CHART_TGZ"

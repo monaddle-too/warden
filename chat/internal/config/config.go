@@ -10,9 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"warden/chat/internal/transport"
 )
 
 // Version is the schema version this package reads and writes.
@@ -34,17 +38,50 @@ const (
 	AuthGoogle = "google"
 )
 
+// Runtime kinds (runtime.kind): the sandbox runtime a deployment uses.
+const (
+	RuntimeSBX        = "sbx"
+	RuntimeKubernetes = "kubernetes"
+)
+
+// Gateway modes, derived from the runtime kind (GatewayMode): per-binding
+// loopback listeners on the sbx shapes, one credentialed listener on
+// Kubernetes.
+const (
+	GatewayLoopback = "loopback"
+	GatewayShared   = "shared"
+)
+
+// Isolation tiers of the kubernetes kind (kubernetes.tier).
+const (
+	TierKata   = "kata"
+	TierGVisor = "gvisor"
+)
+
 // Config is the parsed file. Zero values mean "compute the default".
 type Config struct {
-	Version   int       `json:"version"`
-	Paths     Paths     `json:"paths"`
-	SBX       SBX       `json:"sbx"`
-	Runtimes  Runtimes  `json:"runtimes"`
-	Sandboxes Sandboxes `json:"sandboxes"`
-	Chat      Chat      `json:"chat"`
-	Previews  Previews  `json:"previews"`
-	Auth      Auth      `json:"auth"`
-	Providers Providers `json:"providers"`
+	Version int   `json:"version"`
+	Paths   Paths `json:"paths"`
+	// Runtime selects the sandbox runtime; its zero value is the sbx kind,
+	// so files written before the field existed read unchanged and a file
+	// written for the sbx shapes does not mention it.
+	Runtime Runtime `json:"runtime,omitzero"`
+	SBX     SBX     `json:"sbx"`
+	// Kubernetes is the kubernetes kind's section (docs/warden-kubernetes-plan.md,
+	// appendix A); required with that kind and refused with any other.
+	Kubernetes *Kubernetes `json:"kubernetes,omitempty"`
+	Runtimes   Runtimes    `json:"runtimes"`
+	Sandboxes  Sandboxes   `json:"sandboxes"`
+	Chat       Chat        `json:"chat"`
+	Previews   Previews    `json:"previews"`
+	Auth       Auth        `json:"auth"`
+	Providers  Providers   `json:"providers"`
+	// Services and TLS are the transport between the four services; both
+	// are omitted from a written file when they hold nothing, and an
+	// existing file without them keeps today's Unix sockets and loopback
+	// chat.
+	Services Services `json:"services,omitzero"`
+	TLS      *TLS     `json:"tls,omitempty"`
 }
 
 // Paths locates Warden's data and release assets.
@@ -57,6 +94,60 @@ type Paths struct {
 	GitHubCatalog string `json:"githubCatalog,omitempty"`
 	// SandboxPolicyTemplate is the starting policy for new sandboxes.
 	SandboxPolicyTemplate string `json:"sandboxPolicyTemplate,omitempty"`
+}
+
+// Runtime names the sandbox runtime kind.
+type Runtime struct {
+	Kind string `json:"kind,omitempty"`
+}
+
+// Kubernetes configures the kubernetes runtime kind: where sandboxes run,
+// how they are isolated, what they run, and what the policy service
+// publishes for them.
+type Kubernetes struct {
+	// Namespace holds the sandbox pods and their workspace volumes.
+	Namespace string `json:"namespace"`
+	// Tier is the isolation boundary, kata or gvisor; the verifier checks
+	// the RuntimeClass handler against the tier's allow-list.
+	Tier string `json:"tier"`
+	// RuntimeClass is the runtimeClassName every sandbox pod is created
+	// with and the verifier pins.
+	RuntimeClass string `json:"runtimeClass"`
+	// GuestImage and GuestImageDigest are the guest base image and the
+	// digest the pod's imageID must report; they replace sbx.guestImage*
+	// for this kind.
+	GuestImage       string `json:"guestImage"`
+	GuestImageDigest string `json:"guestImageDigest"`
+	// StorageClass is the workspace volumes' class; empty means the
+	// cluster default.
+	StorageClass string `json:"storageClass,omitempty"`
+	// WorkspaceSizeGi sizes each sandbox's workspace volume; 20 when unset.
+	WorkspaceSizeGi int `json:"workspaceSizeGi,omitempty"`
+	// GatewayService is the Service the shared gateway is advertised
+	// through; warden-gateway when unset. GatewayPort is the port the
+	// shared gateway listens on and the Service exposes; 7000 when unset.
+	GatewayService string `json:"gatewayService,omitempty"`
+	GatewayPort    int    `json:"gatewayPort,omitempty"`
+	// TrustConfigMap is the guest trust bundle the policy service publishes
+	// and the runner mounts; warden-guest-trust when unset.
+	TrustConfigMap string `json:"trustConfigMap,omitempty"`
+	// GatewayCAMaxAgeDays bounds the gateway CA's age before the policy
+	// service rotates it (sbx.inspectionCertMaxAgeDays of the sbx shapes);
+	// 365 when unset.
+	GatewayCAMaxAgeDays int `json:"gatewayCAMaxAgeDays,omitempty"`
+	// NodeSelector and Tolerations place sandbox pods (a Kata node pool, a
+	// tainted gVisor pool); none when unset.
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	Tolerations  []Toleration      `json:"tolerations,omitempty"`
+}
+
+// Toleration is a sandbox pod toleration, the Kubernetes field names.
+type Toleration struct {
+	Key               string `json:"key,omitempty"`
+	Operator          string `json:"operator,omitempty"`
+	Value             string `json:"value,omitempty"`
+	Effect            string `json:"effect,omitempty"`
+	TolerationSeconds *int64 `json:"tolerationSeconds,omitempty"`
 }
 
 // SBX describes the sandbox runtime on this host.
@@ -76,7 +167,11 @@ type Runtimes struct {
 
 // Sandboxes sets capacity and lifecycle.
 type Sandboxes struct {
-	MemoryMB             int `json:"memoryMB,omitempty"`
+	MemoryMB int `json:"memoryMB,omitempty"`
+	// CPUMillis is each sandbox's CPU request and limit in the kubernetes
+	// kind (1000 = one core, the SBX shapes' fixed --cpus 1); 1000 when
+	// unset. The SBX driver ignores it.
+	CPUMillis            int `json:"cpuMillis,omitempty"`
 	MaxRunning           int `json:"maxRunning,omitempty"`
 	WarmSpares           int `json:"warmSpares,omitempty"`
 	StopAfterIdleMinutes int `json:"stopAfterIdleMinutes,omitempty"`
@@ -96,9 +191,63 @@ const (
 	EgressOpen       = "open"
 )
 
-// Chat is the web app listener.
+// Chat is the web app listener: the loopback host:port of the sbx shapes.
+// It stays the address the policy service's built-in Google Docs client
+// redirects to; services.chat.listen may replace it as the chat's own
+// listener (a tls:// URL in Kubernetes).
 type Chat struct {
 	Listen string `json:"listen,omitempty"`
+}
+
+// Services are the listeners of the policy service, the runner and the
+// chat, and the addresses their clients dial, one URL each. The sbx shapes
+// leave them unset: unix://<paths.state>/policy/sbx-control.sock and
+// unix://<paths.state>/runner/worker.sock for the first two, and
+// http://<chat.listen> for the chat, the same values as before this
+// section existed. Kubernetes sets tls://<host>:<port> for all of them,
+// with mutual TLS from the tls section (docs/warden-kubernetes-plan.md,
+// decision 5 and appendix A).
+type Services struct {
+	Policy Service       `json:"policy,omitzero"`
+	Runner RunnerService `json:"runner,omitzero"`
+	Chat   Service       `json:"chat,omitzero"`
+}
+
+// Service is one service's listener and the address its clients dial.
+// Address defaults to Listen when that is a unix:// (or, for the chat,
+// http://) URL; a tls:// listener needs an explicit address, since the
+// listener usually binds every interface.
+type Service struct {
+	Listen  string `json:"listen,omitempty"`
+	Address string `json:"address,omitempty"`
+}
+
+// RunnerService is the runner's control listener and address plus, where
+// the chat and the runner do not share a host, its preview server.
+type RunnerService struct {
+	Service
+	// Previews is the runner's one mutual-TLS preview server (listen) and
+	// the address the chat dials it at (docs/warden-kubernetes-plan.md,
+	// decisions 5 and 10): every published preview is served under
+	// <address>/<publication ID>, and only the chat's certificate is
+	// admitted. Both are tls:// URLs, set together or not at all; the
+	// tls section is required with them. Unset (the sbx shapes, where the
+	// chat and the runner share a host) the runner keeps one loopback
+	// listener per publication and hands the chat http://127.0.0.1:<port>/
+	// URLs. Accepted with any runtime kind; the chart sets it for
+	// Kubernetes.
+	Previews Service `json:"previews,omitzero"`
+}
+
+// TLS is the mutual-TLS material every service uses on tls:// URLs: the
+// deployment CA and this service's own certificate and key, PEM files at
+// the same paths in every container (the chart mounts each service's own
+// Secret there). Required, and validated, only when a listener or address
+// is tls://.
+type TLS struct {
+	CAFile   string `json:"caFile"`
+	CertFile string `json:"certFile"`
+	KeyFile  string `json:"keyFile"`
 }
 
 // Previews says how agent web previews reach the browser.
@@ -131,9 +280,11 @@ type Providers struct {
 	GitHub *GitHub   `json:"github,omitempty"`
 }
 
-// AuthFile points at one owner-only credential file.
+// AuthFile points at one owner-only credential file (the sbx shapes) or
+// names the Secret holding the login (the kubernetes kind, appendix A).
 type AuthFile struct {
-	AuthFile string `json:"authFile"`
+	AuthFile string `json:"authFile,omitempty"`
+	Secret   string `json:"secret,omitempty"`
 }
 
 // Google selects the Docs OAuth client: "builtin" or a path to an operator
@@ -142,9 +293,11 @@ type Google struct {
 	DocsClient string `json:"docsClient,omitempty"`
 }
 
-// GitHub is either a local user token (AuthFile) or a server GitHub App.
+// GitHub is either a local user token (AuthFile, or Secret on Kubernetes)
+// or a server GitHub App.
 type GitHub struct {
 	AuthFile          string `json:"authFile,omitempty"`
+	Secret            string `json:"secret,omitempty"`
 	AppID             int64  `json:"appID,omitempty"`
 	AppSlug           string `json:"appSlug,omitempty"`
 	InstallationOwner string `json:"installationOwner,omitempty"`
@@ -161,7 +314,7 @@ func Defaults(state string) Config {
 	c.Paths.State = state
 	c.SBX.PrivateHome = filepath.Join(state, "sbx")
 	c.SBX.InspectionCertMaxAgeDays = 365
-	c.Sandboxes = Sandboxes{MemoryMB: 1536, MaxRunning: 2, WarmSpares: 1, StopAfterIdleMinutes: 15, KeepStopped: 32, Egress: EgressRestricted}
+	c.Sandboxes = Sandboxes{MemoryMB: 1536, CPUMillis: 1000, MaxRunning: 2, WarmSpares: 1, StopAfterIdleMinutes: 15, KeepStopped: 32, Egress: EgressRestricted}
 	c.Chat.Listen = "127.0.0.1:18780"
 	c.Previews = Previews{Mode: PreviewLoopback, HostSuffix: "localhost", EdgeListen: "127.0.0.1:18781"}
 	c.Auth = Auth{Mode: AuthOwner, PublicURL: "http://" + c.Previews.EdgeListen}
@@ -173,6 +326,26 @@ func Defaults(state string) Config {
 		GitHub: &GitHub{AuthFile: filepath.Join(provider, "github.json")},
 	}
 	return c
+}
+
+// RuntimeKind is the effective runtime kind: runtime.kind, or sbx when the
+// file does not say.
+func (c Config) RuntimeKind() string {
+	if c.Runtime.Kind == "" {
+		return RuntimeSBX
+	}
+	return c.Runtime.Kind
+}
+
+// GatewayMode is how bindings' gateways are listened for, derived from the
+// kind rather than configured: the sbx shapes keep their per-binding
+// loopback listeners (the shared gateway is not switched on there in this
+// plan), and Kubernetes has no per-binding ports, so it is always shared.
+func (c Config) GatewayMode() string {
+	if c.RuntimeKind() == RuntimeKubernetes {
+		return GatewayShared
+	}
+	return GatewayLoopback
 }
 
 // SBXSocketPath is the longest Unix socket sbx binds inside its namespace
@@ -193,6 +366,83 @@ func (c Config) OwnerTokenFile() string {
 	return filepath.Join(c.AppState(), "endpoint.json")
 }
 
+// Transport URLs: what each service listens on and what its clients dial.
+// Each is the file's value or the sbx-shape default named in Services.
+func (c Config) PolicyListen() string {
+	return first(c.Services.Policy.Listen, "unix://"+c.PolicySocket())
+}
+func (c Config) PolicyAddress() string {
+	return first(c.Services.Policy.Address, unixOnly(c.Services.Policy.Listen), "unix://"+c.PolicySocket())
+}
+func (c Config) RunnerListen() string {
+	return first(c.Services.Runner.Listen, "unix://"+c.RunnerSocket())
+}
+func (c Config) RunnerAddress() string {
+	return first(c.Services.Runner.Address, unixOnly(c.Services.Runner.Listen), "unix://"+c.RunnerSocket())
+}
+func (c Config) ChatListen() string {
+	return first(c.Services.Chat.Listen, "http://"+c.Chat.Listen)
+}
+func (c Config) ChatAddress() string {
+	return first(c.Services.Chat.Address, httpOnly(c.Services.Chat.Listen), "http://"+c.Chat.Listen)
+}
+
+// RunnerPreviewListen and RunnerPreviewAddress are the runner's shared
+// preview server and the address the chat dials it at
+// (services.runner.previews), both "" when the file sets none: the sbx
+// shapes' per-publication loopback listeners.
+func (c Config) RunnerPreviewListen() string  { return c.Services.Runner.Previews.Listen }
+func (c Config) RunnerPreviewAddress() string { return c.Services.Runner.Previews.Address }
+
+// TransportTLS is the tls section as the transport package takes it, nil
+// when the file has none.
+func (c Config) TransportTLS() *transport.TLS {
+	if c.TLS == nil {
+		return nil
+	}
+	return &transport.TLS{CAFile: c.TLS.CAFile, CertFile: c.TLS.CertFile, KeyFile: c.TLS.KeyFile}
+}
+
+// UsesTLS reports whether any listener or address is tls://.
+func (c Config) UsesTLS() bool {
+	for _, u := range []string{c.PolicyListen(), c.PolicyAddress(), c.RunnerListen(), c.RunnerAddress(), c.ChatListen(), c.ChatAddress(), c.RunnerPreviewListen(), c.RunnerPreviewAddress()} {
+		if transport.IsTLS(u) {
+			return true
+		}
+	}
+	return false
+}
+
+func first(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+func unixOnly(u string) string {
+	if strings.HasPrefix(u, "unix://") {
+		return u
+	}
+	return ""
+}
+func httpOnly(u string) string {
+	if strings.HasPrefix(u, "http://") {
+		return u
+	}
+	return ""
+}
+
+// HostOf is the host:port of an http:// or tls:// URL, "" for anything else.
+func HostOf(rawurl string) string {
+	u, err := url.Parse(rawurl)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "tls") {
+		return ""
+	}
+	return u.Host
+}
+
 // PreviewScheme is the URL scheme approved bindings receive.
 func (c Config) PreviewScheme() string {
 	if c.Previews.Mode == PreviewPublic {
@@ -206,7 +456,7 @@ func (c Config) GitHubMode() string {
 	switch {
 	case c.Providers.GitHub == nil:
 		return ""
-	case c.Providers.GitHub.AuthFile != "":
+	case c.Providers.GitHub.AuthFile != "" || c.Providers.GitHub.Secret != "":
 		return "user"
 	case c.Providers.GitHub.AppID != 0:
 		return "app"
@@ -263,12 +513,40 @@ func Parse(raw []byte) (Config, error) {
 	}
 	c := Defaults(file.Paths.State)
 	merge(&c, file)
+	if c.RuntimeKind() == RuntimeKubernetes {
+		if file.SBX != (SBX{}) {
+			return c, errors.New("sbx.* is only used with runtime.kind \"sbx\"")
+		}
+		// The file-backed provider defaults are the sbx shapes'; here a
+		// provider is configured only by naming its Secret.
+		if file.Providers.Codex == nil {
+			c.Providers.Codex = nil
+		}
+		if file.Providers.Claude == nil {
+			c.Providers.Claude = nil
+		}
+		if file.Providers.GitHub == nil {
+			c.Providers.GitHub = nil
+		}
+	}
 	// A provider set to JSON null is removed: the pointer stays nil in file,
 	// so explicit nulls are read separately and hide that integration.
 	var nulls struct {
 		Providers map[string]json.RawMessage `json:"providers"`
 	}
 	_ = json.Unmarshal(raw, &nulls)
+	// warmSpares is the one integer whose zero is a setting (no spare
+	// sandbox), which merge cannot tell from unset; an explicit value is
+	// read separately so 0 survives.
+	var explicit struct {
+		Sandboxes struct {
+			WarmSpares *int `json:"warmSpares"`
+		} `json:"sandboxes"`
+	}
+	_ = json.Unmarshal(raw, &explicit)
+	if explicit.Sandboxes.WarmSpares != nil {
+		c.Sandboxes.WarmSpares = *explicit.Sandboxes.WarmSpares
+	}
 	for name, value := range nulls.Providers {
 		if strings.TrimSpace(string(value)) != "null" {
 			continue
@@ -289,6 +567,26 @@ func Parse(raw []byte) (Config, error) {
 
 // merge copies every set field of file over c.
 func merge(c *Config, file Config) {
+	setString(&c.Runtime.Kind, file.Runtime.Kind)
+	if file.Kubernetes != nil {
+		k := *file.Kubernetes
+		if k.WorkspaceSizeGi == 0 {
+			k.WorkspaceSizeGi = 20
+		}
+		if k.GatewayService == "" {
+			k.GatewayService = "warden-gateway"
+		}
+		if k.GatewayPort == 0 {
+			k.GatewayPort = 7000
+		}
+		if k.TrustConfigMap == "" {
+			k.TrustConfigMap = "warden-guest-trust"
+		}
+		if k.GatewayCAMaxAgeDays == 0 {
+			k.GatewayCAMaxAgeDays = 365
+		}
+		c.Kubernetes = &k
+	}
 	setString(&c.Paths.WebAssets, file.Paths.WebAssets)
 	setString(&c.Paths.GitHubCatalog, file.Paths.GitHubCatalog)
 	setString(&c.Paths.SandboxPolicyTemplate, file.Paths.SandboxPolicyTemplate)
@@ -300,12 +598,32 @@ func merge(c *Config, file Config) {
 	setString(&c.Runtimes.Codex, file.Runtimes.Codex)
 	setString(&c.Runtimes.Claude, file.Runtimes.Claude)
 	setInt(&c.Sandboxes.MemoryMB, file.Sandboxes.MemoryMB)
+	setInt(&c.Sandboxes.CPUMillis, file.Sandboxes.CPUMillis)
 	setInt(&c.Sandboxes.MaxRunning, file.Sandboxes.MaxRunning)
 	setInt(&c.Sandboxes.WarmSpares, file.Sandboxes.WarmSpares)
 	setInt(&c.Sandboxes.StopAfterIdleMinutes, file.Sandboxes.StopAfterIdleMinutes)
 	setInt(&c.Sandboxes.KeepStopped, file.Sandboxes.KeepStopped)
 	setString(&c.Sandboxes.Egress, file.Sandboxes.Egress)
 	setString(&c.Chat.Listen, file.Chat.Listen)
+	setString(&c.Services.Policy.Listen, file.Services.Policy.Listen)
+	setString(&c.Services.Policy.Address, file.Services.Policy.Address)
+	setString(&c.Services.Runner.Listen, file.Services.Runner.Listen)
+	setString(&c.Services.Runner.Address, file.Services.Runner.Address)
+	setString(&c.Services.Runner.Previews.Listen, file.Services.Runner.Previews.Listen)
+	setString(&c.Services.Runner.Previews.Address, file.Services.Runner.Previews.Address)
+	setString(&c.Services.Chat.Listen, file.Services.Chat.Listen)
+	setString(&c.Services.Chat.Address, file.Services.Chat.Address)
+	if file.Chat.Listen == "" {
+		// A loopback services.chat.listen alone also sets chat.listen, so
+		// the two never disagree unless the file says both.
+		if host := HostOf(httpOnly(file.Services.Chat.Listen)); host != "" {
+			c.Chat.Listen = host
+		}
+	}
+	if file.TLS != nil {
+		t := *file.TLS
+		c.TLS = &t
+	}
 	setString(&c.Previews.Mode, file.Previews.Mode)
 	setString(&c.Previews.HostSuffix, file.Previews.HostSuffix)
 	setString(&c.Previews.EdgeListen, file.Previews.EdgeListen)
@@ -357,21 +675,35 @@ func (c Config) Validate() error {
 	if c.Paths.State == "" || !filepath.IsAbs(c.Paths.State) {
 		return errors.New("paths.state must be an absolute path")
 	}
-	if len(c.PolicySocket()) > 100 {
+	if err := c.validateKind(); err != nil {
+		return err
+	}
+	sbx := c.RuntimeKind() == RuntimeSBX
+	// The Unix socket and loopback rules belong to the one-host shapes: on
+	// Kubernetes the services dial each other over tls:// and the edge port
+	// reaches the operator through a port-forward.
+	if sbx && len(c.PolicySocket()) > 100 {
 		return errors.New("paths.state is too long for the private Unix sockets")
 	}
-	if len(SBXSocketPath(c.SBX.PrivateHome)) > 103 {
+	if sbx && len(SBXSocketPath(c.SBX.PrivateHome)) > 103 {
 		return errors.New("sbx.privateHome is too long: sbx binds Unix sockets under it (keep the state directory short, e.g. ~/.warden)")
 	}
 	if err := loopback(c.Chat.Listen); err != nil {
 		return fmt.Errorf("chat.listen: %w", err)
+	}
+	if err := c.validateTransport(); err != nil {
+		return err
 	}
 	switch c.Previews.Mode {
 	case PreviewLoopback:
 		if c.Previews.HostSuffix != "localhost" {
 			return errors.New("previews.hostSuffix must be \"localhost\" in loopback mode")
 		}
-		if err := loopback(c.Previews.EdgeListen); err != nil {
+		if sbx {
+			if err := loopback(c.Previews.EdgeListen); err != nil {
+				return fmt.Errorf("previews.edgeListen: %w", err)
+			}
+		} else if _, _, err := net.SplitHostPort(c.Previews.EdgeListen); err != nil {
 			return fmt.Errorf("previews.edgeListen: %w", err)
 		}
 	case PreviewPublic:
@@ -409,6 +741,9 @@ func (c Config) Validate() error {
 		return errors.New("sbx.guestImageDigest must be sha256:<64 hex>")
 	}
 	s := c.Sandboxes
+	if s.CPUMillis < 100 || s.CPUMillis > 64000 {
+		return errors.New("sandboxes.cpuMillis must be 100–64000")
+	}
 	if s.MemoryMB < 512 || s.MemoryMB > 16384 || s.MaxRunning < 1 || s.WarmSpares < 0 || s.StopAfterIdleMinutes < 1 || s.KeepStopped < 1 {
 		return errors.New("sandboxes: memoryMB 512–16384, maxRunning ≥ 1, warmSpares ≥ 0, stopAfterIdleMinutes ≥ 1, keepStopped ≥ 1")
 	}
@@ -416,9 +751,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("sandboxes.egress must be %q or %q", EgressRestricted, EgressOpen)
 	}
 	if g := c.Providers.GitHub; g != nil {
-		user, app := g.AuthFile != "", g.AppID != 0 || g.AppSlug != "" || g.InstallationOwner != "" || g.BrokerFile != ""
+		user, app := g.AuthFile != "" || g.Secret != "", g.AppID != 0 || g.AppSlug != "" || g.InstallationOwner != "" || g.BrokerFile != ""
 		if user == app {
-			return errors.New("providers.github must be either a user authFile or a GitHub App (appID, appSlug, installationOwner, brokerFile), not both or neither")
+			return errors.New("providers.github must be either a user authFile (or secret) or a GitHub App (appID, appSlug, installationOwner, brokerFile), not both or neither")
+		}
+		if g.AuthFile != "" && g.Secret != "" {
+			return errors.New("providers.github: authFile and secret are exclusive")
 		}
 		if app && (g.AppID == 0 || g.AppSlug == "" || g.InstallationOwner == "" || g.BrokerFile == "") {
 			return errors.New("providers.github App mode requires appID, appSlug, installationOwner and brokerFile")
@@ -428,6 +766,240 @@ func (c Config) Validate() error {
 		return errors.New("providers.google.docsClient must be \"builtin\" or a file path")
 	}
 	return nil
+}
+
+// validateKind applies the rules that depend on runtime.kind: the sbx
+// section and file-backed provider logins belong to the sbx kind, the
+// kubernetes section and Secret-backed logins to the kubernetes kind.
+func (c Config) validateKind() error {
+	switch c.RuntimeKind() {
+	case RuntimeSBX:
+		if c.Kubernetes != nil {
+			return errors.New("kubernetes.* is only used with runtime.kind \"kubernetes\"")
+		}
+		for name, p := range map[string]*AuthFile{"codex": c.Providers.Codex, "claude": c.Providers.Claude} {
+			if p != nil && p.Secret != "" {
+				return fmt.Errorf("providers.%s.secret is only used with runtime.kind \"kubernetes\"; the sbx shapes use authFile", name)
+			}
+		}
+		if c.Providers.GitHub != nil && c.Providers.GitHub.Secret != "" {
+			return errors.New("providers.github.secret is only used with runtime.kind \"kubernetes\"; the sbx shapes use authFile")
+		}
+	case RuntimeKubernetes:
+		k := c.Kubernetes
+		if k == nil {
+			return errors.New("runtime.kind \"kubernetes\" requires the kubernetes section (namespace, tier, runtimeClass, guestImage, guestImageDigest)")
+		}
+		if !dnsLabel(k.Namespace) {
+			return errors.New("kubernetes.namespace must be a DNS label")
+		}
+		if k.Tier != TierKata && k.Tier != TierGVisor {
+			return fmt.Errorf("kubernetes.tier must be %q or %q", TierKata, TierGVisor)
+		}
+		if !dnsLabel(k.RuntimeClass) {
+			return errors.New("kubernetes.runtimeClass must be a DNS label")
+		}
+		if k.GuestImage == "" || strings.ContainsAny(k.GuestImage, " @\t\n") {
+			return errors.New("kubernetes.guestImage must be an image reference without a digest")
+		}
+		if !digestShape(k.GuestImageDigest) {
+			return errors.New("kubernetes.guestImageDigest must be sha256:<64 hex>")
+		}
+		if k.WorkspaceSizeGi < 1 {
+			return errors.New("kubernetes.workspaceSizeGi must be at least 1")
+		}
+		if !dnsLabel(k.GatewayService) || !dnsLabel(k.TrustConfigMap) || (k.StorageClass != "" && !dnsLabel(k.StorageClass)) {
+			return errors.New("kubernetes.gatewayService, trustConfigMap and storageClass must be DNS labels")
+		}
+		if k.GatewayPort < 1 || k.GatewayPort > 65535 {
+			return errors.New("kubernetes.gatewayPort must be a TCP port")
+		}
+		if k.GatewayCAMaxAgeDays < 0 {
+			return errors.New("kubernetes.gatewayCAMaxAgeDays must not be negative")
+		}
+		for i, t := range k.Tolerations {
+			if t.Operator != "" && t.Operator != "Equal" && t.Operator != "Exists" {
+				return fmt.Errorf("kubernetes.tolerations[%d].operator must be Equal or Exists", i)
+			}
+			if t.Effect != "" && t.Effect != "NoSchedule" && t.Effect != "PreferNoSchedule" && t.Effect != "NoExecute" {
+				return fmt.Errorf("kubernetes.tolerations[%d].effect must be NoSchedule, PreferNoSchedule or NoExecute", i)
+			}
+		}
+		for name, p := range map[string]*AuthFile{"codex": c.Providers.Codex, "claude": c.Providers.Claude} {
+			if p == nil {
+				continue
+			}
+			if p.AuthFile != "" {
+				return fmt.Errorf("providers.%s.authFile is only used with runtime.kind \"sbx\"; the kubernetes kind names a secret", name)
+			}
+			if !dnsLabel(p.Secret) {
+				return fmt.Errorf("providers.%s.secret must name a Secret", name)
+			}
+		}
+		if g := c.Providers.GitHub; g != nil {
+			if g.AuthFile != "" {
+				return errors.New("providers.github.authFile is only used with runtime.kind \"sbx\"; the kubernetes kind names a secret")
+			}
+			if g.Secret != "" && !dnsLabel(g.Secret) {
+				return errors.New("providers.github.secret must name a Secret")
+			}
+		}
+	default:
+		return fmt.Errorf("runtime.kind must be %q or %q", RuntimeSBX, RuntimeKubernetes)
+	}
+	return nil
+}
+
+// dnsLabel reports whether s is a Kubernetes object name: lower-case
+// alphanumerics and dashes, 1–63 bytes, starting and ending alphanumeric.
+func dnsLabel(s string) bool {
+	if len(s) < 1 || len(s) > 63 || s[0] == '-' || s[len(s)-1] == '-' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// validateTransport applies the URL rules: unix:// or tls:// for the policy
+// service and the runner, http:// (loopback) or tls:// for the chat, a
+// listener and its address on the same scheme, an explicit address for a
+// tls:// listener, and the tls section whenever any of them is tls://.
+func (c Config) validateTransport() error {
+	services := []struct {
+		name, listen, address string
+		schemes               []string
+	}{
+		{"policy", c.PolicyListen(), c.PolicyAddress(), []string{"unix", "tls"}},
+		{"runner", c.RunnerListen(), c.RunnerAddress(), []string{"unix", "tls"}},
+		{"chat", c.ChatListen(), c.ChatAddress(), []string{"http", "tls"}},
+	}
+	for _, s := range services {
+		listen, err := serviceURL(s.listen, s.schemes, true)
+		if err != nil {
+			return fmt.Errorf("services.%s.listen: %w", s.name, err)
+		}
+		address, err := serviceURL(s.address, s.schemes, false)
+		if err != nil {
+			return fmt.Errorf("services.%s.address: %w", s.name, err)
+		}
+		if listen != address {
+			return fmt.Errorf("services.%s: listen is %s:// but address is %s://", s.name, listen, address)
+		}
+		if listen == "tls" && c.services(s.name).Address == "" {
+			return fmt.Errorf("services.%s.address is required with a tls:// listener", s.name)
+		}
+	}
+	if HostOf(httpOnly(c.ChatListen())) != "" && HostOf(c.ChatListen()) != c.Chat.Listen {
+		return fmt.Errorf("services.chat.listen %s disagrees with chat.listen %s", c.ChatListen(), c.Chat.Listen)
+	}
+	if err := c.validatePreviewListener(); err != nil {
+		return err
+	}
+	if c.UsesTLS() {
+		if c.TLS == nil {
+			return errors.New("tls (caFile, certFile, keyFile) is required when a service listens on or dials a tls:// URL")
+		}
+		for name, path := range map[string]string{"caFile": c.TLS.CAFile, "certFile": c.TLS.CertFile, "keyFile": c.TLS.KeyFile} {
+			if !filepath.IsAbs(path) {
+				return fmt.Errorf("tls.%s must be an absolute path", name)
+			}
+		}
+	}
+	return nil
+}
+
+func (c Config) services(name string) Service {
+	switch name {
+	case "policy":
+		return c.Services.Policy
+	case "runner":
+		return c.Services.Runner.Service
+	}
+	return c.Services.Chat
+}
+
+// validatePreviewListener applies the rules of services.runner.previews:
+// listen and address are set together or not at all, both tls:// (the
+// chat dials it as https:// with its client certificate, so there is no
+// plaintext form), and the address names a host. The tls section is
+// checked with the other tls:// URLs.
+func (c Config) validatePreviewListener() error {
+	p := c.Services.Runner.Previews
+	if p.Listen == "" && p.Address == "" {
+		return nil
+	}
+	if p.Listen == "" || p.Address == "" {
+		return errors.New("services.runner.previews: listen and address are set together")
+	}
+	if _, err := serviceURL(p.Listen, []string{"tls"}, true); err != nil {
+		return fmt.Errorf("services.runner.previews.listen: %w", err)
+	}
+	if _, err := serviceURL(p.Address, []string{"tls"}, false); err != nil {
+		return fmt.Errorf("services.runner.previews.address: %w", err)
+	}
+	if _, previews, _ := net.SplitHostPort(HostOf(p.Listen)); previews != "" {
+		if _, control, _ := net.SplitHostPort(HostOf(c.RunnerListen())); control == previews {
+			return errors.New("services.runner.previews.listen must use a port other than services.runner.listen: the preview server is its own listener")
+		}
+	}
+	return nil
+}
+
+// serviceURL checks one transport URL against the allowed schemes and
+// returns its scheme. A listener may bind every interface (tls://:port);
+// an address needs a host. http:// URLs keep the loopback rule the chat
+// listener always had; unix:// paths keep the socket length limit.
+func serviceURL(rawurl string, schemes []string, listener bool) (string, error) {
+	scheme, rest, ok := strings.Cut(rawurl, "://")
+	if !ok || !contains(schemes, scheme) {
+		return "", fmt.Errorf("%q must be a %s URL", rawurl, strings.Join(schemes, ":// or ")+"://")
+	}
+	switch scheme {
+	case "unix":
+		if !strings.HasPrefix(rest, "/") {
+			return "", fmt.Errorf("%q: a unix:// URL needs an absolute socket path", rawurl)
+		}
+		if len(rest) > 100 {
+			return "", fmt.Errorf("%q: socket path too long for a private Unix socket", rawurl)
+		}
+	case "http":
+		u, err := url.Parse(rawurl)
+		if err != nil || u.Path != "" || u.RawQuery != "" || u.User != nil || u.Fragment != "" {
+			return "", fmt.Errorf("%q must be http://<loopback>:<port>", rawurl)
+		}
+		if err := loopback(u.Host); err != nil {
+			return "", fmt.Errorf("%q: %w", rawurl, err)
+		}
+	case "tls":
+		if strings.ContainsAny(rest, "/?#@") {
+			return "", fmt.Errorf("%q: a tls:// URL is host:port only", rawurl)
+		}
+		host, port, err := net.SplitHostPort(rest)
+		if err != nil {
+			return "", fmt.Errorf("%q: %w", rawurl, err)
+		}
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return "", fmt.Errorf("%q: port must be 1-65535", rawurl)
+		}
+		if host == "" && !listener {
+			return "", fmt.Errorf("%q: an address needs a host", rawurl)
+		}
+	}
+	return scheme, nil
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func loopback(addr string) error {
