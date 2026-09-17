@@ -28,6 +28,12 @@ identifiers were kept stable). Grep for the right-hand column.
 | **edge** | `warden edge` (`edgesvc`), `chat/internal/edge` — sign-in, preview hosts, ingress |
 | **guest image** | `deploy/guest/`, `release.GuestImage*`, config `sbx.guestImage` |
 | **egress mode** restricted / open | `policy/egress.go`, `sharing/egress_set`, `<state>/policy/egress.json` overrides `warden.json` |
+| **Kubernetes shape** (the third install, beside Mac and OVH) | config `runtime.kind: kubernetes`, `config.RuntimeKubernetes`; chart `deploy/helm/warden`; drivers `sandbox/kube`, `policy/kube` |
+| **tier** (isolation boundary of a sandbox pod: `kata` or `gvisor`) | config `kubernetes.tier`, `config.TierKata`/`TierGVisor`; chart `runtime.tier`; the RuntimeClass `kubernetes.runtimeClass` |
+| **canary** (two throwaway pods proving NetworkPolicy is enforced) | `policy/kube/canary.go` (`CanaryOptions`, `runCanaries`), pods labelled `warden.monaddle.com/canary` |
+| **cluster facts** (what the policy service reads back about the cluster before trusting it) | `policy/kube/clusterfacts.go`, `policy/kube/inspector.go` |
+| **trust bundle** (system CAs plus the gateway CA, mounted into every sandbox) | `policy/kube/trust.go` (`TrustPublisher`, `TrustBundleKey`), ConfigMap `warden-guest-trust` (`kubernetes.trustConfigMap`) |
+| **shared gateway** (one credentialed egress listener for every sandbox) | `policy/sharedgateway.go` (`SharedGateway`), Service `warden-gateway`, config `kubernetes.gatewayService`/`gatewayPort`, `config.GatewayShared` |
 
 ## Processes and layout
 
@@ -43,13 +49,23 @@ four services as subcommands of itself; `warden install|doctor|login|open|chat
 | edge | `warden edge` | `chat/internal/services/edgesvc`, `chat/internal/edge` | authentication (owner cookie / Google), preview hostnames, public ingress |
 
 Shared: `chat/internal/config` (the one `warden.json` schema; appendix of
-[warden-local-deployments-plan.md](warden-local-deployments-plan.md)),
+[warden-local-deployments-plan.md](warden-local-deployments-plan.md) and
+appendix A of [warden-kubernetes-plan.md](warden-kubernetes-plan.md)),
 `chat/internal/release` (pinned runtime versions, guest image, OAuth client
 IDs), `chat/internal/handshake` (version check between services),
-`chat/internal/services` (what the four share).
+`chat/internal/services` (what the four share), `chat/internal/transport`
+(`unix://` and mutual-TLS `tls://` listeners and dials between them),
+`chat/internal/kube` (the minimal Kubernetes API client: in-cluster or
+kubeconfig, typed REST, watch, exec, logs).
 
 State dir (`~/.warden` locally): `policy/ runner/ app/ edge/ provider/ sbx/
 runtimes/ bin/` (`chat/cmd/warden/state.go`).
+
+Kubernetes shape (`runtime.kind: kubernetes`): the same four services as
+Deployments over `tls://`, state under `/var/lib/warden` on one PVC each,
+sandboxes as pods in `kubernetes.namespace` with a workspace PVC; installed
+by the chart `deploy/helm/warden`, never by `warden install`
+([warden-kubernetes.md](warden-kubernetes.md)).
 
 Legacy macOS-VM stack (pre-SBX, still in tree): `warden` (Python launcher),
 `host/` (control plane + dashboard), `proxy/` (Linux inspection VM), `native/`
@@ -67,7 +83,7 @@ Legacy macOS-VM stack (pre-SBX, still in tree): `warden` (Python launcher),
 | Workspace panel: status, Stop / Archive / Delete, sibling chats, documents, repositories, PRs, previews, access history | `chats/environments.go` | `GET environments`, `environments/{id}/stop|archive|delete`, `sharing/history` | `WorkspacePanel.tsx` | `chats/engine_test.go`, `chats/sharing_test.go` | [warden-environments-plan](warden-environments-plan.md) § Workspace panel |
 | Sandbox lifecycle (create from template, clone, keep-alive, idle stop, remove) | `sandbox/managed.go`, `sandbox/runtime.go` (`RuntimeDriver` = the only sbx adapter), `sandbox/lock.go` | runner protocol `sandbox/client.go` | | `sandbox/managed_test.go`, `worker_test.go` | [sbx-integration-plan](sbx-integration-plan.md), [stop-status-plan](stop-status-plan.md) |
 | Spare (warm) sandboxes | `sandbox/pool.go` | | | `sandbox/pool_test.go` | [warden-spare-sandbox-plan](warden-spare-sandbox-plan.md) |
-| Sandbox memory / CPU sizing | `sandbox/runtime.go` `Create` (`--cpus 1 --memory`), config `sandboxes.memoryMB` | | | | |
+| Sandbox memory / CPU sizing | `sandbox/runtime.go` `Create` (`--cpus 1 --memory`), config `sandboxes.memoryMB`; on Kubernetes also `sandboxes.cpuMillis` (`runnersvc/main.go` `kubernetesOptions`) | | | | |
 | Host resource stats (runner's own host) | `hoststats/`, surfaced in `sandbox.Response.Stats` / `pool.go` | `chats/{id}/runtime` (status) | | | |
 | Previews: bind a port, loopback `*.localhost` or public hostnames, unpublish; on Kubernetes the runner's shared mTLS preview server (config `services.runner.previews.{listen,address}`, chart `services.runner.previewPort`) | `sandbox/preview.go`, `sandbox/ports.go`, `chats/ports.go`, `chats/preview.go`, `runnersvc/main.go`, `deploy/helm/warden/templates/{services,networkpolicies}.yaml` | `GET ports`, `ports/{id}/revoke`, `ports/{id}/proxy/*`; edge `/auth/preview`; runner `https://warden-runner:7446/{publicationID}/*` | `Previews.tsx`, `WorkspacePanel.tsx` | `sandbox/preview_shared_test.go`, `chats/ports_test.go` | [warden-public-previews-plan](warden-public-previews-plan.md), [warden-kubernetes-plan](warden-kubernetes-plan.md) § decisions 5, 10 |
 | Agent tools: `preview_attach`, `sandbox_bind_port`, `attach_image` | `chats/preview.go`, `chats/images.go` | MCP server `warden` in `sandbox/runtime.go` / `agent/claude.go` | | | |
@@ -83,8 +99,16 @@ Legacy macOS-VM stack (pre-SBX, still in tree): `warden` (Python launcher),
 | Provider logins (Codex / Claude / Google / GitHub device flow) | `login/github.go`, `cmd/warden/login.go`, `cmd/warden/github_login.go`, `sandbox/openai.go`, `policy/oauth.go`, `policy/credentials.go` | | `warden login` | | [warden-local-deployments-plan](warden-local-deployments-plan.md) |
 | Local install: `warden install|doctor|start|open|stop|status|uninstall`, private sbx namespace, runtimes layout, popups | `cmd/warden/*.go` (`install.go`, `doctor.go`, `sbx.go`, `runtimes.go`, `notify.go`, `service.go`), `hostinfo/` | | | `cmd/warden/*_test.go` | [warden-local-install](warden-local-install.md), [warden-local-deployments-plan](warden-local-deployments-plan.md) |
 | Terminal client `warden chat` (TUI), `chat list|new|send --wait|approve` | `tui/` | same HTTP API | `tui/app.go`, `tui/follow.go` | `tui/*_test.go` | |
-| Releases: version handshake, pinned runtimes, guest image, OAuth clients | `release/release.go`, `handshake/` | | | | `scripts/release.sh`, `scripts/build-guest-image-in-sbx.sh`, [warden-guest-image-plan](warden-guest-image-plan.md) |
+| Releases: version handshake, pinned runtimes, guest image, OAuth clients; artefacts = tarballs, server image, Helm chart (`oci://ghcr.io/monaddle-too/charts/warden`, version = tag without `v`) | `release/release.go`, `handshake/`; `.github/workflows/release.yml`, `.github/workflows/guest-image.yml`, `scripts/release.sh` (`--chart`, `--publish`), `scripts/package-chart.sh` | | | | `scripts/build-guest-image-in-sbx.sh`, [warden-guest-image-plan](warden-guest-image-plan.md), [warden-kubernetes-plan](warden-kubernetes-plan.md) § decision 17 |
 | Deployment (OVH compose, Caddy, systemd; local `deploy-local.sh`) | `deploy/chat/*`, `deploy/guest/*` | | | | `deploy/chat/README.md`, [ovh-html-demo-plan](ovh-html-demo-plan.md) |
+| Kubernetes shape: Helm chart (four Deployments over mTLS, hardened sandbox namespace, admission policy, NetworkPolicies, quota, TLS bootstrap Job or cert-manager, Ingress), Lima/k3s dev loop, operator guide | `deploy/helm/warden/` (`values.yaml`, `templates/_helpers.tpl` renders `warden.json`), `deploy/k8s/dev/{lima.yaml,values.yaml}`, `scripts/k8s-dev.sh` | | | `deploy/helm/warden/test.sh` (goldens in `testdata/`), `config/helm_test.go` | [warden-kubernetes](warden-kubernetes.md), [warden-kubernetes-plan](warden-kubernetes-plan.md) |
+| Kubernetes config: `runtime.kind`, `kubernetes.*` (`namespace`, `tier`, `runtimeClass`, `guestImage`, `guestImageDigest`, `storageClass`, `workspaceSizeGi`, `gatewayService`, `gatewayPort`, `trustConfigMap`, `nodeSelector`, `tolerations`), `services.{policy,runner,chat}.{listen,address}` and `services.runner.previews`, `tls.{caFile,certFile,keyFile}`, `providers.<p>.secret`, `sandboxes.cpuMillis` | `config/config.go` (`Kubernetes`, `Services`, `TLS`, `RuntimeKind`, `GatewayMode`, validation by kind) | | | `config/config_test.go`, `config/helm_test.go` | [warden-kubernetes-plan](warden-kubernetes-plan.md) appendix A |
+| Service transport: `unix://` sockets or mutual TLS `tls://` (identity = certificate CN); `warden tls bootstrap` issues the deployment CA and the four certificates | `transport/transport.go`, `transport/ca.go`, `cmd/warden/tls.go` | | chart `templates/tls-bootstrap.yaml` | `transport/transport_test.go`, `cmd/warden/tls_test.go` | [warden-kubernetes-plan](warden-kubernetes-plan.md) § decision 5 |
+| Kubernetes runtime driver: sandbox pods with a workspace PVC, stop/resume, fork by clone or copy, exec, reconcile by label; `warden runner --kubeconfig` for development | `sandbox/kube/driver.go`, `sandbox/kube/spec.go`, `sandbox/kube/exec.go`, `runnersvc/main.go` `runtimeDriver` | runner protocol unchanged | | `sandbox/kube/driver_test.go`, `sandbox/kube/live_test.go` (needs a cluster) | [warden-kubernetes-plan](warden-kubernetes-plan.md) § work item 4 |
+| Kubernetes enforcement: inspector (cluster facts, per-pod facts, egress by label), canaries, trust-bundle publisher, Secret credential store; `warden policy --kubeconfig` / `--kube-namespace` for development | `policy/kube/inspector.go`, `policy/kube/clusterfacts.go`, `policy/kube/canary.go`, `policy/kube/refresh.go`, `policy/kube/trust.go`, `policy/kube/secretstore.go`, `policy/kube/labels.go`, `policysvc/main.go` | | chart `templates/sandbox-{namespace,networkpolicies,admission,quota}.yaml`, `templates/rbac.yaml` | `policy/kube/*_test.go`, `policy/kube/live_test.go` (needs a cluster) | [warden-kubernetes-plan](warden-kubernetes-plan.md) § work item 5, decisions 9, 11, 12 |
+| Shared gateway: one egress listener for every binding, credential in the proxy URL, 407 challenge | `policy/sharedgateway.go`, `policy/gateway.go` (`BindingGateway`), `config.GatewayMode` | Service `warden-gateway`; `Proxy-Authorization: Basic bindingID:capability` | | `policy/sharedgateway_test.go` | [warden-kubernetes-plan](warden-kubernetes-plan.md) § decision 4 |
+| Edge-minted owner capability (owner mode over a `tls://` upstream: the edge mints, persists and logs the launch URL) | `edge/capability.go`, `edgesvc/main.go` | `/auth/*` unchanged | | `edge/capability_test.go` | [warden-kubernetes-plan](warden-kubernetes-plan.md) § step 6 |
+| Guest base image for Kubernetes sandboxes (no SBX template; pinned by platform manifest digest) | `deploy/guest/Dockerfile.base`, `deploy/guest/build-base.sh`, `.github/workflows/guest-image.yml` (`warden-guest-base`) | | chart `guestImage.{repository,digest}` | | [warden-kubernetes-plan](warden-kubernetes-plan.md) § work item 6 |
 | Audit events / SIEM export | `policy/audit.go`, `policy/redact.go`, `policy/retention.go`, `schemas/audit-event.schema.json` | | | | [siem](siem.md) |
 | Untrusted image normalisation | `imageguard/` | | | `imageguard/*_test.go` | |
 
@@ -112,6 +136,7 @@ egress, egress.finish, authorize, active, event`.
 Per-feature plans are `docs/*-plan.md`; the plan that is currently the
 mainline's record of progress is
 [warden-local-deployments-plan.md](warden-local-deployments-plan.md). The
-Kubernetes runtime direction is [warden-kubernetes-plan.md](warden-kubernetes-plan.md)
-(this branch; the driver lands in `chat/internal/sandbox/kube` from `k8s/track-a`). Architecture and security scope:
+Kubernetes shape: design and progress in
+[warden-kubernetes-plan.md](warden-kubernetes-plan.md), operator guide
+[warden-kubernetes.md](warden-kubernetes.md). Architecture and security scope:
 [architecture.md](architecture.md). Local install: [warden-local-install.md](warden-local-install.md).
