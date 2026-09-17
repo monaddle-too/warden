@@ -3,7 +3,9 @@ package edgesvc
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"warden/chat/internal/config"
@@ -33,19 +35,43 @@ func loadEdgeConfig(path string) (edge.Config, error) {
 		if err != nil {
 			return edge.Config{}, errors.New(path + ": " + err.Error())
 		}
-		return edgeConfig(cfg), nil
+		c := edgeConfig(cfg)
+		return c, validateListen(c.Listen, cfg.RuntimeKind())
 	}
 	var c edge.Config
 	if err = json.Unmarshal(b, &c); err != nil {
 		return edge.Config{}, err
 	}
-	return c, nil
+	return c, validateListen(c.Listen, config.RuntimeSBX)
+}
+
+// validateListen applies the listener rule of the shape: on the one-host
+// shapes (and the original edge JSON, which is OVH's) the edge binds a
+// loopback or private address, never a public interface; on Kubernetes the
+// chart binds every interface of the pod (0.0.0.0:<port>), because what the
+// pod exposes is the Service's and the NetworkPolicy's business.
+func validateListen(listen, kind string) error {
+	host, _, err := net.SplitHostPort(listen)
+	ip := net.ParseIP(host)
+	if err != nil || ip == nil {
+		return errors.New("edge listener must be an IP address and port")
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || (kind == config.RuntimeKubernetes && ip.IsUnspecified()) {
+		return nil
+	}
+	if kind == config.RuntimeKubernetes {
+		return errors.New("edge listener must be 0.0.0.0, a private or a loopback IP")
+	}
+	return errors.New("edge listener must be a private or loopback IP")
 }
 
 // edgeConfig maps warden.json onto the edge's settings: previews.*, auth.*,
 // the chat's address (services.chat.address, http://<chat.listen> unless the
 // file says tls://, in which case the tls section is the edge's material)
-// and the owner capability file derived from paths.state.
+// and the owner capability file: the chat's, under paths.state/app, which
+// the edge reads over the loopback upstream; the edge's own, under
+// paths.state/edge, over tls://, where the chat writes none and the edge
+// mints the capability itself in owner mode.
 func edgeConfig(cfg config.Config) edge.Config {
 	c := edge.Config{
 		Mode:           cfg.Auth.Mode,
@@ -58,6 +84,7 @@ func edgeConfig(cfg config.Config) edge.Config {
 	}
 	if transport.IsTLS(c.Upstream) {
 		c.UpstreamTLS = cfg.TransportTLS()
+		c.OwnerTokenFile = filepath.Join(cfg.EdgeState(), "endpoint.json")
 	}
 	if g := cfg.Auth.Google; g != nil && cfg.Auth.Mode == config.AuthGoogle {
 		c.ClientID = g.SignInClientID

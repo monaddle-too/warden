@@ -3,11 +3,9 @@ package edgesvc
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -36,13 +34,18 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	host, _, err := net.SplitHostPort(c.Listen)
-	if err != nil || net.ParseIP(host) == nil || (!net.ParseIP(host).IsLoopback() && !net.ParseIP(host).IsPrivate()) {
-		return errors.New("edge listener must be a private or loopback IP")
-	}
 	handler, err := edge.New(c)
 	if err != nil {
 		return err
+	}
+	// In owner mode over a tls:// upstream the edge holds the owner
+	// capability (docs/warden-kubernetes-plan.md, step 6): a fresh one at
+	// every start, as the chat rotates its own, kept in the edge's state
+	// directory and announced in the log, the one place it can be read from.
+	if handler.MintsOwnerCapability() {
+		if _, err = handler.RotateOwnerCapability(time.Now()); err != nil {
+			return err
+		}
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
