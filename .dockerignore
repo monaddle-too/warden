@@ -1,0 +1,6 @@
+# Build context for deploy/chat/Dockerfile: only what it COPYs.
+*
+!config/policy.template.json
+!vendor
+!dist
+!chat/web/dist
