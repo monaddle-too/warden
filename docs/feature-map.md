@@ -112,6 +112,6 @@ egress, egress.finish, authorize, active, event`.
 Per-feature plans are `docs/*-plan.md`; the plan that is currently the
 mainline's record of progress is
 [warden-local-deployments-plan.md](warden-local-deployments-plan.md). The
-Kubernetes runtime direction is `docs/warden-kubernetes-plan.md` on branch
-`plan/warden-kubernetes` (not on this branch yet). Architecture and security scope:
+Kubernetes runtime direction is [warden-kubernetes-plan.md](warden-kubernetes-plan.md)
+(this branch; the driver lands in `chat/internal/sandbox/kube` from `k8s/track-a`). Architecture and security scope:
 [architecture.md](architecture.md). Local install: [warden-local-install.md](warden-local-install.md).
