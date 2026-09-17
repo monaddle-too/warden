@@ -51,8 +51,9 @@ runtime:
   # Create the RuntimeClass for the selected tier. Off by default: clusters
   # usually own their RuntimeClasses (kata-deploy, GKE Sandbox, the dev VM).
   createRuntimeClasses: false
-  # Pod overhead the RuntimeClass charges per sandbox pod, counted by the
-  # sandbox ResourceQuota on top of the container limits. Set to the
+  # Pod overhead the RuntimeClass charges per sandbox pod, which the sandbox
+  # ResourceQuota must allow on top of the container limits; also written
+  # into the RuntimeClass when the chart creates it. Set it to the
   # cluster's kata-qemu overhead on the kata tier (typically 160Mi, 250m).
   overhead:
     memoryMi: 0
@@ -237,10 +238,13 @@ tls:
     # issuerRef).
     caDuration: 87600h
     caRenewBefore: 8760h
-  # Without cert-manager: a pre-install Job runs `warden tls bootstrap` from
-  # the server image and stores the four Secrets. It does nothing when all
-  # four already exist and fails when only some do (they must share a CA:
-  # delete all four to re-issue).
+  # Without cert-manager: a pre-install and pre-upgrade hook Job runs
+  # `warden tls bootstrap` from the server image and stores the four
+  # Secrets. It does nothing when all four already exist and fails when
+  # only some do (they must share a CA: delete all four to re-issue). The
+  # Secrets are not release objects and survive uninstall.
+  # With neither option the four Secrets must already exist (an operator
+  # CA): <identity>-tls with ca.crt, tls.crt and tls.key, CN = identity.
   bootstrap: false
   bootstrapJob:
     # The image that stores the generated material as Secrets: any image
