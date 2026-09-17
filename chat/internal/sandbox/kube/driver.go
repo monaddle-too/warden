@@ -366,8 +366,10 @@ func StartupDetail(pod *kube.Pod) string {
 		if c.Type == "PodScheduled" {
 			scheduled = c.Status == "True"
 			if !scheduled {
-				if c.Message != "" {
-					return "waiting for a node: " + strings.TrimSpace(c.Message)
+				// The scheduler's first sentence says what is missing; the
+				// rest is its preemption reasoning.
+				if message, _, _ := strings.Cut(strings.TrimSpace(c.Message), ". "); message != "" {
+					return "waiting for a node: " + strings.TrimSuffix(message, ".")
 				}
 				return "waiting for a node"
 			}

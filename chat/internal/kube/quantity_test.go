@@ -1,14 +1,17 @@
 package kube
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestParseQuantity(t *testing.T) {
 	cases := map[string]float64{
-		"109m": 0.109, "2": 2, "1.5": 1.5, "1086Mi": 1086 << 20, "1Gi": 1 << 30, "500M": 5e8, "3e3": 3000, "12E2": 1200, "0": 0, "8138104Ki": 8138104 << 10,
+		"109m": 0.109, "2": 2, "1.5": 1.5, "1086Mi": 1086 << 20, "1Gi": 1 << 30, "500M": 5e8, "3e3": 3000, "12E2": 1200, "0": 0, "8138104Ki": 8138104 << 10, "109123456n": 0.109123456, "1500u": 0.0015,
 	}
 	for in, want := range cases {
 		got, err := ParseQuantity(in)
-		if err != nil || got != want {
+		if err != nil || math.Abs(got-want) > 1e-12*math.Max(1, want) {
 			t.Errorf("ParseQuantity(%q) = %v, %v; want %v", in, got, err, want)
 		}
 	}
@@ -19,6 +22,9 @@ func TestParseQuantity(t *testing.T) {
 	}
 	if m, _ := Milli("109m"); m != 109 {
 		t.Errorf("Milli = %d", m)
+	}
+	if m, _ := Milli("109123456n"); m != 109 {
+		t.Errorf("Milli(nano) = %d", m)
 	}
 	if m, _ := Milli("2"); m != 2000 {
 		t.Errorf("Milli(2) = %d", m)

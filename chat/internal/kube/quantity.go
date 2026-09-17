@@ -8,9 +8,10 @@ import (
 )
 
 // ParseQuantity reads a Kubernetes resource quantity ("109m", "1086Mi",
-// "2", "1.5Gi", "3e3", "500M") into a float in base units: cores for CPU,
-// bytes for memory. Binary (Ki, Mi, ...) and decimal (k, M, ...) suffixes
-// and the milli suffix are accepted; anything else is an error. The
+// "2", "1.5Gi", "3e3", "500M", and the metrics server's "109123456n")
+// into a float in base units: cores for CPU, bytes for memory. Binary (Ki,
+// Mi, ...) and decimal (k, M, ...) suffixes and the nano, micro and milli
+// suffixes are accepted; anything else is an error. The
 // result is what a page displays, so a float is enough.
 func ParseQuantity(s string) (float64, error) {
 	s = strings.TrimSpace(s)
@@ -23,7 +24,7 @@ func ParseQuantity(s string) (float64, error) {
 		scale  float64
 	}{
 		{"Ki", 1 << 10}, {"Mi", 1 << 20}, {"Gi", 1 << 30}, {"Ti", 1 << 40}, {"Pi", 1 << 50}, {"Ei", 1 << 60},
-		{"m", 1e-3}, {"k", 1e3}, {"M", 1e6}, {"G", 1e9}, {"T", 1e12}, {"P", 1e15}, {"E", 1e18},
+		{"n", 1e-9}, {"u", 1e-6}, {"m", 1e-3}, {"k", 1e3}, {"M", 1e6}, {"G", 1e9}, {"T", 1e12}, {"P", 1e15}, {"E", 1e18},
 	}
 	number := s
 	for _, sfx := range suffixes {

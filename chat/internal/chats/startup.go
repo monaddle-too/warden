@@ -63,10 +63,10 @@ func (e *Engine) startupOf(id string) *Startup {
 }
 
 // followProgress copies the runner's startup reports for the chat into the
-// engine's until stop is closed or ctx ends: one progress call a second on
-// the runner's control lane, which does not wait behind the creation.
+// engine's until stop is closed or ctx ends: two progress calls a second
+// on the runner's control lane, which does not wait behind the creation.
 func (e *Engine) followProgress(ctx context.Context, c *Chat, stop <-chan struct{}) {
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {

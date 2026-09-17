@@ -976,26 +976,6 @@ rules:
 
 ---
 # Source: warden/templates/rbac.yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: warden-policy-credentials
-  namespace: warden
-  labels:
-    app.kubernetes.io/name: warden
-    app.kubernetes.io/instance: warden
-    app.kubernetes.io/version: "v0.0.0-dev"
-    app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: warden-0.0.0-dev
-    warden.monaddle.com/component: policy
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: warden-policy-credentials
-subjects:
-  - kind: ServiceAccount
-    name: warden-policy
-    namespace: warden
 # The admin console's Cluster section also lists the four Warden service
 # pods and reads their logs: the runner's read-only view of its own
 # namespace's pods.
@@ -1063,6 +1043,29 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: warden-policy
+subjects:
+  - kind: ServiceAccount
+    name: warden-policy
+    namespace: warden
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-policy-credentials
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-policy-credentials
 subjects:
   - kind: ServiceAccount
     name: warden-policy

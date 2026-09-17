@@ -20,7 +20,7 @@ func TestStartupDetail(t *testing.T) {
 		want string
 	}{
 		{&kube.Pod{Status: kube.PodStatus{Phase: "Pending"}}, "waiting for a node"},
-		{&kube.Pod{Status: kube.PodStatus{Phase: "Pending", Conditions: []kube.PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available: 3 Insufficient cpu."}}}}, "waiting for a node: 0/3 nodes are available: 3 Insufficient cpu."},
+		{&kube.Pod{Status: kube.PodStatus{Phase: "Pending", Conditions: []kube.PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available: 3 Insufficient cpu. no new claims to deallocate, preemption: 0/3 nodes are available: 3 No preemption victims found for incoming pod."}}}}, "waiting for a node: 0/3 nodes are available: 3 Insufficient cpu"},
 		{&kube.Pod{Status: kube.PodStatus{Phase: "Pending", Conditions: []kube.PodCondition{{Type: "PodScheduled", Status: "True"}}}}, "waiting for the kubelet to start the container"},
 		{waiting("ContainerCreating", ""), "starting the container"},
 		{waiting("ImagePullBackOff", "Back-off pulling image"), "waiting for the container image: Back-off pulling image"},

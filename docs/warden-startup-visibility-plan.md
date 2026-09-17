@@ -60,7 +60,7 @@ The report is not persisted anywhere: a restart clears it with the run.
 - **Chat engine.** `Engine.startup` (chat ID → `Startup{Stage, Detail,
   Since}`) is filled by `run` and merged into `Chat.Startup` by `View`, the
   way typing indicators are, so the SSE stream carries it. While `prepare`
-  is in flight a goroutine polls the runner's `progress` op every second and
+  is in flight a goroutine polls the runner's `progress` op twice a second and
   copies the runner's stage over the engine's `preparing` placeholder.
 - **Web / TUI.** The composer's status line shows the stage label and the
   detail while `chat.startup` is set; the sidebar entry and the workspace

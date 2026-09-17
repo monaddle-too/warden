@@ -154,6 +154,7 @@ subjects:
   - kind: ServiceAccount
     name: warden-policy
     namespace: {{ .Release.Namespace }}
+---
 # The admin console's Cluster section also lists the four Warden service
 # pods and reads their logs: the runner's read-only view of its own
 # namespace's pods.
