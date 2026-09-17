@@ -408,6 +408,12 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 			return fail(err)
 		}
 	}
+	// The runtime must exist before its networking can be attested: a
+	// pod-based driver recreates a stopped sandbox's pod here (under the
+	// namespace's default deny), the SBX driver opens its residency session.
+	if err = w.ensureResidencyLocked(ctx, s); err != nil {
+		return fail(err)
+	}
 	// Creation authorization is distinct from attested runtime networking.
 	if err = w.Gate.Check(ctx, grant, "runtime"); err != nil {
 		return fail(err)
@@ -1195,18 +1201,25 @@ func (w *Worker) maintainSpares(ctx context.Context) {
 // spare's report was taken at boot, a guest this worker just created or
 // adopted cannot hold publications, and an adopted spare is already
 // resident.
+// ensureResidencyLocked prepares the runtime (the SBX keep-alive session, or
+// the pod of the current generation) once per residency.
+func (w *Worker) ensureResidencyLocked(ctx context.Context, s *managedSandbox) error {
+	if s.residency != nil {
+		return nil
+	}
+	residency, err := w.Runtime.Prepare(ctx, RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source, SandboxID: s.ID, Generation: s.Generation})
+	if residency != nil {
+		s.residency = residency // owned by the sandbox now, so a later failure releases it
+	}
+	return err
+}
+
 func (w *Worker) probeGuestLocked(ctx context.Context, s *managedSandbox) (string, error) {
 	report, haveReport := s.pendingReport, s.pendingReport != ""
 	fresh := s.fresh
 	s.pendingReport, s.fresh = "", false
-	if s.residency == nil {
-		residency, err := w.Runtime.Prepare(ctx, RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source, SandboxID: s.ID, Generation: s.Generation})
-		if residency != nil {
-			s.residency = residency // owned by the sandbox now, so a later failure releases it
-		}
-		if err != nil {
-			return "", err
-		}
+	if err := w.ensureResidencyLocked(ctx, s); err != nil {
+		return "", err
 	}
 	var wg sync.WaitGroup
 	var reportErr, mappingErr error
