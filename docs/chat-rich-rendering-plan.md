@@ -42,7 +42,7 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
 |---|---|---|---|
 | 0 | Worktree, plan, add `mermaid`, `rehype-highlight`, `remark-math`, `rehype-katex`, `katex` | done | build 454.6 kB before any use |
 | 1 | Code component: syntax highlighting, language label, copy button, wrap toggle, collapse over ~40 lines | done | one `code`/`pre` override in `RichText.tsx`; highlighter lazy-loaded; theme via tokens for light and dark |
-| 2 | Mermaid fences rendered client-side | pending | `securityLevel: "strict"`, `startOnLoad: false`, lazy import; render only once the fence is closed (not while `isStreaming`); parse error → keep the code block with a small error line |
+| 2 | Mermaid fences rendered client-side | done | `securityLevel: "strict"`, `startOnLoad: false`, lazy import; render only once the fence is closed (not while `isStreaming`); parse error → keep the code block with a small error line. Strict alone was not enough (see decisions): HTML labels off and config locked via `secure`, image nodes refused before render, SVG re-filtered after |
 | 3 | Inline images in markdown | pending | `![alt](relative/path)` → fetch via `chats/{id}/file`, normalise server-side with imageguard (new `image-file`-style handling or reuse `attachImage` path), show through `ImageAttachment`-like element with lightbox; `http(s)` and `data:` sources stay as alt text |
 | 4 | Diff rendering | pending | detect unified diff in activity `detail` and in ```` ```diff ```` fences; +/- line colouring, file header, hunk collapse |
 | 5 | Math | pending | `remark-math` + `rehype-katex`, KaTeX CSS lazy-loaded, `trust: false`, `throwOnError: false` |
@@ -64,6 +64,17 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
   they cannot fetch from the network on the agent's behalf.
 - Heavy renderers are lazy chunks so the transcript's first paint does not
   pay for them.
+- Mermaid's `securityLevel: "strict"` is a floor, not the whole answer. In
+  a browser test it still emitted `<img>` from an HTML label and `<a>` from
+  `click`, and a `%%{init}%%` `themeCSS`/`fontFamily` or an image node
+  (`A@{ img: … }`) made the browser fetch *during* render, before any output
+  filter runs. So `Mermaid.tsx` keeps labels as SVG text (`htmlLabels:
+  false`), lists the theme/CSS/label config keys as `secure` so a directive
+  cannot flip them, parses first and refuses diagrams whose database has
+  image nodes, and finally strips fetching/navigating elements and
+  attributes from the SVG (`mermaid.ts` `DROP_TAGS`, `unsafeAttribute`)
+  before it is injected. A CSP on the served page would be a further
+  backstop and is out of this plan's scope.
 - Attachments live in the sandbox (the agent reads them like any file)
   rather than in a host-side store, so nothing new needs sharing policy.
 
@@ -71,3 +82,4 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
 
 - 2026-09-17: step 0 done.
 - 2026-09-17: step 1 done — "Render fenced code with highlighting, copy, wrap and collapse" (`CodeBlock.tsx`, `code.ts`; highlighter is a 167 kB lazy chunk, main chunk 454.6 → 458.8 kB).
+- 2026-09-17: step 2 done — "Render closed mermaid fences as diagrams" (`Mermaid.tsx`, `mermaid.ts`; Mermaid is lazy chunks, main chunk 458.8 → 463.6 kB; verified in a browser that no agent-controlled URL is fetched).

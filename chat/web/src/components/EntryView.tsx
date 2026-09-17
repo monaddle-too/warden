@@ -116,7 +116,11 @@ export const EntryView = memo(function EntryView({
       </div>
       <div className="message-body">
         {header}
-        <RichText text={entry.text} onFile={onFile} />
+        <RichText
+          text={entry.text}
+          streaming={entry.isStreaming}
+          onFile={onFile}
+        />
       </div>
     </article>
   );

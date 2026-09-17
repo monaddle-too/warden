@@ -404,6 +404,27 @@ dialog::backdrop {
   border-top: 1px solid var(--line);
 }
 
+/* A rendered ```mermaid fence (Mermaid.tsx) sits where the <pre> would; the
+   SVG carries its own width, capped to the block. */
+.mermaid-diagram {
+  padding: 12px 14px;
+  overflow: auto;
+  text-align: center;
+}
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.code-error {
+  margin: 0;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--danger);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 /* highlight.js scopes, mapped onto the code tokens so both schemes stay
    readable on --surface-2. */
 .hljs-comment,

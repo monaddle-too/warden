@@ -19,9 +19,13 @@ function loadHighlighter() {
 
 export function RichText({
   text,
+  streaming,
   onFile,
 }: {
   text: string;
+  /* Set while the entry is still being written; renderers that need the
+     whole fence (Mermaid) wait for it to clear. */
+  streaming?: boolean;
   onFile?: (href: string) => void;
 }) {
   const [rehypePlugins, setRehypePlugins] = useState(highlighter);
@@ -67,7 +71,9 @@ export function RichText({
           // Every fence and indented block goes through CodeBlock, which is
           // also where later renderers (Mermaid, diffs) dispatch by language.
           pre: ({ node, children }) => (
-            <CodeBlock node={node}>{children}</CodeBlock>
+            <CodeBlock node={node} streaming={streaming}>
+              {children}
+            </CodeBlock>
           ),
         }}
       >
