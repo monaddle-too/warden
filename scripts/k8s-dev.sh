@@ -75,14 +75,20 @@ cmd_build_images() {
   limactl shell "$NAME" sudo bash -c "cd '$ROOT' && deploy/guest/build-base.sh --k3s --platform linux/arm64 --tag warden-guest-base:${rev} && nerdctl tag warden-guest-base:${rev} warden-guest-base:dev"
   limactl shell "$NAME" sudo bash -c "cd '$ROOT' && nerdctl build --platform linux/arm64 -f deploy/chat/Dockerfile -t warden:${rev} -t warden:dev ."
   limactl shell "$NAME" sudo nerdctl images | grep -E "^warden(-guest-base)?\s+(${rev}|dev)\b"
+  # The chart pins the guest image by manifest digest; deploy reads it from here.
+  limactl shell "$NAME" sudo nerdctl image inspect "warden-guest-base:${rev}" --format '{{index .RepoDigests 0}}' \
+    | sed 's/.*@//' > "$ROOT/dist/guest-image-digest"
+  echo "guest image digest: $(cat "$ROOT/dist/guest-image-digest")"
 }
 
 cmd_deploy() {
   need helm
   export KUBECONFIG; KUBECONFIG="$(kubeconfig_path)"
   local rev; rev="$(git -C "$ROOT" describe --always --dirty)"
+  local digest=""; [ -f "$ROOT/dist/guest-image-digest" ] && digest="$(cat "$ROOT/dist/guest-image-digest")"
   helm upgrade --install warden "$ROOT/deploy/helm/warden" -n warden --create-namespace \
-    -f "$ROOT/deploy/k8s/dev/values.yaml" --set "image.tag=${rev}" --set "guestImage.tag=${rev}" "$@"
+    -f "$ROOT/deploy/k8s/dev/values.yaml" --set "image.tag=${rev}" \
+    ${digest:+--set "guestImage.digest=${digest}"} "$@"
 }
 
 case "${1:-}" in

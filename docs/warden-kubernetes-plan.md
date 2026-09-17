@@ -108,7 +108,7 @@ build variant.
 |---|---|---|
 | Runtime | `sbx` (Mac, OVH), `kubernetes` (this plan) | `runtime.kind` in `warden.json`; selects the driver, the inspector, the credential store and which config sections are required. |
 | Isolation tier | `kata` (microVM), `gvisor` (userspace kernel) | Explicit `kubernetes.tier`; the verifier checks the RuntimeClass handler against the tier's allowlist. There is no plain-container tier: the gVisor shim installs in one step in the dev VM, so a `runc` mode would buy nothing and would leak into support. |
-| Auth | `local` (owner sign-in without a Google client), `google` (edge with Google ID tokens and allowlist) | Existing modes, unchanged in meaning. |
+| Auth | `owner` (owner sign-in without a Google client), `google` (edge with Google ID tokens and allowlist) | Existing modes, unchanged in meaning (the code and the chart call the first one `owner`). |
 | Previews | `loopback` (`*.localhost` through a forwarded port), `public` (wildcard suffix through an Ingress) | Existing modes; loopback now means "reached through a port-forward". |
 | Egress | `restricted`, `open` | Existing `sandboxes.egress`; unchanged semantics, enforced at the gateway. |
 | Transport | `unix` (sbx shapes), `tls` (Kubernetes) | Address scheme per service; same protocol either way (decision 5). |
@@ -268,7 +268,11 @@ Isolation tiers in terms of what they promise:
    step 0 confirms the refresh under both tiers. `InstallCA` is not
    implemented by the Kubernetes driver; the interface method moves to the
    SBX driver's own preparation path (work item 2). `Copy` remains a
-   primitive for git bundles and the fork fallback.
+   primitive for git bundles and the fork fallback. The ConfigMap starts
+   empty (chart-created), so "the trust bundle is published" is part of
+   the runner's readiness: the runner creates no sandbox pod until the
+   ConfigMap holds a non-empty `ca-certificates.crt`, and the policy
+   service publishes it before it serves its control listener.
 
 10. **Previews use pod IPs; no host ports and no per-publication
     objects.** `Publish` records the guest port and generation; the
@@ -284,8 +288,10 @@ Isolation tiers in terms of what they promise:
     certificate, with the existing `/_tls/allow` ask endpoint kept for
     deployments that terminate TLS in Caddy. Loopback previews work as on
     the Mac: the edge port is forwarded to the operator's `127.0.0.1`
-    (Lima does this automatically for the dev VM, `kubectl port-forward`
-    otherwise), so `*.localhost` URLs are unchanged.
+    (`kubectl port-forward` to the edge Service, or in the dev VM an edge
+    Service of type LoadBalancer, which k3s's ServiceLB binds on the node
+    and Lima then forwards to the Mac's loopback), so `*.localhost` URLs
+    are unchanged.
 
 11. **The sandbox namespace is hardened by admission, and the verifier
     checks that the hardening is present.** Its own Namespace with Pod
@@ -297,12 +303,16 @@ Isolation tiers in terms of what they promise:
     hostPath, and only the allowed volume types (the workspace PVC, the
     trust ConfigMap, an emptyDir `/tmp`); a ResourceQuota and a LimitRange
     sized from `sandboxes.maxRunning` and `sandboxes.memoryMB`. RBAC: the
-    runner's ServiceAccount may create/get/list/watch/delete pods and PVCs
-    and create `pods/exec` in the sandbox namespace only; the policy
-    ServiceAccount may get/list/watch/patch pods (labels) and read
-    NetworkPolicies there, and read/write the provider Secrets and the
-    trust ConfigMap in the core namespace. Neither can touch the TLS
-    Secrets beyond its own.
+    runner's ServiceAccount may create/get/list/watch/delete pods and PVCs,
+    create `pods/exec` and read `pods/log` in the sandbox namespace only;
+    the policy ServiceAccount may get/list/watch/patch pods (labels),
+    create/delete pods and read `pods/log` there (the canaries of decision
+    12), read NetworkPolicies there, update/patch the trust ConfigMap
+    there, and read/write the provider Secrets in the core namespace.
+    The trust ConfigMap lives in the sandbox namespace because pods can
+    only mount ConfigMaps of their own namespace; the chart creates it
+    empty and the policy service only updates it. Neither ServiceAccount
+    can touch the TLS Secrets beyond its own.
 
 12. **Enforcement is proven by canaries and control-plane facts.** A
     cluster fact ("NetworkPolicy is enforced here") is established by two
@@ -729,7 +739,11 @@ shared gateway; Panta; provider breadth beyond what the other shapes have.
     "storageClass": "",
     "workspaceSizeGi": 20,
     "gatewayService": "warden-gateway",
-    "trustConfigMap": "warden-guest-trust"
+    "gatewayPort": 7000,
+    "trustConfigMap": "warden-guest-trust",
+    "gatewayCAMaxAgeDays": 365,
+    "nodeSelector": {},
+    "tolerations": []
   },
   "providers": {
     "codex":  { "secret": "warden-codex-login" },
@@ -750,9 +764,11 @@ shared gateway; Panta; provider breadth beyond what the other shapes have.
 | `kubernetes.guestImage` / `guestImageDigest` | required | runner (pod image), policy (`imageID` check); replaces `sbx.guestImage*` for this kind |
 | `kubernetes.storageClass` | cluster default | runner (workspace PVCs) |
 | `kubernetes.workspaceSizeGi` | 20 | runner |
-| `kubernetes.gatewayService` | `warden-gateway` | policy (advertised address in `Begin`) |
+| `kubernetes.gatewayService` / `gatewayPort` | `warden-gateway` / 7000 | policy (advertised address in `Begin`; the shared gateway listens on the port) |
+| `kubernetes.gatewayCAMaxAgeDays` | 365 | policy (CA rotation; replaces `sbx.inspectionCertMaxAgeDays` for this kind) |
+| `kubernetes.nodeSelector` / `tolerations` | none | runner (sandbox pod placement; Kata nodes are usually a pool) |
 | `kubernetes.trustConfigMap` | `warden-guest-trust` | policy (publisher), runner (pod volume) |
-| `providers.<p>.secret` | none; `authFile` for the sbx shapes | policy (Secret credential store) |
+| `providers.<p>.secret` | none; `authFile` for the sbx shapes | policy (Secret credential store). Key layout mirrors the files of the sbx shapes: codex `auth.json`; claude `claude.json`; github `github.json` (user-token mode) or `broker.json` plus `app-private-key.pem` (App mode). |
 
 `sandboxes.*`, `previews.*`, `auth.*` and `chat.*` are unchanged. `paths.*`
 keep their defaults, which the chart mounts at the same container paths as
@@ -792,7 +808,7 @@ scripts/k8s-dev.sh build-images
 helm upgrade --install warden deploy/helm/warden -f deploy/k8s/dev/values.yaml
 ```
 
-Sizing: with 16 GiB for the VM, two resident sandboxes at 1536 MiB plus one
+Sizing: with 16 GiB for the VM, two resident sandboxes at 1024 MiB (the dev values; 1536 MiB elsewhere) plus one
 spare fit beside the four service pods and the cluster components under
 either tier; Kata adds the guest kernel's memory per sandbox. The VM is
 disposable (`limactl delete warden-k8s`); all state that matters lives in
