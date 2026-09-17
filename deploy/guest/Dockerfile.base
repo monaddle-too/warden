@@ -1,0 +1,149 @@
+# Warden guest base image (warden-guest-base): a plain Ubuntu 24.04 with the
+# `agent` user, a modest tool set, the pinned agent runtimes under
+# /opt/warden and the guest trust bundle at a path a volume can replace.
+# Kubernetes sandboxes run this image directly (docs/warden-kubernetes-plan.md,
+# decisions 7, 8 and 9); the SBX variant (Dockerfile) layers the same
+# runtimes on the Docker Sandboxes template instead. Built and published for
+# linux/amd64 and linux/arm64 by .github/workflows/guest-image.yml; built
+# locally, or into a k3s node's containerd, by build-base.sh.
+#
+# Everything is fetched from its public release by version and SHA-256
+# (fetch-runtimes.sh, shared with Dockerfile; the release test in
+# chat/internal/release keeps the ARGs below equal to the runner's
+# constants), so the image is reproducible from this directory alone. The
+# manifest at /opt/warden/guest-manifest.json tells the runner what is here
+# and where, read back from the files themselves (write-manifest.sh).
+#
+# Layout the runner and the Kubernetes driver rely on:
+#   /opt/warden/runtime                   the Codex bundle (bin/codex, ...)
+#   /opt/warden/claude/claude             the Claude executable
+#   /opt/warden/trust/ca-certificates.crt the trust bundle (see below)
+#   /opt/warden/guest-manifest.json       the manifest naming all of the above
+#   /home/agent                           the agent home and working directory
+#
+# Persisted set: /home/agent is the ONLY path that survives a stop. The
+# Kubernetes driver mounts the per-sandbox PersistentVolumeClaim there;
+# everything else, including package installs and /tmp (an emptyDir), is
+# image state and is recreated with the next pod. The agent's system prompt
+# and the docs say the same.
+#
+# Trust: `update-ca-certificates` builds the system bundle from Ubuntu's CAs
+# plus the Warden gateway CA (warden-proxy.crt, public certificate only);
+# the bundle is then moved to /opt/warden/trust/ca-certificates.crt and the
+# system path /etc/ssl/certs/ca-certificates.crt becomes a symlink to it.
+# The policy service publishes the current bundle (the same system CAs plus
+# the gateway CA in force) as a ConfigMap that the runner mounts at
+# /opt/warden/trust, so a CA rotation reaches a running guest through the
+# kubelet's in-place refresh with no exec and no root; with nothing mounted
+# the image's own bundle is what the symlink resolves to and the guest works
+# against the CA it was built with. The ENV below points the clients that
+# ignore the system path (Node and the Claude executable, Python requests
+# and pip, git, curl, OpenSSL-based tools such as Codex) at the same file.
+# Running `update-ca-certificates` inside a guest replaces the symlink with
+# a regenerated file; the ENV still points at the mounted bundle, and the
+# change does not persist anyway.
+#
+# BuildKit is required (RUN --mount): docker build, docker buildx and
+# nerdctl build all use it.
+#
+# The base reference is the multi-architecture OCI index of ubuntu:24.04
+# pinned by digest (Docker Hub, 2026-09-16); buildx resolves it to the
+# platform manifest for each target (amd64
+# sha256:496754492fb28b4d3049432f2ca787449331e23fb14f0dd3fffea86bf5a93eb4,
+# arm64 sha256:11dc1ccb427f0464a2369e645454c272bb0baece7357c892ba69d313b3a332cf).
+FROM ubuntu:24.04@sha256:69cecf4bbf72d2d44a9eef1b71fb98c7fb973d78af11399deccef19beb008ad9
+
+# Set by buildx from --platform: amd64 or arm64. A plain `docker build` sets
+# it to the host architecture.
+ARG TARGETARCH
+
+# Pinned runtimes. Keep these equal to Dockerfile and to the constants in
+# chat/internal/release/release.go (TestGuestDockerfilesPinReleaseRuntimes).
+ARG CODEX_VERSION=0.154.0
+# codex-package-<target>.tar.gz from the rust-v${CODEX_VERSION} release;
+# both match the release's codex-package_SHA256SUMS.
+ARG CODEX_PACKAGE_SHA256_AMD64=fc6e3e3b85f2cf7d664520ee5c66a7fe4aa12bae7d46834f47e2f165fd0d6f78
+ARG CODEX_PACKAGE_SHA256_ARM64=97d93e11df72d3c26772db019e6ea8bb72c246500d46b98c760839f3240355e6
+ARG CLAUDE_VERSION=2.1.272
+# linux-x64 and linux-arm64 from the release's manifest.json (glibc builds).
+ARG CLAUDE_SHA256_AMD64=d81396a668eb76fbddb49a2a5841f1b5d7af96b4c1f6500ced92f2c988f5bcd4
+ARG CLAUDE_SHA256_ARM64=214a90efdd16ee0ea81132ffecced588dba394d178cc494f285ba04b5288c8de
+
+# Tool set: what the runner execs in a guest (bash, sh, sudo, git, python3,
+# coreutils, sha256sum, install, tar) and what an agent reaches for in
+# nearly every session and would otherwise install first: git and curl,
+# Python with venv and pip, jq, the archive tools, an SSH client (for
+# ssh-keygen and known_hosts; SSH egress itself is not allowed through the
+# gateway), less (git's pager), procps (ps) and tini (the PID 1 that reaps
+# the children of exec sessions). Not included, on purpose: build-essential
+# (it roughly doubles the image and native compilation is rare in chat
+# work; a session can `sudo apt-get install` it through the gateway, at the
+# cost of not persisting), Node (the Claude executable is self-contained)
+# and Docker (decision 16: no Docker inside Kubernetes guests). The Docker
+# Sandboxes template the SBX variant uses ships Docker and a broader tool
+# set; the base image is the smaller of the two by design.
+RUN set -eu; export DEBIAN_FRONTEND=noninteractive; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      bash ca-certificates curl git sudo \
+      python3 python3-pip python3-venv jq \
+      tar gzip bzip2 xz-utils unzip zip \
+      openssh-client less procps tini; \
+    rm -rf /var/lib/apt/lists/*
+
+# The agent user: uid and gid 1000, home /home/agent, passwordless sudo
+# (root in the guest is a product feature; the RuntimeClass is the
+# boundary). Ubuntu 24.04 ships an `ubuntu` user at uid 1000, which is
+# removed first so the ids are free.
+RUN set -eu; \
+    if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi; \
+    if getent group ubuntu >/dev/null; then groupdel ubuntu; fi; \
+    groupadd -g 1000 agent; \
+    useradd -m -u 1000 -g agent -s /bin/bash agent; \
+    printf 'agent ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/agent; \
+    chmod 0440 /etc/sudoers.d/agent; \
+    visudo -cf /etc/sudoers.d/agent >/dev/null
+
+# The pinned runtimes, fetched and verified by the shared script.
+RUN --mount=type=bind,source=fetch-runtimes.sh,target=/tmp/fetch-runtimes.sh \
+    sh /tmp/fetch-runtimes.sh /opt/warden/runtime /opt/warden/claude/claude
+
+# The trust bundle, as described in the header: system CAs plus the gateway
+# CA, moved to /opt/warden/trust with the system path symlinked to it.
+COPY warden-proxy.crt /usr/local/share/ca-certificates/warden-proxy.crt
+RUN set -eu; \
+    chmod 644 /usr/local/share/ca-certificates/warden-proxy.crt; \
+    update-ca-certificates >/dev/null; \
+    mkdir -p /opt/warden/trust; \
+    mv /etc/ssl/certs/ca-certificates.crt /opt/warden/trust/ca-certificates.crt; \
+    chmod 644 /opt/warden/trust/ca-certificates.crt; \
+    ln -s /opt/warden/trust/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt; \
+    test -L /etc/ssl/certs/ca-certificates.crt; \
+    grep -qF -- "$(sed -n '/BEGIN CERTIFICATE/{n;p;q;}' /usr/local/share/ca-certificates/warden-proxy.crt)" /etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_FILE=/opt/warden/trust/ca-certificates.crt \
+    SSL_CERT_DIR=/opt/warden/trust \
+    NODE_EXTRA_CA_CERTS=/opt/warden/trust/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/opt/warden/trust/ca-certificates.crt \
+    PIP_CERT=/opt/warden/trust/ca-certificates.crt \
+    GIT_SSL_CAINFO=/opt/warden/trust/ca-certificates.crt \
+    CURL_CA_BUNDLE=/opt/warden/trust/ca-certificates.crt
+
+# The manifest, read back from the files above (see write-manifest.sh for
+# the schema), and the entrypoint.
+RUN --mount=type=bind,source=write-manifest.sh,target=/tmp/write-manifest.sh \
+    sh /tmp/write-manifest.sh base /opt/warden/runtime /opt/warden/claude/claude \
+      /opt/warden/trust/ca-certificates.crt /home/agent \
+      /usr/local/share/ca-certificates/warden-proxy.crt /opt/warden/guest-manifest.json
+COPY guest-init.sh /opt/warden/bin/guest-init
+RUN set -eu; chmod 755 /opt/warden/bin/guest-init; chmod -R a+rX /opt/warden; \
+    test -x /opt/warden/runtime/bin/codex; test -x /opt/warden/claude/claude; \
+    sh -n /opt/warden/bin/guest-init
+
+ENV HOME=/home/agent \
+    LANG=C.UTF-8
+WORKDIR /home/agent
+USER agent
+# tini reaps what exec sessions leave behind; guest-init prepares a mounted
+# home. A pod spec should set `args`, not `command`, to keep both.
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/warden/bin/guest-init"]
+CMD ["sleep", "infinity"]
