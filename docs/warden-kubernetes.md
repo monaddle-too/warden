@@ -687,8 +687,9 @@ With no run active the runner stops the sandbox at once and the next
 start creates the pod at the new size; under an agent's run the chat
 takes the restarting path it uses on SBX (the tool result says the
 sandbox restarts, the run ends, the sandbox is replaced, Warden's note
-resumes the chat). The owner's panel resize under a run is refused with
-"stop the chat first" in that case. Warm spares are booted at the default
+resumes the chat). The owner's panel resize under a run stops the chat
+itself in that case, as the panel's Stop and Archive do; the chat resumes
+on its next message. Warm spares are booted at the default
 size and grown, or replaced, when a larger workspace adopts one. See
 docs/warden-workspace-resources-plan.md.
 

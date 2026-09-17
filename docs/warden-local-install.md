@@ -468,11 +468,12 @@ Changing the size of an SBX sandbox recreates it (SBX cannot change a
 sandbox's limits): the sandbox is stopped, its filesystem saved as a
 template, and a sandbox of the same name created from it at the new size,
 so `/home/agent`, the installed runtimes and the network rule are kept and
-`/tmp` is not. That takes about twenty seconds and needs the workspace's
-chats stopped first; the panel's button says so. When an agent asks and
-you approve, the tool result tells it the sandbox restarts now, its run
-ends at that turn, and once the sandbox is back Warden posts a note in
-the chat that resumes the run at the new size. On Kubernetes the same
+`/tmp` is not. That takes about twenty seconds; a chat running on the
+workspace is stopped first (as the panel's Stop and Archive do) and
+resumes on its next message. When an agent asks and you approve, the tool
+result tells it the sandbox restarts now, its run ends at that turn, and
+once the sandbox is back Warden posts a note in the chat that resumes
+the run at the new size. On Kubernetes the same
 request is applied to the running pod where the cluster's runtime allows
 (see docs/warden-kubernetes.md); where it does not, the restart above
 happens there too. CPUs are whole numbers on SBX and quarters on

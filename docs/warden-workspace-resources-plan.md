@@ -118,10 +118,12 @@ ceiling.
 7. **Only growth is agent-requestable; the owner can shrink.** An agent
    asks for more, never less (a smaller request is refused with the
    current size and a pointer to the panel). The owner sets any size
-   within the ceiling from the workspace panel's Size section (same RPC),
-   larger or smaller; on SBX that needs the workspace's chats stopped
-   first, so nothing is interrupted behind their back, and the form's
-   button says so. A Kubernetes memory decrease the kubelet refuses in
+   within the ceiling from the workspace panel's Resources section (same
+   RPC), larger or smaller; where that replaces the sandbox the
+   workspace's running chat is stopped first by the resize itself (owner
+   decision 2026-09-17: "just kill the running agent"; a chat resident
+   between turns counts as running), as the panel's Stop and Archive now
+   do too, and the form says so. A Kubernetes memory decrease the kubelet refuses in
    place falls back to a new generation (stop, create at the new size),
    which the driver already does for a stopped workspace.
 8. **A shared workspace has its size already.** `POST chats` with both
@@ -283,5 +285,18 @@ ceiling.
   guest reports 2 CPUs and MemTotal 2 GiB (a new pod, unlike an in-place
   resize); the decrease back replaces the pod and the allocation fails
   again. Decision 6 amended (per-resize fallback to the restart path);
-  `watchPod` reopens a watch the API front end reset. In-app check on GKE
-  (form, panel, agent grant) still to run.
+  `watchPod` reopens a watch the API front end reset.
+- 2026-09-17 (owner's run-through on GKE): the panel refused a resize and
+  the Stop button was disabled while a chat was "running" (resident
+  between turns); the owner's call is to end the agent instead, so Stop,
+  Archive and resize now stop the chat first (`Engine.stopChats`). A
+  deferred in-place resize (Autopilot packs nodes; the kubelet parks the
+  resize as Deferred for good) held the runner's registry for the whole
+  2-minute budget: the driver now gives it 15 s, reverts the patch and
+  answers infeasible. The start reported "Agent is running" from the
+  turn's acceptance: stages `initializing`, `sending` and `firstResponse`
+  (on every turn) fill the gap and a start over 5 s logs its stages'
+  durations. Sign-in sessions now survive an edge restart (every deploy
+  signed the owner out). The panel's provisioned CPUs are the size, not
+  the guest's `nproc`. In-app check (form, panel, agent grant) with these
+  fixes: see below.
