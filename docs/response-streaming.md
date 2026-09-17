@@ -6,6 +6,8 @@ POST requests to these exact endpoints:
 - `api.openai.com/v1/responses`
 - `api.openai.com/v1/chat/completions`
 - `chatgpt.com/backend-api/codex/responses`
+- `api.anthropic.com/v1/messages` (reached through the gateway's `/anthropic`
+  reverse route; `/v1/messages/count_tokens` is JSON only and stays buffered)
 
 Requests remain buffered for inspection and authorization. Other response types,
 error responses, and GitHub operations retain the existing buffered behavior.
