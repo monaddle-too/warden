@@ -1,8 +1,9 @@
 {{- /*
 Core namespace NetworkPolicies (plan decision 5): default deny, then one
-policy per service admitting exactly chat->runner, chat->policy,
-runner->policy, edge->chat, sandbox namespace->policy on the gateway port
-and runner->sandbox namespace, all TCP. Every service resolves its peers
+policy per service admitting exactly chat->runner (the control port and
+the preview server, decision 10), chat->policy, runner->policy,
+edge->chat, sandbox namespace->policy on the gateway port and
+runner->sandbox namespace, all TCP. Every service resolves its peers
 by Service name, so all four reach cluster DNS; the policy service and the
 runner reach the API server; the policy pod, as the deployment's only
 egress point, reaches provider hosts on 443; the edge reaches Google's
@@ -87,11 +88,15 @@ spec:
       {{- include "warden.selectorLabels" (dict "root" . "component" "runner") | nindent 6 }}
   policyTypes: [Ingress, Egress]
   ingress:
+    # Control, and the shared preview server the chat dials for every
+    # published preview.
     - from:
         {{- include "warden.peer" (dict "root" . "component" "chat") | nindent 8 }}
       ports:
         - protocol: TCP
           port: {{ int .Values.services.runner.port }}
+        - protocol: TCP
+          port: {{ int .Values.services.runner.previewPort }}
   egress:
     - to:
         {{- include "warden.peer" (dict "root" . "component" "policy") | nindent 8 }}
@@ -134,6 +139,8 @@ spec:
       ports:
         - protocol: TCP
           port: {{ int .Values.services.runner.port }}
+        - protocol: TCP
+          port: {{ int .Values.services.runner.previewPort }}
     - to:
         {{- include "warden.peer" (dict "root" . "component" "policy") | nindent 8 }}
       ports:

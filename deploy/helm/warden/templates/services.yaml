@@ -4,14 +4,16 @@ and warden.json use (warden-policy, warden-runner, warden-chat; appendix
 A). warden-gateway is the policy pod's shared gateway (decision 4): the
 policy service advertises this Service's ClusterIP to sandboxes, which
 the label-gated NetworkPolicy lets reach the policy pod on that port.
-warden-edge is what the Ingress fronts in public mode and what NOTES.txt
+warden-runner also exposes the runner's shared preview server, which the
+chat dials for every published preview (decisions 5 and 10). warden-edge
+is what the Ingress fronts in public mode and what NOTES.txt
 port-forwards in loopback mode.
 */ -}}
 {{- range $s := list
-  (dict "name" "warden-policy" "component" "policy" "portName" "control" "port" (int .Values.services.policy.port))
-  (dict "name" "warden-gateway" "component" "policy" "portName" "gateway" "port" (int .Values.gateway.port))
-  (dict "name" "warden-runner" "component" "runner" "portName" "control" "port" (int .Values.services.runner.port))
-  (dict "name" "warden-chat" "component" "chat" "portName" "control" "port" (int .Values.services.chat.port)) }}
+  (dict "name" "warden-policy" "component" "policy" "ports" (list (dict "name" "control" "port" (int .Values.services.policy.port))))
+  (dict "name" "warden-gateway" "component" "policy" "ports" (list (dict "name" "gateway" "port" (int .Values.gateway.port))))
+  (dict "name" "warden-runner" "component" "runner" "ports" (list (dict "name" "control" "port" (int .Values.services.runner.port)) (dict "name" "previews" "port" (int .Values.services.runner.previewPort))))
+  (dict "name" "warden-chat" "component" "chat" "ports" (list (dict "name" "control" "port" (int .Values.services.chat.port)))) }}
 ---
 apiVersion: v1
 kind: Service
@@ -26,10 +28,12 @@ spec:
   selector:
     {{- include "warden.selectorLabels" (dict "root" $ "component" $s.component) | nindent 4 }}
   ports:
-    - name: {{ $s.portName }}
-      port: {{ $s.port }}
-      targetPort: {{ $s.portName }}
+    {{- range $p := $s.ports }}
+    - name: {{ $p.name }}
+      port: {{ $p.port }}
+      targetPort: {{ $p.name }}
       protocol: TCP
+    {{- end }}
 {{- end }}
 ---
 apiVersion: v1

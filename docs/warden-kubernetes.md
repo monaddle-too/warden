@@ -369,7 +369,7 @@ when the two differ.
 | `previews` | `mode` (`loopback` or `public`); `hostSuffix` (public only); `ingress.enabled`, `ingress.className`, `ingress.annotations`, `ingress.host` (empty derives the app host from `auth.publicURL`), `ingress.tls.enabled`, `ingress.tls.secretName` (the certificate for the app host and `*.<hostSuffix>`). | `loopback`, `""`, `true`, `""`, `{}`, `""`, `true`, `warden-edge-public-tls` |
 | `edge` | `port` the edge listens on and the `warden-edge` Service exposes; `service.type` and `service.annotations`. | `18781`, `ClusterIP`, `{}` |
 | `gateway` | `port` of the policy service's shared gateway behind the `warden-gateway` Service. | `7000` |
-| `services` | Ports of the mutual-TLS control listeners: `policy.port`, `runner.port`, `chat.port` (rendered as `services.*` in `warden.json`). | `7443`, `7444`, `7445` |
+| `services` | Ports of the mutual-TLS control listeners: `policy.port`, `runner.port`, `chat.port` (rendered as `services.*` in `warden.json`); `runner.previewPort`, the runner's shared preview server the chat dials as `https://warden-runner:<port>/<publication ID>` (rendered as `services.runner.previews`). | `7443`, `7444`, `7445`, `7446` |
 | `storage` | `className` for every PVC (empty is the cluster default; forks clone when it supports `dataSource`); sizes of the service PVCs `policy`, `runner`, `app`, `edge`; `workspaceGi` per sandbox; `keepOnUninstall`. | `""`, `5Gi`, `5Gi`, `10Gi`, `1Gi`, `20`, `true` |
 | `secrets` | Names of the existing provider login Secrets: `codex`, `claude`, `github`. | `warden-codex-login`, `warden-claude-login`, `warden-github-login` |
 | `providers` | `codex.enabled`, `claude.enabled`, `google.enabled` and `google.docsClient` (`builtin` or a client file path inside the policy pod), `github.enabled`, `github.appID` (0 is user-token mode; otherwise `appSlug` and `installationOwner` are rendered too). A disabled provider renders as JSON `null`. | all `true`, `builtin`, `0`, `""`, `""` |
@@ -383,7 +383,9 @@ when the two differ.
 
 What the chart renders into `warden.json` from these (plan, appendix A):
 `runtime.kind: kubernetes`; `services.*` as `tls://0.0.0.0:<port>` listeners
-and `tls://warden-<svc>:<port>` addresses; `tls.*` under `/etc/warden/tls`;
+and `tls://warden-<svc>:<port>` addresses, plus `services.runner.previews`
+(the runner's preview server on `services.runner.previewPort`, the same
+two URL shapes); `tls.*` under `/etc/warden/tls`;
 `kubernetes.{namespace,tier,runtimeClass,guestImage,guestImageDigest,
 storageClass,workspaceSizeGi,gatewayService,gatewayPort,trustConfigMap,
 nodeSelector,tolerations}`; `sandboxes.*` with `egress`;
@@ -681,6 +683,10 @@ adversary has root in the guest. Compared with the SBX shapes:
 - The runner may reach every TCP port of every sandbox pod (one static
   ingress policy), where SBX published one port per approval. Only the
   runner's preview proxy is admitted, and it dials only published ports.
+  The chat reaches that proxy over mutual TLS on the runner's preview
+  port (`https://warden-runner:7446/<publication ID>/…`, the chat's
+  certificate presented, the runner admitting only `warden-chat`) where
+  the single-host shapes use a loopback listener per publication.
 
 **Stronger.**
 

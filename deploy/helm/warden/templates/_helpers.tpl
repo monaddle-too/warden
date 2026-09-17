@@ -155,7 +155,8 @@ Compose file uses.
       "sandboxPolicyTemplate" "/app/config/policy.template.json") -}}
 {{- $_ = set $cfg "services" (dict
       "policy" (dict "listen" (printf "tls://0.0.0.0:%d" (int .Values.services.policy.port)) "address" (printf "tls://warden-policy:%d" (int .Values.services.policy.port)))
-      "runner" (dict "listen" (printf "tls://0.0.0.0:%d" (int .Values.services.runner.port)) "address" (printf "tls://warden-runner:%d" (int .Values.services.runner.port)))
+      "runner" (dict "listen" (printf "tls://0.0.0.0:%d" (int .Values.services.runner.port)) "address" (printf "tls://warden-runner:%d" (int .Values.services.runner.port))
+                     "previews" (dict "listen" (printf "tls://0.0.0.0:%d" (int .Values.services.runner.previewPort)) "address" (printf "tls://warden-runner:%d" (int .Values.services.runner.previewPort))))
       "chat"   (dict "listen" (printf "tls://0.0.0.0:%d" (int .Values.services.chat.port)) "address" (printf "tls://warden-chat:%d" (int .Values.services.chat.port)))) -}}
 {{- $_ = set $cfg "tls" (dict
       "caFile" "/etc/warden/tls/ca.crt"
@@ -261,7 +262,7 @@ file gives it, and its container ports.
   (dict "name" "policy" "subcommand" "policy" "state" "policy" "token" true "grace" 30
         "ports" (list (dict "name" "gateway" "port" (int $v.gateway.port)) (dict "name" "control" "port" (int $v.services.policy.port))))
   (dict "name" "runner" "subcommand" "runner" "state" "runner" "token" true "grace" 45
-        "ports" (list (dict "name" "control" "port" (int $v.services.runner.port))))
+        "ports" (list (dict "name" "control" "port" (int $v.services.runner.port)) (dict "name" "previews" "port" (int $v.services.runner.previewPort))))
   (dict "name" "chat" "subcommand" "serve" "state" "app" "token" false "grace" 30
         "ports" (list (dict "name" "control" "port" (int $v.services.chat.port))))
   (dict "name" "edge" "subcommand" "edge" "state" "edge" "token" false "grace" 30

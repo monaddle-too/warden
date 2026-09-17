@@ -36,6 +36,11 @@ func TestHelmChartRendersKubernetesConfig(t *testing.T) {
 			t.Errorf("services.%s = %+v, want tls:// listener and address", name, s)
 		}
 	}
+	// The runner's shared preview server (decisions 5 and 10) on its own
+	// port, which the chat dials as https://warden-runner:<port>/<id>.
+	if c.RunnerPreviewListen() != "tls://0.0.0.0:7446" || c.RunnerPreviewAddress() != "tls://warden-runner:7446" {
+		t.Errorf("services.runner.previews = %+v", c.Services.Runner.Previews)
+	}
 	if c.TLS == nil || c.TLS.CAFile != "/etc/warden/tls/ca.crt" || c.TLS.CertFile != "/etc/warden/tls/tls.crt" || c.TLS.KeyFile != "/etc/warden/tls/tls.key" {
 		t.Errorf("tls = %+v", c.TLS)
 	}

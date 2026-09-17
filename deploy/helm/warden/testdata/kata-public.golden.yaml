@@ -139,6 +139,8 @@ spec:
       warden.monaddle.com/component: runner
   policyTypes: [Ingress, Egress]
   ingress:
+    # Control, and the shared preview server the chat dials for every
+    # published preview.
     - from:
         - namespaceSelector:
             matchLabels:
@@ -151,6 +153,8 @@ spec:
       ports:
         - protocol: TCP
           port: 7444
+        - protocol: TCP
+          port: 7446
   egress:
     - to:
         - namespaceSelector:
@@ -240,6 +244,8 @@ spec:
       ports:
         - protocol: TCP
           port: 7444
+        - protocol: TCP
+          port: 7446
     - to:
         - namespaceSelector:
             matchLabels:
@@ -617,7 +623,11 @@ data:
         },
         "runner": {
           "address": "tls://warden-runner:7444",
-          "listen": "tls://0.0.0.0:7444"
+          "listen": "tls://0.0.0.0:7444",
+          "previews": {
+            "address": "tls://warden-runner:7446",
+            "listen": "tls://0.0.0.0:7446"
+          }
         }
       },
       "tls": {
@@ -980,6 +990,10 @@ spec:
       port: 7444
       targetPort: control
       protocol: TCP
+    - name: previews
+      port: 7446
+      targetPort: previews
+      protocol: TCP
 
 ---
 # Source: warden/templates/services.yaml
@@ -1066,7 +1080,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: policy
       annotations:
-        checksum/config: 9833c1b83f88127633bf4157a73e9e9832e5f8dd966be7d1254af89e84a4e071
+        checksum/config: a786e8e5684d1729a6e0af96aaa313e403d5fa615c646e4fe8fe8c4897f6952d
     spec:
       serviceAccountName: warden-policy
       automountServiceAccountToken: true
@@ -1203,7 +1217,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: runner
       annotations:
-        checksum/config: 9833c1b83f88127633bf4157a73e9e9832e5f8dd966be7d1254af89e84a4e071
+        checksum/config: a786e8e5684d1729a6e0af96aaa313e403d5fa615c646e4fe8fe8c4897f6952d
     spec:
       serviceAccountName: warden-runner
       automountServiceAccountToken: true
@@ -1249,6 +1263,9 @@ spec:
           ports:
             - name: control
               containerPort: 7444
+              protocol: TCP
+            - name: previews
+              containerPort: 7446
               protocol: TCP
           readinessProbe:
             tcpSocket:
@@ -1337,7 +1354,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: chat
       annotations:
-        checksum/config: 9833c1b83f88127633bf4157a73e9e9832e5f8dd966be7d1254af89e84a4e071
+        checksum/config: a786e8e5684d1729a6e0af96aaa313e403d5fa615c646e4fe8fe8c4897f6952d
     spec:
       serviceAccountName: warden-chat
       automountServiceAccountToken: false
@@ -1471,7 +1488,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: edge
       annotations:
-        checksum/config: 9833c1b83f88127633bf4157a73e9e9832e5f8dd966be7d1254af89e84a4e071
+        checksum/config: a786e8e5684d1729a6e0af96aaa313e403d5fa615c646e4fe8fe8c4897f6952d
     spec:
       serviceAccountName: warden-edge
       automountServiceAccountToken: false
