@@ -165,28 +165,37 @@ func TestAttachmentUploadSendAndDelivery(t *testing.T) {
 	if len(entry.Attachments) != 1 || entry.Attachments[0] != a || entry.Text != "" {
 		t.Fatalf("%+v", entry)
 	}
-	// Sent: no longer removable, not sendable again.
+	// Sent: no longer removable, but a retry may name it again and the
+	// second message records the same file.
 	if rec := post("chats/"+id+"/attachments/"+a.ID+"/remove", "{}"); rec.Code != 409 {
 		t.Fatalf("remove after send: %d", rec.Code)
 	}
-	if err = e.MessageFrom(id, "again", cv.ID(), cv.Actor{}, a.ID); err == nil {
-		t.Fatal("sent attachment accepted twice")
+	if err = e.MessageFrom(id, "again", cv.ID(), cv.Actor{}, a.ID); err != nil {
+		t.Fatalf("retry with a sent attachment: %v", err)
+	}
+	until(t, func() bool {
+		c := e.Store.Snapshot().chat(id)
+		return len(c.Conversation.Entries) > 1 && c.Conversation.Entries[1].Delivery == "sent"
+	})
+	if retried := e.Store.Snapshot().chat(id).Conversation.Entries[1]; len(retried.Attachments) != 1 || retried.Attachments[0] != a || retried.Text != "again" {
+		t.Fatalf("%+v", retried)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	var wrote bool
+	// The file is written into the sandbox before each of the two turns.
+	wrote := 0
 	for _, r := range w.requests {
 		if r.Operation == "attachment-write" {
-			wrote = true
+			wrote++
 			if r.Directory != a.Path || string(r.Bytes) != "hello agent" || r.ChatID != id {
 				t.Fatalf("%+v", r)
 			}
 		}
 	}
-	if !wrote {
-		t.Fatal("attachment never written into the sandbox")
+	if wrote != 2 {
+		t.Fatalf("attachment written %d times, want 2", wrote)
 	}
-	if len(w.inputs) != 1 || len(w.inputs[0]) != 1 || !strings.Contains(agent.String(agent.Map(w.inputs[0][0])["text"]), "- "+a.Path+" (file \"notes.txt\", 11 B)") {
+	if len(w.inputs) != 2 || len(w.inputs[0]) != 1 || !strings.Contains(agent.String(agent.Map(w.inputs[0][0])["text"]), "- "+a.Path+" (file \"notes.txt\", 11 B)") {
 		t.Fatalf("%v", w.inputs)
 	}
 }

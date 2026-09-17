@@ -10,7 +10,13 @@ import {
   type ReactNode,
 } from "react";
 import { ArrowUp, Bot, Paperclip, Square } from "lucide-react";
-import { readLocalAttempt, messageAttempt, type Attempt } from "../drafts";
+import {
+  canResend,
+  messageAttempt,
+  readLocalAttempt,
+  resendAttempt,
+  type Attempt,
+} from "../drafts";
 import { api, me, newID, downloadFile, uploadAttachment } from "../api";
 import {
   attachmentError,
@@ -75,6 +81,7 @@ export function Conversation({
   const [dragging, setDragging] = useState(false);
   const nextKey = useRef(0);
   const picker = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
   const uploading = pending.some((p) => p.status === "uploading");
   const ready = pending.filter((p) => p.status === "ready");
   function addFiles(files: File[], pasted = false) {
@@ -117,16 +124,23 @@ export function Conversation({
       );
     }
   }
-  function removePending(key: number) {
-    const item = pending.find((p) => p.key === key);
-    setPending((list) => list.filter((p) => p.key !== key));
-    if (item?.attachment)
+  // Forgetting an unsent upload; one reused from a sent message stays.
+  const forget = useCallback(
+    (item: Pending) => {
+      if (!item.attachment || item.reused) return;
       void api(
         `chats/${chat.id}/attachments/${item.attachment.id}/remove`,
         {},
       ).catch(() => {
         /* an unsent upload is forgotten by the service after a day anyway */
       });
+    },
+    [chat.id],
+  );
+  function removePending(key: number) {
+    const item = pending.find((p) => p.key === key);
+    setPending((list) => list.filter((p) => p.key !== key));
+    if (item) forget(item);
   }
   function dragOver(event: DragEvent) {
     if (!hasFiles(event.dataTransfer)) return;
@@ -149,6 +163,63 @@ export function Conversation({
   );
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
+  // The composer's current contents, for the transcript's edit action,
+  // which is a stable callback and cannot close over state.
+  const current = useRef({ text, pending });
+  current.current = { text, pending };
+  // Retry sends the entry again as a new message; the transcript's buttons
+  // are disabled while a send would be refused, so this only guards
+  // against a double click.
+  const sending = useRef(false);
+  const retry = useCallback(
+    async (entry: Entry) => {
+      if (sending.current) return;
+      sending.current = true;
+      setBusy(true);
+      setError("");
+      try {
+        await api(`chats/${chat.id}/message`, resendAttempt(entry, newID));
+        follow.current = true;
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        sending.current = false;
+        setBusy(false);
+      }
+    },
+    [chat.id],
+  );
+  // Edit puts the entry's text and uploads into the composer, asking first
+  // when that would replace something already there.
+  const edit = useCallback(
+    (entry: Entry) => {
+      const { text, pending } = current.current;
+      const draft = text.trim();
+      const replacing =
+        (draft !== "" && draft !== entry.text.trim()) ||
+        pending.some((p) => !p.reused);
+      if (replacing && !window.confirm("Replace your draft with this message?"))
+        return;
+      for (const item of pending) forget(item);
+      setPending(
+        (entry.attachments || []).map((attachment) => ({
+          key: nextKey.current++,
+          status: "ready",
+          attachment,
+          reused: true,
+        })),
+      );
+      setText(entry.text);
+      setError("");
+      requestAnimationFrame(() => {
+        const el = input.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      });
+    },
+    [forget],
+  );
   const attempted = useRef<Attempt | undefined>(
     readLocalAttempt(key + ":attempt"),
   );
@@ -270,6 +341,9 @@ export function Conversation({
                 key={item.entry.id}
                 entry={item.entry}
                 onFile={onFile}
+                onEdit={edit}
+                onRetry={retry}
+                actions={!busy && canResend(item.entry, chat, live)}
               />
             ),
           )}
@@ -338,8 +412,13 @@ export function Conversation({
           )}
         </p>
         <div className={`composer${dragging ? " dragging" : ""}`}>
-          <ComposerAttachments items={pending} onRemove={removePending} />
+          <ComposerAttachments
+            chatID={chat.id}
+            items={pending}
+            onRemove={removePending}
+          />
           <textarea
+            ref={input}
             aria-label="Message agent"
             placeholder={
               chat.archived

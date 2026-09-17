@@ -6,21 +6,24 @@ import type { Attachment } from "../types";
 import { Lightbox } from "./Lightbox";
 
 /* A file in the composer: chosen, being uploaded, uploaded (with the
-   service's record) or refused. */
+   service's record) or refused. An item taken from a sent message while it
+   is edited has the record but no File, and is `reused`: the service keeps
+   the upload, so removing the chip does not remove it. */
 export type Pending = {
   key: number;
-  file: File;
+  file?: File;
   status: "uploading" | "ready" | "failed";
   attachment?: Attachment;
   error?: string;
+  reused?: boolean;
 };
 
 /* A local preview of an image the sender chose; the object URL lives as
    long as the chip does. */
-function useFilePreview(file: File) {
+function useFilePreview(file?: File) {
   const [url, setURL] = useState("");
   useEffect(() => {
-    if (!file.type.startsWith("image/")) return;
+    if (!file?.type.startsWith("image/")) return;
     const object = URL.createObjectURL(file);
     setURL(object);
     return () => {
@@ -33,24 +36,64 @@ function useFilePreview(file: File) {
   return { url: broken ? "" : url, onBroken: () => setBroken(true) };
 }
 
+/* The service's copy of a sent image as an object URL, empty until it
+   loads or when it cannot; nothing is fetched for a file or no record. */
+function useAttachmentURL(chatID: string, attachment?: Attachment) {
+  const [url, setURL] = useState("");
+  const [error, setError] = useState(false);
+  // Keyed on the ID, not the record: every state frame is a fresh object.
+  const id = attachment?.id;
+  const image = attachment?.kind === "image";
+  useEffect(() => {
+    let stopped = false,
+      object = "";
+    setURL("");
+    setError(false);
+    if (!id || !image) return;
+    void attachmentBlob(chatID, id, "image").then(
+      (blob) => {
+        if (stopped) return;
+        object = URL.createObjectURL(blob);
+        setURL(object);
+      },
+      () => {
+        if (!stopped) setError(true);
+      },
+    );
+    return () => {
+      stopped = true;
+      if (object) URL.revokeObjectURL(object);
+    };
+  }, [chatID, id, image]);
+  return { url, error };
+}
+
 function PendingChip({
+  chatID,
   item,
   onRemove,
 }: {
+  chatID: string;
   item: Pending;
   onRemove: () => void;
 }) {
   const preview = useFilePreview(item.file);
-  const name = item.attachment?.name || item.file.name || "attachment";
+  const stored = useAttachmentURL(
+    chatID,
+    item.file ? undefined : item.attachment,
+  );
+  const thumb = preview.url || stored.url;
+  const name = item.attachment?.name || item.file?.name || "attachment";
+  const size = item.file?.size ?? item.attachment?.size ?? 0;
   return (
     <span
       className={`chip attachment-chip ${item.status}`}
       title={item.error || name}
     >
-      {preview.url ? (
+      {thumb ? (
         <img
           className="attachment-thumb"
-          src={preview.url}
+          src={thumb}
           alt=""
           onError={preview.onBroken}
         />
@@ -65,7 +108,7 @@ function PendingChip({
           ? "Uploading…"
           : item.status === "failed"
             ? item.error || "Failed"
-            : formatSize(item.file.size)}
+            : formatSize(size)}
       </span>
       <button
         type="button"
@@ -81,9 +124,11 @@ function PendingChip({
 
 /* The chips above the composer's text. */
 export function ComposerAttachments({
+  chatID,
   items,
   onRemove,
 }: {
+  chatID: string;
   items: Pending[];
   onRemove: (key: number) => void;
 }) {
@@ -93,6 +138,7 @@ export function ComposerAttachments({
       {items.map((item) => (
         <PendingChip
           key={item.key}
+          chatID={chatID}
           item={item}
           onRemove={() => onRemove(item.key)}
         />
@@ -109,31 +155,8 @@ function AttachmentImage({
   chatID: string;
   attachment: Attachment;
 }) {
-  const [url, setURL] = useState("");
-  const [error, setError] = useState(false);
+  const { url, error } = useAttachmentURL(chatID, attachment);
   const [open, setOpen] = useState(false);
-  // Keyed on the ID, not the record: every state frame is a fresh object.
-  const { id, kind } = attachment;
-  useEffect(() => {
-    let stopped = false,
-      object = "";
-    setURL("");
-    setError(false);
-    void attachmentBlob(chatID, id, kind).then(
-      (blob) => {
-        if (stopped) return;
-        object = URL.createObjectURL(blob);
-        setURL(object);
-      },
-      () => {
-        if (!stopped) setError(true);
-      },
-    );
-    return () => {
-      stopped = true;
-      if (object) URL.revokeObjectURL(object);
-    };
-  }, [chatID, id, kind]);
   if (!url)
     return (
       <span className="chip attachment-chip" title={attachment.path}>

@@ -192,8 +192,10 @@ func (e *Engine) removeAttachment(chatID, id string) error {
 	return os.Remove(filepath.Join(dir, id+".json"))
 }
 
-// claimAttachments resolves the IDs a new message names to stored records
-// that no earlier message has used.
+// claimAttachments resolves the IDs a new message names to stored records.
+// An ID an earlier message of this chat carried is allowed again: a retry
+// or an edit-and-resend names the same upload, and the stored copy stays
+// for as long as the chat does (pruning only forgets unsent uploads).
 func (e *Engine) claimAttachments(c *Chat, ids []string) ([]cv.Attachment, error) {
 	if len(ids) > maxMessageAttachments {
 		return nil, fmt.Errorf("a message can carry at most %d attachments", maxMessageAttachments)
@@ -205,8 +207,8 @@ func (e *Engine) claimAttachments(c *Chat, ids []string) ([]cv.Attachment, error
 		if err != nil {
 			return nil, err
 		}
-		if seen[id] || c.attachment(id) != nil {
-			return nil, errors.New("attachment was already sent")
+		if seen[id] {
+			return nil, errors.New("attachment named twice")
 		}
 		seen[id] = true
 		out = append(out, a)

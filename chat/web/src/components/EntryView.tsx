@@ -1,6 +1,14 @@
 // Adapted from Panta Conversation.tsx at bf61d5b; presentation retained, app dependencies removed.
 import { memo, useMemo } from "react";
-import { Bot, ChevronRight, FileText, LoaderCircle, User } from "lucide-react";
+import {
+  Bot,
+  ChevronRight,
+  FileText,
+  LoaderCircle,
+  Pencil,
+  RotateCcw,
+  User,
+} from "lucide-react";
 import { hasDiff, parseDiff } from "../diff";
 import type { Entry } from "../types";
 import { EntryAttachments } from "./Attachments";
@@ -75,16 +83,72 @@ export function senderLabel(sender?: Entry["sender"]) {
   return sender.principalID === "owner" ? "You" : "Collaborator";
 }
 
+/* Retry and edit for a message the owner sent. Shown on hover or focus
+   (always when the message failed to deliver, since retrying is the fix);
+   `enabled` is false while a send would be refused, so the buttons still
+   show what is possible instead of failing in the composer. */
+function UserActions({
+  entry,
+  enabled,
+  onEdit,
+  onRetry,
+}: {
+  entry: Entry;
+  enabled: boolean;
+  onEdit: (entry: Entry) => void;
+  onRetry: (entry: Entry) => void;
+}) {
+  return (
+    <div
+      className={`message-actions${entry.delivery === "failed" ? " shown" : ""}`}
+      role="group"
+      aria-label="Message actions"
+    >
+      <button
+        type="button"
+        className="ghost icon"
+        aria-label="Edit and resend"
+        title="Edit and resend"
+        disabled={!enabled}
+        onClick={() => onEdit(entry)}
+      >
+        <Pencil size={14} />
+      </button>
+      <button
+        type="button"
+        className="ghost icon"
+        aria-label="Retry"
+        title={
+          entry.delivery === "failed"
+            ? "Send this message again"
+            : "Send this message again as a new message"
+        }
+        disabled={!enabled}
+        onClick={() => onRetry(entry)}
+      >
+        <RotateCcw size={14} />
+      </button>
+    </div>
+  );
+}
+
 export const EntryView = memo(function EntryView({
   entry,
   chatID,
   provider,
   onFile,
+  onEdit,
+  onRetry,
+  actions = false,
 }: {
   entry: Entry;
   chatID: string;
   provider?: string;
   onFile: (href: string) => void;
+  onEdit?: (entry: Entry) => void;
+  onRetry?: (entry: Entry) => void;
+  /* Whether retry and edit would be accepted right now. */
+  actions?: boolean;
 }) {
   if (entry.role === "image")
     return (
@@ -132,6 +196,14 @@ export const EntryView = memo(function EntryView({
             <EntryAttachments chatID={chatID} attachments={entry.attachments} />
           )}
         </div>
+        {onEdit && onRetry && (
+          <UserActions
+            entry={entry}
+            enabled={actions}
+            onEdit={onEdit}
+            onRetry={onRetry}
+          />
+        )}
       </article>
     );
   return (
