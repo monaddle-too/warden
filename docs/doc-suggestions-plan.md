@@ -133,7 +133,7 @@ they do for pull requests.
       workspace panel section; checked in the browser against a stub API.
 - [x] Docs: feature map row and glossary, `warden-document-sharing.md`.
 - [x] Go suite, web build and tests green.
-- [ ] Live verification against a real Google Doc (see below).
+- [x] Live verification against a real Google Doc (2026-09-17, below).
 
 ## Progress
 
@@ -145,17 +145,45 @@ since Docs may give a merged paragraph the last paragraph's properties.
 Direct write grants were kept (decision 8); tool descriptions steer agents
 to the proposal flow.
 
-Known limits to confirm live: numbered lists created across separate hunks
-may restart numbering (one `createParagraphBullets` per run within a hunk,
-none across hunks); inserting between two frozen blocks is refused; a
-document whose first element is a table cannot take insertions at the top.
+Live verification 2026-09-17 on the local Warden (build 8b3bf65 →
+ad49511, Claude chats, document "Warden suggestions test" in the owner's
+Drive, created by the agent through `request_google_document_creation`):
+
+- `read_google_document` projects headings, bold/link runs, nested bullets
+  and numbered items exactly.
+- Round 1: four ops → review dialog; rejected one suggestion, hand-edited a
+  paragraph, commented, *Send back* → the agent received `changes` (diff
+  against its proposal), `comments` and feedback. Round 2 with `revises`
+  carried the kept reasons, was approved and written in 19 edits.
+- Raw document check: an item inserted by the compiler joined the existing
+  numbered list (`createParagraphBullets` next to a list of the same preset
+  merges into it — numbering stays continuous), the Risks items got their
+  own list, bold and link survived.
+- Clean rebase: proposal pending, collaborator (second chat, direct
+  `batchUpdate`) changed another paragraph, approve → merged and written
+  against the new revision, `rebased_from` reported; the agent whose run
+  had been stopped got the outcome as the durable notification.
+- Conflicting rebase: both sides changed paragraph 1 → `stale`, the conflict
+  shown in Summary, the suggestion listed as rejected-but-acceptable;
+  accepting it and approving wrote it.
+- Bug found and fixed live: an empty current diff serialised as
+  `hunks: null` and crashed the dialog (now `[]`, guarded in the UI).
+
+Observed, not ours: the agent's own round-1 `batchUpdate` shifted indexes
+after its first `createParagraphBullets` and left a HEADING_2 on a list
+item, which the projection hides (a list item is shown as `bullet`/
+`numbered` whatever its named style) — consider surfacing the named style
+of list items. Chats sharing a workspace run one at a time; a queued chat
+can wait for a wake after its sibling's stop (task spawned).
+
+Known limits: inserting between two frozen blocks is refused; a document
+whose first element is a table cannot take insertions at the top; only the
+first tab.
 
 ## Remaining work / follow-ups
 
-- Live verification against a real Google Doc on the Mac (needs the owner's
-  Google connection): read, propose, approve, check formatting survival,
-  stale-base rebase.
 - Decide whether to retire the direct `write` grant level (decision 8).
+- Show the underlying named style of list items in the projection.
 - Tables and inline images as editable content (v2), multiple tabs,
   headers/footers.
 - Panta: mount the same review component in its document panel, or adopt the

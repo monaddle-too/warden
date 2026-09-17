@@ -294,7 +294,7 @@ func TestStaleDocumentIsRebasedOrHandedBack(t *testing.T) {
 		t.Fatalf("rebased proposal: %+v", proposal)
 	}
 	f.dispatch("doc_resolve", map[string]any{"id": id2, "allow": true})
-	if done := f.waitStatus(id2, "applied", "failed", "stale", "pending"); done["status"] != "applied" || len(f.google.batchCalls) != 2 {
+	if done := f.waitStatus(id2, "applied", "failed", "stale", "pending"); done["status"] != "applied" || len(f.google.batchCalls) != 2 || done["rebased_from"] != "r1" {
 		t.Fatalf("second approval: %v", done)
 	}
 	// A clean rebase leaves the review reading against what was written.

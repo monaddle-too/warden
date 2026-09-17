@@ -713,7 +713,7 @@ func (d *DocumentProposals) Apply(id string) {
 			out["revision_id"] = stringField(control, "requiredRevisionId")
 			out["url"] = proposal.URL
 			out["written"] = len(body["requests"].([]map[string]any))
-			if rebased {
+			if proposal.RebasedFrom != "" {
 				out["rebased_from"] = proposal.RebasedFrom
 			}
 			status = "applied"
