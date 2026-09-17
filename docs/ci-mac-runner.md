@@ -59,9 +59,14 @@ system-wide except the Homebrew formulae.
   stays `off`). Image build, digests and the GitHub release are unchanged.
 - QEMU is registered for `linux/amd64` (the daemon is arm64), the reverse
   of the GitHub-hosted setup.
-- `ocsf-deploy.yml`: the deploy job keeps the SSH identity and known_hosts
-  under `$RUNNER_TEMP/ssh` (`UserKnownHostsFile`, `IdentitiesOnly`) instead
-  of the runner user's `~/.ssh`.
+- `ocsf-deploy.yml`: no sudo. The build job mounts the app's data
+  directory from a named volume (`ocsf-viewer/deploy/compose.ci.yaml`
+  overlays `compose.yaml`) and a root helper container chowns it and
+  restores the queue snapshot for uid 65532 (`scripts/integration.mjs`
+  `dataVolume`). The image is built `--platform linux/amd64` for OVH and
+  smoke-tested under QEMU. The deploy job keeps the SSH identity and
+  known_hosts under `$RUNNER_TEMP/ssh` (`UserKnownHostsFile`,
+  `IdentitiesOnly`) instead of the runner user's `~/.ssh`.
 
 ## Security
 
@@ -89,12 +94,6 @@ system-wide except the Homebrew formulae.
 
 ## Remaining work / known gaps
 
-- `ocsf-deploy.yml` build job: `scripts/integration.mjs` and the workflow
-  call `sudo install -o 65532 …` on host paths. On the Mac this needs
-  passwordless sudo for `/usr/bin/install` (a sudoers rule the owner adds),
-  and the virtiofs bind-mount must honour the 65532 ownership for the
-  container's mode-600 `queue.db`. Unverified until the first run; if it
-  fails, move the data directory to a Docker named volume for CI.
 - First runs of `guest-image.yml` (retags `warden-guest:latest`) and
   `ocsf-deploy.yml` on the Mac.
 - Repository setting: fork-PR approval policy was `first_time_contributors`;
