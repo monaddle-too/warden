@@ -113,13 +113,51 @@ func (d *Driver) launchOptions() sandbox.LaunchOptions {
 // waited out first). The first Create waits for the trust bundle
 // (decision 9).
 func (d *Driver) Create(ctx context.Context, spec sandbox.RuntimeSpec) error {
-	if err := validName(spec.Name); err != nil {
-		return err
-	}
 	if spec.Source != "" {
 		if err := validName(spec.Source); err != nil {
 			return fmt.Errorf("fork source: %w", err)
 		}
+	}
+	if err := d.ensureRunning(ctx, spec); err != nil {
+		return err
+	}
+	if spec.Source == "" {
+		return nil
+	}
+	// A clone the storage did not perform (a provisioner that ignores
+	// dataSource yields an empty volume) or a copy interrupted earlier
+	// leaves the workspace directory missing: copy from the source pod.
+	if _, err := d.run(ctx, spec.Name, nil, 0, "test", "-d", spec.Directory); err == nil {
+		return nil
+	}
+	if err := d.copyHome(ctx, spec.Source, spec.Name); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	if rt := d.runtimes[spec.Name]; rt != nil {
+		rt.workspace = WorkspaceCopy
+	}
+	d.mu.Unlock()
+	log.Printf("sandbox %s: workspace copied from %s", spec.Name, spec.Source)
+	return nil
+}
+
+// Prepare makes a created runtime resident again: after a stop its claim
+// is there and its pod is not, so the pod of this generation is created
+// (decision 3); a running pod is confirmed. The handle is a no-op, since
+// a pod stays up on its own.
+func (d *Driver) Prepare(ctx context.Context, spec sandbox.RuntimeSpec) (io.Closer, error) {
+	spec.Source = "" // the workspace was cloned or copied at creation
+	if err := d.ensureRunning(ctx, spec); err != nil {
+		return nil, err
+	}
+	return sandbox.NoResidency{}, nil
+}
+
+// ensureRunning is the claim, the pod, the wait and the manifest check.
+func (d *Driver) ensureRunning(ctx context.Context, spec sandbox.RuntimeSpec) error {
+	if err := validName(spec.Name); err != nil {
+		return err
 	}
 	if err := d.awaitTrust(ctx); err != nil {
 		return err
@@ -148,25 +186,27 @@ func (d *Driver) Create(ctx context.Context, spec sandbox.RuntimeSpec) error {
 	if err != nil {
 		return err
 	}
-	if err = d.checkManifest(ctx, spec.Name); err != nil {
-		return err
-	}
-	if spec.Source != "" {
-		// A clone the storage did not perform (a provisioner that ignores
-		// dataSource yields an empty volume) or a copy interrupted earlier
-		// leaves the workspace directory missing: copy from the source pod.
-		if _, cerr := d.run(ctx, spec.Name, nil, 0, "test", "-d", spec.Directory); cerr != nil {
-			if err = d.copyHome(ctx, spec.Source, spec.Name); err != nil {
-				return err
-			}
-			workspace = WorkspaceCopy
+	d.mu.Lock()
+	known := rt.podUID == pod.Metadata.UID
+	d.mu.Unlock()
+	if !known {
+		if err = d.checkManifest(ctx, spec.Name); err != nil {
+			return err
 		}
 	}
 	d.mu.Lock()
-	rt.podUID, rt.podIP, rt.generation, rt.workspace = pod.Metadata.UID, pod.Status.PodIP, spec.Generation, workspace
-	rt.publications = nil
+	if !known {
+		rt.publications = nil
+		rt.workspace = workspace
+	}
+	rt.podUID, rt.podIP = pod.Metadata.UID, pod.Status.PodIP
+	if spec.Generation != "" {
+		rt.generation = spec.Generation
+	}
 	d.mu.Unlock()
-	log.Printf("sandbox %s: pod %s running at %s (claim %s, workspace %s)", spec.Name, pod.Metadata.UID, pod.Status.PodIP, claim.Metadata.UID, workspace)
+	if !known {
+		log.Printf("sandbox %s: pod %s running at %s (claim %s, workspace %s)", spec.Name, pod.Metadata.UID, pod.Status.PodIP, claim.Metadata.UID, workspace)
+	}
 	return nil
 }
 
@@ -296,18 +336,32 @@ func (d *Driver) awaitRunning(ctx context.Context, name, uid string) (*kube.Pod,
 // nil pod with Deleted when the pod is absent at the start.
 func (d *Driver) awaitPod(ctx context.Context, name string, done func(*kube.Pod, kube.EventType) (bool, error)) (*kube.Pod, error) {
 	for {
+		pod, finished, err := d.watchPod(ctx, name, done)
+		if finished || err != nil {
+			return pod, err
+		}
+	}
+}
+
+// watchPod is one round of awaitPod: a Get, then a watch that is cancelled
+// (its connection closed) when this returns. finished false with a nil
+// error means the server ended the watch and the caller should try again.
+func (d *Driver) watchPod(ctx context.Context, name string, done func(*kube.Pod, kube.EventType) (bool, error)) (*kube.Pod, bool, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	{
 		var current kube.Pod
 		err := d.client.Get(ctx, kube.Pods, d.opts.Namespace, name, &current)
 		switch {
 		case kube.IsNotFound(err):
 			if ok, err := done(nil, kube.Deleted); ok {
-				return nil, err
+				return nil, true, err
 			}
 		case err != nil:
-			return nil, err
+			return nil, true, err
 		default:
 			if ok, err := done(&current, kube.Modified); ok {
-				return &current, err
+				return &current, true, err
 			}
 		}
 		events, err := d.client.Watch(ctx, kube.Pods, d.opts.Namespace, kube.WatchOptions{FieldSelector: "metadata.name=" + name, ResourceVersion: current.Metadata.ResourceVersion})
@@ -316,9 +370,9 @@ func (d *Driver) awaitPod(ctx context.Context, name string, done func(*kube.Pod,
 		}
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return nil, true, ctx.Err()
 			}
-			return nil, err
+			return nil, true, err
 		}
 		for ev := range events {
 			switch ev.Type {
@@ -329,21 +383,22 @@ func (d *Driver) awaitPod(ctx context.Context, name string, done func(*kube.Pod,
 					continue // the loop lists again
 				}
 				if ctx.Err() != nil {
-					return nil, ctx.Err()
+					return nil, true, ctx.Err()
 				}
-				return nil, ev.Err
+				return nil, true, ev.Err
 			}
 			var pod kube.Pod
 			if err := ev.Decode(&pod); err != nil {
-				return nil, err
+				return nil, true, err
 			}
 			if ok, err := done(&pod, ev.Type); ok {
-				return &pod, err
+				return &pod, true, err
 			}
 		}
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, true, ctx.Err()
 		}
+		return nil, false, nil
 	}
 }
 
@@ -356,30 +411,42 @@ func (d *Driver) awaitGone(ctx context.Context, r kube.Resource, name string) er
 		return err
 	}
 	for {
-		var obj kube.Object
-		err := d.client.Get(ctx, r, d.opts.Namespace, name, &obj)
-		if kube.IsNotFound(err) {
-			return nil
-		}
-		if err != nil {
+		gone, err := d.watchGone(ctx, r, name)
+		if gone || err != nil {
 			return err
-		}
-		events, err := d.client.Watch(ctx, r, d.opts.Namespace, kube.WatchOptions{FieldSelector: "metadata.name=" + name})
-		if err != nil {
-			return err
-		}
-		for ev := range events {
-			if ev.Type == kube.Deleted {
-				return nil
-			}
-			if ev.Type == kube.Error && !kube.IsGone(ev.Err) {
-				return ev.Err
-			}
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
 		}
 	}
+}
+
+// watchGone is one round of awaitGone for a claim; the watch is cancelled
+// when it returns.
+func (d *Driver) watchGone(ctx context.Context, r kube.Resource, name string) (bool, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var obj kube.Object
+	err := d.client.Get(ctx, r, d.opts.Namespace, name, &obj)
+	if kube.IsNotFound(err) {
+		return true, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	events, err := d.client.Watch(ctx, r, d.opts.Namespace, kube.WatchOptions{FieldSelector: "metadata.name=" + name, ResourceVersion: obj.Meta().ResourceVersion})
+	if err != nil {
+		return true, err
+	}
+	for ev := range events {
+		if ev.Type == kube.Deleted {
+			return true, nil
+		}
+		if ev.Type == kube.Error && !kube.IsGone(ev.Err) {
+			return true, ev.Err
+		}
+	}
+	if ctx.Err() != nil {
+		return true, ctx.Err()
+	}
+	return false, nil
 }
 
 // guestManifest is the part of the image's manifest the driver checks
@@ -420,11 +487,6 @@ func (d *Driver) checkManifest(ctx context.Context, name string) error {
 		return fmt.Errorf("sandbox %s: guest image user %s is uid %d, the pod runs as %d", name, m.User.Name, *m.User.UID, d.opts.guestUID())
 	}
 	return nil
-}
-
-// Prepare returns a no-op handle: a pod stays resident on its own.
-func (d *Driver) Prepare(context.Context, string) (io.Closer, error) {
-	return sandbox.NoResidency{}, nil
 }
 
 // Address is the pod IP (decision 10).
@@ -649,27 +711,42 @@ func (d *Driver) awaitTrust(ctx context.Context) error {
 			log.Printf("waiting for the guest trust bundle: %s/%s has no %s yet", d.opts.Namespace, d.opts.TrustConfigMap, TrustBundleKey)
 			logged = true
 		}
-		events, err := d.client.Watch(ctx, kube.ConfigMaps, d.opts.Namespace, kube.WatchOptions{FieldSelector: "metadata.name=" + d.opts.TrustConfigMap})
+		published, err := d.watchTrust(ctx)
 		if err != nil {
-			if ctx.Err() != nil {
-				return fmt.Errorf("waiting for the guest trust bundle: %w", ctx.Err())
-			}
-			return fmt.Errorf("waiting for the guest trust bundle: %w", err)
+			return err
 		}
-		for ev := range events {
-			if ev.Type != kube.Added && ev.Type != kube.Modified {
-				continue
-			}
-			var current kube.ConfigMap
-			if ev.Decode(&current) == nil && trustPublished(current) {
-				mark()
-				return nil
-			}
-		}
-		if ctx.Err() != nil {
-			return fmt.Errorf("waiting for the guest trust bundle: %w", ctx.Err())
+		if published {
+			mark()
+			return nil
 		}
 	}
+}
+
+// watchTrust watches the trust ConfigMap until it holds a bundle; the
+// watch is cancelled when it returns.
+func (d *Driver) watchTrust(ctx context.Context) (bool, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	events, err := d.client.Watch(ctx, kube.ConfigMaps, d.opts.Namespace, kube.WatchOptions{FieldSelector: "metadata.name=" + d.opts.TrustConfigMap})
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, fmt.Errorf("waiting for the guest trust bundle: %w", ctx.Err())
+		}
+		return false, fmt.Errorf("waiting for the guest trust bundle: %w", err)
+	}
+	for ev := range events {
+		if ev.Type != kube.Added && ev.Type != kube.Modified {
+			continue
+		}
+		var current kube.ConfigMap
+		if ev.Decode(&current) == nil && trustPublished(current) {
+			return true, nil
+		}
+	}
+	if ctx.Err() != nil {
+		return false, fmt.Errorf("waiting for the guest trust bundle: %w", ctx.Err())
+	}
+	return false, nil
 }
 
 // trustPublished reports a bundle under TrustBundleKey with content.

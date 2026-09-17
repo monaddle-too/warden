@@ -106,12 +106,14 @@ type PortMapping struct {
 // Warden-derived, never guest-supplied.
 type RuntimeDriver interface {
 	Create(context.Context, RuntimeSpec) error
-	// Prepare readies a guest that just became resident (created, adopted
-	// or resumed) and returns a handle the worker closes when the guest
-	// stops. The SBX handle is the exec session that keeps the VM booted,
-	// since SBX stops a VM after its last exec ends; a driver whose guests
-	// stay up on their own returns a no-op handle.
-	Prepare(context.Context, string) (io.Closer, error)
+	// Prepare makes a created guest resident again after a stop (or
+	// confirms it is) before the worker's first exec, and returns a handle
+	// the worker closes when the guest stops. The SBX handle is the exec
+	// session that keeps the VM booted, since SBX stops a VM after its last
+	// exec ends and boots it on the next; a driver whose guests are
+	// recreated per generation (a pod on the kept workspace) creates one
+	// here from the spec and returns a no-op handle.
+	Prepare(context.Context, RuntimeSpec) (io.Closer, error)
 	Exec(context.Context, string, string, ...string) (string, error)
 	Copy(context.Context, string, string, string) error
 	// Address is where the core reaches the guest's published ports and
@@ -412,9 +414,9 @@ func (d *sbxRuntime) Stream(ctx context.Context, name string, run RunSpec) (io.R
 // SBX auto-stops a VM after its last exec/SSH session disconnects, even when
 // detached guest processes and published ports still exist, so the handle
 // lives as long as the guest is resident, not as long as the caller's ctx.
-func (d *sbxRuntime) Prepare(_ context.Context, name string) (io.Closer, error) {
+func (d *sbxRuntime) Prepare(_ context.Context, spec RuntimeSpec) (io.Closer, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := command(ctx, d.worker.Executable, "exec", "-i", name, "sh", "-c", "printf 'ready\\n'; exec cat >/dev/null")
+	cmd := command(ctx, d.worker.Executable, "exec", "-i", spec.Name, "sh", "-c", "printf 'ready\\n'; exec cat >/dev/null")
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()

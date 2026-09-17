@@ -1147,9 +1147,10 @@ func (w *Worker) maintainSpares(ctx context.Context) {
 		createCtx, done := context.WithTimeout(ctx, 2*time.Minute)
 		defer done()
 		var residency io.Closer
-		err := w.Runtime.Create(createCtx, RuntimeSpec{Name: name, Directory: "/home/agent/workspace", Spare: true})
+		spec := RuntimeSpec{Name: name, Directory: "/home/agent/workspace", Spare: true}
+		err := w.Runtime.Create(createCtx, spec)
 		if err == nil {
-			residency, err = w.Runtime.Prepare(createCtx, name)
+			residency, err = w.Runtime.Prepare(createCtx, spec)
 		}
 		report := ""
 		if err == nil {
@@ -1174,19 +1175,29 @@ func (w *Worker) maintainSpares(ctx context.Context) {
 }
 
 // probeGuestLocked performs the guest round-trips a run needs before its
-// stream, concurrently: the guest report (workspace, manifest, presence of
-// the CA and runtimes), the port-publication check, and the driver's
-// preparation (for SBX, the keep-alive session that holds the guest resident). Each is skipped when it is already
-// known: a spare's report was taken at boot, a guest this worker just
-// created or adopted cannot hold publications, and an adopted spare already
-// has its keep-alive.
+// stream: first the driver's preparation when the guest is not resident
+// (for SBX the keep-alive session that boots and holds the VM; for a pod
+// driver the pod of this generation), then, concurrently, the guest report
+// (workspace, manifest, presence of the CA and runtimes) and the
+// port-publication check. Each is skipped when it is already known: a
+// spare's report was taken at boot, a guest this worker just created or
+// adopted cannot hold publications, and an adopted spare is already
+// resident.
 func (w *Worker) probeGuestLocked(ctx context.Context, s *managedSandbox) (string, error) {
 	report, haveReport := s.pendingReport, s.pendingReport != ""
 	fresh := s.fresh
 	s.pendingReport, s.fresh = "", false
+	if s.residency == nil {
+		residency, err := w.Runtime.Prepare(ctx, RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source, SandboxID: s.ID, Generation: s.Generation})
+		if residency != nil {
+			s.residency = residency // owned by the sandbox now, so a later failure releases it
+		}
+		if err != nil {
+			return "", err
+		}
+	}
 	var wg sync.WaitGroup
-	var reportErr, mappingErr, keepErr error
-	var residency io.Closer
+	var reportErr, mappingErr error
 	if !haveReport {
 		wg.Add(1)
 		go func() {
@@ -1201,18 +1212,8 @@ func (w *Worker) probeGuestLocked(ctx context.Context, s *managedSandbox) (strin
 			mappingErr = w.verifyMappingsLocked(ctx, s, nil, false)
 		}()
 	}
-	if s.residency == nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			residency, keepErr = w.Runtime.Prepare(ctx, s.RuntimeName)
-		}()
-	}
 	wg.Wait()
-	if residency != nil {
-		s.residency = residency // owned by the sandbox now, so a later failure releases it
-	}
-	for _, err := range []error{reportErr, mappingErr, keepErr} {
+	for _, err := range []error{reportErr, mappingErr} {
 		if err != nil {
 			return "", err
 		}

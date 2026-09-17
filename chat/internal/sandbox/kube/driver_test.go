@@ -95,10 +95,18 @@ func TestCreateIsClaimThenPodAndIdempotent(t *testing.T) {
 	}
 }
 
-// Prepare is a no-op handle; the guest stays resident on its own.
-func TestPrepareNeedsNoSession(t *testing.T) {
-	_, d := readyFake(t)
-	h, err := d.Prepare(testContext(t), runtimeName)
+// Prepare makes a stopped runtime resident again: the claim is there, the
+// pod of the new generation is created, and the handle is a no-op. On a
+// running runtime it confirms the pod and creates nothing.
+func TestPrepareRecreatesThePodAfterAStop(t *testing.T) {
+	api, d := readyFake(t)
+	ctx := testContext(t)
+	if err := d.Create(ctx, sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace", SandboxID: "s1", Generation: "gen-1"}); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := d.Runtime(runtimeName)
+	before := len(api.recorded())
+	h, err := d.Prepare(ctx, sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace", SandboxID: "s1", Generation: "gen-1"})
 	if err != nil || h == nil {
 		t.Fatal(err)
 	}
@@ -106,6 +114,32 @@ func TestPrepareNeedsNoSession(t *testing.T) {
 		t.Fatalf("%T", h)
 	}
 	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range api.recorded()[before:] {
+		if r.Method == "POST" {
+			t.Fatalf("Prepare of a running guest posted %s", r.Path)
+		}
+	}
+	if err := d.Stop(ctx, runtimeName); err != nil {
+		t.Fatal(err)
+	}
+	// The worker resumes: a new generation, the fork source still named in
+	// the spec (ignored: the workspace was made at creation).
+	if _, err = d.Prepare(ctx, sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace", Source: "wc-gone", SandboxID: "s1", Generation: "gen-2"}); err != nil {
+		t.Fatal(err)
+	}
+	pod, ok := api.pod(runtimeName)
+	if !ok || pod.Status.Phase != "Running" || pod.Metadata.UID == first.PodUID || pod.Metadata.Annotations[AnnotationGeneration] != "gen-2" {
+		t.Fatalf("resumed pod %+v", pod.Metadata)
+	}
+	claim, _ := api.claim(runtimeName)
+	if rt, _ := d.Runtime(runtimeName); rt.ClaimUID != first.ClaimUID || claim.Metadata.UID != first.ClaimUID || rt.PodUID != pod.Metadata.UID || rt.Generation != "gen-2" || rt.PodIP != pod.Status.PodIP {
+		t.Fatalf("resumed record %+v", rt)
+	}
+	// A Prepare with no claim at all (never created) still works: Prepare
+	// is Create without the fork, so a lost claim is a fresh workspace.
+	if _, err = d.Prepare(ctx, sandbox.RuntimeSpec{Name: "wc-never", Directory: "/home/agent/workspace"}); err != nil {
 		t.Fatal(err)
 	}
 }

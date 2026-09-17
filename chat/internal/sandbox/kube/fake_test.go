@@ -140,11 +140,14 @@ func (api *fakeAPI) publishTrust(bundle string) {
 func (api *fakeAPI) object(resource, name string, into any) bool {
 	api.mu.Lock()
 	obj, ok := api.objects[resource+"/"+name]
+	var raw []byte
+	if ok {
+		raw, _ = json.Marshal(obj)
+	}
 	api.mu.Unlock()
 	if !ok {
 		return false
 	}
-	raw, _ := json.Marshal(obj)
 	if err := json.Unmarshal(raw, into); err != nil {
 		api.t.Fatal(err)
 	}
@@ -285,6 +288,9 @@ func (api *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 func (api *fakeAPI) serveGet(w http.ResponseWriter, resource, name string) {
 	api.mu.Lock()
 	obj, ok := api.objects[resource+"/"+name]
+	if ok {
+		obj = cloneObject(obj)
+	}
 	api.mu.Unlock()
 	if !ok {
 		writeNotFound(w, resource, name)
@@ -298,7 +304,7 @@ func (api *fakeAPI) serveList(w http.ResponseWriter, resource string, q url.Valu
 	var items []map[string]any
 	for key, obj := range api.objects {
 		if strings.HasPrefix(key, resource+"/") && selectorsMatch(obj, q.Get("labelSelector"), q.Get("fieldSelector")) {
-			items = append(items, obj)
+			items = append(items, cloneObject(obj))
 		}
 	}
 	rv := api.rv

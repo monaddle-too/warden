@@ -863,7 +863,8 @@ func TestUnpublishedPreviewAllowsIdleStop(t *testing.T) {
 type testResidency struct{ runtime *testRuntime }
 
 func (p *testResidency) Close() error { p.runtime.record("release-residency"); return nil }
-func (d *testRuntime) Prepare(_ context.Context, name string) (io.Closer, error) {
+func (d *testRuntime) Prepare(_ context.Context, spec RuntimeSpec) (io.Closer, error) {
+	name := spec.Name
 	d.record("hold-residency:" + name)
 	return &testResidency{runtime: d}, nil
 }
