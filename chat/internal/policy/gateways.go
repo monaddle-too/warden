@@ -70,8 +70,9 @@ func LoopbackEndpoint(port int) GatewayEndpoint {
 // called by the verifier with the registry lock held and must not block on
 // anything that takes it.
 type Gateway interface {
-	// Bind starts (or confirms) the binding's gateway and returns the
-	// endpoint Begin advertises for it.
+	// Bind starts (or confirms) the binding's gateway, records the endpoint
+	// on the binding (Binding.Endpoint, what Begin advertises) and returns
+	// it.
 	Bind(b *Binding) (GatewayEndpoint, error)
 	// Healthy probes the binding's gateway with a fresh HMAC challenge over
 	// its capability. Callers pass a snapshot of the binding.
@@ -92,7 +93,8 @@ func (l *LoopbackGateways) Bind(b *Binding) (GatewayEndpoint, error) {
 	if err := l.Ensure(b); err != nil {
 		return GatewayEndpoint{}, err
 	}
-	return LoopbackEndpoint(b.GatewayPort), nil
+	b.Endpoint = LoopbackEndpoint(b.GatewayPort)
+	return b.Endpoint, nil
 }
 
 func (l *LoopbackGateways) Healthy(b *Binding) bool { return GatewayHealthy(b) }

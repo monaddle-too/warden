@@ -36,11 +36,17 @@ const requestInspectionLimit = 8388608
 // ReviewFunc produces a push review; InspectPush is the default.
 type ReviewFunc func(ctx context.Context, repository string, body []byte, auth, upstream string, active func() (bool, error)) (map[string]any, []byte, error)
 
-// GatewayConfig describes one binding's inspected loopback gateway.
+// GatewayConfig describes one binding's inspected gateway: on its own
+// loopback Listener (LoopbackGateways), or with Listener nil, served
+// through a dispatcher that already identified the binding (SharedGateway),
+// in which case Start is never called and Host names the advertised host
+// the guest dials, accepted as a reverse-route authority beside the
+// loopback names.
 type GatewayConfig struct {
 	BindingID  string
 	Capability string
 	Port       int
+	Host       string
 	Listener   net.Listener
 	Control    func(message map[string]any) (map[string]any, error)
 	CA         *GatewayCA
@@ -119,7 +125,7 @@ func LoadGitHubNetworks(path string) ([]*net.IPNet, error) {
 
 // NewBindingGateway prepares a gateway on a pre-bound loopback listener.
 func NewBindingGateway(cfg GatewayConfig) (*BindingGateway, error) {
-	if cfg.Listener == nil || cfg.Control == nil || cfg.CA == nil || cfg.Port == 0 {
+	if (cfg.Listener == nil && cfg.Host == "") || cfg.Control == nil || cfg.CA == nil || cfg.Port == 0 {
 		return nil, errors.New("gateway configuration incomplete")
 	}
 	if cfg.Resolve == nil {
@@ -506,7 +512,7 @@ func (f *flow) handle() {
 			return
 		}
 	}
-	reverse := f.host == "host.docker.internal" || f.host == "localhost" || f.host == "127.0.0.1"
+	reverse := f.host == LoopbackGatewayHost || f.host == "localhost" || f.host == "127.0.0.1" || (f.g.cfg.Host != "" && f.host == f.g.cfg.Host)
 	if reverse && strings.HasPrefix(f.path, DocumentPrefix) {
 		f.documentRequest()
 		return

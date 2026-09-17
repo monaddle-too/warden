@@ -27,18 +27,21 @@ var GatewayHealthy = func(b *Binding) bool {
 	if b.GatewayPort == 0 {
 		return false
 	}
-	return gatewayAnswers("http://127.0.0.1:"+itoa(b.GatewayPort), nil, b.Identity["sandboxID"], b.Capability)
+	return gatewayAnswers("http://127.0.0.1:"+itoa(b.GatewayPort), "", nil, b.Identity["sandboxID"], b.Capability)
 }
 
-// gatewayAnswers sends the health challenge to origin, with the request
-// headers a dispatching gateway needs, and checks the HMAC over the nonce
-// keyed by the binding capability.
-func gatewayAnswers(origin string, headers map[string]string, bindingID, capability string) bool {
+// gatewayAnswers sends the health challenge to origin (with the Host header
+// host when set, and the request headers a dispatching gateway needs) and
+// checks the HMAC over the nonce keyed by the binding capability.
+func gatewayAnswers(origin, host string, headers map[string]string, bindingID, capability string) bool {
 	nonce := randomHex(32)
 	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true, DialContext: (&net.Dialer{Timeout: time.Second}).DialContext}}
 	req, err := http.NewRequest(http.MethodGet, origin+"/__warden_sbx_health/"+nonce, nil)
 	if err != nil {
 		return false
+	}
+	if host != "" {
+		req.Host = host
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -259,11 +262,9 @@ func (v *RuntimeVerifier) snapshot(identity map[string]string, phase string, loc
 			return
 		}
 		if v.registry.Gateways != nil {
-			var endpoint GatewayEndpoint
-			if endpoint, err = v.registry.Gateways.Bind(b); err != nil {
+			if _, err = v.registry.Gateways.Bind(b); err != nil {
 				return
 			}
-			b.Endpoint = endpoint
 		}
 		probe = &Binding{Identity: b.Identity, Capability: b.Capability, GatewayPort: b.GatewayPort, Endpoint: b.endpoint()}
 		digest = b.Engine.PolicyDigest()
