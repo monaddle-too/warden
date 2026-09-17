@@ -10,6 +10,7 @@ import (
 
 	"warden/chat/internal/config"
 	"warden/chat/internal/release"
+	sandboxkube "warden/chat/internal/sandbox/kube"
 )
 
 func runnerSettings(t *testing.T, args ...string) (settings, error) {
@@ -123,21 +124,58 @@ func TestRunnerTransportSettings(t *testing.T) {
 }
 
 // The runner selects its driver by runtime.kind: the SBX driver for the
-// sbx shapes, a clear refusal for a kind this build cannot drive.
+// sbx shapes, the Kubernetes pod driver (over --kubeconfig here; the
+// service account in a pod) for the kubernetes kind, configured from the
+// kubernetes section and the sandbox memory.
 func TestRunnerSelectsDriverByRuntimeKind(t *testing.T) {
 	t.Setenv(config.Env, "")
 	s, err := runnerSettings(t, "--root", "/state", "--sbx", "/usr/local/bin/sbx")
 	if err != nil || s.cfg.RuntimeKind() != config.RuntimeSBX {
 		t.Fatalf("%+v %v", s.cfg.Runtime, err)
 	}
-	driver, err := runtimeDriver(s.cfg.RuntimeKind())
+	driver, err := runtimeDriver(s, "")
 	if err != nil || driver == nil {
 		t.Fatal(err)
 	}
-	if _, err = runtimeDriver(config.RuntimeKubernetes); err == nil || !strings.Contains(err.Error(), "not part of this build") {
-		t.Fatalf("kubernetes kind: %v", err)
-	}
-	if _, err = runtimeDriver("firecracker"); err == nil {
+	unknown := s
+	unknown.cfg.Runtime.Kind = "firecracker"
+	if _, err = runtimeDriver(unknown, ""); err == nil {
 		t.Fatal("unknown kind accepted")
+	}
+	dir := t.TempDir()
+	kubeconfig := filepath.Join(dir, "kubeconfig")
+	if err = os.WriteFile(kubeconfig, []byte(`{"apiVersion":"v1","kind":"Config","current-context":"dev","clusters":[{"name":"dev","cluster":{"server":"https://127.0.0.1:6443","insecure-skip-tls-verify":true}}],"contexts":[{"name":"dev","context":{"cluster":"dev","user":"dev"}}],"users":[{"name":"dev","user":{"token":"t"}}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "warden.json")
+	if err = os.WriteFile(path, []byte(`{"version":1,"runtime":{"kind":"kubernetes"},"paths":{"state":"/var/lib/warden"},
+		"services":{"policy":{"listen":"tls://0.0.0.0:7443","address":"tls://warden-policy:7443"},"runner":{"listen":"tls://0.0.0.0:7444","address":"tls://warden-runner:7444"},"chat":{"listen":"tls://0.0.0.0:7445","address":"tls://warden-chat:7445"}},
+		"tls":{"caFile":"/etc/warden/tls/ca.crt","certFile":"/etc/warden/tls/tls.crt","keyFile":"/etc/warden/tls/tls.key"},
+		"kubernetes":{"namespace":"warden-sandboxes","tier":"gvisor","runtimeClass":"gvisor","guestImage":"warden-guest-base","guestImageDigest":"sha256:`+strings.Repeat("ab", 32)+`","storageClass":"local-path","workspaceSizeGi":4,"nodeSelector":{"pool":"sandboxes"}},
+		"sandboxes":{"memoryMB":1024,"warmSpares":1},"previews":{"edgeListen":"0.0.0.0:18781"},"providers":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err = runnerSettings(t, "--config", path)
+	if err != nil || s.cfg.RuntimeKind() != config.RuntimeKubernetes || s.memoryMB != 1024 || s.spares != 1 {
+		t.Fatalf("%+v %v", s, err)
+	}
+	if _, err = runtimeDriver(s, filepath.Join(dir, "missing")); err == nil || !strings.Contains(err.Error(), "kubernetes API access") {
+		t.Fatalf("missing kubeconfig: %v", err)
+	}
+	driver, err = runtimeDriver(s, kubeconfig)
+	if err != nil || driver == nil {
+		t.Fatal(err)
+	}
+	if _, ok := driver(nil).(*sandboxkube.Driver); !ok {
+		t.Fatalf("%T", driver(nil))
+	}
+	opts := kubernetesOptions(s.cfg.Kubernetes, s.memoryMB)
+	if opts.Namespace != "warden-sandboxes" || opts.Tier != config.TierGVisor || opts.RuntimeClass != "gvisor" || opts.Image() != "warden-guest-base@sha256:"+strings.Repeat("ab", 32) || opts.StorageClass != "local-path" || opts.WorkspaceSizeGi != 4 || opts.TrustConfigMap != "warden-guest-trust" || opts.MemoryMB != 1024 || opts.NodeSelector["pool"] != "sandboxes" {
+		t.Fatalf("options %+v", opts)
+	}
+	// Outside a pod without --kubeconfig the service account is missing.
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	if _, err = runtimeDriver(s, ""); err == nil || !strings.Contains(err.Error(), "kubernetes API access") {
+		t.Fatalf("in-cluster outside a cluster: %v", err)
 	}
 }
