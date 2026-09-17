@@ -56,14 +56,16 @@ networkPolicy:
         matchLabels:
           kubernetes.io/metadata.name: ingress-nginx
 
-# The four service pods on Spot capacity: about 70% off their requests, at
-# the price of a restart when the node is reclaimed (state is on the
-# PVCs; the sandboxes are on separate GKE Sandbox nodes and unaffected).
-# Remove both keys for on-demand capacity.
-nodeSelector:
-  cloud.google.com/gke-spot: "true"
-tolerations:
-  - key: cloud.google.com/gke-spot
-    operator: Equal
-    value: "true"
-    effect: NoSchedule
+# The four service pods can run on Spot capacity, about 70% off their
+# requests, at the price of a restart when the node is reclaimed (state is
+# on the PVCs; the sandboxes are on separate GKE Sandbox nodes and
+# unaffected). Off by default: on the first run us-central1 had no Spot
+# capacity for an hour ("GCE out of resources") and the pods stayed
+# Pending. Uncomment both keys to opt in.
+# nodeSelector:
+#   cloud.google.com/gke-spot: "true"
+# tolerations:
+#   - key: cloud.google.com/gke-spot
+#     operator: Equal
+#     value: "true"
+#     effect: NoSchedule
