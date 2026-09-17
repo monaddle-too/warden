@@ -7,6 +7,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -154,7 +156,7 @@ func (f *sharingFixture) read(doc, chat, sandbox string, changes map[string]any)
 	for k, v := range changes {
 		request[k] = v
 	}
-	grant, authorization, _, err := f.s.Authorize(chat, sandbox, request)
+	grant, authorization, err := f.s.Authorize(chat, sandbox, request)
 	return grant, authorization, err
 }
 
@@ -369,106 +371,98 @@ func (f *sharingFixture) write(doc, chat string, edits []any, path string) error
 		path = "/v1/documents/" + doc + ":batchUpdate"
 	}
 	body := mustJSON(map[string]any{"requests": edits})
-	_, _, _, err := f.s.Authorize(chat, "sbx", map[string]any{"scheme": "https", "port": 443, "host": "docs.googleapis.com", "method": "POST", "path": path, "body_base64": base64.StdEncoding.EncodeToString(body)})
+	_, _, err := f.s.Authorize(chat, "sbx", map[string]any{"scheme": "https", "port": 443, "host": "docs.googleapis.com", "method": "POST", "path": path, "body_base64": base64.StdEncoding.EncodeToString(body)})
 	return err
 }
 
-func TestWriteGrantIsScopedAndRevocable(t *testing.T) {
+// No grant level writes a Google Doc: batchUpdate is refused with a
+// pointer to suggestions, whatever the grant, while reads keep working.
+func TestDocsWritesAreRefusedAtEveryLevel(t *testing.T) {
 	f := newSharingFixture(t)
-	g := f.writeGrant("write", "1")
-	if err := f.write("", "", nil, ""); err != nil {
-		t.Fatal(err)
-	}
-	// Write grants belong to the environment, not the requesting chat.
-	if err := f.write("", "other", nil, ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.write("other", "", nil, ""); err == nil {
-		t.Fatal("other doc")
+	for i, access := range []string{"read", "write", "structure"} {
+		f.writeGrant(access, strconv.Itoa(i+1))
+		err := f.write("", "", nil, "")
+		if err == nil || !strings.Contains(err.Error(), "propose_google_document_edit") {
+			t.Fatalf("%s grant: %v", access, err)
+		}
+		if err := f.write("", "", []any{map[string]any{"insertTable": map[string]any{"rows": 1, "columns": 1}}}, ""); err == nil {
+			t.Fatalf("%s grant allowed a table", access)
+		}
+		if _, _, err := f.s.Authorize("chat", "sbx", map[string]any{"scheme": "https", "port": 443, "host": "docs.googleapis.com", "method": "GET", "path": "/v1/documents/doc?suggestionsViewMode=PREVIEW_WITHOUT_SUGGESTIONS"}); err != nil {
+			t.Fatalf("%s grant read: %v", access, err)
+		}
 	}
 	if err := f.write("", "", nil, "/v1/documents"); err == nil {
 		t.Fatal("list path")
 	}
-	if err := f.write("", "", nil, "/v1/documents/doc:batchUpdate?fields=*"); err == nil {
-		t.Fatal("query")
-	}
-	if err := f.write("", "", []any{map[string]any{"insertInlineImage": map[string]any{"uri": "https://evil.test"}}}, ""); err == nil {
-		t.Fatal("image edit")
-	}
-	f.clock.now = 1900
-	if err := f.write("", "", nil, ""); err == nil {
-		t.Fatal("expired")
-	}
-	f.clock.now = 1001
-	f.dispatch("revoke", map[string]any{"id": g["request_id"]})
-	if err := f.write("", "", nil, ""); err == nil {
-		t.Fatal("revoked")
-	}
 }
 
-// A write grant stops at text edits and cell values; structure edits on
-// Docs and Sheets need a structure grant, which also covers the lower
-// levels. Requests name only known levels.
+// A write grant covers cell values; sheet structure edits (tabs, formats,
+// charts) need a structure grant, which also covers the lower levels.
+// Requests name only known levels.
 func TestStructureGrantLevels(t *testing.T) {
 	f := newSharingFixture(t)
 	f.writeGrant("write", "1")
-	table := []any{map[string]any{"insertTable": map[string]any{"rows": 1, "columns": 1}}}
-	if err := f.write("", "", table, ""); err == nil {
-		t.Fatal("write grant allowed a table")
-	}
 	sheetStructure := map[string]any{"scheme": "https", "port": 443, "host": "sheets.googleapis.com", "method": "POST", "path": "/v4/spreadsheets/doc:batchUpdate", "body_base64": base64.StdEncoding.EncodeToString([]byte(`{"requests":[{"addSheet":{}}]}`))}
-	if _, _, _, err := f.s.Authorize("chat", "sbx", sheetStructure); err == nil {
+	if _, _, err := f.s.Authorize("chat", "sbx", sheetStructure); err == nil {
 		t.Fatal("write grant allowed a sheet structure edit")
 	}
 	sheetValues := map[string]any{"scheme": "https", "port": 443, "host": "sheets.googleapis.com", "method": "POST", "path": "/v4/spreadsheets/doc/values/A1:append?valueInputOption=RAW", "body_base64": base64.StdEncoding.EncodeToString([]byte(`{"values":[["x"]]}`))}
-	if _, _, _, err := f.s.Authorize("chat", "sbx", sheetValues); err != nil {
+	if _, _, err := f.s.Authorize("chat", "sbx", sheetValues); err != nil {
+		t.Fatal(err)
+	}
+	// Grants belong to the environment, not the requesting chat.
+	if _, _, err := f.s.Authorize("other", "sbx", sheetValues); err != nil {
 		t.Fatal(err)
 	}
 	f.writeGrant("structure", "2")
-	if err := f.write("", "", table, ""); err != nil {
+	if _, _, err := f.s.Authorize("chat", "sbx", sheetStructure); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := f.s.Authorize("chat", "sbx", sheetStructure); err != nil {
+	if _, _, err := f.s.Authorize("chat", "sbx", sheetValues); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.write("", "", nil, ""); err != nil {
-		t.Fatal(err)
+	f.clock.now = 1900
+	if _, _, err := f.s.Authorize("chat", "sbx", sheetValues); err == nil {
+		t.Fatal("expired")
+	}
+	f.clock.now = 1001
+	f.dispatch("revoke", map[string]any{"id": f.dispatch("state", nil)["requests"].([]any)[1].(map[string]any)["request_id"]})
+	if _, _, err := f.s.Authorize("chat", "sbx", sheetStructure); err == nil {
+		t.Fatal("revoked structure grant still authorized")
 	}
 	if _, err := f.s.Dispatch("request", map[string]any{"chatID": "chat", "sandboxID": "sbx", "callID": "3", "reason": "x", "access": "admin"}); err == nil {
 		t.Fatal("unknown level accepted")
 	}
 }
 
-// An attached image goes into a Doc through a placeholder: the policy
-// publishes it under a one-off token, rewrites the edit to that URL and
-// withdraws the token afterwards. Images of other conversations, write-level
-// grants and installs without a public https address are refused.
+// An attached image can go into a Docs edit body through a placeholder:
+// the policy publishes it under a one-off token, rewrites the edit to that
+// URL and withdraws the token afterwards. Images of other conversations
+// and installs without a public https address are refused. No grant
+// reaches this any more (Docs are written through suggestions only); it
+// stays for the suggestion writer to pick up.
 func TestInlineImageEditsArePublishedOnce(t *testing.T) {
 	f := newSharingFixture(t)
 	f.s.PublicURL = "https://warden.example"
 	added := f.dispatch("image_add", map[string]any{"chatID": "chat", "sandboxID": "sbx", "caption": "Chart", "png": base64.StdEncoding.EncodeToString(testPNG)})
 	id := added["image_id"].(string)
 	edits := []any{map[string]any{"insertInlineImage": map[string]any{"uri": "warden-image:" + id, "location": map[string]any{"index": 1}}}}
-	authorize := func(chat string) (*Rewrite, error) {
-		body := mustJSON(map[string]any{"requests": edits})
-		_, _, rewrite, err := f.s.Authorize(chat, "sbx", map[string]any{"scheme": "https", "port": 443, "host": "docs.googleapis.com", "method": "POST", "path": "/v1/documents/doc:batchUpdate", "body_base64": base64.StdEncoding.EncodeToString(body)})
-		return rewrite, err
+	rewrite := func(chat string) ([]byte, []string, error) {
+		f.s.mu.Lock()
+		defer f.s.mu.Unlock()
+		return f.s.Images.rewriteImageEditsLocked(chat, "sbx", mustJSON(map[string]any{"requests": edits}))
 	}
-	f.writeGrant("write", "1")
-	if _, err := authorize("chat"); err == nil {
-		t.Fatal("write grant allowed an image")
-	}
-	f.writeGrant("structure", "2")
-	if _, err := authorize("other"); err == nil {
+	if _, _, err := rewrite("other"); err == nil {
 		t.Fatal("another conversation's image was published")
 	}
-	rewrite, err := authorize("chat")
-	if err != nil || rewrite == nil || len(rewrite.Publications) != 1 {
-		t.Fatalf("rewrite: %+v %v", rewrite, err)
+	rewritten, tokens, err := rewrite("chat")
+	if err != nil || len(tokens) != 1 {
+		t.Fatalf("rewrite: %v %v", tokens, err)
 	}
-	token := rewrite.Publications[0]
+	token := tokens[0]
 	var body map[string]any
-	if err := json.Unmarshal(rewrite.Body, &body); err != nil {
+	if err := json.Unmarshal(rewritten, &body); err != nil {
 		t.Fatal(err)
 	}
 	uri := body["requests"].([]any)[0].(map[string]any)["insertInlineImage"].(map[string]any)["uri"]
@@ -485,28 +479,20 @@ func TestInlineImageEditsArePublishedOnce(t *testing.T) {
 	if _, err := f.s.Images.Published(token); err == nil {
 		t.Fatal("still published after unpublish")
 	}
-	rewrite, _ = authorize("chat")
+	_, tokens, _ = rewrite("chat")
 	f.clock.now += PublicationTTL + 1
-	if _, err := f.s.Images.Published(rewrite.Publications[0]); err == nil {
+	if _, err := f.s.Images.Published(tokens[0]); err == nil {
 		t.Fatal("still published after the TTL")
 	}
 	f.clock.now = 1000
 	f.s.PublicURL = ""
-	if _, err := authorize("chat"); err == nil {
+	if _, _, err := rewrite("chat"); err == nil {
 		t.Fatal("published without a public address")
 	}
-	// Text-only structure edits are forwarded untouched.
+	// Bodies without placeholders are left alone.
 	edits = []any{map[string]any{"insertTable": map[string]any{"rows": 1, "columns": 1}}}
-	if rewrite, err := authorize("chat"); err != nil || rewrite != nil {
-		t.Fatalf("table: %+v %v", rewrite, err)
-	}
-}
-
-func TestReadGrantNeverAuthorizesWrite(t *testing.T) {
-	f := newSharingFixture(t)
-	f.writeGrant("read", "1")
-	if err := f.write("", "", nil, ""); err == nil {
-		t.Fatal("read grant allowed write")
+	if rewritten, tokens, err := rewrite("chat"); err != nil || rewritten != nil || tokens != nil {
+		t.Fatalf("plain edit: %v %v %v", rewritten, tokens, err)
 	}
 }
 
@@ -521,15 +507,34 @@ func TestCreationRequiresApprovalAndIsIdempotent(t *testing.T) {
 	if g["documents"].([]any)[0].(map[string]any)["id"] != "new-doc" {
 		t.Fatalf("grant: %v", g)
 	}
-	if err := f.write("new-doc", "", nil, ""); err != nil {
+	// The created document is readable for suggestions, never written.
+	if _, _, err := f.read("new-doc", "chat", "sbx", nil); err != nil {
 		t.Fatal(err)
+	}
+	if err := f.write("new-doc", "", nil, ""); err == nil {
+		t.Fatal("create grant allowed a direct write")
 	}
 	f.dispatch("resolve", data)
 	if len(f.google.createCalls) != 1 || f.google.createCalls[0] != "Plan" {
 		t.Fatalf("create calls: %v", f.google.createCalls)
 	}
-	if err := f.write("other", "", nil, ""); err == nil {
+	if _, _, err := f.read("other", "chat", "sbx", nil); err == nil {
 		t.Fatal("other document")
+	}
+}
+
+// Creating a document needs the write scope even though the grant it
+// leaves behind is read-level.
+func TestCreationNeedsWriteScope(t *testing.T) {
+	f := newSharingFixture(t)
+	f.google.canWrite = false
+	r := f.writeRequest("create", "1")
+	if _, err := f.s.Dispatch("resolve", map[string]any{"id": r["request_id"], "allow": true, "duration": 900}); err == nil || len(f.google.createCalls) != 0 {
+		t.Fatalf("created without the write scope: %v", err)
+	}
+	r = f.writeRequest("read", "2")
+	if _, err := f.s.Dispatch("resolve", map[string]any{"id": r["request_id"], "allow": true, "documents": []any{"doc"}, "duration": 900}); err != nil {
+		t.Fatal(err)
 	}
 }
 

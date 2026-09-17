@@ -17,7 +17,7 @@ import (
 )
 
 func imageTools() []any {
-	return []any{map[string]any{"type": "function", "name": "attach_image", "description": "Show a PNG/JPEG image from a relative path beneath this conversation's workspace. Warden sanitizes and stores an immutable image attachment in the chat. Returns an image_id to include in request_pull_request images, or to place in a shared Google Doc: with structure-level document access, send a Docs batchUpdate insertInlineImage whose uri is warden-image:<image_id> and Warden serves the image to Google for that edit only. Maximum 8 MiB input and 4 megapixels. Do not use URLs or absolute paths.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "caption": map[string]any{"type": "string", "maxLength": 500}}, "required": []string{"path", "caption"}, "additionalProperties": false}}}
+	return []any{map[string]any{"type": "function", "name": "attach_image", "description": "Show a PNG/JPEG image from a relative path beneath this conversation's workspace. Warden sanitizes and stores an immutable image attachment in the chat. Returns an image_id to include in request_pull_request images. Maximum 8 MiB input and 4 megapixels. Do not use URLs or absolute paths.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "caption": map[string]any{"type": "string", "maxLength": 500}}, "required": []string{"path", "caption"}, "additionalProperties": false}}}
 }
 func (e *Engine) imageTool(ctx context.Context, c *Chat, client *agent.Client, f agent.Frame) error {
 	var in struct {

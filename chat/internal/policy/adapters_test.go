@@ -330,48 +330,32 @@ func TestFigmaOperationsAndConnection(t *testing.T) {
 	}
 }
 
-func TestDocumentWriteOperationBoundaries(t *testing.T) {
+// Google Docs are read-only through grants: every write shape, valid or
+// not, is refused with a pointer to suggestions; reads classify as "read".
+func TestDocumentWriteOperationRefusesDocsWrites(t *testing.T) {
 	edit := mustJSON(map[string]any{"requests": []any{map[string]any{"insertText": map[string]any{"location": map[string]any{"index": 1}, "text": "Hi"}}}, "writeControl": map[string]any{"requiredRevisionId": "r1"}})
-	access, doc, err := DocumentWriteOperation("POST", "/v1/documents/doc:batchUpdate", nil, edit)
-	if err != nil || access != "write" || doc != "doc" {
-		t.Fatalf("write: %s %s %v", access, doc, err)
-	}
-	for _, body := range [][]byte{mustJSON(map[string]any{"requests": []any{}}), mustJSON(map[string]any{"requests": []any{map[string]any{"insertInlineImage": map[string]any{}}}}),
-		mustJSON(map[string]any{"requests": []any{map[string]any{"insertText": map[string]any{}, "deleteContentRange": map[string]any{}}}}), mustJSON(map[string]any{"requests": []any{map[string]any{"insertText": map[string]any{}}}, "extra": 1}),
-		mustJSON(map[string]any{"requests": []any{map[string]any{"insertText": map[string]any{}}}, "writeControl": map[string]any{"targetRevisionId": "x"}})} {
-		if _, _, err := DocumentWriteOperation("POST", "/v1/documents/doc:batchUpdate", nil, body); err == nil {
-			t.Fatalf("%s accepted", body)
+	table := mustJSON(map[string]any{"requests": []any{map[string]any{"insertTable": map[string]any{"rows": 2, "columns": 2}}}})
+	image := mustJSON(map[string]any{"requests": []any{map[string]any{"insertInlineImage": map[string]any{"uri": "warden-image:" + strings.Repeat("ab", 32), "location": map[string]any{"index": 1}}}}})
+	for _, body := range [][]byte{edit, table, image, nil} {
+		_, _, err := DocumentWriteOperation("POST", "/v1/documents/doc:batchUpdate", nil, body)
+		if err == nil || !strings.Contains(err.Error(), "propose_google_document_edit") {
+			t.Fatalf("%s: %v", body, err)
 		}
 	}
-	if _, _, err := DocumentWriteOperation("POST", "/v1/documents/doc:batchUpdate", []QueryPair{{"fields", "*"}}, edit); err == nil {
-		t.Fatal("query accepted")
+	for _, method := range []string{"POST", "PUT", "PATCH", "DELETE"} {
+		if _, _, err := DocumentWriteOperation(method, "/v1/documents/doc", nil, nil); err == nil {
+			t.Fatalf("%s accepted", method)
+		}
 	}
 	if access, doc, err := DocumentWriteOperation("GET", "/v1/documents/doc", nil, nil); err != nil || access != "read" || doc != "doc" {
 		t.Fatal("read")
 	}
 }
 
-// Text edits are "write"; any other batchUpdate request lifts the whole
-// call to "structure"; remote images are refused at every level. Sheets:
-// values are "write", spreadsheets:batchUpdate is "structure".
+// Sheets keep their levels: values are "write", spreadsheets:batchUpdate
+// is "structure". "create" ranks as read: the agent fills a created
+// document through suggestions.
 func TestDocumentWriteOperationLevels(t *testing.T) {
-	table := mustJSON(map[string]any{"requests": []any{map[string]any{"insertText": map[string]any{"text": "x"}}, map[string]any{"insertTable": map[string]any{"rows": 2, "columns": 2}}}})
-	if access, _, err := DocumentWriteOperation("POST", "/v1/documents/doc:batchUpdate", nil, table); err != nil || access != "structure" {
-		t.Fatalf("table: %s %v", access, err)
-	}
-	placeholder := "warden-image:" + strings.Repeat("ab", 32)
-	for _, key := range []string{"insertInlineImage", "replaceImage"} {
-		for _, uri := range []string{"https://evil.test", "warden-image:zz", "", "https://example.test/published/x.png"} {
-			body := mustJSON(map[string]any{"requests": []any{map[string]any{key: map[string]any{"uri": uri}}}})
-			if _, _, err := DocumentWriteOperation("POST", "/v1/documents/doc:batchUpdate", nil, body); err == nil {
-				t.Fatalf("%s %q accepted", key, uri)
-			}
-		}
-		body := mustJSON(map[string]any{"requests": []any{map[string]any{key: map[string]any{"uri": placeholder, "location": map[string]any{"index": 1}}}}})
-		if access, _, err := DocumentWriteOperation("POST", "/v1/documents/doc:batchUpdate", nil, body); err != nil || access != "structure" {
-			t.Fatalf("%s placeholder: %s %v", key, access, err)
-		}
-	}
 	values := []byte(`{"values":[["1"]]}`)
 	if access, id, err := GoogleSheetsOperation("PUT", "/v4/spreadsheets/sh/values/A1", []QueryPair{{"valueInputOption", "RAW"}}, values); err != nil || access != "write" || id != "sh" {
 		t.Fatalf("values: %s %v", access, err)
@@ -382,7 +366,7 @@ func TestDocumentWriteOperationLevels(t *testing.T) {
 	if access, _, err := GoogleSheetsOperation("POST", "/v4/spreadsheets/sh:batchUpdate", nil, []byte(`{"requests":[{"deleteSheet":{"sheetId":1}}]}`)); err != nil || access != "structure" {
 		t.Fatalf("structure: %s %v", access, err)
 	}
-	if AccessRank("read") != 0 || AccessRank("write") != 1 || AccessRank("structure") != 2 || AccessRank("create") != 2 || AccessRank("admin") != -1 {
+	if AccessRank("read") != 0 || AccessRank("write") != 1 || AccessRank("structure") != 2 || AccessRank("create") != 0 || AccessRank("admin") != -1 {
 		t.Fatal("rank")
 	}
 }

@@ -59,11 +59,14 @@ round-trip); this is the Google Docs version, owned by Warden.
 7. **Review UI is a Warden component**, modelled on `PullRequestReview.tsx`,
    with plain HTML rendering — no Tiptap, no Panta dependency ("Warden must
    operate without Panta"). Panta can mount it later.
-8. **Direct write grants stay for now.** `write`/`structure`/`create` levels
-   keep working (the Canton create-and-fill flow depends on `create`), but
-   the tool descriptions steer agents to the proposal flow, which needs only
-   `read`. Retiring `write` is an owner decision to take once proposals have
-   been used live.
+8. **Direct Docs writes are retired** (owner decision 2026-09-17, after
+   proposals had been used live; until then `write`/`structure`/`create`
+   kept writing directly, with tool descriptions steering agents to
+   proposals). `DocumentWriteOperation` refuses every Docs `batchUpdate`
+   whatever the grant; `write`/`structure` apply to Sheets only; `create`
+   is a read-level grant on the new document, which the agent fills through
+   suggestions. The inline-image publication path (`policy/images.go`,
+   `/published/<token>.png`) has no producer until suggestions carry images.
 9. **Google cannot receive native suggestions.** The Docs API always writes
    directly, and the Drive comments API cannot anchor comments in Docs; the
    suggestion layer lives only in Warden. Reads use
@@ -142,8 +145,8 @@ tests pass. The compiler's end-of-document rule: a deletion that reaches the
 last paragraph removes the preceding paragraph's newline instead (the final
 newline cannot be deleted) and that paragraph is then asserted in full,
 since Docs may give a merged paragraph the last paragraph's properties.
-Direct write grants were kept (decision 8); tool descriptions steer agents
-to the proposal flow.
+Direct Docs write grants were retired the same day (decision 8); the
+picker's permission levels now concern spreadsheets only.
 
 Live verification 2026-09-17 on the local Warden (build 8b3bf65 →
 ad49511, Claude chats, document "Warden suggestions test" in the owner's

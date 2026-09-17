@@ -284,7 +284,7 @@ export function ChatShell({
     const what =
       r.access === "create"
         ? `to create a Google document “${r.title}”`
-        : `for ${r.access === "write" ? "read and edit" : "read"} access to Google documents`;
+        : `for ${r.access === "write" ? "read and spreadsheet edit" : r.access === "structure" ? "read and full spreadsheet edit" : "read"} access to Google documents`;
     requests.push({
       id: "documents:" + r.request_id,
       icon: <FileText size={18} />,

@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -809,10 +808,10 @@ func TestGatewayOpenEgressReachesBrokeredHostsAnonymously(t *testing.T) {
 	}
 }
 
-// A Docs edit naming an attached image reaches Google with the image's
-// one-off published URL instead of the placeholder, and the token is
-// withdrawn once Google has answered.
-func TestGatewayPublishesInlineImagesForOneEdit(t *testing.T) {
+// A Docs batchUpdate never reaches Google through the gateway, whatever
+// the grant level: the agent is told to propose the change instead, and
+// the attached image it named stays unpublished.
+func TestGatewayRefusesDocsWrites(t *testing.T) {
 	f := newGatewayFixture(t)
 	google := &fakeGoogle{authorization: "Bearer synthetic-google-credential", canWrite: true, connected: true, configured: true}
 	sharing, err := NewSharing(filepath.Join(f.dir, "sharing"), google, f.clock.wall, nil)
@@ -828,35 +827,25 @@ func TestGatewayPublishesInlineImagesForOneEdit(t *testing.T) {
 	}
 	r, _ := sharing.Dispatch("request", map[string]any{"chatID": "c1", "sandboxID": "s1", "callID": "tool-1", "reason": "Insert chart", "access": "structure"})
 	sharing.Dispatch("resolve", map[string]any{"id": r["request_id"], "allow": true, "documents": []any{"doc-a"}, "duration": 900})
-	var seen string
 	f.setHandler(func(w http.ResponseWriter, req *http.Request) {
-		body, _ := io.ReadAll(req.Body)
-		var data map[string]any
-		_ = json.Unmarshal(body, &data)
-		seen, _ = data["requests"].([]any)[0].(map[string]any)["insertInlineImage"].(map[string]any)["uri"].(string)
-		token := strings.TrimSuffix(strings.TrimPrefix(seen, "https://warden.example/published/"), ".png")
-		if png, err := sharing.Images.Published(token); err != nil || len(png) == 0 {
-			w.WriteHeader(500)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"documentId":"doc-a"}`))
 	})
-	edit := `{"requests":[{"insertInlineImage":{"uri":"warden-image:` + added["image_id"].(string) + `","location":{"index":1}}}]}`
-	res, _, err := f.do("POST", "https://docs.googleapis.com/v1/documents/doc-a:batchUpdate", map[string]string{"Content-Type": "application/json"}, edit)
-	if err != nil || res.StatusCode != 200 {
-		t.Fatalf("edit: %v %v", res, err)
+	for _, edit := range []string{
+		`{"requests":[{"insertText":{"location":{"index":1},"text":"Hello"}}]}`,
+		`{"requests":[{"insertInlineImage":{"uri":"warden-image:` + added["image_id"].(string) + `","location":{"index":1}}}]}`,
+	} {
+		res, body, err := f.do("POST", "https://docs.googleapis.com/v1/documents/doc-a:batchUpdate", map[string]string{"Content-Type": "application/json"}, edit)
+		if err != nil || res.StatusCode < 400 || !strings.Contains(string(body), "propose_google_document_edit") {
+			t.Fatalf("edit: %v %s %v", res, body, err)
+		}
 	}
-	if !strings.HasPrefix(seen, "https://warden.example/published/") || strings.Contains(seen, "warden-image:") {
-		t.Fatalf("upstream uri %q", seen)
+	if len(f.upstreamRequests()) != 0 {
+		t.Fatalf("upstream reached: %+v", f.upstreamRequests())
 	}
-	token := strings.TrimSuffix(strings.TrimPrefix(seen, "https://warden.example/published/"), ".png")
-	if _, err := sharing.Images.Published(token); err == nil {
-		t.Fatal("image still published after the edit")
-	}
-	res, _, err = f.do("POST", "https://docs.googleapis.com/v1/documents/doc-a:batchUpdate", map[string]string{"Content-Type": "application/json"}, `{"requests":[{"insertInlineImage":{"uri":"https://evil.test/x.png"}}]}`)
-	if (err == nil && res.StatusCode < 400) || len(f.upstreamRequests()) != 1 {
-		t.Fatalf("remote image: %v %v", res, err)
+	res, _, err := f.do("GET", "https://docs.googleapis.com/v1/documents/doc-a", nil, "")
+	if err != nil || res.StatusCode != 200 || len(f.upstreamRequests()) != 1 {
+		t.Fatalf("read: %v %v", res, err)
 	}
 }
 

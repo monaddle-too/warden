@@ -71,8 +71,6 @@ func GoogleDocsOperation(method, path string, query []QueryPair, body []byte) (s
 	return "google_docs/documents/get", m[1], nil
 }
 
-var batchUpdatePath = regexp.MustCompile(`^/v1/documents/([A-Za-z0-9_-]{1,256}):batchUpdate$`)
-
 // Google Sheets: reads of a spreadsheet or its values, and the value and
 // structure writes a write grant covers. The spreadsheet ID is the grant's
 // document ID, exactly as for Docs.
@@ -120,25 +118,22 @@ func GoogleSheetsOperation(method, path string, query []QueryPair, body []byte) 
 }
 
 // AccessRank orders document grant levels: a grant authorizes every
-// operation of its own level and below. "create" is a structure-level
-// grant on a document Warden created for the agent.
+// operation of its own level and below. Only spreadsheets have write
+// levels; Google Docs are read at every level and changed through
+// suggestions the owner approves (DocumentProposals). "create" is a
+// read-level grant on a document Warden created for the agent, which
+// fills it the same way.
 func AccessRank(access string) int {
 	switch access {
-	case "read":
+	case "read", "create":
 		return 0
 	case "write":
 		return 1
-	case "structure", "create":
+	case "structure":
 		return 2
 	}
 	return -1
 }
-
-// docsImageEdits make Google fetch a URI, which would let an agent
-// exfiltrate data through a URL of its choosing. They are allowed only with
-// a placeholder naming an image the agent attached (WardenImageURI); the
-// sharing store publishes that image itself for the duration of the edit.
-var docsImageEdits = stringSet("insertInlineImage", "replaceImage")
 
 // WardenImageURI is the placeholder an agent writes as an image edit's uri:
 // warden-image:<attach_image id>.
@@ -155,78 +150,27 @@ func imageEditPlaceholder(edit any) string {
 	return ""
 }
 
-// docsTextEdits are the requests a "write" grant covers; every other
-// batchUpdate request (tables, tabs, headers, named ranges, page breaks, ...)
-// is "structure".
-var docsTextEdits = stringSet("insertText", "deleteContentRange", "updateTextStyle", "updateParagraphStyle")
+// errDocsWrite refuses every direct Google Docs write: the agent proposes
+// edits as suggestions instead, and Warden writes what the owner approves.
+var errDocsWrite = errors.New("Google Docs are not written directly; propose the change with propose_google_document_edit")
 
-// DocumentWriteOperation classifies shared-document reads and batchUpdate
-// edits as "read", "write" (text and styling) or "structure" (everything
-// else). Creation is host-executed after owner approval only.
+// DocumentWriteOperation classifies shared-document requests: Docs and
+// Sheets reads are "read", Sheets cell values "write" and Sheets
+// spreadsheets:batchUpdate "structure". Google Docs are never written
+// through a grant, whatever its level; creation is host-executed after
+// owner approval only.
 func DocumentWriteOperation(method, path string, query []QueryPair, body []byte) (access, document string, err error) {
 	if strings.HasPrefix(path, "/v4/spreadsheets/") {
 		return GoogleSheetsOperation(method, path, query, body)
 	}
-	if method == "GET" {
-		_, doc, err := GoogleDocsOperation(method, path, query, body)
-		if err != nil {
-			return "", "", err
-		}
-		return "read", doc, nil
+	if method != "GET" {
+		return "", "", errDocsWrite
 	}
-	m := batchUpdatePath.FindStringSubmatch(path)
-	if method != "POST" || m == nil || len(query) > 0 || len(body) == 0 || len(body) > 256*1024 {
-		return "", "", errors.New("unsupported document write")
+	_, doc, err := GoogleDocsOperation(method, path, query, body)
+	if err != nil {
+		return "", "", err
 	}
-	var data map[string]any
-	if err := json.Unmarshal(body, &data); err != nil || data == nil {
-		return "", "", errors.New("invalid document edit")
-	}
-	for key := range data {
-		if key != "requests" && key != "writeControl" {
-			return "", "", errors.New("invalid document edit")
-		}
-	}
-	edits, ok := data["requests"].([]any)
-	if !ok || len(edits) < 1 || len(edits) > 100 {
-		return "", "", errors.New("expected 1–100 edits")
-	}
-	if raw, present := data["writeControl"]; present {
-		control, ok := raw.(map[string]any)
-		if !ok {
-			return "", "", errors.New("unsupported revision control")
-		}
-		for key := range control {
-			if key != "requiredRevisionId" {
-				return "", "", errors.New("unsupported revision control")
-			}
-		}
-		if len(control) > 0 {
-			revision, ok := control["requiredRevisionId"].(string)
-			if !ok || len(revision) < 1 || len(revision) > 256 {
-				return "", "", errors.New("invalid revision")
-			}
-		}
-	}
-	access = "write"
-	for _, item := range edits {
-		edit, ok := item.(map[string]any)
-		if !ok || len(edit) != 1 {
-			return "", "", errors.New("invalid edit")
-		}
-		for key, value := range edit {
-			if _, isObject := value.(map[string]any); !isObject {
-				return "", "", errors.New("invalid edit")
-			}
-			if docsImageEdits[key] && imageEditPlaceholder(value) == "" {
-				return "", "", errors.New("image edits must use uri warden-image:<image_id> from attach_image; remote URLs are not allowed")
-			}
-			if !docsTextEdits[key] {
-				access = "structure"
-			}
-		}
-	}
-	return access, m[1], nil
+	return "read", doc, nil
 }
 
 // Figma.

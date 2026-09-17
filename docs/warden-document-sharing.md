@@ -18,13 +18,13 @@ New connections request `documents` and `drive.metadata.readonly` under `https:/
 
 This implementation uses the existing single-owner local Warden installation. It has not been deployed to OVH and is not a multi-user OAuth account store.
 
-## Document creation and editing
+## Document creation and spreadsheet editing
 
-Agents can call `request_google_document_creation({title, reason})`. Warden shows the title, proposed write access and expiry. On approval the host creates one blank Google document and grants the requesting conversation read/write access to that ID. The agent receives its browser/API URLs and fills it using `POST /v1/documents/{id}:batchUpdate` through Warden's credential-injecting proxy. A creation timeout/crash is marked failed and never automatically retried: check Google for a possibly-created document before submitting another request.
+Agents can call `request_google_document_creation({title, reason})`. Warden shows the title and expiry. On approval the host creates one blank Google document and grants the requesting conversation read access to that ID; the agent fills it through suggestions (below), never directly. A creation timeout/crash is marked failed and never automatically retried: check Google for a possibly-created document before submitting another request.
 
-`request_google_docs_access` accepts `access: "read" | "write" | "structure"` (read by default); each level includes the ones below, on the selected IDs only. `write` covers Docs text insertion/deletion and text/paragraph styling plus Sheets cell values (update, append, clear). `structure` covers every other Docs `batchUpdate` request (tables, tabs, headers, named ranges, ...) and Sheets `spreadsheets:batchUpdate` (adding and deleting sheets, formats, charts, merges). Created documents get `structure`-level access. Creating other files, deleting documents, changing sharing permissions and inserting remote images are denied at every level.
+`request_google_docs_access` accepts `access: "read" | "write" | "structure"` (read by default); each level includes the ones below, on the selected IDs only. The higher levels apply to spreadsheets: `write` covers Sheets cell values (update, append, clear) and `structure` also `spreadsheets:batchUpdate` (adding and deleting sheets, formats, charts, merges). Google Docs are read at every level — `documents.get` only; any Docs `batchUpdate` is refused with a pointer to `propose_google_document_edit`, so every change to a document is a suggestion the owner reviews (2026-09-17: the direct `write`/`structure` Docs levels were retired once suggestions had been used live). Creating other files, deleting documents and changing sharing permissions are denied at every level. Grants expire and can be revoked. Creating a document does not authorize another conversation to read it.
 
-Images go in through `attach_image`: at `structure` level an agent may send `insertInlineImage` (or `replaceImage`) with `uri: "warden-image:<image_id>"`. The Docs API only accepts a URL for images and copies the bytes at insertion time, so the policy service publishes the attached PNG at `<auth.publicURL>/published/<random token>.png`, rewrites the edit to that URL, and withdraws the token as soon as Google has answered (or after two minutes if it never does). Any other image URL is refused, since it would let the agent make Google fetch an address of its choosing. This needs an https `auth.publicURL` that Google can reach, so it works on public deployments and not on a loopback install. Grants expire and can be revoked. Creating a document does not authorize another conversation to read it.
+Inline images: the policy service can still publish an attached PNG (`attach_image`) at `<auth.publicURL>/published/<token>.png` for the duration of one Docs edit, but no grant reaches that path any more; it stays for the suggestion writer to use once suggestions can carry images. Any other image URL is refused, since it would let the agent make Google fetch an address of its choosing.
 
 Owners can use **Shared documents → Share documents with this chat** before the first message to select documents, permission and expiry. This setup action does not automatically launch the agent. The host API is `POST /api/sharing/select` with `chatID`, `documents`, `access` and `duration`; it derives sandbox identity from the conversation. A second agent retrieves its explicitly shared plan with `list_shared_documents`.
 
@@ -32,8 +32,8 @@ Google creation/editing requires the `documents` OAuth scope in addition to `dri
 
 ## Suggestions: reviewed edits without a write grant
 
-The recommended way for an agent to change a shared document is to propose
-suggestions, which only needs `read` access:
+The only way for an agent to change a shared document is to propose
+suggestions, which needs `read` access:
 
 - `read_google_document({document_id})` returns the document as numbered
   paragraphs `{n, style, depth, text, frozen?}`. Styles are `title`,
