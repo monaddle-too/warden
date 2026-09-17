@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"warden/chat/internal/conversation"
 )
 
 type HTTP struct {
@@ -74,7 +75,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if r.Method == "GET" && path == "state" {
-		json.NewEncoder(w).Encode(h.Engine.Store.Snapshot())
+		json.NewEncoder(w).Encode(h.Engine.View())
 		return
 	}
 	if r.Method == "GET" && path == "environments" {
@@ -162,7 +163,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "agent":
 			err = h.Engine.ConfigureAgentAndRelease(r.Context(), parts[1], body.Provider, body.Model)
 		case "message":
-			err = h.Engine.Message(parts[1], body.Text, body.ID)
+			err = h.Engine.MessageFrom(parts[1], body.Text, body.ID, requester(r))
+		case "typing":
+			err = h.Engine.Typing(parts[1], requester(r))
+			result = map[string]bool{"ok": true}
 		case "edit":
 			err = h.Engine.Edit(parts[1], body.Title, body.Archived)
 		case "stop":
@@ -181,6 +185,25 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	respond(w, result, err)
 }
+
+// requester is the person behind a request as the edge identified them
+// (X-Warden-Principal, -Email, -Name; the edge strips client-supplied
+// copies). Without the edge, the capability holder is the owner.
+func requester(r *http.Request) conversation.Actor {
+	principal := strings.TrimSpace(r.Header.Get("X-Warden-Principal"))
+	if principal == "" || len(principal) > 128 {
+		return conversation.Actor{PrincipalID: "owner"}
+	}
+	clip := func(v string, n int) string {
+		v = strings.TrimSpace(v)
+		if len(v) > n {
+			return v[:n]
+		}
+		return v
+	}
+	return conversation.Actor{PrincipalID: principal, Email: clip(r.Header.Get("X-Warden-Email"), 254), Name: clip(r.Header.Get("X-Warden-Name"), 120)}
+}
+
 func respond(w http.ResponseWriter, value any, err error) {
 	if err != nil {
 		w.WriteHeader(409)
@@ -202,7 +225,7 @@ func (h *HTTP) events(w http.ResponseWriter, r *http.Request) {
 	previous := ""
 	lastWrite := time.Time{}
 	for {
-		data, _ := json.Marshal(h.Engine.Store.Snapshot())
+		data, _ := json.Marshal(h.Engine.View())
 		if string(data) != previous || time.Since(lastWrite) >= 5*time.Second {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {

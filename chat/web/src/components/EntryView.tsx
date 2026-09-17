@@ -51,6 +51,15 @@ export const ActivityGroup = memo(function ActivityGroup({
     </details>
   );
 });
+// Who wrote a user entry: their Google name, else their email, else the
+// owner ("You" on a local install, where the owner is the only person).
+export function senderLabel(sender?: Entry["sender"]) {
+  if (!sender) return "You";
+  if (sender.name) return sender.name;
+  if (sender.email) return sender.email;
+  return sender.principalID === "owner" ? "You" : "Collaborator";
+}
+
 export const EntryView = memo(function EntryView({
   entry,
   chatID,
@@ -74,12 +83,7 @@ export const EntryView = memo(function EntryView({
     <header>
       <strong>
         {user
-          ? entry.sender?.email ||
-            (entry.sender
-              ? entry.sender.principalID === "owner"
-                ? "You"
-                : "Collaborator"
-              : "You")
+          ? senderLabel(entry.sender)
           : provider === "claude"
             ? "Claude"
             : "Codex"}

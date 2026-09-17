@@ -76,6 +76,14 @@ func (a *ownerAuth) Role(r *http.Request) string {
 	return ""
 }
 
+// Identity: a local install has one person, the owner.
+func (a *ownerAuth) Identity(r *http.Request) (string, string, string, bool) {
+	if a.Role(r) == "" {
+		return "", "", "", false
+	}
+	return "owner", "", "", true
+}
+
 // SessionRef is the cookie session when present, else a reference to the
 // capability itself for bearer requests.
 func (a *ownerAuth) SessionRef(r *http.Request) (string, bool) {

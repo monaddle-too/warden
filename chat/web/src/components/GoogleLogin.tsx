@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 
 export type BrowserSession = {
-  user: { sub: string; email: string; role: string };
+  user: { sub: string; email: string; role: string; name?: string };
   csrf: string;
 };
 export type AuthState = Partial<BrowserSession> & {

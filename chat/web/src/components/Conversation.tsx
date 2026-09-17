@@ -9,7 +9,7 @@ import {
 } from "react";
 import { ArrowUp, Bot, Square } from "lucide-react";
 import { readLocalAttempt, messageAttempt, type Attempt } from "../drafts";
-import { api, newID, downloadFile } from "../api";
+import { api, me, newID, downloadFile } from "../api";
 import type { Chat, Entry } from "../types";
 import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
@@ -68,6 +68,35 @@ export function Conversation({
     chat.status === "running" ||
     chat.status === "queued" ||
     chat.status === "stopping";
+  // Typing: every keystroke reports at most once per 3 s (the server keeps
+  // an indicator for 8 s after the last report), so a steady typist stays
+  // visible and a pause fades within seconds.
+  const lastTyping = useRef(0);
+  function reportTyping() {
+    const now = Date.now();
+    if (now - lastTyping.current < 3000) return;
+    lastTyping.current = now;
+    void api(`chats/${chat.id}/typing`, {}).catch(() => {
+      /* indicator only; failures are invisible */
+    });
+  }
+  const [clock, setClock] = useState(() => Date.now() / 1000);
+  const others = (chat.typing || []).filter(
+    (t) => t.principalID !== me.principalID && t.until > clock,
+  );
+  useEffect(() => {
+    if (!chat.typing?.length) return;
+    const id = setInterval(() => setClock(Date.now() / 1000), 1000);
+    return () => clearInterval(id);
+  }, [chat.typing]);
+  const typingLine =
+    others.length === 0
+      ? ""
+      : others.length === 1
+        ? `${others[0].name} is typing…`
+        : others.length === 2
+          ? `${others[0].name} and ${others[1].name} are typing…`
+          : `${others[0].name}, ${others[1].name} and ${others.length - 2} more are typing…`;
   useEffect(() => {
     try {
       if (text) localStorage.setItem(key, text);
@@ -90,6 +119,7 @@ export function Conversation({
     } catch {}
     try {
       await api(`chats/${chat.id}/message`, message);
+      lastTyping.current = 0;
       setText("");
       attempted.current = undefined;
       try {
@@ -199,6 +229,14 @@ export function Conversation({
             {error}
           </p>
         )}
+        <p className="typing-line" aria-live="polite">
+          {typingLine && (
+            <>
+              {typingLine.replace(/…$/, "")}
+              <span className="typing-dots">…</span>
+            </>
+          )}
+        </p>
         <div className="composer">
           <textarea
             aria-label="Message agent"
@@ -206,7 +244,10 @@ export function Conversation({
               chat.archived ? "This chat is archived" : "Message your agent…"
             }
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              if (e.target.value) reportTyping();
+            }}
             disabled={busy || chat.archived}
             rows={3}
             onKeyDown={(e) => {

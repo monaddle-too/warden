@@ -34,6 +34,16 @@ type Chat struct {
 	Archived     bool                      `json:"archived"`
 	Conversation conversation.Conversation `json:"conversation"`
 	Approvals    []Approval                `json:"approvals"`
+	// Typing is who is composing a message right now. It is filled in for
+	// clients by Engine.View and never stored.
+	Typing []Typist `json:"typing,omitempty"`
+}
+
+// Typist is one person composing a message in a chat.
+type Typist struct {
+	PrincipalID string  `json:"principalID"`
+	Name        string  `json:"name"`
+	Until       float64 `json:"until"` // unix seconds when the indicator lapses
 }
 type State struct {
 	Version          int           `json:"version"`

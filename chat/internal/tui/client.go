@@ -27,6 +27,11 @@ type Entry struct {
 	CreatedAt   float64 `json:"createdAt"`
 	IsStreaming bool    `json:"isStreaming"`
 	Delivery    string  `json:"delivery"`
+	Sender      *struct {
+		PrincipalID string `json:"principalID"`
+		Email       string `json:"email"`
+		Name        string `json:"name"`
+	} `json:"sender"`
 }
 
 type Question struct {

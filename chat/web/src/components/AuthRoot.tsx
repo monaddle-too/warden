@@ -11,7 +11,7 @@ export function AuthRoot() {
   const [auth, setAuth] = useState<AuthState>();
   const [error, setError] = useState("");
   const accept = useCallback((session: BrowserSession) => {
-    remoteSession(session.csrf);
+    remoteSession(session.csrf, session.user);
     setAuth({ enabled: true, ...session });
     const next = new URLSearchParams(location.search).get("next");
     if (next) {
@@ -72,7 +72,9 @@ export function AuthRoot() {
             <span className="warden-account-avatar" aria-hidden="true">
               {(auth.user?.email || "?").slice(0, 1)}
             </span>
-            <small title={auth.user?.email}>{auth.user?.email}</small>
+            <small title={auth.user?.email}>
+              {auth.user?.name || auth.user?.email}
+            </small>
             <button className="ghost" onClick={logout}>
               Sign out
             </button>

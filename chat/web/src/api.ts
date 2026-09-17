@@ -15,8 +15,17 @@ if (fragment.has("session")) {
   history.replaceState(null, "", location.pathname + location.search);
 }
 let remoteCSRF = "";
-export function remoteSession(csrf: string) {
+// The signed-in person, as the edge will attribute them; "owner" without
+// sign-in (a local install).
+export let me: { principalID: string; email?: string; name?: string } = {
+  principalID: "owner",
+};
+export function remoteSession(
+  csrf: string,
+  user?: { sub: string; email: string; name?: string },
+) {
   remoteCSRF = csrf;
+  if (user) me = { principalID: user.sub, email: user.email, name: user.name };
 }
 export const signedIn = () => !!token || !!remoteCSRF;
 export async function api<T = unknown>(

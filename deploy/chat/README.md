@@ -343,6 +343,13 @@ cannot be served from Warden's authenticated app origin. A one-use ticket binds
 a host-only preview session to the main Google session and a browser challenge.
 Every preview request checks the session and approved binding; logout/revocation
 cancels streams. Cookies and Warden/provider authorization are stripped upstream.
+The edge tells the chat who each request is from (`X-Warden-Principal`, the
+Google subject; `X-Warden-Email`; `X-Warden-Name`, the account's display
+name when Google supplies one), after discarding any such headers a client
+sent. The chat attributes user messages to that identity (name, else email)
+and keeps a per-chat "is typing" indicator for 8 s after each keystroke a
+client reports, visible to everyone else in the chat. On a local install the
+only identity is the owner.
 Unpublishing persists revocation before trying worker cleanup. Stopped servers
 return unavailable until the chat restarts its server/revalidates the binding.
 

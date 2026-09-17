@@ -28,6 +28,12 @@ func (a *fakeAuth) Role(r *http.Request) string {
 	return ""
 }
 func (a *fakeAuth) Handler() http.Handler { return http.NotFoundHandler() }
+func (a *fakeAuth) Identity(r *http.Request) (string, string, string, bool) {
+	if _, ok := a.SessionRef(r); !ok {
+		return "", "", "", false
+	}
+	return "google-subject", "owner@gmail.com", "Owner Person", true
+}
 func (a *fakeAuth) SessionRef(r *http.Request) (string, bool) {
 	c, err := r.Cookie("main")
 	return "parent", err == nil && c.Value == "valid" && a.ActiveSession("parent")
@@ -574,4 +580,23 @@ func TestLoopbackRevocationCancelsActivePreviewStream(t *testing.T) {
 		t.Fatal("revocation did not close preview stream")
 	}
 	<-done
+}
+
+// The edge tells the chat who is behind each request with headers of its
+// own, after discarding any the client sent.
+func TestProxyForwardsIdentityHeadersItOwns(t *testing.T) {
+	var seen http.Header
+	s, _ := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = r.Header.Clone(); w.WriteHeader(204) }))
+	r := httptest.NewRequest("GET", "https://warden.example.com/api/state", nil)
+	r.AddCookie(&http.Cookie{Name: "main", Value: "valid"})
+	r.Header.Set(HeaderPrincipal, "forged")
+	r.Header.Set(HeaderName, "Forged Name")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != 204 {
+		t.Fatalf("status %d", w.Code)
+	}
+	if seen.Get(HeaderPrincipal) != "google-subject" || seen.Get(HeaderEmail) != "owner@gmail.com" || seen.Get(HeaderName) != "Owner Person" {
+		t.Fatalf("identity headers: %v", seen)
+	}
 }

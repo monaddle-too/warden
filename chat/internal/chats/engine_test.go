@@ -552,3 +552,72 @@ func TestArchiveEnvironmentStopsAndArchivesAllChats(t *testing.T) {
 		t.Fatal("unknown workspace archived")
 	}
 }
+
+// Messages are attributed to the person the edge identified (headers the
+// edge sets and clients cannot), falling back to the owner; typing
+// indicators show for TypingTTL after the last reported keystroke and
+// vanish when that person sends.
+func TestAttributionAndTypingIndicators(t *testing.T) {
+	e, _, _ := setup(t)
+	now := time.Unix(1000, 0)
+	e.Now = func() time.Time { return now }
+	h := &HTTP{Engine: e, Token: "private", Host: "127.0.0.1:18780", Origin: "http://127.0.0.1:18780", WebDir: t.TempDir()}
+	id, _ := e.Create("shared", "", "")
+	call := func(path, body string, identity map[string]string) int {
+		t.Helper()
+		r := httptest.NewRequest("POST", h.Origin+"/api/"+path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer private")
+		for k, v := range identity {
+			r.Header.Set(k, v)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	alice := map[string]string{"X-Warden-Principal": "sub-alice", "X-Warden-Email": "alice@example.com", "X-Warden-Name": "Alice Example"}
+	bob := map[string]string{"X-Warden-Principal": "sub-bob", "X-Warden-Email": "bob@example.com"}
+	if code := call("chats/"+id+"/typing", "{}", alice); code != 200 {
+		t.Fatalf("typing: %d", code)
+	}
+	if code := call("chats/"+id+"/typing", "{}", bob); code != 200 {
+		t.Fatalf("typing: %d", code)
+	}
+	if code := call("chats/unknown/typing", "{}", alice); code != 409 {
+		t.Fatalf("typing in unknown chat: %d", code)
+	}
+	typing := e.View().chat(id).Typing
+	if len(typing) != 2 || typing[0].Name != "Alice Example" || typing[0].PrincipalID != "sub-alice" || typing[1].Name != "bob@example.com" || typing[0].Until != 1008 {
+		t.Fatalf("typing: %+v", typing)
+	}
+	if e.Store.Snapshot().chat(id).Typing != nil {
+		t.Fatal("typing leaked into the stored state")
+	}
+	// Alice sends: her indicator goes, her message carries her identity.
+	if code := call("chats/"+id+"/message", `{"text":"hello","id":"`+strings.Repeat("a", 32)+`"}`, alice); code != 200 {
+		t.Fatalf("message: %d", code)
+	}
+	view := e.View().chat(id)
+	if len(view.Typing) != 1 || view.Typing[0].PrincipalID != "sub-bob" {
+		t.Fatalf("typing after send: %+v", view.Typing)
+	}
+	entry := view.Conversation.Entries[0]
+	if entry.Sender == nil || entry.Sender.PrincipalID != "sub-alice" || entry.Sender.Email != "alice@example.com" || entry.Sender.Name != "Alice Example" {
+		t.Fatalf("sender: %+v", entry.Sender)
+	}
+	// Without the edge's headers the owner is the sender.
+	if code := call("chats/"+id+"/message", `{"text":"local","id":"`+strings.Repeat("b", 32)+`"}`, nil); code != 200 {
+		t.Fatal("owner message refused")
+	}
+	if s := e.View().chat(id).Conversation.Entries[1].Sender; s == nil || s.PrincipalID != "owner" || s.Name != "" {
+		t.Fatalf("owner sender: %+v", s)
+	}
+	// Bob's indicator lapses eight seconds after his last keystroke.
+	now = time.Unix(1007, 0)
+	if len(e.View().chat(id).Typing) != 1 {
+		t.Fatal("indicator lapsed early")
+	}
+	now = time.Unix(1008, 0)
+	if len(e.View().chat(id).Typing) != 0 {
+		t.Fatal("indicator outlived its ttl")
+	}
+}

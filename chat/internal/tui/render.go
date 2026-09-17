@@ -141,7 +141,18 @@ func RenderTranscript(c *Chat, width int, expanded bool) []string {
 		text := sanitize(e.Text)
 		switch e.Role {
 		case "user":
-			out = append(out, wrap(text, width, bold+cyan+"you › "+reset, "      ")...)
+			// Another person's message carries their name (else email) on
+			// a shared web deployment; the owner's own is "you".
+			label := "you"
+			if e.Sender != nil && e.Sender.PrincipalID != "owner" {
+				switch {
+				case e.Sender.Name != "":
+					label = sanitize(e.Sender.Name)
+				case e.Sender.Email != "":
+					label = sanitize(e.Sender.Email)
+				}
+			}
+			out = append(out, wrap(text, width, bold+cyan+label+" › "+reset, strings.Repeat(" ", len(label)+3))...)
 			if e.Delivery != "" && e.Delivery != "delivered" && e.Delivery != "confirmed" {
 				out = append(out, dim+"      ("+sanitize(e.Delivery)+")"+reset)
 			}

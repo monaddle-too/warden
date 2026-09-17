@@ -910,4 +910,11 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   GET operations scoped to a repository) joined the operation catalog's
   known read set; before this, reading issues of a shared repository was
   refused as unsupported while pull requests worked.
+- 2026-09-16: multiplayer basics for the web deployment. Sessions carry the
+  Google display name; the edge forwards principal, email and name to the
+  chat in headers it owns; user entries record the sender (name, then email)
+  and the UI and terminal client show it; `POST /api/chats/{id}/typing`
+  keeps a per-person indicator for 8 s after the last reported keystroke
+  (clients report at most every 3 s), merged into the live state by
+  `Engine.View` and shown as "Name is typing…" to everyone else.
 

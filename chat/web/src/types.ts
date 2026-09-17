@@ -6,7 +6,7 @@ export type Entry = {
   createdAt: number;
   isStreaming: boolean;
   delivery: string;
-  sender?: { email?: string; principalID: string };
+  sender?: { email?: string; name?: string; principalID: string };
 };
 export type Question = {
   id: string;
@@ -32,6 +32,7 @@ export type Chat = {
   error?: string;
   conversation: { threadID?: string; entries: Entry[] };
   approvals: Approval[];
+  typing?: { principalID: string; name: string; until: number }[];
 };
 export type State = { version: number; chats: Chat[] };
 export type EnvironmentChat = {

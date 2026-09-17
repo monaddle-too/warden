@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,10 +51,15 @@ type Engine struct {
 	ResidentProviders []string
 	ResidentIdle      time.Duration
 	SteeringProviders []string
-	mu                sync.Mutex
-	active            map[string]*activeRun
-	wake              chan struct{}
-	done              chan struct{}
+	// Now is the clock (tests replace it); nil means time.Now.
+	Now func() time.Time
+	// typing: chat id -> principal -> indicator, see Typing.
+	typingMu sync.Mutex
+	typing   map[string]map[string]Typist
+	mu       sync.Mutex
+	active   map[string]*activeRun
+	wake     chan struct{}
+	done     chan struct{}
 }
 
 const runSlots = 2
@@ -234,6 +240,16 @@ func (e *Engine) Create(title, shared, repository string, selection ...string) (
 	return id, err
 }
 func (e *Engine) Message(id, text, messageID string) error {
+	return e.MessageFrom(id, text, messageID, cv.Actor{PrincipalID: "owner"})
+}
+
+// MessageFrom appends a user message attributed to actor (the person the
+// edge identified, or the owner) and clears that person's typing indicator.
+func (e *Engine) MessageFrom(id, text, messageID string, actor cv.Actor) error {
+	if actor.PrincipalID == "" {
+		actor.PrincipalID = "owner"
+	}
+	defer e.stopTyping(id, actor.PrincipalID)
 	text = strings.TrimSpace(text)
 	if text == "" || len(text) > 128<<10 || len(messageID) != 32 {
 		return errors.New("valid message and message ID required")
@@ -259,7 +275,8 @@ func (e *Engine) Message(id, text, messageID string) error {
 		}
 		v := cv.NewEntry("user", text)
 		v.ID = messageID
-		v.Sender = &cv.Actor{PrincipalID: "owner"}
+		sender := actor
+		v.Sender = &sender
 		v.Delivery = "queued"
 		c.Conversation.Entries = append(c.Conversation.Entries, v)
 		if c.Status != "running" && c.Status != "queued" {
@@ -275,6 +292,80 @@ func (e *Engine) Message(id, text, messageID string) error {
 	}
 	return err
 }
+
+// TypingTTL is how long a typing indicator outlives the last keystroke.
+const TypingTTL = 8 * time.Second
+
+// Typing records that actor is composing a message in chat id: the
+// indicator shows to everyone else for TypingTTL after each keystroke the
+// client reports. Nothing is stored; a restart forgets it.
+func (e *Engine) Typing(id string, actor cv.Actor) error {
+	if actor.PrincipalID == "" {
+		actor.PrincipalID = "owner"
+	}
+	if e.Store.Snapshot().chat(id) == nil {
+		return errors.New("chat not found")
+	}
+	label := actor.Name
+	if label == "" {
+		label = actor.Email
+	}
+	if label == "" {
+		label = "Someone"
+	}
+	e.typingMu.Lock()
+	defer e.typingMu.Unlock()
+	if e.typing == nil {
+		e.typing = map[string]map[string]Typist{}
+	}
+	if e.typing[id] == nil {
+		e.typing[id] = map[string]Typist{}
+	}
+	e.typing[id][actor.PrincipalID] = Typist{PrincipalID: actor.PrincipalID, Name: label, Until: float64(e.now().Add(TypingTTL).UnixNano()) / 1e9}
+	return nil
+}
+
+func (e *Engine) stopTyping(id, principal string) {
+	e.typingMu.Lock()
+	defer e.typingMu.Unlock()
+	if e.typing[id] != nil {
+		delete(e.typing[id], principal)
+	}
+}
+
+func (e *Engine) now() time.Time {
+	if e.Now != nil {
+		return e.Now()
+	}
+	return time.Now()
+}
+
+// View is the state clients see: the stored snapshot plus who is typing
+// in each chat, expired indicators dropped.
+func (e *Engine) View() State {
+	st := e.Store.Snapshot()
+	now := float64(e.now().UnixNano()) / 1e9
+	e.typingMu.Lock()
+	defer e.typingMu.Unlock()
+	for _, c := range st.Chats {
+		people := e.typing[c.ID]
+		if len(people) == 0 {
+			continue
+		}
+		var list []Typist
+		for principal, t := range people {
+			if t.Until <= now {
+				delete(people, principal)
+				continue
+			}
+			list = append(list, t)
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+		c.Typing = list
+	}
+	return st
+}
+
 func (e *Engine) Edit(id, title string, archived bool) error {
 	err := e.Store.update(func(st *State) error {
 		c := st.chat(id)

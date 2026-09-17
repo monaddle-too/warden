@@ -32,6 +32,9 @@ type User struct {
 	Subject string `json:"sub"`
 	Email   string `json:"email"`
 	Role    string `json:"role"`
+	// Name is the account's display name from the ID token, when Google
+	// provides one; attribution falls back to the email otherwise.
+	Name string `json:"name,omitempty"`
 }
 type session struct {
 	HostedDomain string
@@ -286,6 +289,7 @@ func (a *Auth) login(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Verified bool   `json:"email_verified"`
 		Domain   string `json:"hd"`
+		Name     string `json:"name"`
 	}
 	if err := token.Claims(&claims); err != nil || !claims.Verified {
 		reject(w, 403, "a verified Google email is required")
@@ -298,7 +302,11 @@ func (a *Auth) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := random()
-	s := session{HostedDomain: claims.Domain, User: User{token.Subject, email, role}, CSRF: random(), Expires: time.Now().Add(sessionTTL)}
+	name := strings.TrimSpace(claims.Name)
+	if len(name) > 120 {
+		name = name[:120]
+	}
+	s := session{HostedDomain: claims.Domain, User: User{Subject: token.Subject, Email: email, Role: role, Name: name}, CSRF: random(), Expires: time.Now().Add(sessionTTL)}
 	a.mu.Lock()
 	a.cleanupLocked()
 	if old, err := r.Cookie(sessionCookie); err == nil {
@@ -337,6 +345,17 @@ func (a *Auth) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 // SessionRef is an opaque host-only session reference, never sent to a preview.
+// Identity reports the signed-in person behind r for attribution: the
+// stable Google subject, the email and the display name ("" when Google
+// gave none). ok is false without a live session.
+func (a *Auth) Identity(r *http.Request) (principal, email, name string, ok bool) {
+	s, ok := a.current(r)
+	if !ok {
+		return "", "", "", false
+	}
+	return s.User.Subject, s.User.Email, s.User.Name, true
+}
+
 func (a *Auth) SessionRef(r *http.Request) (string, bool) {
 	if _, ok := a.current(r); !ok {
 		return "", false

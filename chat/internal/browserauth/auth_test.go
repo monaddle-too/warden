@@ -311,3 +311,30 @@ func TestOnLoginObservesOnlyAdmittedSignIns(t *testing.T) {
 		t.Fatalf("unexpected demo login record: %+v", seen[1])
 	}
 }
+
+// The display name from the ID token rides along in the session for
+// attribution; a missing one is simply absent.
+func TestSessionCarriesGoogleName(t *testing.T) {
+	a, signer := testAuth(t)
+	c, nonce := bootstrap(t, a)
+	w := login(a, c, signed(t, signer, nonce, map[string]any{"name": "  Ada Lovelace  "}), origin)
+	if w.Code != 200 {
+		t.Fatalf("login: %d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		User User `json:"user"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if body.User.Name != "Ada Lovelace" || body.User.Email != "admin@gmail.com" {
+		t.Fatalf("user: %+v", body.User)
+	}
+	r := httptest.NewRequest("GET", origin+"/auth/session", nil)
+	for _, c := range w.Result().Cookies() {
+		if c.Name == sessionCookie {
+			r.AddCookie(c)
+		}
+	}
+	if principal, email, name, ok := a.Identity(r); !ok || principal != "google-subject" || email != "admin@gmail.com" || name != "Ada Lovelace" {
+		t.Fatalf("identity: %q %q %q %v", principal, email, name, ok)
+	}
+}

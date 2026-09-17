@@ -14,6 +14,7 @@ type Conversation struct {
 type Actor struct {
 	PrincipalID string `json:"principalID"`
 	Email       string `json:"email,omitempty"`
+	Name        string `json:"name,omitempty"`
 }
 type Entry struct {
 	Sender      *Actor  `json:"sender,omitempty"`

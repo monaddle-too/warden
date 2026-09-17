@@ -65,7 +65,20 @@ type Authenticator interface {
 	Handler() http.Handler
 	SessionRef(*http.Request) (string, bool)
 	ActiveSession(string) bool
+	// Identity names the person behind an authenticated request so the
+	// chat can attribute what they write: a stable principal, their email
+	// and display name (either may be empty). ok is false when unknown.
+	Identity(*http.Request) (principal, email, name string, ok bool)
 }
+
+// Identity headers the edge sets on requests it forwards to the chat; a
+// client cannot supply them because the edge strips its own copies first.
+const (
+	HeaderPrincipal = "X-Warden-Principal"
+	HeaderEmail     = "X-Warden-Email"
+	HeaderName      = "X-Warden-Name"
+)
+
 type Server struct {
 	Config      Config
 	Auth        Authenticator
@@ -531,8 +544,21 @@ func (s *Server) proxy(binding string, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Warden host unavailable", 503)
 		return
 	}
+	principal, email, name, known := s.Auth.Identity(r)
 	proxy := httputil.NewSingleHostReverseProxy(s.target)
 	proxy.Director = func(req *http.Request) {
+		req.Header.Del(HeaderPrincipal)
+		req.Header.Del(HeaderEmail)
+		req.Header.Del(HeaderName)
+		if known && principal != "" {
+			req.Header.Set(HeaderPrincipal, principal)
+			if email != "" {
+				req.Header.Set(HeaderEmail, email)
+			}
+			if name != "" {
+				req.Header.Set(HeaderName, name)
+			}
+		}
 		req.URL.Scheme = s.target.Scheme
 		req.URL.Host = s.target.Host
 		req.Host = s.Config.UpstreamHost
