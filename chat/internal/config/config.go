@@ -535,6 +535,18 @@ func Parse(raw []byte) (Config, error) {
 		Providers map[string]json.RawMessage `json:"providers"`
 	}
 	_ = json.Unmarshal(raw, &nulls)
+	// warmSpares is the one integer whose zero is a setting (no spare
+	// sandbox), which merge cannot tell from unset; an explicit value is
+	// read separately so 0 survives.
+	var explicit struct {
+		Sandboxes struct {
+			WarmSpares *int `json:"warmSpares"`
+		} `json:"sandboxes"`
+	}
+	_ = json.Unmarshal(raw, &explicit)
+	if explicit.Sandboxes.WarmSpares != nil {
+		c.Sandboxes.WarmSpares = *explicit.Sandboxes.WarmSpares
+	}
 	for name, value := range nulls.Providers {
 		if strings.TrimSpace(string(value)) != "null" {
 			continue

@@ -123,6 +123,22 @@ func TestSandboxEgressModes(t *testing.T) {
 	}
 }
 
+// warmSpares 0 is a setting (no spare sandbox), not an unset field; the
+// other integers keep their defaults when omitted.
+func TestWarmSparesZeroIsKept(t *testing.T) {
+	c, err := Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"}}`))
+	if err != nil || c.Sandboxes.WarmSpares != 1 {
+		t.Fatalf("default warmSpares: %d %v", c.Sandboxes.WarmSpares, err)
+	}
+	c, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"sandboxes":{"warmSpares":0,"maxRunning":3}}`))
+	if err != nil || c.Sandboxes.WarmSpares != 0 || c.Sandboxes.MaxRunning != 3 || c.Sandboxes.KeepStopped != 32 {
+		t.Fatalf("explicit warmSpares 0: spares %d running %d kept %d %v", c.Sandboxes.WarmSpares, c.Sandboxes.MaxRunning, c.Sandboxes.KeepStopped, err)
+	}
+	if _, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"sandboxes":{"warmSpares":-1}}`)); err == nil {
+		t.Fatal("negative warmSpares accepted")
+	}
+}
+
 // A file without services or tls resolves to the Unix sockets and the
 // loopback chat the services used before those sections existed, and a
 // written file does not gain them.
