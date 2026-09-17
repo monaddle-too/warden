@@ -825,6 +825,13 @@ the repository and in the chart values.
 ## Progress
 
 - 2026-09-16: plan drafted from the a45aeaf inventory; no code yet.
+- 2026-09-17 (later): step 2 merged (eb44e63), the chart (6f7d88e) and
+  the Kubernetes docs (12b489e) merged; plan reconciled with both. Step 4
+  runs as three parallel tracks: the runner driver (`k8s/track-a`,
+  `chat/internal/sandbox/kube`), the policy side (`k8s/track-d`,
+  `chat/internal/policy/kube`: inspector, canaries, trust publisher,
+  Secret store, shared-gateway wiring) and the edge's owner capability
+  over a `tls://` upstream (`k8s/track-c`).
 - 2026-09-17: steps 0, 1, 3 and 5 done and merged (see the step list and
   "Spike results"). The dev VM `warden-k8s` runs k3s with both tiers;
   `warden-guest-base:dev` and `warden:dev` (server image, built from the
