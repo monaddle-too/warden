@@ -14,11 +14,15 @@ import (
 // and published ports belong to it, not to the chat that asked for them: every
 // chat on the environment shares its disk and its network lease.
 type Environment struct {
-	ID         string               `json:"id"`
-	Name       string               `json:"name"`
-	Repository string               `json:"repository"`
-	Chats      []EnvironmentChat    `json:"chats"`
-	Runtime    *sandbox.SandboxInfo `json:"runtime"`
+	ID         string                `json:"id"`
+	Name       string                `json:"name"`
+	Repository string                `json:"repository"`
+	Chats      []EnvironmentChat     `json:"chats"`
+	Runtime    *sandbox.SandboxInfo  `json:"runtime"`
+	Usage      *sandbox.SandboxUsage `json:"usage"`
+	// Pod is the sandbox pod on the Kubernetes shape (nil elsewhere, and
+	// while the sandbox is stopped).
+	Pod *sandbox.PodInfo `json:"pod"`
 	// Resources is the workspace's size: the runner's record once the
 	// sandbox exists, else what its first chat asked for, else nil (the
 	// runner's default).
@@ -34,6 +38,8 @@ type EnvironmentChat struct {
 	Title    string `json:"title"`
 	Status   string `json:"status"`
 	Archived bool   `json:"archived"`
+	// Stage is the chat's startup stage while it is starting (startup.go).
+	Stage string `json:"stage,omitempty"`
 }
 
 func (s State) deleted(sandboxID string) bool {
@@ -77,7 +83,7 @@ func busy(chats []*Chat) *Chat {
 func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 	st := e.Store.Snapshot()
 	var grants []any
-	if e.WardenSocket != "" {
+	if e.PolicyAddress != "" {
 		if result, err := e.sharingCall(ctx, "state", map[string]any{}); err == nil {
 			grants = agent.Array(result["requests"])
 		}
@@ -93,7 +99,11 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Resources: chats[0].Resources, Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Deleted: st.deleted(c.SandboxID)}
 		env.Archived = true
 		for _, chat := range chats {
-			env.Chats = append(env.Chats, EnvironmentChat{ID: chat.ID, Title: chat.Title, Status: chat.Status, Archived: chat.Archived})
+			ec := EnvironmentChat{ID: chat.ID, Title: chat.Title, Status: chat.Status, Archived: chat.Archived}
+			if s := e.startupOf(chat.ID); s != nil {
+				ec.Stage = s.Stage
+			}
+			env.Chats = append(env.Chats, ec)
 			if !chat.Archived {
 				env.Archived = false
 			}
@@ -120,8 +130,16 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 					size := res.Sandbox.Resources
 					env.Resources = &size
 				}
+				// Provisioned and used CPU, memory and disk, as the guest
+				// reports them; the panel refreshes this every few seconds.
+				if res, err := e.Runtime(ctx, ran.ID, "usage"); err == nil {
+					env.Usage = res.Usage
+				}
+				if res, err := e.Runtime(ctx, ran.ID, "pod"); err == nil {
+					env.Pod = res.Pod
+				}
 			}
-			if e.WardenSocket != "" {
+			if e.PolicyAddress != "" {
 				if result, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": ran.ID, "sandboxID": c.SandboxID}); err == nil {
 					env.Repositories = agent.Array(result["repositories"])
 				}
@@ -189,7 +207,7 @@ func (e *Engine) DeleteEnvironment(ctx context.Context, id string) error {
 		return errors.New("workspace is running chat “" + c.Title + "”; stop that chat first")
 	}
 	ran := ranChat(chats)
-	if e.WardenSocket != "" {
+	if e.PolicyAddress != "" {
 		result, err := e.sharingCall(ctx, "state", map[string]any{})
 		if err != nil {
 			return errors.New("sharing service unavailable; workspace not deleted")

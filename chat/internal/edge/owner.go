@@ -15,25 +15,41 @@ const ownerSessionTTL = 8 * time.Hour
 
 // ownerAuth is the auth.mode "owner" authenticator: one person, identified
 // by the launcher capability from endpoint.json exactly as warden-chat
-// identifies them. API calls carry it as a bearer token. Because the preview
-// ticket flow starts with a plain navigation that carries no header, a
-// bearer-authenticated request also mints a host-only cookie session; that
-// session is only ever accepted for reads and expires with the capability
-// (the chat rotates it at every start), so a stale browser cannot outlive a
-// restart.
+// identifies them (the chat's file on the loopback shape, the edge's own
+// over a tls:// upstream; see capability.go). API calls carry it as a
+// bearer token. Because the preview ticket flow starts with a plain
+// navigation that carries no header, a bearer-authenticated request also
+// mints a host-only cookie session; that session is only ever accepted for
+// reads and expires with the capability (whichever service holds it
+// rotates it at every start), so a stale browser cannot outlive a restart.
+//
+// Only a browser can present a cookie back, and only browsers send fetch
+// metadata, so a request without Sec-Fetch-Site (curl, the TUI, a test
+// harness) mints nothing: each of those would otherwise hold a session for
+// eight hours and, at ownerSessionBound, deny the web app its own. The
+// bound evicts the oldest session rather than refusing.
+//
+// The cookie name carries the origin's port: browsers scope host-only
+// cookies by host alone, so a port-forwarded cluster edge on
+// 127.0.0.1:28781 next to a local `warden start` on 127.0.0.1:18781 would
+// otherwise overwrite the other's cookie at every API call.
 type ownerAuth struct {
 	token    func() (string, error)
 	secure   bool
+	cookie   string
 	mu       sync.Mutex
 	sessions map[string]ownerSession
 }
 type ownerSession struct {
 	Capability string // hash of the capability the session was minted from
+	Minted     time.Time
 	Expires    time.Time
 }
 
-func newOwnerAuth(token func() (string, error), secure bool) *ownerAuth {
-	return &ownerAuth{token: token, secure: secure, sessions: map[string]ownerSession{}}
+const ownerSessionBound = 64
+
+func newOwnerAuth(token func() (string, error), secure bool, cookie string) *ownerAuth {
+	return &ownerAuth{token: token, secure: secure, cookie: cookie, sessions: map[string]ownerSession{}}
 }
 
 // current returns the hash of the live capability, or "" when the chat is
@@ -55,7 +71,7 @@ func (a *ownerAuth) bearer(r *http.Request) bool {
 	return err == nil && subtle.ConstantTimeCompare([]byte(presented), []byte(token)) == 1
 }
 func (a *ownerAuth) cookieSession(r *http.Request) (string, bool) {
-	c, err := r.Cookie(ownerCookie)
+	c, err := r.Cookie(a.cookie)
 	if err != nil {
 		return "", false
 	}
@@ -119,7 +135,7 @@ func (a *ownerAuth) ActiveSession(id string) bool {
 // Establish mints the cookie session for a bearer-authenticated request that
 // has none yet.
 func (a *ownerAuth) Establish(w http.ResponseWriter, r *http.Request) {
-	if !a.bearer(r) {
+	if !a.bearer(r) || r.Header.Get("Sec-Fetch-Site") == "" {
 		return
 	}
 	if _, ok := a.cookieSession(r); ok {
@@ -137,15 +153,18 @@ func (a *ownerAuth) Establish(w http.ResponseWriter, r *http.Request) {
 			delete(a.sessions, k)
 		}
 	}
-	if len(a.sessions) < 64 {
-		a.sessions[key] = ownerSession{Capability: live, Expires: now.Add(ownerSessionTTL)}
-	} else {
-		key = ""
+	for len(a.sessions) >= ownerSessionBound {
+		oldest := ""
+		for k, s := range a.sessions {
+			if oldest == "" || s.Minted.Before(a.sessions[oldest].Minted) {
+				oldest = k
+			}
+		}
+		delete(a.sessions, oldest)
 	}
+	a.sessions[key] = ownerSession{Capability: live, Minted: now, Expires: now.Add(ownerSessionTTL)}
 	a.mu.Unlock()
-	if key != "" {
-		http.SetCookie(w, &http.Cookie{Name: ownerCookie, Value: key, Path: "/", Secure: a.secure, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int(ownerSessionTTL / time.Second)})
-	}
+	http.SetCookie(w, &http.Cookie{Name: a.cookie, Value: key, Path: "/", Secure: a.secure, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int(ownerSessionTTL / time.Second)})
 }
 
 // Handler serves the /auth/ surface the web app expects: sign-in is not a
@@ -157,12 +176,12 @@ func (a *ownerAuth) Handler() http.Handler {
 		_, _ = w.Write([]byte(`{"enabled":false}` + "\n"))
 	})
 	mux.HandleFunc("POST /auth/logout", func(w http.ResponseWriter, r *http.Request) {
-		if c, err := r.Cookie(ownerCookie); err == nil {
+		if c, err := r.Cookie(a.cookie); err == nil {
 			a.mu.Lock()
 			delete(a.sessions, c.Value)
 			a.mu.Unlock()
 		}
-		http.SetCookie(w, &http.Cookie{Name: ownerCookie, Value: "", Path: "/", Secure: a.secure, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+		http.SetCookie(w, &http.Cookie{Name: a.cookie, Value: "", Path: "/", Secure: a.secure, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"signed_out":true}` + "\n"))
 	})

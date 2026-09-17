@@ -1,0 +1,144 @@
+# Warden Kubernetes development VM (docs/warden-kubernetes-plan.md, appendix B).
+#
+# A single-node k3s cluster in a Lima VM with nested virtualization, so both
+# isolation tiers run on an Apple Silicon Mac: gVisor through the runsc shim
+# (installed here) and Kata Containers through kata-deploy (installed by
+# scripts/k8s-dev.sh with Helm from the host, because it needs /dev/kvm in
+# the VM). Images are built inside the VM straight into k3s's containerd
+# (buildkitd with the containerd worker in the k8s.io namespace), so the
+# loop needs no registry.
+#
+#   scripts/k8s-dev.sh up          # create/start the VM, install Kata, print KUBECONFIG
+#   scripts/k8s-dev.sh build-images
+#   scripts/k8s-dev.sh deploy
+#
+# Lima forwards every port the guest listens on to the host's 127.0.0.1,
+# which is how *.localhost previews reach the Mac.
+minimumLimaVersion: 2.0.0
+
+base: template:_images/ubuntu-24.04
+
+vmType: vz
+nestedVirtualization: true
+cpus: 8
+memory: 16GiB
+disk: 100GiB
+mountType: virtiofs
+
+mounts:
+- location: "~/Documents/warden-workspace"
+  writable: false
+
+# containerd is managed by k3s, not by Lima.
+containerd:
+  system: false
+  user: false
+
+param:
+  # Pinned 2026-09-16 (plan step 0); bump deliberately.
+  GVISOR_RELEASE: "20260914"
+  GVISOR_SHA512_AARCH64: "c3f556ea8dd122c99bedffb994801b585d7314ab549a98c295a5f15069d9eacd44fd241f562fa3b10f6a5d82a71cc676e4aa3df8e7016cb0599471f69e236357"
+  BUILDKIT_VERSION: "0.33.0"
+  NERDCTL_VERSION: "2.3.5"
+
+provision:
+# 1. gVisor: runsc and the containerd shim from the release tarball,
+#    installed before k3s so the containerd template below can name them.
+- mode: system
+  script: |
+    #!/bin/bash
+    set -euxo pipefail
+    if [ ! -x /usr/local/bin/runsc ]; then
+      ARCH=$(uname -m)
+      URL="https://storage.googleapis.com/gvisor/releases/release/{{.Param.GVISOR_RELEASE}}/${ARCH}"
+      apt-get update -qq && apt-get install -y -qq zstd >/dev/null
+      cd "$(mktemp -d)"
+      curl -fsSLO "${URL}/gvisor.tar.zstd" -O "${URL}/gvisor.tar.zstd.sha512"
+      sha512sum -c gvisor.tar.zstd.sha512
+      if [ "$ARCH" = aarch64 ]; then echo "{{.Param.GVISOR_SHA512_AARCH64}}  gvisor.tar.zstd" | sha512sum -c -; fi
+      mkdir x && tar --zstd -xf gvisor.tar.zstd -C x
+      # The tarball holds runsc, the shim and gvisor-bin/ (the sentry and
+      # other sidecars runsc launches); runsc looks for gvisor-bin next to
+      # itself, so the whole layout goes to /usr/local/bin.
+      install -m 0755 x/runsc x/containerd-shim-runsc-v1 /usr/local/bin/
+      rm -rf /usr/local/bin/gvisor-bin && cp -a x/gvisor-bin /usr/local/bin/gvisor-bin
+      /usr/local/bin/runsc --version
+    fi
+    mkdir -p /etc/containerd /var/log/runsc
+    # allow-suid: runsc ignores SUID bits by default, which breaks the guest's
+    # passwordless sudo (found in plan step 0).
+    printf 'log_path = "/var/log/runsc/%%ID%%/shim.log"\nlog_level = "info"\n[runsc_config]\n  platform = "systrap"\n  allow-suid = "true"\n' > /etc/containerd/runsc.toml
+# 2. k3s without Traefik (the chart brings its own ingress in the dev values).
+#    The embedded network policy controller stays on. The containerd template
+#    adds the runsc runtime on top of k3s's generated base config.
+- mode: system
+  script: |
+    #!/bin/bash
+    set -euxo pipefail
+    mkdir -p /var/lib/rancher/k3s/agent/etc/containerd
+    cat > /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl <<'TMPL'
+    {{"{{"}} template "base" . {{"}}"}}
+
+    [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runsc]
+      runtime_type = "io.containerd.runsc.v1"
+    [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runsc.options]
+      TypeUrl = "io.containerd.runsc.v1.options"
+      ConfigPath = "/etc/containerd/runsc.toml"
+    TMPL
+    if [ ! -d /var/lib/rancher/k3s/server ]; then
+      curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server --write-kubeconfig-mode 644 --disable traefik" sh -
+    fi
+# 3. buildkitd on k3s's containerd (k8s.io namespace) and nerdctl, so
+#    `nerdctl build` / `buildctl build` land images where the kubelet finds them.
+- mode: system
+  script: |
+    #!/bin/bash
+    set -euxo pipefail
+    ARCH=$(uname -m); case "$ARCH" in aarch64) A=arm64;; x86_64) A=amd64;; esac
+    if [ ! -x /usr/local/bin/buildkitd ]; then
+      cd "$(mktemp -d)"
+      curl -fsSL "https://github.com/moby/buildkit/releases/download/v{{.Param.BUILDKIT_VERSION}}/buildkit-v{{.Param.BUILDKIT_VERSION}}.linux-${A}.tar.gz" | tar -xz
+      install -m 0755 bin/buildkitd bin/buildctl /usr/local/bin/
+    fi
+    if [ ! -x /usr/local/bin/nerdctl ]; then
+      cd "$(mktemp -d)"
+      curl -fsSL "https://github.com/containerd/nerdctl/releases/download/v{{.Param.NERDCTL_VERSION}}/nerdctl-{{.Param.NERDCTL_VERSION}}-linux-${A}.tar.gz" | tar -xz
+      install -m 0755 nerdctl /usr/local/bin/
+    fi
+    mkdir -p /etc/nerdctl
+    printf 'address = "/run/k3s/containerd/containerd.sock"\nnamespace = "k8s.io"\n' > /etc/nerdctl/nerdctl.toml
+    cat > /etc/systemd/system/buildkitd.service <<'UNIT'
+    [Unit]
+    Description=BuildKit on k3s containerd
+    After=k3s.service
+    Requires=k3s.service
+    [Service]
+    ExecStart=/usr/local/bin/buildkitd --oci-worker=false --containerd-worker=true --containerd-worker-addr=/run/k3s/containerd/containerd.sock --containerd-worker-namespace=k8s.io
+    Restart=always
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+    systemctl daemon-reload
+    systemctl enable --now buildkitd
+
+probes:
+- script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    if ! timeout 120s bash -c "until test -f /etc/rancher/k3s/k3s.yaml; do sleep 3; done"; then
+      echo >&2 "k3s is not running yet"
+      exit 1
+    fi
+  hint: |
+    The k3s kubeconfig has not been created yet. Check
+    "limactl shell warden-k8s sudo journalctl -u k3s" and /var/log/cloud-init-output.log.
+
+copyToHost:
+- guest: "/etc/rancher/k3s/k3s.yaml"
+  host: "{{.Dir}}/copied-from-guest/kubeconfig.yaml"
+  deleteOnStop: true
+
+message: |
+  Warden dev cluster. On the host:
+    export KUBECONFIG="{{.Dir}}/copied-from-guest/kubeconfig.yaml"
+    kubectl get runtimeclasses

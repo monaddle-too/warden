@@ -30,6 +30,10 @@ type fakeWorker struct {
 	steal       bool
 	rejectSteer bool
 	turns       int
+	// prepareGate, when set, holds prepare until it is closed; progress is
+	// what the progress operation answers meanwhile (startup_test.go).
+	prepareGate chan struct{}
+	progress    *sandbox.Progress
 }
 
 func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
@@ -38,6 +42,18 @@ func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 	f.requests = append(f.requests, r)
 	if f.fail {
 		return sandbox.Response{}, errors.New("unverified sandbox")
+	}
+	if r.Operation == "progress" {
+		return sandbox.Response{Version: 2, Progress: f.progress}, nil
+	}
+	if r.Operation == "prepare" && f.prepareGate != nil {
+		gate := f.prepareGate
+		f.mu.Unlock()
+		select {
+		case <-gate:
+		case <-ctx.Done():
+		}
+		f.mu.Lock()
 	}
 	if r.Operation == "stop" && f.conn != nil {
 		f.conn.Close()
@@ -408,13 +424,26 @@ func TestEnvironmentsListStopAndDelete(t *testing.T) {
 }
 
 func TestPreviewURLsAndIdentity(t *testing.T) {
+	var e Engine
 	for _, value := range []struct {
 		url   string
 		valid bool
-	}{{"http://127.0.0.1:32100/", true}, {"https://evil.example/", false}, {"http://localhost:32100/", false}, {"http://user@127.0.0.1:32100/", false}, {"javascript:alert(1)", false}} {
-		err := validateAttachment(sandbox.PreviewAttachment{State: "available", URL: value.url})
+	}{{"http://127.0.0.1:32100/", true}, {"https://evil.example/", false}, {"http://localhost:32100/", false}, {"http://user@127.0.0.1:32100/", false}, {"javascript:alert(1)", false}, {"https://warden-runner:7446/abc/", false}} {
+		err := e.validateAttachment(sandbox.PreviewAttachment{State: "available", URL: value.url})
 		if (err == nil) != value.valid {
 			t.Errorf("URL validation failed for %q", value.url)
+		}
+	}
+	// With the runner's shared preview server configured, exactly that
+	// https origin is accepted beside the loopback listeners.
+	e.RunnerPreviewHost = "warden-runner:7446"
+	for _, value := range []struct {
+		url   string
+		valid bool
+	}{{"https://warden-runner:7446/abc/", true}, {"https://warden-runner:7446/abc", true}, {"http://127.0.0.1:32100/", true}, {"https://warden-runner:7447/abc/", false}, {"https://warden-runner/abc/", false}, {"http://warden-runner:7446/abc/", false}, {"https://user@warden-runner:7446/abc/", false}, {"https://warden-runner:7446/abc/?x=1", false}, {"https://evil.example:7446/abc/", false}} {
+		err := e.validateAttachment(sandbox.PreviewAttachment{State: "available", URL: value.url})
+		if (err == nil) != value.valid {
+			t.Errorf("URL validation failed for %q with the shared server", value.url)
 		}
 	}
 }

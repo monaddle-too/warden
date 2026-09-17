@@ -83,6 +83,12 @@ type Chat struct {
 		Entries []Entry `json:"entries"`
 	} `json:"conversation"`
 	Approvals []Approval `json:"approvals"`
+	// Startup is where the chat's start is while its message waits for the
+	// agent: the stage and the runtime's detail.
+	Startup *struct {
+		Stage  string `json:"stage"`
+		Detail string `json:"detail"`
+	} `json:"startup"`
 }
 
 // Pending returns the approvals still waiting for the owner.

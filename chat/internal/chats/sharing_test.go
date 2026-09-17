@@ -58,7 +58,7 @@ func TestSharingNotificationSurvivesInterruptedDelivery(t *testing.T) {
 	}()
 	run := func(e *Engine, condition func() bool) {
 		t.Helper()
-		e.WardenSocket = socket
+		e.PolicyAddress = "unix://" + socket
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
 		go func() { defer close(done); e.sharingDelivery(ctx) }()
@@ -134,7 +134,7 @@ func TestRejectedPullRequestResumesWithFeedback(t *testing.T) {
 			}()
 		}
 	}()
-	engine.WardenSocket = socket
+	engine.PolicyAddress = "unix://" + socket
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); engine.sharingDelivery(ctx) }()

@@ -28,6 +28,13 @@ type ResourceLimits struct {
 	Restart      bool      `json:"restart"`
 }
 
+// ErrResizeInfeasible is a driver's answer when the platform cannot give
+// the running instance the size in place (a memory decrease the kubelet
+// refuses, a cluster without in-place resize, no room on the node). The
+// size is still right for the next instance: the worker replaces the
+// instance when nothing is running on it.
+var ErrResizeInfeasible = errors.New("the running sandbox cannot be resized in place")
+
 // Memory bounds a single sandbox may have, whatever the ceiling says.
 const (
 	MinMemoryMB = 512

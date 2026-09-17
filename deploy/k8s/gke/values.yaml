@@ -1,0 +1,77 @@
+# Chart values for the GKE Autopilot test cluster (docs/warden-kubernetes.md,
+# "A real cluster: GKE Autopilot with public previews"): GKE Sandbox as the
+# gVisor tier, Google sign-in, public previews through ingress-nginx with a
+# Let's Encrypt wildcard certificate from cert-manager (DNS-01 in Cloud
+# DNS), sized for the smallest bill while nothing runs.
+#
+# scripts/k8s-gke.sh deploy adds what names the deployment from
+# deploy/k8s/gke/env: the image references and the guest image digest,
+# auth.publicURL, previews.hostSuffix, the sign-in client, the owner and
+# the issuer annotation.
+
+runtime:
+  # GKE's RuntimeClass `gvisor` (handler `gvisor`, in the tier's allowlist);
+  # GKE Sandbox nodes are provisioned by Autopilot when a pod names it.
+  tier: gvisor
+
+sandboxes:
+  memoryMB: 1536
+  cpus: 1
+  maxCPUs: 4
+  maxMemoryMB: 8192
+  maxRunning: 2
+  # Autopilot bills a pod's requests around the clock, so a warm spare is
+  # about $38 a month at 1 vCPU / 1.5 GiB. Without one the first sandbox
+  # after an idle period waits for a GKE Sandbox node (one to two minutes).
+  warmSpares: 0
+  # A stopped workspace keeps its claim: storage.workspaceGi of pd-balanced
+  # each ($0.10 per GiB-month).
+  keepStopped: 4
+
+auth:
+  mode: google
+
+previews:
+  mode: public
+  ingress:
+    className: nginx
+    # cert-manager issues the certificate for the app host and *.<hostSuffix>
+    # from the ClusterIssuer deploy selects (deploy/k8s/gke/cluster-issuer.yaml).
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-staging
+
+tls:
+  # The four service certificates from cert-manager (a chart-created CA).
+  certManager:
+    enabled: true
+
+storage:
+  # The cluster default `standard-rwo` (pd-balanced) supports cloning, so a
+  # chat fork clones the workspace claim.
+  className: ""
+  workspaceGi: 5
+
+networkPolicy:
+  # Autopilot resolves through NodeLocal DNSCache on the node, not through
+  # the kube-dns pods the pod selector admits.
+  dns:
+    cidr: 169.254.20.10/32
+  # Only the ingress controller reaches the edge.
+  edgeIngressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+
+# The four service pods can run on Spot capacity, about 70% off their
+# requests, at the price of a restart when the node is reclaimed (state is
+# on the PVCs; the sandboxes are on separate GKE Sandbox nodes and
+# unaffected). Off by default: on the first run us-central1 had no Spot
+# capacity for an hour ("GCE out of resources") and the pods stayed
+# Pending. Uncomment both keys to opt in.
+# nodeSelector:
+#   cloud.google.com/gke-spot: "true"
+# tolerations:
+#   - key: cloud.google.com/gke-spot
+#     operator: Equal
+#     value: "true"
+#     effect: NoSchedule

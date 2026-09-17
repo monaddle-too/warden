@@ -1,0 +1,5 @@
+testdata/
+test.sh
+*.swp
+*~
+.DS_Store

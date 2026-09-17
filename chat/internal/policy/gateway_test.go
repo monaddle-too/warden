@@ -37,7 +37,7 @@ type gatewayFixture struct {
 	verifier     *fixtureVerifier
 	registry     *Registry
 	value        map[string]any
-	gateway      *Gateway
+	gateway      *BindingGateway
 	port         int
 	ca           *GatewayCA
 	upstreamCA   *GatewayCA
@@ -102,7 +102,7 @@ func newGatewayFixture(t *testing.T) *gatewayFixture {
 	t.Cleanup(func() { f.upstream.Close() })
 	binding := f.registry.Bindings["s1"]
 	capability := binding.Capability
-	gateway, err := NewGateway(GatewayConfig{BindingID: "s1", Capability: capability, Port: f.port, Listener: listener, CA: f.ca,
+	gateway, err := NewBindingGateway(GatewayConfig{BindingID: "s1", Capability: capability, Port: f.port, Listener: listener, CA: f.ca,
 		Control: func(message map[string]any) (map[string]any, error) {
 			return f.registry.Proxy("s1", capability, message)
 		},

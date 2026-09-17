@@ -1,0 +1,68 @@
+{{- /*
+The sandbox namespace's three static NetworkPolicies, as proven in the
+step 0 spike (deploy/k8s/dev/spike/10-networkpolicies.yaml): default deny
+both ways; egress to the policy pod's gateway port granted by one label the
+policy service sets and removes (decision 4); ingress from the runner only,
+for the preview proxy (decision 10). No per-binding objects exist.
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $sandboxNS := include "warden.sandboxNamespace" . }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ $sandboxNS }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: sandboxes
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-egress
+  namespace: {{ $sandboxNS }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: sandboxes
+spec:
+  podSelector:
+    matchLabels:
+      warden.monaddle.com/egress: gateway
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "warden.selectorLabels" (dict "root" . "component" "policy") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ int .Values.gateway.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runner-ingress
+  namespace: {{ $sandboxNS }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: sandboxes
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "warden.selectorLabels" (dict "root" . "component" "runner") | nindent 14 }}
+      ports:
+        - protocol: TCP
+{{- end }}

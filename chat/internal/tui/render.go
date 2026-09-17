@@ -259,6 +259,14 @@ func RenderStatus(c *Chat, ports []Port, live bool, width int) string {
 	case "failed", "interrupted":
 		status = red + c.Status + reset
 	}
+	if c.Startup != nil && (c.Status == "running" || c.Status == "queued") {
+		// The startup stage, with the runtime's detail, until the turn runs.
+		stage := c.Startup.Stage
+		if c.Startup.Detail != "" {
+			stage += ": " + sanitize(c.Startup.Detail)
+		}
+		status = yellow + stage + reset
+	}
 	published := 0
 	for _, p := range ports {
 		if p.ChatID == c.ID && p.State == "approved" {

@@ -4,9 +4,13 @@ import type {
   AccessEvent,
   Chat,
   Environment,
+  PodInfo,
   ResourceLimits,
   Resources,
+  SandboxUsage,
 } from "../types";
+import { stageLabel } from "../stages";
+import { cpu, memory } from "../units";
 import { api } from "../api";
 import type { PullRequestProposal } from "./PullRequestReview";
 import { resourcesLabel } from "./Approvals";
@@ -62,6 +66,107 @@ function describe(e: AccessEvent): string {
       return `${e.status} ${what}`;
   }
 }
+const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+const percent = (used: number, total: number) =>
+  total > 0 ? Math.max(0, Math.min(100, (100 * used) / total)) : 0;
+
+/* One row per resource: what is used of what was provisioned, with a bar.
+   A stopped sandbox shows only the provisioned side; the disk size of a
+   stopped sandbox is unknown until it boots. The section around it holds
+   the owner's size change. */
+function UsageRows({ usage }: { usage: SandboxUsage }) {
+  const rows: { name: string; value: string; percent: number | null }[] = [
+    {
+      name: "CPU",
+      value: !usage.running
+        ? `${usage.cpus} provisioned`
+        : usage.cpuPercent == null
+          ? `sampling… · ${usage.cpus} provisioned`
+          : `${usage.cpuPercent.toFixed(0)}% of ${usage.cpus}`,
+      percent: usage.running ? usage.cpuPercent : null,
+    },
+    {
+      name: "Memory",
+      value: usage.running
+        ? `${gib(usage.memoryUsed)} of ${gib(usage.memoryTotal)}`
+        : `${gib(usage.memoryTotal)} provisioned`,
+      percent: usage.running
+        ? percent(usage.memoryUsed, usage.memoryTotal)
+        : null,
+    },
+    {
+      name: "Disk",
+      value: usage.running
+        ? `${gib(usage.diskUsed)} of ${gib(usage.diskTotal)}`
+        : usage.diskTotal > 0
+          ? `${gib(usage.diskTotal)} provisioned`
+          : "sized at boot",
+      percent: usage.running ? percent(usage.diskUsed, usage.diskTotal) : null,
+    },
+  ];
+  return (
+    <ul className="workspace-resources">
+      {rows.map((r) => (
+        <li key={r.name}>
+          <span>{r.name}</span>
+          <small>{r.value}</small>
+          <meter
+            min={0}
+            max={100}
+            value={r.percent ?? 0}
+            aria-label={`${r.name} used`}
+            className={r.percent == null ? "idle" : ""}
+          />
+        </li>
+      ))}
+    </ul>
+  );
+}
+/* The sandbox pod on Kubernetes: where it runs and what it was given. */
+function Pod({ pod }: { pod: PodInfo }) {
+  const facts: [string, string][] = [
+    ["Pod", `${pod.namespace}/${pod.name}`],
+    ["Node", pod.node || "not scheduled yet"],
+    [
+      "State",
+      pod.ready
+        ? "Running"
+        : pod.reason
+          ? `${pod.phase} · ${pod.reason}`
+          : pod.phase,
+    ],
+  ];
+  if (pod.runtimeClass) facts.push(["Isolation", pod.runtimeClass]);
+  if (pod.ip) facts.push(["Address", pod.ip]);
+  if (pod.started)
+    facts.push(["Started", new Date(pod.started).toLocaleString()]);
+  if (pod.restarts) facts.push(["Restarts", String(pod.restarts)]);
+  facts.push([
+    "CPU",
+    pod.usage
+      ? `${cpu(pod.usage.cpuMilli)} used of ${cpu(pod.limits.cpuMilli || pod.requests.cpuMilli)}`
+      : `${cpu(pod.limits.cpuMilli || pod.requests.cpuMilli)} limit`,
+  ]);
+  facts.push([
+    "Memory",
+    pod.usage
+      ? `${memory(pod.usage.memoryBytes)} used of ${memory(pod.limits.memoryBytes || pod.requests.memoryBytes)}`
+      : `${memory(pod.limits.memoryBytes || pod.requests.memoryBytes)} limit`,
+  ]);
+  return (
+    <section className="workspace-section">
+      <h2>Pod</h2>
+      <dl className="workspace-facts">
+        {facts.map(([k, v]) => (
+          <div key={k}>
+            <dt>{k}</dt>
+            <dd title={v}>{v}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
 const label = (state: string) =>
   state ? state.charAt(0).toUpperCase() + state.slice(1) : "Not started";
 
@@ -112,12 +217,19 @@ export function WorkspacePanel({
     }
   }
   const chats = ws?.chats ?? [
-    { id: chat.id, title: chat.title, status: chat.status, archived: false },
+    {
+      id: chat.id,
+      title: chat.title,
+      status: chat.status,
+      archived: false,
+      stage: chat.startup?.stage,
+    },
     ...siblings.map((c) => ({
       id: c.id,
       title: c.title,
       status: c.status,
       archived: c.archived,
+      stage: c.startup?.stage,
     })),
   ];
   const running = chats.some((c) =>
@@ -224,11 +336,11 @@ export function WorkspacePanel({
           resumed.
         </p>
       )}
-      {limits && (
+      {!ws?.deleted && (limits || ws?.usage) && (
         <section className="workspace-section">
           <h2>
-            Size
-            {!ws?.deleted && !sizing && (
+            Resources
+            {limits && !sizing && (
               <button
                 className="ghost"
                 disabled={!!busy || (running && limits.restart)}
@@ -243,15 +355,16 @@ export function WorkspacePanel({
               </button>
             )}
           </h2>
-          {!sizing && (
+          {!sizing && ws?.usage && <UsageRows usage={ws.usage} />}
+          {!sizing && !ws?.usage && (
             <p>
               {resourcesLabel(current.cpuMilli, current.memoryMB)}
-              {sameSize(current, limits.default) && (
+              {limits && sameSize(current, limits.default) && (
                 <span className="muted"> · default</span>
               )}
             </p>
           )}
-          {sizing && (
+          {sizing && limits && (
             <form
               className="size-form"
               onSubmit={(e) => {
@@ -272,7 +385,7 @@ export function WorkspacePanel({
               <p className="muted">
                 {limits.restart
                   ? "The sandbox is recreated at the new size; files are kept."
-                  : "Applied without a restart; files are kept."}{" "}
+                  : "Applied to the running sandbox without a restart; files are kept."}{" "}
                 Up to {resourcesLabel(limits.max.cpuMilli, limits.max.memoryMB)}.
               </p>
               <div className="button-row">
@@ -295,12 +408,15 @@ export function WorkspacePanel({
           )}
         </section>
       )}
+      {ws?.pod && !ws.deleted && <Pod pod={ws.pod} />}
       <section className="workspace-section">
         <h2>Chats in this workspace</h2>
         <ul>
           {chats.map((c) => (
             <li key={c.id}>
-              <span className={`status-dot ${c.status}`} />
+              <span
+                className={`status-dot ${c.stage ? "starting" : c.status}`}
+              />
               {c.id === chat.id ? (
                 <span className="workspace-current">{c.title}</span>
               ) : (
@@ -319,7 +435,9 @@ export function WorkspacePanel({
                   ? "this chat"
                   : c.archived
                     ? "archived"
-                    : c.status}
+                    : c.stage
+                      ? stageLabel(c.stage).toLowerCase()
+                      : c.status}
               </small>
             </li>
           ))}

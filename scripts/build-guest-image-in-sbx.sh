@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build the Warden guest image inside an sbx sandbox, without Docker.
+# Build the Warden guest image (SBX variant) inside an sbx sandbox, without
+# Docker.
 #
 # The guest image is the stock shell template with the pinned Codex bundle,
 # the Claude executable and the gateway CA preinstalled (what
@@ -8,9 +9,17 @@
 # sandbox from the stock template in Warden's namespace, copying the
 # already-verified runtimes in from the host exactly as warden-runner does,
 # and snapshotting it with `sbx template save`. Nothing inside the sandbox
-# needs network; the sandbox is created deny-all.
+# needs network; the sandbox is created deny-all. The manifest is written
+# by deploy/guest/write-manifest.sh, the same script the Dockerfiles use.
 #
-#   scripts/build-guest-image-in-sbx.sh [--state DIR] [--tag TAG] [--ca FILE] [--output FILE]
+#   scripts/build-guest-image-in-sbx.sh [--variant sbx] [--state DIR] [--tag TAG] [--ca FILE] [--output FILE]
+#
+# Only the sbx variant can be made this way. The base image
+# (deploy/guest/Dockerfile.base, for Kubernetes) is not an SBX template:
+# it starts from plain Ubuntu, needs apt-get during the build and must land
+# in a container runtime's image store, none of which a deny-all sandbox
+# snapshot provides; build it with deploy/guest/build-base.sh (docker or
+# nerdctl, `--k3s` for a k3s node) or take it from the workflow.
 #
 # Defaults: state ~/.warden (its bin/warden-sbx wrapper, runtimes/ and the
 # policy gateway CA); tag warden-guest:<git revision>-<guest arch>; the CA
@@ -24,8 +33,11 @@ STATE="$HOME/.warden"
 TAG=""
 CA=""
 OUTPUT=""
+VARIANT=sbx
 while [ $# -gt 0 ]; do
   case "$1" in
+    --variant) VARIANT="$2"; shift 2 ;;
+    --base) VARIANT=base; shift ;;
     --state) STATE="$2"; shift 2 ;;
     --tag) TAG="$2"; shift 2 ;;
     --ca) CA="$2"; shift 2 ;;
@@ -33,6 +45,12 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
 done
+case "$VARIANT" in
+  sbx) ;;
+  base) echo "the base image cannot be made by snapshotting an sbx sandbox (see the header of this script); build it with deploy/guest/build-base.sh" >&2; exit 2 ;;
+  *) echo "unknown variant $VARIANT (sbx)" >&2; exit 2 ;;
+esac
+[ -f deploy/guest/write-manifest.sh ] || { echo "deploy/guest/write-manifest.sh missing" >&2; exit 1; }
 SBX="$STATE/bin/warden-sbx"
 RUNTIMES="$STATE/runtimes"
 [ -x "$SBX" ] || { echo "$SBX missing; run warden install first" >&2; exit 1; }
@@ -71,10 +89,14 @@ case "$ARCH:$guest_arch" in arm64:aarch64|amd64:x86_64) ;; *) echo "guest is $gu
 "$SBX" cp "$RUNTIMES/claude/claude" "$NAME:/tmp/warden-claude" >/dev/null
 "$SBX" exec "$NAME" sudo chmod 755 /tmp/warden-claude
 
-# 3. The gateway CA (public certificate only) and the manifest the runner reads.
+# 3. The gateway CA (public certificate only) and the manifest the runner
+# reads, written by the shared script so the schema matches the Dockerfiles
+# (variant sbx, the /tmp runtime paths, trust at the system bundle).
 "$SBX" cp "$CA" "$NAME:/tmp/warden-proxy.crt" >/dev/null
 "$SBX" exec "$NAME" sudo sh -c 'install -m 644 /tmp/warden-proxy.crt /usr/local/share/ca-certificates/warden-proxy.crt && rm -f /tmp/warden-proxy.crt && update-ca-certificates >/dev/null'
-"$SBX" exec "$NAME" sudo sh -c "set -eu; mkdir -p /opt/warden; printf '{\"platform\":\"linux/%s\",\"codex\":{\"version\":\"%s\",\"target\":\"%s\"},\"claude\":{\"version\":\"%s\",\"sha256\":\"%s\"},\"ca\":{\"sha256\":\"%s\"}}\n' '$ARCH' '$CODEX_VERSION' '$CODEX_TARGET' '$CLAUDE_VERSION' \"\$(sha256sum /tmp/warden-claude | cut -d' ' -f1)\" \"\$(sha256sum /usr/local/share/ca-certificates/warden-proxy.crt | cut -d' ' -f1)\" > /opt/warden/guest-manifest.json; chmod 644 /opt/warden/guest-manifest.json; cat /opt/warden/guest-manifest.json"
+"$SBX" cp deploy/guest/write-manifest.sh "$NAME:/tmp/warden-write-manifest.sh" >/dev/null
+"$SBX" exec "$NAME" sudo env "TARGETARCH=$ARCH" "CODEX_VERSION=$CODEX_VERSION" "CLAUDE_VERSION=$CLAUDE_VERSION" sh /tmp/warden-write-manifest.sh sbx /tmp/warden-runtime /tmp/warden-claude /etc/ssl/certs/ca-certificates.crt /home/agent /usr/local/share/ca-certificates/warden-proxy.crt /opt/warden/guest-manifest.json
+"$SBX" exec "$NAME" sudo rm -f /tmp/warden-write-manifest.sh
 "$SBX" exec "$NAME" sh -c 'test -x /tmp/warden-runtime/bin/codex && /tmp/warden-runtime/bin/codex --version && test -x /tmp/warden-claude && ls -ld /tmp/warden-runtime /tmp/warden-claude /opt/warden/guest-manifest.json'
 
 # 4. Snapshot as a template (and optionally export a tar for other hosts).

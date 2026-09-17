@@ -1,0 +1,196 @@
+{{- /*
+Core namespace NetworkPolicies (plan decision 5): default deny, then one
+policy per service admitting exactly chat->runner (the control port and
+the preview server, decision 10), chat->policy, runner->policy,
+edge->chat, sandbox namespace->policy on the gateway port and
+runner->sandbox namespace, all TCP. Every service resolves its peers
+by Service name, so all four reach cluster DNS; the policy service and the
+runner reach the API server; the policy pod, as the deployment's only
+egress point, reaches provider hosts on 443; the edge reaches Google's
+signing keys in Google mode.
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $ns := .Release.Namespace }}
+{{- $sandboxNS := include "warden.sandboxNamespace" . }}
+{{- $dns := .Values.networkPolicy.dns }}
+{{- $api := .Values.networkPolicy.apiServer }}
+{{- $dnsPeers := list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" $dns.namespace)) "podSelector" (dict "matchLabels" $dns.podSelector)) }}
+{{- /* A node-local DNS cache (GKE's NodeLocal DNSCache at 169.254.20.10) is
+       a host-network address, not a pod, so it needs an ipBlock beside the
+       pod selector. */ -}}
+{{- if $dns.cidr }}{{ $dnsPeers = append $dnsPeers (dict "ipBlock" (dict "cidr" $dns.cidr)) }}{{ end }}
+{{- $dnsEgress := list (dict "to" $dnsPeers "ports" (list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53))) }}
+{{- $apiPorts := list }}
+{{- range $p := $api.ports }}{{ $apiPorts = append $apiPorts (dict "protocol" "TCP" "port" (int $p)) }}{{ end }}
+{{- $apiEgress := list (dict "to" (list (dict "ipBlock" (dict "cidr" $api.cidr))) "ports" $apiPorts) }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ $ns }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: warden-policy
+  namespace: {{ $ns }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: policy
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "warden.selectorLabels" (dict "root" . "component" "policy") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Control: the chat and the runner.
+    - from:
+        {{- include "warden.peer" (dict "root" . "component" "chat") | nindent 8 }}
+        {{- include "warden.peer" (dict "root" . "component" "runner") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ int .Values.services.policy.port }}
+    # The gateway: sandbox pods that hold the egress label (decision 4).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $sandboxNS }}
+          podSelector:
+            matchLabels:
+              warden.monaddle.com/egress: gateway
+      ports:
+        - protocol: TCP
+          port: {{ int .Values.gateway.port }}
+  egress:
+    {{- $dnsEgress | toYaml | nindent 4 }}
+    {{- $apiEgress | toYaml | nindent 4 }}
+    # Provider egress through the gateway.
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.providerEgress.cidr }}
+      ports:
+        {{- range $p := .Values.networkPolicy.providerEgress.ports }}
+        - protocol: TCP
+          port: {{ int $p }}
+        {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: warden-runner
+  namespace: {{ $ns }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: runner
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "warden.selectorLabels" (dict "root" . "component" "runner") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Control, and the shared preview server the chat dials for every
+    # published preview.
+    - from:
+        {{- include "warden.peer" (dict "root" . "component" "chat") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ int .Values.services.runner.port }}
+        - protocol: TCP
+          port: {{ int .Values.services.runner.previewPort }}
+  egress:
+    - to:
+        {{- include "warden.peer" (dict "root" . "component" "policy") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ int .Values.services.policy.port }}
+    # The preview proxy dials published guest ports (decision 10); exec
+    # goes through the API server, not the pod network.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $sandboxNS }}
+      ports:
+        - protocol: TCP
+    {{- $dnsEgress | toYaml | nindent 4 }}
+    {{- $apiEgress | toYaml | nindent 4 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: warden-chat
+  namespace: {{ $ns }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: chat
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "warden.selectorLabels" (dict "root" . "component" "chat") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "warden.peer" (dict "root" . "component" "edge") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ int .Values.services.chat.port }}
+  egress:
+    - to:
+        {{- include "warden.peer" (dict "root" . "component" "runner") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ int .Values.services.runner.port }}
+        - protocol: TCP
+          port: {{ int .Values.services.runner.previewPort }}
+    - to:
+        {{- include "warden.peer" (dict "root" . "component" "policy") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ int .Values.services.policy.port }}
+    {{- $dnsEgress | toYaml | nindent 4 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: warden-edge
+  namespace: {{ $ns }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: edge
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "warden.selectorLabels" (dict "root" . "component" "edge") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Browsers, through the Ingress controller or a port-forward.
+    - ports:
+        - protocol: TCP
+          port: {{ int .Values.edge.port }}
+      {{- if .Values.networkPolicy.edgeIngressFrom }}
+      from:
+        {{- .Values.networkPolicy.edgeIngressFrom | toYaml | nindent 8 }}
+      {{- end }}
+  egress:
+    - to:
+        {{- include "warden.peer" (dict "root" . "component" "chat") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ int .Values.services.chat.port }}
+    {{- $dnsEgress | toYaml | nindent 4 }}
+    {{- if eq .Values.auth.mode "google" }}
+    # Google's ID-token signing keys.
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.edgeEgress.cidr }}
+      ports:
+        {{- range $p := .Values.networkPolicy.edgeEgress.ports }}
+        - protocol: TCP
+          port: {{ int $p }}
+        {{- end }}
+    {{- end }}
+{{- end }}

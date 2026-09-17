@@ -1,0 +1,12 @@
+# CI overlay for compose.yaml (.github/workflows/ocsf-deploy.yml,
+# scripts/integration.mjs): the app's data directory is a named volume
+# instead of a host path, so the job never needs sudo to hand it to the
+# container's uid 65532. The workflow creates and initialises the volume.
+services:
+  app:
+    volumes:
+      - app_data:/app/data
+volumes:
+  app_data:
+    external: true
+    name: ocsf-smoke-data

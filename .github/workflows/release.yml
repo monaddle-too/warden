@@ -2,9 +2,18 @@ name: Warden release
 # Builds one Warden release from a tag: the frontend, the five binaries for
 # linux/amd64, linux/arm64 and darwin/arm64 with the revision linked in,
 # one tarball per target with SHA256SUMS, a GitHub release holding them,
-# and the multi-architecture server image at ghcr.io/<owner>/warden:<tag>.
-# A manual run builds and pushes the image and keeps the tarballs as a
-# workflow artifact under a dev version; it publishes no GitHub release.
+# the multi-architecture server image at ghcr.io/<owner>/warden:<tag>, and
+# the Helm chart at oci://ghcr.io/<owner>/charts/warden (chart version =
+# the tag without its v, appVersion = the tag, values pinned to the image
+# by digest; scripts/package-chart.sh). A manual run builds and pushes the
+# image, packages the chart without pushing it, and keeps the tarballs and
+# the chart as workflow artifacts under a dev version; it publishes no
+# GitHub release.
+#
+# Runs on the self-hosted macOS runner (docs/ci-mac-runner.md): the build
+# and packaging are scripts/release.sh, which handles BSD tar; Docker is the
+# runner's Lima VM, reached through DOCKER_HOST from the runner's .env;
+# helm is the runner's Homebrew one.
 on:
   push:
     tags: ['v*']
@@ -19,12 +28,14 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/warden
+  # helm push appends /<chart name>: the chart is oci://…/charts/warden.
+  CHARTS: oci://ghcr.io/${{ github.repository_owner }}/charts
   PNPM_VERSION: 11.27.0
 
 jobs:
   release:
-    runs-on: ubuntu-24.04
-    # The arm64 image half runs under QEMU (only a selfcheck of the
+    runs-on: [self-hosted, macOS, ARM64]
+    # The amd64 image half runs under QEMU (only a selfcheck of the
     # prebuilt binary and apt), so emulation costs minutes.
     timeout-minutes: 90
     steps:
@@ -42,76 +53,33 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Warden $version ($GITHUB_SHA)"
 
+      # Toolchains land in the runner's tool cache and stay there; the
+      # module and pnpm stores live in the runner user's home, so the
+      # Actions cache service adds nothing.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-      - name: Build the frontend (pnpm via corepack)
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: chat/go.mod
+          cache: false
+      - name: pnpm via corepack
         run: |
           set -eu
           corepack enable
           corepack prepare "pnpm@${PNPM_VERSION}" --activate
-          pnpm --dir chat/web install --frozen-lockfile
-          pnpm --dir chat/web build
-          test -f chat/web/dist/index.html
+          pnpm --version
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: chat/go.mod
-          cache-dependency-path: chat/go.sum
-      - name: Test
-        run: |
-          set -eu
-          cd chat
-          test -z "$(gofmt -l .)"
-          go vet ./...
-          go test -race ./...
-
-      - name: Cross-compile the five binaries
+      - name: Build, test, cross-compile and package (scripts/release.sh)
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          CGO_ENABLED: '0'
+          GOPROXY: https://proxy.golang.org,direct
         run: |
           set -eu
-          cd chat
-          for target in linux/amd64 linux/arm64 darwin/arm64; do
-            os="${target%/*}"; arch="${target#*/}"
-            out="../dist/${os}-${arch}"
-            mkdir -p "$out"
-            GOOS="$os" GOARCH="$arch" go build -trimpath \
-              -ldflags "-s -w -X warden/chat/internal/release.Revision=${VERSION}" \
-              -o "$out/warden" ./cmd/warden
-          done
-          # The Linux binary runs on this runner: it and every service
-          # subcommand must report the release version.
-          ../dist/linux-amd64/warden --version | grep -q "^warden ${VERSION} protocol=" || { echo "warden does not report ${VERSION}"; exit 1; }
-          for svc in policy runner serve edge; do
-            ../dist/linux-amd64/warden $svc --version | grep -q " ${VERSION} protocol=" || { echo "warden $svc does not report ${VERSION}"; exit 1; }
-          done
-
-      - name: Package the tarballs
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -eu
-          mkdir -p dist/release
-          for target in linux-amd64 linux-arm64 darwin-arm64; do
-            name="warden-${VERSION}-${target}"
-            stage="dist/stage/$name"
-            rm -rf "$stage"
-            mkdir -p "$stage/bin" "$stage/config" "$stage/vendor"
-            cp dist/$target/warden "$stage/bin/"
-            cp -R chat/web/dist "$stage/web"
-            cp config/policy.template.json "$stage/config/"
-            cp vendor/github-operations.json vendor/github-meta.json "$stage/vendor/"
-            cp deploy/chat/warden.example.json "$stage/config/warden.server.example.json"
-            chmod -R a+rX "$stage"
-            tar -C dist/stage --owner=0 --group=0 --numeric-owner --mtime="@$(git log -1 --format=%ct)" -czf "dist/release/$name.tar.gz" "$name"
-          done
-          (cd dist/release && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS)
-          # An unpacked tarball must work from bin/ without configuration:
-          # the launcher finds web/, vendor/ and config/ beside it.
-          tar -C dist/stage -xzf "dist/release/warden-${VERSION}-linux-amd64.tar.gz"
-          "dist/stage/warden-${VERSION}-linux-amd64/bin/warden" policy selfcheck
+          scripts/release.sh --version "$VERSION"
+          test -f "dist/release/warden-${VERSION}-linux-amd64.tar.gz"
+          test -f "dist/release/warden-${VERSION}-linux-arm64.tar.gz"
+          test -f "dist/release/warden-${VERSION}-darwin-arm64.tar.gz"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: github.ref_type != 'tag'
         with:
@@ -123,7 +91,7 @@ jobs:
 
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
-          platforms: linux/arm64
+          platforms: linux/amd64
       - uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -149,11 +117,52 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
 
+      # The chart is versioned with the binary and the image (plan decision
+      # 17): chart version <tag without v>, appVersion <tag>, and its values
+      # default to the image just pushed, by index digest. The runner's
+      # Homebrew helm packages and pushes it.
+      - name: Package the chart
+        id: chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          INDEX_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -eu
+          helm version --short
+          tgz="$(scripts/package-chart.sh --version "$VERSION" --image-digest "$INDEX_DIGEST" --image-repository "$IMAGE" --out dist/release)"
+          (cd dist/release && { command -v sha256sum >/dev/null 2>&1 && sha256sum -- "$(basename "$tgz")" || shasum -a 256 -- "$(basename "$tgz")"; } >> SHA256SUMS && cat SHA256SUMS)
+          echo "tgz=$tgz" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.ref_type != 'tag'
+        with:
+          name: warden-${{ steps.version.outputs.version }}-chart
+          path: ${{ steps.chart.outputs.tgz }}
+          if-no-files-found: error
+      - name: Push the chart
+        id: chartpush
+        if: github.ref_type == 'tag'
+        env:
+          TGZ: ${{ steps.chart.outputs.tgz }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          # The same GHCR login the image push uses (packages: write).
+          printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm push "$TGZ" "$CHARTS" > push.txt 2>&1 || { cat push.txt; exit 1; }
+          cat push.txt
+          digest="$(sed -n 's/^Digest: //p' push.txt)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Record the digests
         env:
           VERSION: ${{ steps.version.outputs.version }}
           REF: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
           INDEX_DIGEST: ${{ steps.image.outputs.digest }}
+          CHART_REF: ${{ env.CHARTS }}/warden
+          CHART_VERSION: ${{ steps.chart.outputs.version }}
+          CHART_TGZ: ${{ steps.chart.outputs.tgz }}
+          CHART_DIGEST: ${{ steps.chartpush.outputs.digest }}
         run: |
           set -eu
           docker buildx imagetools inspect "$REF" \
@@ -171,7 +180,19 @@ jobs:
               echo "| $platform | \`$digest\` |"
             done < platforms.txt
             echo
-            echo "### Tarballs"
+            echo "### Helm chart"
+            echo
+            if [ -n "$CHART_DIGEST" ]; then
+              echo "\`$CHART_REF\` version \`$CHART_VERSION\` (OCI digest \`$CHART_DIGEST\`; also \`$(basename "$CHART_TGZ")\` below). Its values default to the image above by digest; see docs/warden-kubernetes.md."
+              echo
+              echo '```'
+              echo "helm install warden $CHART_REF --version $CHART_VERSION -n warden --create-namespace -f values.yaml"
+              echo '```'
+            else
+              echo "Packaged as \`$(basename "$CHART_TGZ")\` (workflow artifact) and not pushed: only a tag build pushes to \`$CHART_REF\`."
+            fi
+            echo
+            echo "### Tarballs and chart"
             echo
             echo '```'
             cat dist/release/SHA256SUMS
@@ -186,7 +207,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+          CHART_TGZ: ${{ steps.chart.outputs.tgz }}
         run: |
           set -eu
           gh release create "$VERSION" --title "Warden $VERSION" --notes-file notes.md --verify-tag \
-            dist/release/*.tar.gz dist/release/SHA256SUMS
+            dist/release/*.tar.gz dist/release/SHA256SUMS "$CHART_TGZ"

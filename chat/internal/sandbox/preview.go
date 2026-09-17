@@ -13,12 +13,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"warden/chat/internal/transport"
 )
 
+// publication is one guest port the runtime exposes to the core at
+// Address:HostPort (the SBX driver's loopback port; the pod IP and guest
+// port on Kubernetes) and the runner's own availability listener serves at
+// ProxyPort, or, with the shared preview server (Worker.PreviewAddress),
+// under /<ID> of that server with ProxyPort left 0. HostPort keeps its
+// name so existing worker state files load unchanged.
 type publication struct {
 	ID         string
 	SandboxID  string
 	Port       int
+	Address    string
 	HostPort   int
 	ProxyPort  int
 	Generation string
@@ -128,22 +137,13 @@ func (w *Worker) attachLocked(ctx context.Context, r Request) (Response, error) 
 				return Response{}, err
 			}
 		}
-		for attempt := 0; attempt < 3; attempt++ {
-			var listener net.Listener
-			listener, err = net.Listen("tcp4", "127.0.0.1:0")
-			if err != nil {
-				break
-			}
-			p.HostPort = listener.Addr().(*net.TCPAddr).Port
-			listener.Close()
-			if err = w.saveManagedLocked(); err != nil {
-				break
-			}
-			err = w.Runtime.Publish(ctx, s.RuntimeName, p.Port, p.HostPort)
-			if err == nil {
-				break
-			}
-		}
+		// The driver chooses the endpoint and hands it back through reserve
+		// before publishing, so the record is durable before the mapping
+		// exists (a crash in between is reconciled on resume).
+		_, err = w.Runtime.Publish(ctx, s.RuntimeName, p.Port, func(m PortMapping) error {
+			p.Address, p.HostPort = m.Address, m.Port
+			return w.saveManagedLocked()
+		})
 		if err != nil {
 			p.State = "error"
 			_ = w.saveManagedLocked()
@@ -171,7 +171,7 @@ func (w *Worker) attachLocked(ctx context.Context, r Request) (Response, error) 
 	}
 	a.Title = r.Title
 	a.State = "available"
-	a.URL = "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(p.ProxyPort)) + a.Path
+	a.URL = w.attachmentURL(p) + a.Path
 	w.managed.Calls[call] = savedAttachmentCall{fingerprint, a.ID}
 	s.LastActivity = w.now()
 	if err = w.saveManagedLocked(); err != nil {
@@ -222,8 +222,60 @@ func (w *Worker) removeLocked(ctx context.Context, r Request) (Response, error) 
 	copy := *a
 	return Response{Attachment: &copy}, w.saveManagedLocked()
 }
+
+// sharedPreviews reports whether publications are served by the one
+// mutual-TLS preview server (PreviewAddress set) rather than by a loopback
+// listener each.
+func (w *Worker) sharedPreviews() bool { return w.PreviewAddress != "" }
+
+// previewHost is the host:port the shared preview server is advertised at,
+// what the chat sends as the Host header; "" with per-publication
+// listeners.
+func (w *Worker) previewHost() string {
+	a, err := transport.Parse(w.PreviewAddress)
+	if err != nil || a.Scheme != transport.SchemeTLS {
+		return ""
+	}
+	return a.Host
+}
+
+// attachmentURL is the origin the chat dials for a publication, without
+// the attachment's path: the shared server's https:// address followed by
+// /<publication ID>, or the publication's own loopback listener.
+func (w *Worker) attachmentURL(p *publication) string {
+	if w.sharedPreviews() {
+		return "https://" + w.previewHost() + "/" + p.ID
+	}
+	return "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(p.ProxyPort))
+}
+
+// previewServer is the shared preview server: /<publication ID>/<rest> is
+// served as <rest> by the same servePreview the loopback listeners run,
+// so the availability, generation and audit checks are one code path.
+// The listener admits only the chat's certificate; that peer identity is
+// the authority here, and the Host and Origin checks in servePreview
+// (against the advertised address, https://) are the same consistency
+// checks the loopback listeners make, no more.
+func (w *Worker) previewServer() *http.Server {
+	return &http.Server{Handler: http.HandlerFunc(w.serveSharedPreview), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32768}
+}
+func (w *Worker) serveSharedPreview(rw http.ResponseWriter, r *http.Request) {
+	id, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	if id == "" || !strings.HasPrefix(r.URL.Path, "/") {
+		http.NotFound(rw, r)
+		return
+	}
+	r2 := r.Clone(r.Context())
+	r2.URL.Path = "/" + rest
+	if r.URL.RawPath != "" {
+		// The ID is hex, so the encoded form has the same prefix.
+		_, rawRest, _ := strings.Cut(strings.TrimPrefix(r.URL.RawPath, "/"), "/")
+		r2.URL.RawPath = "/" + rawRest
+	}
+	w.servePreview(id, rw, r2)
+}
 func (w *Worker) ensureProxyLocked(p *publication) error {
-	if p.listener != nil {
+	if p.listener != nil || w.sharedPreviews() {
 		return nil
 	}
 	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(p.ProxyPort))
@@ -253,14 +305,21 @@ func (w *Worker) servePreview(id string, rw http.ResponseWriter, r *http.Request
 		http.NotFound(rw, r)
 		return
 	}
-	expected := net.JoinHostPort("127.0.0.1", strconv.Itoa(pub.ProxyPort))
+	// The chat addresses the publication's own listener on the sbx shapes
+	// and the shared server's advertised address on Kubernetes; both set
+	// Host and Origin to exactly that (chats/ports.go), and anything else
+	// is not the chat.
+	expected, scheme := net.JoinHostPort("127.0.0.1", strconv.Itoa(pub.ProxyPort)), "http://"
+	if w.sharedPreviews() {
+		expected, scheme = w.previewHost(), "https://"
+	}
 	if r.Host != expected {
 		w.mu.Unlock()
 		http.Error(rw, "Invalid preview host", http.StatusForbidden)
 		return
 	}
 	origin := r.Header.Get("Origin")
-	if origin != "" && origin != "http://"+expected {
+	if origin != "" && origin != scheme+expected {
 		w.mu.Unlock()
 		http.Error(rw, "Invalid preview origin", http.StatusForbidden)
 		return
@@ -282,7 +341,7 @@ func (w *Worker) servePreview(id string, rw http.ResponseWriter, r *http.Request
 		http.Error(rw, "Preview isolation audit is stale; awaiting background verification", http.StatusServiceUnavailable)
 		return
 	}
-	target := &url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", strconv.Itoa(pub.HostPort))}
+	target := &url.URL{Scheme: "http", Host: net.JoinHostPort(pub.Address, strconv.Itoa(pub.HostPort))}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	director := proxy.Director
 	proxy.Director = func(req *http.Request) {
@@ -313,7 +372,7 @@ func (w *Worker) servePreview(id string, rw http.ResponseWriter, r *http.Request
 		defer w.mu.Unlock()
 		s := w.managed.Sandboxes[pub.SandboxID]
 		current := w.managed.Publications[pubKey(pub.SandboxID, pub.Port)]
-		if s == nil || current == nil || s.State != "running" || current.State != "available" || current.Generation != pub.Generation || current.HostPort != pub.HostPort {
+		if s == nil || current == nil || s.State != "running" || current.State != "available" || current.Generation != pub.Generation || current.mapping() != pub.mapping() {
 			return nil, errors.New("preview generation changed")
 		}
 		return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, network, address)

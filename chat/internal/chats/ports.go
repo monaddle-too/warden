@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"warden/chat/internal/agent"
 	cv "warden/chat/internal/conversation"
 	"warden/chat/internal/sandbox"
+	"warden/chat/internal/transport"
 )
 
 // A published address always maps to this exact chat, sandbox and port. IDs are
@@ -105,7 +107,7 @@ func (e *Engine) bindPort(c *Chat, input portInput, id string) (PortBinding, err
 	if a == nil || a.ChatID != c.ID || a.SandboxID != c.SandboxID || a.Port != input.Port {
 		return PortBinding{}, errors.New("worker port binding mismatch")
 	}
-	if err = validateAttachment(*a); err != nil {
+	if err = e.validateAttachment(*a); err != nil {
 		return PortBinding{}, err
 	}
 	if id == "" {
@@ -207,18 +209,35 @@ func (e *Engine) ServePort(id, path string, w http.ResponseWriter, r *http.Reque
 		http.Error(w, "preview unavailable; resume its sandbox and server", 503)
 		return
 	}
+	// The attachment URL is the runner's loopback listener for this
+	// publication (http://127.0.0.1:<port>/) or, on Kubernetes, its shared
+	// mutual-TLS preview server with the publication's path prefix
+	// (https://warden-runner:<port>/<id>/); the viewer's path is served
+	// under that prefix. e.validateAttachment admitted the URL at binding
+	// time and the runner's answer is checked again here.
+	if err = e.validateAttachment(*a); err != nil {
+		http.Error(w, "invalid worker mapping", 502)
+		return
+	}
 	target, err := url.Parse(a.URL)
 	if err != nil {
 		http.Error(w, "invalid worker mapping", 502)
 		return
 	}
+	prefix := strings.TrimSuffix(target.Path, "/")
 	target.Path = ""
+	target.RawPath = ""
 	target.RawQuery = ""
+	upstream, err := e.previewUpstream(target)
+	if err != nil {
+		http.Error(w, "preview upstream unavailable", 502)
+		return
+	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Director = func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
-		req.URL.Path = path
+		req.URL.Path = prefix + path
 		req.URL.RawPath = ""
 		req.Host = target.Host
 		req.Header.Del("Authorization")
@@ -233,7 +252,7 @@ func (e *Engine) ServePort(id, path string, w http.ResponseWriter, r *http.Reque
 			req.Header.Set("Origin", target.Scheme+"://"+target.Host)
 		}
 	}
-	proxy.Transport = &http.Transport{Proxy: nil, ResponseHeaderTimeout: 15 * time.Second}
+	proxy.Transport = upstream
 	proxy.FlushInterval = -1
 	proxy.ModifyResponse = func(res *http.Response) error {
 		res.Header.Del("Set-Cookie")
@@ -243,6 +262,10 @@ func (e *Engine) ServePort(id, path string, w http.ResponseWriter, r *http.Reque
 			if u, err := url.Parse(loc); err == nil && u.Host == target.Host {
 				u.Host = ""
 				u.Scheme = ""
+				if prefix != "" && strings.HasPrefix(u.Path, prefix+"/") {
+					u.Path = strings.TrimPrefix(u.Path, prefix)
+					u.RawPath = ""
+				}
 				res.Header.Set("Location", u.String())
 			}
 		}
@@ -279,6 +302,32 @@ func (e *Engine) ServePort(id, path string, w http.ResponseWriter, r *http.Reque
 		}
 	}()
 	proxy.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// previewUpstream is the transport that reaches an attachment's origin: a
+// plain one for the runner's loopback listeners (as before), and for its
+// shared preview server one mutual-TLS transport kept for reuse, the
+// runner verified against the deployment CA under the advertised host
+// name and this service's certificate presented (transport.ClientConfig,
+// which re-reads a renewed certificate at each handshake).
+func (e *Engine) previewUpstream(target *url.URL) (http.RoundTripper, error) {
+	if target.Scheme != "https" {
+		return &http.Transport{Proxy: nil, ResponseHeaderTimeout: 15 * time.Second}, nil
+	}
+	e.previewMu.Lock()
+	defer e.previewMu.Unlock()
+	if e.previewTransport == nil {
+		host := e.RunnerPreviewHost
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		config, err := transport.ClientConfig(e.RunnerPreviewTLS, host)
+		if err != nil {
+			return nil, err
+		}
+		e.previewTransport = &http.Transport{Proxy: nil, TLSClientConfig: config, ResponseHeaderTimeout: 15 * time.Second, IdleConnTimeout: 90 * time.Second}
+	}
+	return e.previewTransport, nil
 }
 
 // previewURL is the address viewers open for an approved binding. Each

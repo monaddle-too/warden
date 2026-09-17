@@ -63,6 +63,8 @@ func githubUserRequest(method, path, token string) (int, []byte, error) {
 // new sign-in takes effect without a restart. Actions appear as the person.
 type GitHubUserCredentials struct {
 	Path      string
+	Store     CredentialStore // with Name, instead of the file at Path
+	Name      string
 	Redactor  *Redactor
 	Clock     Clock
 	Transport GitHubUserTransport
@@ -77,6 +79,14 @@ func NewGitHubUserCredentials(path string, redactor *Redactor, clock Clock) *Git
 	return &GitHubUserCredentials{Path: path, Redactor: redactor, Clock: clock, Transport: githubUserRequest}
 }
 
+// NewGitHubUserCredentialsFrom returns the user-token source for name in
+// store.
+func NewGitHubUserCredentialsFrom(store CredentialStore, name string, redactor *Redactor, clock Clock) *GitHubUserCredentials {
+	c := NewGitHubUserCredentials("", redactor, clock)
+	c.Store, c.Name = store, name
+	return c
+}
+
 // githubUserFile is the on-disk shape: {"token":"gho_…","login":"…",
 // "scopes":["repo","read:org"],"obtained":<unix seconds>}.
 type githubUserFile struct {
@@ -87,7 +97,7 @@ type githubUserFile struct {
 }
 
 func (c *GitHubUserCredentials) read() (*githubUserFile, error) {
-	raw, err := openPrivate(c.Path, 65536, "GitHub credential file")
+	raw, err := loadCredential(c.Store, c.Name, c.Path, 65536, "GitHub credential file")
 	if err != nil {
 		return nil, errors.New(GitHubRefreshMessage)
 	}

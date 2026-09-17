@@ -43,6 +43,7 @@ import { Conversation, type RequestCard } from "./Conversation";
 import { ModelSelect } from "./ModelSelect";
 import { SizeSelect, sameSize } from "./SizeSelect";
 import { AdminConsole } from "./AdminConsole";
+import { chatStatusLabel } from "../stages";
 import { WorkspacePanel } from "./WorkspacePanel";
 
 const providerName = (provider?: string) =>
@@ -379,8 +380,17 @@ export function ChatShell({
                 onClick={() => showChat(c.id)}
               >
                 <span
-                  className={`status-dot ${c.status}`}
-                  aria-label={c.status === "running" ? "Running" : undefined}
+                  className={`status-dot ${c.startup && ["running", "queued"].includes(c.status) ? "starting" : c.status}`}
+                  aria-label={
+                    ["running", "queued"].includes(c.status)
+                      ? chatStatusLabel(c)
+                      : undefined
+                  }
+                  title={
+                    ["running", "queued"].includes(c.status)
+                      ? chatStatusLabel(c)
+                      : undefined
+                  }
                 />
                 <span>{c.title}</span>
               </button>

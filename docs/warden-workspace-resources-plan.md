@@ -1,10 +1,11 @@
 # Workspace resources: chosen at creation, requested by the agent
 
-Status: implemented for SBX on branch `feature/workspace-resources` (from
-`origin/main` 442618b), September 17, 2026; the Kubernetes driver's `Resize`
-waits for that branch to be synced with main (see Steps). Applies to both
-runtime drivers: SBX (`chat/internal/sandbox/runtime.go`) and Kubernetes
-(`chat/internal/sandbox/kube`, branch `plan/warden-kubernetes`).
+Status: implemented for both runtimes on branch `feature/workspace-resources`
+(synced with `origin/main` 8bb9a30, which carries the Kubernetes shape),
+September 17, 2026; the Kubernetes half awaits its live check on the GKE
+cluster (step 5). Applies to both runtime drivers: SBX
+(`chat/internal/sandbox/runtime.go`) and Kubernetes
+(`chat/internal/sandbox/kube`).
 
 ## Objective
 
@@ -210,14 +211,23 @@ ceiling.
       the form's Size fieldset (`SizeSelect.tsx`), `warden chat new --cpus
       --memory`, `bind-chat` registers the size, spares adopted only at
       the default size.
-- [ ] 2 Kubernetes `Resize` (PATCH `pods/resize`, wait for the allocated
-      resources), the chart Role's `pods/resize` patch verb, the kube
-      `Create` reading `spec.Resources`, `Restart: false` and
-      `CPUStepMilli: 250` in that runner's limits, a live test beside
-      `TestLiveDriver`. Blocked on syncing `plan/warden-kubernetes` with
-      main: the branches conflict in `sandbox/managed.go` and
-      `sandbox/runtime.go`, which this feature touches, so the kube half
-      is written once against the merged tree rather than twice.
+- [x] 2 Kubernetes `Resize` (`Driver.Resize`: a strategic merge patch to
+      `pods/resize` naming only the guest container's resources, then a
+      watch until `status.containerStatuses[guest].resources` carries the
+      size; `PodResizePending`/`Infeasible`, a server without the
+      subresource and a missing Role verb are `sandbox.ErrResizeInfeasible`,
+      which the worker answers by stopping the sandbox so the next
+      generation is created at the size — `resize` is refused under an
+      active run, so nothing is interrupted), the chart Role's `pods/resize`
+      patch verb, `PodSpec` reading `spec.Resources` (Create and Prepare
+      both carry it, `Worker.specOf`), spares adopted at any size on a
+      live platform and grown before the run (`resizeAdoptedLocked`),
+      `kubernetesResourceLimits` (step 250, `Restart: false`, ceiling from
+      `sandboxes.maxCPUs`/`maxMemoryMB`, else the default). The chart's
+      `sandboxes.cpuMillis` became `cpus`/`maxCPUs`/`maxMemoryMB`; the
+      quota and the LimitRange maximum are sized from the ceiling. Fake-API
+      tests `TestResizePatchesThePodInPlace` and `TestResizeReportsInfeasible`;
+      worker tests for adoption and the infeasible fallback.
 - [x] 3 SBX `Resize` by regeneration (`sbxRuntime.Resize`: stop, `template
       save`, `rm --force`, `create` from the tag, `template rm`), the
       runner's `resize` op (`resizeLocked`), resume-after-restart on the
@@ -243,3 +253,13 @@ ceiling.
   `feature/workspace-resources` (Go race suite, vet, web build and tests
   green; the SBX driver's live test passed on the owner's Mac). Kubernetes
   half (step 2) deferred to the branch sync, see the step.
+- 2026-09-17 (later): `origin/main` 8bb9a30 (the Kubernetes shape, cluster
+  visibility, startup stages, sandbox stats) merged into the branch; step 2
+  written against the merged tree. Merge notes: main's cluster-view
+  `sandbox.Resources` (millicores + bytes) became `sandbox.Amounts` (TS
+  `Amounts`) so the workspace size keeps the name; the protocol-2 `health`
+  answer now carries the limits (the branch had them on the legacy handler
+  main removed); the panel's Size section folded into main's Resources
+  section (usage rows, Change… button, the form); the stopped usage sample
+  reports the sandbox's own size. Go race suite, vet, chart goldens, web
+  type-check, tests and build green.

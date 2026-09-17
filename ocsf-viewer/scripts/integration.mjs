@@ -1,17 +1,41 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 const base = 'http://127.0.0.1:8080';
 const admin = process.env.OCSF_ADMIN_TOKEN,
   read = process.env.OCSF_READ_TOKEN,
   ingest = process.env.OCSF_INGEST_TOKEN;
+const composeArgs = [
+  'compose',
+  '-p',
+  'ocsf-smoke',
+  '-f',
+  'deploy/compose.yaml',
+  '-f',
+  'deploy/compose.ci.yaml',
+];
 const compose = (...args) =>
+  execFileSync('docker', [...composeArgs, ...args], { stdio: 'inherit' });
+// The app's data directory is the named volume from compose.ci.yaml. Files
+// in it belong to the container's uid 65532, so a root helper container
+// writes them: no sudo on the runner.
+const dataVolume = (script, input) =>
   execFileSync(
     'docker',
-    ['compose', '-p', 'ocsf-smoke', '-f', 'deploy/compose.yaml', ...args],
-    { stdio: 'inherit' },
+    [
+      'run',
+      '--rm',
+      '-i',
+      '-v',
+      'ocsf-smoke-data:/app/data',
+      'alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40',
+      'sh',
+      '-c',
+      script,
+    ],
+    { input, stdio: ['pipe', 'inherit', 'inherit'] },
   );
 async function api(path, options = {}, token = admin) {
   const r = await fetch(base + path, {
@@ -163,11 +187,7 @@ const rows = (await api('/api/v1/events?stream=ci')).data.events;
 execFileSync(
   'docker',
   [
-    'compose',
-    '-p',
-    'ocsf-smoke',
-    '-f',
-    'deploy/compose.yaml',
+    ...composeArgs,
     'exec',
     '-T',
     'clickhouse',
@@ -194,11 +214,7 @@ compose(
 execFileSync(
   'docker',
   [
-    'compose',
-    '-p',
-    'ocsf-smoke',
-    '-f',
-    'deploy/compose.yaml',
+    ...composeArgs,
     'exec',
     '-T',
     'clickhouse',
@@ -214,17 +230,10 @@ execFileSync(
 // Restore the earlier queue snapshot after indexing. Its queued event overlaps
 // the stored export and must replay to the same visible ID after restoration.
 compose('stop', 'app');
-execFileSync('sudo', [
-  'install',
-  '-m',
-  '600',
-  '-o',
-  '65532',
-  '-g',
-  '65532',
-  snapshotPath,
-  join(process.env.OCSF_DATA_DIR, 'queue.db'),
-]);
+dataVolume(
+  'cat > /app/data/queue.db.restore && chown 65532:65532 /app/data/queue.db.restore && chmod 600 /app/data/queue.db.restore && mv /app/data/queue.db.restore /app/data/queue.db',
+  await readFile(snapshotPath),
+);
 compose('up', '-d', '--wait', '--wait-timeout', '120', 'app');
 await indexed(receipt.data.id);
 assert.equal((await api('/api/v1/events?stream=ci')).data.total, 4);

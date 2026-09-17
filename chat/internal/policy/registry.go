@@ -2,6 +2,7 @@ package policy
 
 import (
 	"bufio"
+	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"warden/chat/internal/release"
+	"warden/chat/internal/transport"
 )
 
 var contextKeys = []string{"projectID", "sandboxID", "runtimeName", "generation", "chatID", "runID", "principalID"}
@@ -75,17 +77,26 @@ type Binding struct {
 	Ended          map[string]bool
 	Decisions      map[string]map[string]any
 	ProviderSecret string
-	GatewayPort    int
+	// GatewayPort is the binding's loopback gateway port (gateway-port.json)
+	// on the sbx shapes, or the shared listener's port; a proof names it.
+	GatewayPort int
+	// Endpoint is what the registry's Gateway bound for this binding, which
+	// Begin advertises; unset until Bind ran in this process.
+	Endpoint GatewayEndpoint
 	// LastBegin (when Begun) keeps the binding warm for background
 	// re-verification after its lease ends.
 	LastBegin float64
 	Begun     bool
 }
 
-// GatewayManager runs the inspected loopback gateway for a binding.
-type GatewayManager interface {
-	Ensure(binding *Binding) error
-	Close()
+// endpoint is the gateway endpoint Begin advertises: the one the Gateway
+// bound, else the loopback endpoint of the recorded port (a registry
+// without a Gateway, as the sbx control tests run it).
+func (b *Binding) endpoint() GatewayEndpoint {
+	if b.Endpoint.Port != 0 {
+		return b.Endpoint
+	}
+	return LoopbackEndpoint(b.GatewayPort)
 }
 
 // RegistryOptions configures the registry.
@@ -114,8 +125,11 @@ type Registry struct {
 	ClaudeSource   ProviderSource
 	DocumentAPI    *DocumentAPI
 	Sharing        *Sharing
-	GatewayPool    GatewayManager
-	Clock          Clock
+	// Gateways runs the bindings' gateways (LoopbackGateways on the sbx
+	// shapes, SharedGateway behind one listener); nil in tests that bind
+	// a port by hand.
+	Gateways Gateway
+	Clock    Clock
 	// CA signs every gateway's leaf certificates; its public certificate is
 	// what guests install.
 	CA            *GatewayCA
@@ -682,8 +696,12 @@ func (r *Registry) Begin(value any, renew bool) (map[string]any, error) {
 	}
 	b.Lease = &Lease{Provider: provider, RunID: ctx["runID"], ChatID: ctx["chatID"], ExpiresAt: r.Clock() + LeaseSeconds}
 	b.LastBegin, b.Begun = r.Clock(), true
-	gateway := "http://host.docker.internal:" + itoa(proof.GatewayPort)
-	result := map[string]any{"ok": true, "ready": true, "leaseSeconds": LeaseSeconds, "apiKeyPlaceholder": "warden-proxy-managed", "provider": provider, "proxyURL": gateway}
+	// The proof names the gateway port it was issued for; the endpoint's
+	// host and credential come from the Gateway that bound it.
+	endpoint := b.endpoint()
+	endpoint.Port = proof.GatewayPort
+	gateway := endpoint.BaseURL()
+	result := map[string]any{"ok": true, "ready": true, "leaseSeconds": LeaseSeconds, "apiKeyPlaceholder": endpoint.Placeholder(), "provider": provider, "proxyURL": endpoint.ProxyURL()}
 	if provider == "claude" {
 		result["providerBaseURL"] = gateway + "/anthropic"
 	} else {
@@ -1280,8 +1298,8 @@ func (r *Registry) Close() {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.GatewayPool != nil {
-		r.GatewayPool.Close()
+	if r.Gateways != nil {
+		r.Gateways.Close()
 	}
 	for _, b := range r.Bindings {
 		b.ProviderSecret = ""
@@ -1290,7 +1308,9 @@ func (r *Registry) Close() {
 	r.Bindings = map[string]*Binding{}
 }
 
-// ControlServer serves the private line-delimited JSON protocol on a Unix socket.
+// ControlServer serves the private line-delimited JSON protocol on the
+// policy service's listener: a Unix socket (0600) on the sbx shapes, a
+// mutual-TLS port admitting warden-runner and warden-chat on Kubernetes.
 type ControlServer struct {
 	registry *Registry
 	listener net.Listener
@@ -1300,15 +1320,14 @@ type ControlServer struct {
 	once     sync.Once
 }
 
-// ListenControl binds the socket privately (0600) and starts serving.
-func ListenControl(path string, registry *Registry) (*ControlServer, error) {
-	_ = os.Remove(path)
-	listener, err := net.Listen("unix", path)
+// ControlPeers are the identities the control listener admits over tls://.
+var ControlPeers = []string{transport.Runner, transport.Chat}
+
+// ListenControl binds address (unix://<path>, bound privately at 0600, or
+// tls://<host>:<port> with the service's material) and starts serving.
+func ListenControl(address string, material *transport.TLS, registry *Registry) (*ControlServer, error) {
+	listener, err := transport.Listen(address, transport.ListenOptions{Mode: 0o600, TLS: material, Peers: ControlPeers})
 	if err != nil {
-		return nil, err
-	}
-	if err = os.Chmod(path, 0o600); err != nil {
-		listener.Close()
 		return nil, err
 	}
 	s := &ControlServer{registry: registry, listener: listener, slots: make(chan struct{}, 64), closed: make(chan struct{})}
@@ -1394,6 +1413,9 @@ func readLine(reader *bufio.Reader, limit int) ([]byte, error) {
 	return line[:len(line)-1], nil
 }
 
+// Addr is the bound address (a tls:// listener's ephemeral port, in tests).
+func (s *ControlServer) Addr() net.Addr { return s.listener.Addr() }
+
 // Close stops accepting and waits for in-flight handlers.
 func (s *ControlServer) Close() {
 	s.once.Do(func() {
@@ -1403,9 +1425,12 @@ func (s *ControlServer) Close() {
 	s.wg.Wait()
 }
 
-// ControlRPC performs one request against a control socket.
-func ControlRPC(path string, message map[string]any) (map[string]any, error) {
-	conn, err := net.DialTimeout("unix", path, 30*time.Second)
+// ControlRPC performs one request against a control endpoint (a unix:// or
+// tls:// URL; material is the caller's for tls://).
+func ControlRPC(address string, material *transport.TLS, message map[string]any) (map[string]any, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := transport.Dial(ctx, address, transport.DialOptions{TLS: material})
 	if err != nil {
 		return nil, err
 	}

@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 	"warden/chat/internal/agent"
 	cv "warden/chat/internal/conversation"
+	"warden/chat/internal/transport"
 )
 
 func sharingTools() []any {
@@ -29,10 +29,10 @@ func sharingTools() []any {
 	}...)
 }
 func (e *Engine) sharingCall(ctx context.Context, op string, data map[string]any) (map[string]any, error) {
-	if e.WardenSocket == "" {
+	if e.PolicyAddress == "" {
 		return nil, errors.New("Sharing is not configured")
 	}
-	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", e.WardenSocket)
+	conn, err := transport.Dial(ctx, e.PolicyAddress, transport.DialOptions{TLS: e.PolicyTLS})
 	if err != nil {
 		return nil, err
 	}
