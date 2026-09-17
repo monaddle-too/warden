@@ -120,6 +120,24 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respond(w, res, err)
 		return
 	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "image-file" {
+		h.imageFileHTTP(w, r, parts[1])
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "paths" {
+		h.pathsHTTP(w, r, parts[1])
+		return
+	}
+	if len(parts) >= 3 && parts[0] == "chats" && parts[2] == "attachments" {
+		switch {
+		case r.Method == "POST" && len(parts) == 3:
+			h.attachmentUpload(w, r, parts[1])
+			return
+		case r.Method == "GET" && len(parts) == 4:
+			h.attachmentHTTP(w, r, parts[1], parts[3])
+			return
+		}
+	}
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "file" {
 		name := r.URL.Query().Get("path")
 		if name == "" || len(name) > 2048 {
@@ -160,6 +178,8 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Allow      bool                `json:"allow"`
 		Answers    map[string][]string `json:"answers"`
 		Resources  *sandbox.Resources  `json:"resources"`
+		// Attachments are upload IDs a message sends along.
+		Attachments []string `json:"attachments"`
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
 	dec.DisallowUnknownFields()
@@ -195,7 +215,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "agent":
 			err = h.Engine.ConfigureAgentAndRelease(r.Context(), parts[1], body.Provider, body.Model)
 		case "message":
-			err = h.Engine.MessageFrom(parts[1], body.Text, body.ID, requester(r))
+			err = h.Engine.MessageFrom(parts[1], body.Text, body.ID, requester(r), body.Attachments...)
 		case "typing":
 			err = h.Engine.Typing(parts[1], requester(r))
 			result = map[string]bool{"ok": true}
@@ -211,6 +231,8 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "approvals":
 		err = h.Engine.ResolveAs(parts[1], parts[3], body.Allow, body.Answers, requester(r))
+	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "attachments" && parts[4] == "remove":
+		err = h.Engine.removeAttachment(parts[1], parts[3])
 	default:
 		http.Error(w, "not found", 404)
 		return

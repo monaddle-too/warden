@@ -136,6 +136,51 @@ func TestIdleResidentSessionYieldsSandboxToAnotherChat(t *testing.T) {
 	}
 }
 
+// evaluated returns once the Serve loop has completed a pass that began after
+// the caller's last change: the loop takes a wake only from its select, so
+// once a second wake has been taken the pass between the two is over.
+func evaluated(t *testing.T, e *Engine) {
+	t.Helper()
+	until(t, func() bool { return len(e.wake) == 0 })
+	e.Wake()
+	until(t, func() bool { return len(e.wake) == 0 })
+}
+
+func TestQueuedChatStartsWhenSiblingSessionGoesIdle(t *testing.T) {
+	e, w := residentSetup(t)
+	first, _ := e.Create("First", "", "", nil)
+	sendAndDeliver(t, e, first, "hello") // mid-turn: the session cannot yield yet
+	sandbox := e.Store.Snapshot().chat(first).SandboxID
+	second, err := e.Create("Second", sandbox, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Message(second, "waiting", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	evaluated(t, e)
+	if e.Store.Snapshot().chat(second).Status != "queued" || !e.sessionAlive(first) {
+		t.Fatal("second chat ran on a sandbox whose session is mid-turn")
+	}
+	// The first chat's turn ends and its session waits between turns. No
+	// message, stop or timeout follows: going idle alone must let the
+	// waiting chat take the sandbox.
+	completeTurn(t, e, w, first)
+	until(t, func() bool {
+		c := e.Store.Snapshot().chat(second)
+		return c.Status == "running" && c.Conversation.Entries[0].Delivery == "sent"
+	})
+	if e.sessionAlive(first) {
+		t.Fatal("first chat's idle session still holds the shared sandbox")
+	}
+	if c := e.Store.Snapshot().chat(first); c.Status != "idle" || c.Error != "" {
+		t.Fatalf("yielding must be a clean end, got %s %q", c.Status, c.Error)
+	}
+	if got := w.count("prepare"); got != 2 {
+		t.Fatalf("second chat prepared %d runs, want its own", got)
+	}
+}
+
 func TestIdleResidentSessionYieldsRunSlot(t *testing.T) {
 	e, w := residentSetup(t)
 	var ids []string

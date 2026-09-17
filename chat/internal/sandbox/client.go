@@ -80,6 +80,8 @@ type Request struct {
 	// Resources is the size a fresh workspace is created with (bind-chat,
 	// prepare) or resized to (resize); nil leaves the sandbox's own.
 	Resources *Resources `json:"resources,omitempty"`
+	// Bytes is the content an attachment-write puts into the sandbox.
+	Bytes []byte `json:"bytes,omitempty"`
 }
 type Response struct {
 	PublishPlan       *RepositoryPublishPlan `json:"publishPlan,omitempty"`
@@ -112,6 +114,8 @@ type Response struct {
 	Diff              string                 `json:"diff,omitempty"`
 	Bundle            []byte                 `json:"bundle,omitempty"`
 	Bytes             []byte                 `json:"bytes,omitempty"`
+	// Paths is a "paths" completion: workspace paths matching the query.
+	Paths []string `json:"paths,omitempty"`
 }
 type SandboxInfo struct {
 	ID          string `json:"id"`

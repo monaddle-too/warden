@@ -22,6 +22,7 @@ import { api } from "../api";
 import type { PullRequestProposal } from "./PullRequestReview";
 import { resourcesLabel } from "./Approvals";
 import { SizeSelect, sameSize } from "./SizeSelect";
+import type { DocumentProposal } from "./DocumentReview";
 
 const remaining = (value: number | null) => {
   if (!value) return "";
@@ -56,8 +57,8 @@ function describe(e: AccessEvent): string {
       : e.access === "create"
         ? "create"
         : e.access === "structure"
-          ? "full edit"
-          : "edit";
+          ? "full spreadsheet edit"
+          : "spreadsheet edit";
   switch (e.status) {
     case "pending":
       return `Requested ${access} access to ${what}`;
@@ -185,10 +186,12 @@ export function WorkspacePanel({
   workspace,
   siblings,
   pullRequests,
+  documentReviews = [],
   onSelectChat,
   onShareDocuments,
   onShareRepositories,
   onOpenPullRequest,
+  onOpenDocumentReview,
   onChanged,
   limits,
 }: {
@@ -198,10 +201,12 @@ export function WorkspacePanel({
   pullRequests: PullRequestProposal[];
   // The runner's size offer; absent while the runner is unreachable.
   limits?: ResourceLimits;
+  documentReviews?: DocumentProposal[];
   onSelectChat: (id: string) => void;
   onShareDocuments: () => void;
   onShareRepositories: () => void;
   onOpenPullRequest: (id: string) => void;
+  onOpenDocumentReview?: (id: string) => void;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState("");
@@ -521,7 +526,7 @@ export function WorkspacePanel({
                 <small>
                   {g.expired
                     ? "access expired"
-                    : `${g.access === "read" ? "read" : g.access === "write" ? "edit" : "full edit"} · ${remaining(g.expires_at)}`}
+                    : `${g.access === "write" ? "spreadsheet edit" : g.access === "structure" ? "full spreadsheet edit" : "read"} · ${remaining(g.expires_at)}`}
                 </small>
               </li>
             )),
@@ -604,6 +609,27 @@ export function WorkspacePanel({
               </button>
             )}
           </details>
+        </section>
+      )}
+      {documentReviews.length > 0 && (
+        <section className="workspace-section">
+          <h2>Document suggestions</h2>
+          <ul>
+            {documentReviews.map((r) => (
+              <li key={r.request_id}>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onOpenDocumentReview?.(r.request_id);
+                  }}
+                >
+                  {r.title}: {r.summary}
+                </a>
+                <small>{r.status}</small>
+              </li>
+            ))}
+          </ul>
         </section>
       )}
       {pullRequests.length > 0 && (

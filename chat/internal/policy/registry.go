@@ -992,7 +992,7 @@ func (r *Registry) Proxy(sandbox string, capability any, message any) (map[strin
 		if !engine.NetworkEnabled() {
 			return denied, nil
 		}
-		grant, authorization, rewrite, err := sharing.Authorize(lease.ChatID, sandbox, request)
+		grant, authorization, err := sharing.Authorize(lease.ChatID, sandbox, request)
 		if err != nil {
 			denied["reason"] = err.Error()
 			return denied, nil
@@ -1013,14 +1013,6 @@ func (r *Registry) Proxy(sandbox string, capability any, message any) (map[strin
 			remaining = 0
 		}
 		result := map[string]any{"allow": true, "authorization": authorization, "decision_id": decision, "request_id": decision, "expires_at": expires, "remaining_seconds": remaining}
-		if rewrite != nil {
-			result["body_base64"] = base64.StdEncoding.EncodeToString(rewrite.Body)
-			published := make([]any, 0, len(rewrite.Publications))
-			for _, t := range rewrite.Publications {
-				published = append(published, t)
-			}
-			result["publications"] = published
-		}
 		return result, nil
 	}
 	if sharing != nil && action == "unpublish" {

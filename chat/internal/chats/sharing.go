@@ -23,9 +23,17 @@ func sharingTools() []any {
 			"files":  map[string]any{"type": "array", "minItems": 0, "maxItems": 20, "items": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "content": map[string]any{"type": []string{"string", "null"}}}, "required": []string{"path", "content"}, "additionalProperties": false}},
 		}, "required": []string{}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "list_shared_repositories", "description": "List the GitHub repositories shared with this conversation, with clone and API URLs and which read categories the user granted each (access: contents = code, branches, commits and git clone; issues = issues, comments, labels, milestones; pull_requests = pull requests, their files and reviews). Persistent read-only access lasts until the user removes a repository. Use HTTPS Git or GitHub REST through the sandbox proxy; never request credentials. Check this tool when you need repository access.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}},
-		map[string]any{"type": "function", "name": "request_google_document_creation", "description": "Request owner approval to create one Google document with this title and grant this conversation temporary read/write access to it. Waits for approval; returns the created document API URL. Then fill the document with POST {api_url}:batchUpdate through the sandbox proxy. Do not call documents.create yourself. Never request credentials.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"title": map[string]any{"type": "string", "maxLength": 200}, "reason": map[string]any{"type": "string", "maxLength": 2000}}, "required": []string{"title", "reason"}, "additionalProperties": false}},
-		map[string]any{"type": "function", "name": "request_google_docs_access", "description": "Ask the user to select Google documents or spreadsheets and an access duration at one permission level (default read). read: Docs documents.get and Sheets reads. write: also Docs batchUpdate text insertion/deletion and text/paragraph styling, and Sheets cell value writes (values update/append/clear). structure: also every other Docs batchUpdate request (tables, tabs, headers, named ranges) and Sheets spreadsheets:batchUpdate (add/delete sheets, formats, charts, merges). Images: only attached ones, via insertInlineImage with uri warden-image:<image_id> from attach_image at structure level; remote image URLs are never allowed. Each level includes the ones below, on the selected IDs only. Ask for the lowest level that does the job. Waits for their decision; returns the selected IDs with their API URLs (docs.googleapis.com for documents, sheets.googleapis.com for spreadsheets). Read them with HTTPS requests through the sandbox proxy. Never request Google credentials.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"reason": map[string]any{"type": "string", "maxLength": 2000}, "access": map[string]any{"type": "string", "enum": []string{"read", "write", "structure"}}}, "required": []string{"reason"}, "additionalProperties": false}},
+		map[string]any{"type": "function", "name": "request_google_document_creation", "description": "Request owner approval to create one empty Google document with this title and grant this conversation temporary read access to it. Waits for approval; returns the created document ID and API URL. Then fill it with propose_google_document_edit (read_google_document first): the owner reviews the content as suggestions and Warden writes what they approve. Documents are never written directly. Do not call documents.create yourself. Never request credentials.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"title": map[string]any{"type": "string", "maxLength": 200}, "reason": map[string]any{"type": "string", "maxLength": 2000}}, "required": []string{"title", "reason"}, "additionalProperties": false}},
+		map[string]any{"type": "function", "name": "request_google_docs_access", "description": "Ask the user to select Google documents or spreadsheets and an access duration at one permission level (default read). read: Docs documents.get and Sheets reads. write: also Sheets cell value writes (values update/append/clear). structure: also Sheets spreadsheets:batchUpdate (add/delete sheets, formats, charts, merges). The write and structure levels apply to spreadsheets only: Google Docs are never written directly (batchUpdate is refused at every level); read them with read_google_document and propose changes with propose_google_document_edit, which need only read. Each level includes the ones below, on the selected IDs only. Ask for the lowest level that does the job: read for documents. Waits for their decision; returns the selected IDs with their API URLs (docs.googleapis.com for documents, sheets.googleapis.com for spreadsheets). Read them with HTTPS requests through the sandbox proxy. Never request Google credentials.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"reason": map[string]any{"type": "string", "maxLength": 2000}, "access": map[string]any{"type": "string", "enum": []string{"read", "write", "structure"}}}, "required": []string{"reason"}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "list_shared_documents", "description": "List this conversation's currently shared Google documents, API URLs and grant expiry times.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}},
+		map[string]any{"type": "function", "name": "read_google_document", "description": "Read a shared Google document (read access suffices) as numbered paragraphs: {n, style, depth, text, frozen?}. Styles: title, subtitle, h1–h6, text, bullet, numbered (depth = list nesting). Text uses Markdown-like marks: **bold**, *italic*, [text](url); backslash escapes \\\\ \\* \\[ \\]. Frozen paragraphs (tables, images, footnotes, breaks, chips) are shown as placeholders and cannot be changed or deleted. Only the first tab is shown. Pass proposal_id to read instead the draft the owner returned with that proposal (see propose_google_document_edit). Prefer this over documents.get.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"document_id": map[string]any{"type": "string"}, "proposal_id": map[string]any{"type": "string"}}, "required": []string{"document_id"}, "additionalProperties": false}},
+		map[string]any{"type": "function", "name": "propose_google_document_edit", "description": "Propose edits to a shared Google document as suggestions the owner reviews in Warden; only read access is needed and nothing is written until they approve. Give a summary and ops against paragraph numbers from read_google_document: {type: replace, start, end, paragraphs, reason?} replaces paragraphs start..end (inclusive), {type: insert, after, paragraphs, reason?} inserts after paragraph number after (0 = at the top), {type: delete, start, end, reason?} deletes. Paragraphs are {style, depth?, text} as read_google_document shows them; put the paragraph's full new text in text. Ops must not overlap or touch frozen paragraphs; up to 200 ops / 256 KiB. Add a short reason to each op: the owner sees it beside the change. Waits for the decision: applied (written to the document), rejected (feedback), returned (the owner edited the draft and/or left comments: read it with read_google_document {document_id, proposal_id} and submit a new proposal with revises = that request_id and ops against the returned draft's numbering), or failed. Do not write with batchUpdate when this tool is available.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+			"document_id": map[string]any{"type": "string"}, "summary": map[string]any{"type": "string", "maxLength": 4000}, "revises": map[string]any{"type": "string"},
+			"ops": map[string]any{"type": "array", "minItems": 1, "maxItems": 200, "items": map[string]any{"type": "object", "properties": map[string]any{
+				"type": map[string]any{"type": "string", "enum": []string{"replace", "insert", "delete"}}, "start": map[string]any{"type": "integer"}, "end": map[string]any{"type": "integer"}, "after": map[string]any{"type": "integer"}, "reason": map[string]any{"type": "string", "maxLength": 2000},
+				"paragraphs": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"style": map[string]any{"type": "string", "enum": []string{"title", "subtitle", "h1", "h2", "h3", "h4", "h5", "h6", "text", "bullet", "numbered"}}, "depth": map[string]any{"type": "integer", "minimum": 0, "maximum": 8}, "text": map[string]any{"type": "string"}}, "required": []string{"text"}, "additionalProperties": false}},
+			}, "required": []string{"type"}, "additionalProperties": false}},
+		}, "required": []string{"document_id", "summary", "ops"}, "additionalProperties": false}},
 	}...)
 }
 func (e *Engine) sharingCall(ctx context.Context, op string, data map[string]any) (map[string]any, error) {
@@ -120,6 +128,29 @@ func (e *Engine) sharingTool(ctx context.Context, c *Chat, client *agent.Client,
 		data["title"] = input.Title
 		data["callID"] = c.RunID + ":" + string(f.ID)
 	}
+	if name := agent.String(f.Params["tool"]); name == "read_google_document" || name == "propose_google_document_edit" {
+		op = "doc_read"
+		if name == "propose_google_document_edit" {
+			op = "doc_submit"
+			data["callID"] = c.RunID + ":" + string(f.ID)
+		}
+		raw, _ := json.Marshal(f.Params["arguments"])
+		if v, ok := f.Params["arguments"].(string); ok {
+			raw = []byte(v)
+		}
+		var input map[string]any
+		if err := json.Unmarshal(raw, &input); err != nil || input == nil {
+			return client.Reply(f.ID, sharingToolResult(nil, errors.New("invalid arguments")))
+		}
+		for key, value := range input {
+			switch {
+			case key == "document_id", key == "proposal_id" && op == "doc_read", (key == "summary" || key == "ops" || key == "revises") && op == "doc_submit":
+				data[key] = value
+			default:
+				return client.Reply(f.ID, sharingToolResult(nil, errors.New("unexpected field "+key)))
+			}
+		}
+	}
 	if agent.String(f.Params["tool"]) == "request_pull_request" {
 		op = "pr_submit"
 		raw, _ := json.Marshal(f.Params["arguments"])
@@ -145,10 +176,10 @@ func (e *Engine) sharingTool(ctx context.Context, c *Chat, client *agent.Client,
 		data["callID"] = c.RunID + ":" + string(f.ID)
 	}
 	result, err := e.sharingCall(ctx, op, data)
-	if op == "pr_submit" && err == nil && result["status"] == "invalid" {
+	if (op == "pr_submit" || op == "doc_submit" || op == "doc_read") && err == nil && result["status"] == "invalid" {
 		return client.Reply(f.ID, sharingToolResult(nil, errors.New(agent.String(result["error"]))))
 	}
-	if err != nil || op == "list" || op == "github_list" {
+	if err != nil || op == "list" || op == "github_list" || op == "doc_read" {
 		return client.Reply(f.ID, sharingToolResult(result, err))
 	}
 	id := agent.String(result["request_id"])
@@ -157,7 +188,7 @@ func (e *Engine) sharingTool(ctx context.Context, c *Chat, client *agent.Client,
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
-			if result["status"] != "pending" && result["status"] != "publishing" {
+			if result["status"] != "pending" && result["status"] != "publishing" && result["status"] != "applying" && result["status"] != "stale" {
 				// A successful pipe write is not proof the model consumed it.
 				// Ack only when this run completes normally; a disconnect
 				// keeps the result available for durable continuation.
@@ -175,8 +206,11 @@ func (e *Engine) sharingTool(ctx context.Context, c *Chat, client *agent.Client,
 			case <-ticker.C:
 			}
 			pollOp := "get"
-			if op == "pr_submit" {
+			switch op {
+			case "pr_submit":
 				pollOp = "pr_get"
+			case "doc_submit":
+				pollOp = "doc_get"
 			}
 			next, err := e.sharingCall(ctx, pollOp, map[string]any{"id": id, "chatID": c.ID, "sandboxID": c.SandboxID})
 			if err == nil {
@@ -224,6 +258,9 @@ func (e *Engine) sharingDelivery(ctx context.Context) {
 			if r["kind"] == "pull_request" {
 				notification = "Warden pull request review resolved: " + string(b) + "\nIf rejected, discuss the feedback and submit a revised request_pull_request proposal. If published, share the GitHub URL. If failed, explain the reported failure before retrying."
 			}
+			if r["kind"] == "document_proposal" {
+				notification = "Warden document suggestion review resolved: " + string(b) + "\nIf applied, tell the user what was written. If rejected, discuss the feedback before proposing again. If returned, read the owner's draft with read_google_document {document_id, proposal_id} and submit a revised propose_google_document_edit with revises set to this request_id. If failed, explain the reported failure before retrying."
+			}
 			messageID := id[:32]
 			delivered := false
 			for _, entry := range chat.Conversation.Entries {
@@ -261,7 +298,7 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 	op := strings.TrimPrefix(path, "sharing/")
 	data := map[string]any{}
 	if r.Method == "GET" {
-		if op != "state" && op != "status" && op != "files" && op != "blocked" && op != "github_repositories" && op != "github_list" && op != "pr_state" && op != "pr_preview" && op != "egress" && op != "history" {
+		if op != "state" && op != "status" && op != "files" && op != "blocked" && op != "github_repositories" && op != "github_list" && op != "pr_state" && op != "pr_preview" && op != "doc_state" && op != "doc_preview" && op != "egress" && op != "history" {
 			http.Error(w, "not found", 404)
 			return
 		}
@@ -283,20 +320,20 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 		if op == "history" {
 			data["sandboxID"] = r.URL.Query().Get("sandboxID")
 		}
-		if op == "pr_preview" {
+		if op == "pr_preview" || op == "doc_preview" {
 			data["id"] = r.URL.Query().Get("id")
 		}
 		if op == "files" {
 			data["page"] = r.URL.Query().Get("page")
 		}
 	} else if r.Method == "POST" {
-		if op != "select" && op != "connect" && op != "disconnect" && op != "egress_set" && op != "resolve" && op != "revoke" && op != "block" && op != "unblock" && op != "github_select" && op != "pr_resolve" {
+		if op != "select" && op != "connect" && op != "disconnect" && op != "egress_set" && op != "resolve" && op != "revoke" && op != "block" && op != "unblock" && op != "github_select" && op != "pr_resolve" && op != "doc_draft" && op != "doc_decide" && op != "doc_resolve" && op != "doc_return" && op != "doc_rebase" {
 			http.Error(w, "not found", 404)
 			return
 		}
 		limit := int64(16384)
-		if op == "pr_resolve" {
-			limit = 256 << 10
+		if op == "pr_resolve" || op == "doc_draft" {
+			limit = 1 << 20
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(&data); err != nil {
 			http.Error(w, "invalid request", 400)

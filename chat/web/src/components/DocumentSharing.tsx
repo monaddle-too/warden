@@ -27,14 +27,19 @@ type File = {
   mimeType?: string;
   blocked?: boolean;
 };
-/* What each grant level lets the agent do; "create" is a structure-level
-   grant on a document Warden made for it. */
+/* What each grant level lets the agent do. Google Docs are read at every
+   level: the agent proposes edits as suggestions and Warden writes what
+   the owner approves, so the higher levels only concern spreadsheets.
+   "create" is a read-level grant on a document Warden made for it. */
 export const ACCESS_LABEL: Record<DocumentRequest["access"], string> = {
   read: "Read only",
-  write: "Read and edit text and cell values",
-  structure: "Full edit (tables, tabs, sheets, formats)",
-  create: "Full edit",
+  write: "Read · edit spreadsheet cell values",
+  structure: "Read · full spreadsheet edit (sheets, formats, charts)",
+  create: "Read only",
 };
+/* Shown wherever the owner chooses or reviews a level. */
+export const SUGGESTIONS_NOTE =
+  "Google Docs are never edited directly: the agent proposes changes as suggestions for you to review, and Warden writes what you accept. Edit levels apply to spreadsheets only.";
 export type DocumentSharingHandle = {
   open: () => void;
   decline: () => void;
@@ -262,7 +267,7 @@ export function DocumentSharing({
               {pending?.access === "create"
                 ? "Create Google document"
                 : pending && pending.access !== "read"
-                  ? "Allow document editing"
+                  ? "Allow spreadsheet editing"
                   : "Share Google documents"}
             </h2>
             <button
@@ -282,7 +287,7 @@ export function DocumentSharing({
               <p>
                 <strong>
                   {pending.access === "create"
-                    ? `Create “${pending.title}” and allow full editing`
+                    ? `Create “${pending.title}”; its content arrives as suggestions`
                     : ACCESS_LABEL[pending.access]}
                 </strong>
               </p>
@@ -292,6 +297,7 @@ export function DocumentSharing({
             Selected documents are shared with {scope}. Access is limited to the
             permission shown below and expires automatically.
           </p>
+          <p className="muted">{SUGGESTIONS_NOTE}</p>
           {error && (
             <p role="alert" className="error">
               {error}
@@ -304,7 +310,7 @@ export function DocumentSharing({
                   ? "The demo owner needs to reconnect the shared Google account."
                   : status.configured
                     ? needsWrite && status.connected
-                      ? "Reconnect Google to enable document creation and editing."
+                      ? "Reconnect Google to enable document creation and spreadsheet editing."
                       : "Sign in to Google to choose documents."
                     : "Configure Warden’s Google OAuth client to enable document sharing."}
               </p>
@@ -382,7 +388,7 @@ export function DocumentSharing({
               )}
               {selecting && (
                 <label>
-                  Permission
+                  Spreadsheet permission
                   <select
                     value={access}
                     onChange={(e) => setAccess(e.target.value)}
@@ -433,9 +439,9 @@ export function DocumentSharing({
                 {busy
                   ? "Working…"
                   : pending?.access === "create"
-                    ? "Create document and allow editing"
+                    ? "Create document"
                     : (pending ? pending.access : access) !== "read"
-                      ? "Allow editing selected documents"
+                      ? "Share and allow spreadsheet editing"
                       : "Share selected documents"}
               </button>
             </footer>

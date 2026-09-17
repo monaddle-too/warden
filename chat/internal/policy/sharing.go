@@ -41,6 +41,11 @@ type GoogleSharing interface {
 	Files(page string) (map[string]any, error)
 	File(id string) (map[string]any, error)
 	Create(title string) (map[string]any, error)
+	// Document fetches one document (documents.get, without pending native
+	// suggestions) and BatchUpdate applies one documents.batchUpdate body,
+	// returning Google's status and decoded response.
+	Document(id string) (map[string]any, error)
+	BatchUpdate(id string, body []byte) (int, map[string]any, error)
 	Authorization() (string, error)
 	// Disconnect forgets the stored Google credential (revoking it with
 	// Google on a best-effort basis) so the account must be connected again.
@@ -315,6 +320,58 @@ func (g *GoogleConnection) Create(title string) (map[string]any, error) {
 	return map[string]any{"id": id, "title": name, "url": "https://docs.google.com/document/d/" + id + "/edit", "api_url": "https://docs.googleapis.com/v1/documents/" + id}, nil
 }
 
+// Document reads a document as the connected account sees it with native
+// suggestions hidden, so paragraph ranges match what a write targets.
+func (g *GoogleConnection) Document(id string) (map[string]any, error) {
+	if !googleDocumentID.MatchString(id) {
+		return nil, errors.New("invalid document")
+	}
+	authorization, err := g.Authorization()
+	if err != nil {
+		return nil, err
+	}
+	status, raw, err := g.HTTP("docs.googleapis.com", "GET", "/v1/documents/"+id+"?suggestionsViewMode=PREVIEW_WITHOUT_SUGGESTIONS", nil, map[string]string{"Authorization": authorization, "Accept": "application/json"}, 20*time.Second, docResponseLimit+1)
+	if err != nil {
+		return nil, err
+	}
+	if status != 200 || len(raw) > docResponseLimit {
+		return nil, errors.New("Google document unavailable; check access to it and Google before retrying")
+	}
+	var data map[string]any
+	if err = json.Unmarshal(raw, &data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// BatchUpdate applies one reviewed edit body with the owner's credential.
+func (g *GoogleConnection) BatchUpdate(id string, body []byte) (int, map[string]any, error) {
+	if !googleDocumentID.MatchString(id) {
+		return 0, nil, errors.New("invalid document")
+	}
+	if !g.CanWrite() {
+		return 0, nil, errors.New("Reconnect Google to allow writing documents")
+	}
+	authorization, err := g.Authorization()
+	if err != nil {
+		return 0, nil, err
+	}
+	status, raw, err := g.HTTP("docs.googleapis.com", "POST", "/v1/documents/"+id+":batchUpdate", body, map[string]string{"Authorization": authorization, "Content-Type": "application/json", "Accept": "application/json"}, 60*time.Second, docResponseLimit+1)
+	if err != nil {
+		return 0, nil, err
+	}
+	if len(raw) > docResponseLimit {
+		return status, nil, errors.New("Google write response too large")
+	}
+	var data map[string]any
+	_ = json.Unmarshal(raw, &data)
+	return status, data, nil
+}
+
+// docResponseLimit bounds one Docs API response body (documents can be
+// large; a review never needs more than this).
+const docResponseLimit = 16 << 20
+
 // Files lists recent Google documents visible to the connected account.
 func (g *GoogleConnection) Files(page string) (map[string]any, error) {
 	params := url.Values{}
@@ -391,6 +448,7 @@ type Sharing struct {
 	DB               *sql.DB
 	Images           *Images
 	PullRequests     *PullRequests
+	Documents        *DocumentProposals
 	// Egress, when set, is the registry's runtime egress switch exposed to
 	// the console (the "egress" and "egress_set" operations).
 	Egress EgressSwitch
@@ -401,13 +459,6 @@ type Sharing struct {
 	// attached images are briefly published for Docs inline-image edits;
 	// empty on installs Google cannot reach.
 	PublicURL string
-}
-
-// Rewrite is a request body Authorize changed before forwarding, and the
-// image publications to withdraw once the upstream has answered.
-type Rewrite struct {
-	Body         []byte
-	Publications []string
 }
 
 // NetworkGrants is the registry as the sharing store needs it for
@@ -489,6 +540,10 @@ func NewSharing(root string, google GoogleSharing, clock Clock, github GitHubCre
 		return nil, err
 	}
 	if s.PullRequests, err = newPullRequests(s); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if s.Documents, err = newDocumentProposals(s); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -674,6 +729,20 @@ func (s *Sharing) Dispatch(op string, data map[string]any) (map[string]any, erro
 		return result, err
 	case strings.HasPrefix(op, "pr_"):
 		return s.PullRequests.Dispatch(op, data)
+	case op == "doc_submit" || op == "doc_read":
+		var result map[string]any
+		var err error
+		if op == "doc_read" {
+			result, err = s.Documents.Read(data)
+		} else {
+			result, err = s.Documents.Submit(data)
+		}
+		if err != nil && isValueError(err) {
+			return map[string]any{"status": "invalid", "error": err.Error()}, nil
+		}
+		return result, err
+	case strings.HasPrefix(op, "doc_"):
+		return s.Documents.Dispatch(op, data)
 	case op == "github_write":
 		return s.githubWrite(data)
 	case strings.HasPrefix(op, "github_"):
@@ -995,7 +1064,9 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		var expiry any
 		status := "denied"
 		if allow, _ := data["allow"].(bool); allow {
-			if AccessRank(r.access) > 0 && (s.Google == nil || !s.Google.CanWrite()) {
+			// Sheets writes and document creation use the write scope;
+			// so does writing an approved suggestion, checked there.
+			if (AccessRank(r.access) > 0 || r.access == "create") && (s.Google == nil || !s.Google.CanWrite()) {
 				return nil, errors.New("Reconnect Google to allow writing documents")
 			}
 			ttl, ttlOK := asInt(data["duration"])
@@ -1132,7 +1203,11 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"requests": append(requests, prs...)}, nil
+		docs, err := s.Documents.undeliveredLocked()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"requests": append(append(requests, prs...), docs...)}, nil
 	case "ack":
 		id := stringField(data, "id")
 		if _, err := s.DB.Exec("UPDATE requests SET delivered=1 WHERE id=?", id); err != nil {
@@ -1141,39 +1216,43 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		if _, err := s.DB.Exec("UPDATE pull_requests SET delivered=1 WHERE id=?", id); err != nil {
 			return nil, err
 		}
+		if _, err := s.DB.Exec("UPDATE document_proposals SET delivered=1 WHERE id=?", id); err != nil {
+			return nil, err
+		}
 		return map[string]any{"ok": true}, nil
 	}
 	return nil, errors.New("unknown sharing operation")
 }
 
-// Authorize finds the grant covering one Docs or Sheets API request (a
-// grant covers its own access level and below) and returns it with the
-// owner's credential.
-func (s *Sharing) Authorize(chat, sandbox string, request map[string]any) (map[string]any, string, *Rewrite, error) {
+// Authorize finds the grant covering one Docs read or Sheets API request
+// (a grant covers its own access level and below) and returns it with the
+// owner's credential. Docs writes never authorize: they arrive as
+// suggestions (DocumentProposals) and Warden writes the approved draft.
+func (s *Sharing) Authorize(chat, sandbox string, request map[string]any) (map[string]any, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	port, _ := asInt(request["port"])
 	if request["scheme"] != "https" || port != 443 || (request["host"] != "docs.googleapis.com" && request["host"] != "sheets.googleapis.com") {
-		return nil, "", nil, errors.New("unsupported document authority")
+		return nil, "", errors.New("unsupported document authority")
 	}
 	path, _ := request["path"].(string)
 	parsed, err := url.Parse(path)
 	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.Fragment != "" {
-		return nil, "", nil, errors.New("invalid document route")
+		return nil, "", errors.New("invalid document route")
 	}
 	bodyEncoded, _ := request["body_base64"].(string)
 	body, err := base64.StdEncoding.Strict().DecodeString(bodyEncoded)
 	if err != nil {
-		return nil, "", nil, errors.New("invalid document body")
+		return nil, "", errors.New("invalid document body")
 	}
 	method, _ := request["method"].(string)
 	access, doc, err := DocumentWriteOperation(method, parsed.Path, parseQSL(parsed.RawQuery), body)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", err
 	}
 	rows, err := s.rowsLocked("SELECT "+sharingColumns+" FROM requests WHERE sandbox=? AND status='granted' AND expires>?", sandbox, s.Clock())
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", err
 	}
 	var grant map[string]any
 	for _, r := range rows {
@@ -1193,33 +1272,23 @@ func (s *Sharing) Authorize(chat, sandbox string, request map[string]any) (map[s
 		}
 	}
 	if grant == nil {
-		return nil, "", nil, errors.New("document is not shared with this environment")
+		return nil, "", errors.New("document is not shared with this environment")
 	}
 	blocked, err := s.blockedLocked()
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", err
 	}
 	if blocked[doc] {
-		return nil, "", nil, errors.New("document is tagged unsharable with AI")
+		return nil, "", errors.New("document is tagged unsharable with AI")
 	}
 	if s.Google == nil {
-		return nil, "", nil, errors.New("Google is not configured")
+		return nil, "", errors.New("Google is not configured")
 	}
 	authorization, err := s.Google.Authorization()
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", err
 	}
-	var rewrite *Rewrite
-	if request["host"] == "docs.googleapis.com" && access == "structure" {
-		rewritten, tokens, err := s.Images.rewriteImageEditsLocked(chat, sandbox, body)
-		if err != nil {
-			return nil, "", nil, err
-		}
-		if tokens != nil {
-			rewrite = &Rewrite{Body: rewritten, Publications: tokens}
-		}
-	}
-	return grant, authorization, rewrite, nil
+	return grant, authorization, nil
 }
 
 // Active reports whether a grant still applies to the sandbox.

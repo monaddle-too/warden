@@ -717,6 +717,22 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 			return Response{}, errors.New("invalid sandbox file response")
 		}
 		return result, nil
+	case "paths":
+		if s.State != "running" {
+			return Response{}, errors.New("sandbox is stopped; resume the chat before completing paths")
+		}
+		if err = w.Gate.Check(ctx, s.Grant, "runtime"); err != nil {
+			return Response{}, err
+		}
+		return w.completePathsLocked(ctx, s, r)
+	case "attachment-write":
+		if s.State != "running" {
+			return Response{}, errors.New("sandbox is stopped; resume the chat before sending files")
+		}
+		if err = w.Gate.Check(ctx, s.Grant, "runtime"); err != nil {
+			return Response{}, err
+		}
+		return w.writeAttachmentLocked(ctx, s, r)
 	case "host.import", "host.export":
 		// Owner-approved copy of a host directory into the sandbox, or of
 		// the sandbox's copy back over it (local installs only; the chat
@@ -748,7 +764,9 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 func (w *Worker) handle(parent context.Context, c net.Conn) {
 	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	reader := bufio.NewReader(c)
-	line, err := readLine(reader, 1<<20)
+	// Room for an attachment-write's 8 MiB of content as base64; the socket
+	// is the backend's only, so the larger line costs nothing in exposure.
+	line, err := readLine(reader, 12<<20)
 	var r Request
 	if err == nil {
 		err = json.Unmarshal(line, &r)

@@ -6,7 +6,43 @@ export type Entry = {
   createdAt: number;
   isStreaming: boolean;
   delivery: string;
+  /* The agent turn this entry belongs to; a user message gets it once the
+     agent accepts the message. */
+  turnID?: string;
   sender?: { email?: string; name?: string; principalID: string };
+  attachments?: Attachment[];
+};
+/* The token usage of one turn as the service records it: `input` counts
+   every input token (`cached` and `cacheWrite` are parts of it),
+   `reasoning` is part of `output`, `costUSD` is the provider's own
+   estimate (Claude) or absent. */
+export type Usage = {
+  input: number;
+  cached: number;
+  cacheWrite?: number;
+  output: number;
+  reasoning?: number;
+  total: number;
+  costUSD?: number;
+};
+/* The service's record of one agent turn: when it began (the agent
+   accepting the message) and ended (0 while it runs), and its usage once
+   the provider reports it. */
+export type Turn = {
+  id: string;
+  startedAt?: number;
+  endedAt?: number;
+  usage?: Usage;
+};
+/* A file sent with a user message: `kind` is "image" for a PNG/JPEG the
+   service normalised to PNG, "file" for anything else; `path` is where the
+   agent finds it in the workspace. */
+export type Attachment = {
+  id: string;
+  name: string;
+  path: string;
+  kind: "image" | "file";
+  size: number;
 };
 export type Question = {
   id: string;
@@ -42,7 +78,12 @@ export type Chat = {
   status: string;
   archived: boolean;
   error?: string;
-  conversation: { threadID?: string; entries: Entry[] };
+  conversation: {
+    threadID?: string;
+    activeTurnID?: string;
+    entries: Entry[];
+    turns?: Turn[];
+  };
   approvals: Approval[];
   typing?: { principalID: string; name: string; until: number }[];
   startup?: Startup;

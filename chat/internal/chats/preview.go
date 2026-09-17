@@ -20,7 +20,7 @@ func (e *Engine) tool(ctx context.Context, c *Chat, client *agent.Client, f agen
 	if _, ok := grantMethods[agent.String(f.Params["tool"])]; ok {
 		return e.requestGrant(c, client, f)
 	}
-	if name := agent.String(f.Params["tool"]); name == "request_google_document_creation" || name == "request_google_docs_access" || name == "list_shared_documents" || name == "list_shared_repositories" || name == "request_pull_request" {
+	if name := agent.String(f.Params["tool"]); name == "request_google_document_creation" || name == "request_google_docs_access" || name == "list_shared_documents" || name == "list_shared_repositories" || name == "request_pull_request" || name == "read_google_document" || name == "propose_google_document_edit" {
 		return e.sharingTool(ctx, c, client, f)
 	}
 	if e.PublicPreviewSuffix != "" && (agent.String(f.Params["tool"]) == "preview_attach" || agent.String(f.Params["tool"]) == "sandbox_bind_port") {

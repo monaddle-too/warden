@@ -18,17 +18,59 @@ New connections request `documents` and `drive.metadata.readonly` under `https:/
 
 This implementation uses the existing single-owner local Warden installation. It has not been deployed to OVH and is not a multi-user OAuth account store.
 
-## Document creation and editing
+## Document creation and spreadsheet editing
 
-Agents can call `request_google_document_creation({title, reason})`. Warden shows the title, proposed write access and expiry. On approval the host creates one blank Google document and grants the requesting conversation read/write access to that ID. The agent receives its browser/API URLs and fills it using `POST /v1/documents/{id}:batchUpdate` through Warden's credential-injecting proxy. A creation timeout/crash is marked failed and never automatically retried: check Google for a possibly-created document before submitting another request.
+Agents can call `request_google_document_creation({title, reason})`. Warden shows the title and expiry. On approval the host creates one blank Google document and grants the requesting conversation read access to that ID; the agent fills it through suggestions (below), never directly. A creation timeout/crash is marked failed and never automatically retried: check Google for a possibly-created document before submitting another request.
 
-`request_google_docs_access` accepts `access: "read" | "write" | "structure"` (read by default); each level includes the ones below, on the selected IDs only. `write` covers Docs text insertion/deletion and text/paragraph styling plus Sheets cell values (update, append, clear). `structure` covers every other Docs `batchUpdate` request (tables, tabs, headers, named ranges, ...) and Sheets `spreadsheets:batchUpdate` (adding and deleting sheets, formats, charts, merges). Created documents get `structure`-level access. Creating other files, deleting documents, changing sharing permissions and inserting remote images are denied at every level.
+`request_google_docs_access` accepts `access: "read" | "write" | "structure"` (read by default); each level includes the ones below, on the selected IDs only. The higher levels apply to spreadsheets: `write` covers Sheets cell values (update, append, clear) and `structure` also `spreadsheets:batchUpdate` (adding and deleting sheets, formats, charts, merges). Google Docs are read at every level — `documents.get` only; any Docs `batchUpdate` is refused with a pointer to `propose_google_document_edit`, so every change to a document is a suggestion the owner reviews (2026-09-17: the direct `write`/`structure` Docs levels were retired once suggestions had been used live). Creating other files, deleting documents and changing sharing permissions are denied at every level. Grants expire and can be revoked. Creating a document does not authorize another conversation to read it.
 
-Images go in through `attach_image`: at `structure` level an agent may send `insertInlineImage` (or `replaceImage`) with `uri: "warden-image:<image_id>"`. The Docs API only accepts a URL for images and copies the bytes at insertion time, so the policy service publishes the attached PNG at `<auth.publicURL>/published/<random token>.png`, rewrites the edit to that URL, and withdraws the token as soon as Google has answered (or after two minutes if it never does). Any other image URL is refused, since it would let the agent make Google fetch an address of its choosing. This needs an https `auth.publicURL` that Google can reach, so it works on public deployments and not on a loopback install. Grants expire and can be revoked. Creating a document does not authorize another conversation to read it.
+Inline images: the policy service can still publish an attached PNG (`attach_image`) at `<auth.publicURL>/published/<token>.png` for the duration of one Docs edit, but no grant reaches that path any more; it stays for the suggestion writer to use once suggestions can carry images. Any other image URL is refused, since it would let the agent make Google fetch an address of its choosing.
 
 Owners can use **Shared documents → Share documents with this chat** before the first message to select documents, permission and expiry. This setup action does not automatically launch the agent. The host API is `POST /api/sharing/select` with `chatID`, `documents`, `access` and `duration`; it derives sandbox identity from the conversation. A second agent retrieves its explicitly shared plan with `list_shared_documents`.
 
 Google creation/editing requires the `documents` OAuth scope in addition to `drive.metadata.readonly`; Google describes the former as access to see, edit, create and delete all Docs. Warden holds that credential privately and enforces the narrower operation/ID grants for agents. Existing read-only connections continue to work; write requests require reconnecting with Google's expanded consent. Existing grants are revoked on reconnect. Deployment remains local until the live workflow and production configuration are separately verified.
+
+## Suggestions: reviewed edits without a write grant
+
+The only way for an agent to change a shared document is to propose
+suggestions, which needs `read` access:
+
+- `read_google_document({document_id})` returns the document as numbered
+  paragraphs `{n, style, depth, text, frozen?}`. Styles are `title`,
+  `subtitle`, `h1`–`h6`, `text`, `bullet` and `numbered` (with `depth` for
+  list nesting); text carries `**bold**`, `*italic*` and `[text](url)` marks
+  with backslash escapes. Tables, images, footnotes, breaks and smart chips
+  appear as frozen placeholders that cannot be changed or deleted, and only
+  the first tab is shown.
+- `propose_google_document_edit({document_id, summary, ops})` submits
+  `replace`/`insert`/`delete` operations against those paragraph numbers,
+  each with an optional `reason`, and waits for the owner. Warden reads the
+  document itself, materialises the proposal and computes the diff; the
+  agent's operations are never applied to Google directly.
+
+The owner reviews the proposal in the chat's **Review suggestions…** card
+(also listed under *Document suggestions* in the workspace panel): each
+change is shown inline in the document with the agent's reason, and can be
+rejected (or accepted again); the whole draft can be edited paragraph by
+paragraph, and comments can be attached to paragraphs. **Approve** re-reads
+the document, rebases the draft onto its current revision (non-overlapping
+collaborator edits merge; overlapping ones mark the proposal *stale* and
+show the conflict for another look), compiles `diff(current, draft)` into a
+single `batchUpdate` with `requiredRevisionId`, and writes it with the
+owner's Google credential. Unchanged paragraphs are never inside a request
+range; edited paragraphs keep their paragraph object so alignment, spacing
+and indentation survive. **Reject** returns feedback to the agent. **Send
+back to agent** returns the edited draft and comments: the agent reads them
+with `read_google_document({document_id, proposal_id})` and submits a new
+proposal with `revises` set to the returned request ID, its operations then
+addressing the returned draft's numbering.
+
+Outcomes reach the agent as tool results, or as a durable notification after
+an interruption, like document grants and pull request reviews. Google Docs
+cannot receive native suggestions through its API, so the suggestion layer
+exists only in Warden; the approved write appears in Google as one edit by
+the owner. Direct `write`/`structure` grants keep working for the flows that
+need them (created documents, tables, images).
 
 ## Large PR proposals
 

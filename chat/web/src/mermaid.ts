@@ -1,0 +1,203 @@
+// Pure helpers behind the Mermaid fence in CodeBlock: which fences are
+// diagrams, how the design tokens map onto Mermaid's theme, and how a parse
+// failure is shortened to one line.
+
+/* Fences whose info string names Mermaid; `mmd` is Mermaid's file suffix. */
+export function isMermaidFence(language: string): boolean {
+  return language === "mermaid" || language === "mmd";
+}
+
+/* Tokens the diagram theme reads from `:root`, so a diagram follows the
+   colour scheme instead of shipping Mermaid's own palette. */
+export const THEME_TOKENS = [
+  "--font",
+  "--surface",
+  "--surface-2",
+  "--surface-3",
+  "--line-strong",
+  "--text",
+  "--text-2",
+  "--accent-soft",
+  "--accent-line",
+  "--info-soft",
+] as const;
+
+export type ThemeTokens = Partial<
+  Record<(typeof THEME_TOKENS)[number], string>
+>;
+
+/* Mermaid's "base" theme derives every other colour from these, so the
+   diagram sits on --surface-2 like a code block does; `darkMode` tells the
+   derivation which way to shade. Missing tokens fall back to Mermaid's
+   defaults rather than to an empty string, which it would treat as black. */
+export function themeVariables(tokens: ThemeTokens, dark: boolean) {
+  const vars: Record<string, string | boolean> = { darkMode: dark };
+  const put = (name: string, token: keyof ThemeTokens) => {
+    const value = tokens[token]?.trim();
+    if (value) vars[name] = value;
+  };
+  put("fontFamily", "--font");
+  put("background", "--surface-2");
+  put("mainBkg", "--surface-3");
+  put("primaryColor", "--surface-3");
+  put("primaryTextColor", "--text");
+  put("primaryBorderColor", "--line-strong");
+  put("lineColor", "--text-2");
+  put("textColor", "--text");
+  put("secondaryColor", "--accent-soft");
+  put("secondaryBorderColor", "--accent-line");
+  put("tertiaryColor", "--surface");
+  put("tertiaryBorderColor", "--line-strong");
+  put("noteBkgColor", "--info-soft");
+  put("noteTextColor", "--text");
+  put("noteBorderColor", "--line-strong");
+  return vars;
+}
+
+/* The slice of a parsed diagram's database that can name an image: the
+   flowchart vertices, and the layout nodes the unified renderers build. */
+export type DiagramDB = {
+  getVertices?: () =>
+    | Iterable<[string, { img?: unknown }]>
+    | Record<string, { img?: unknown }>;
+  getData?: () => { nodes?: { img?: unknown }[] } | undefined;
+};
+
+/* A flowchart image node (`A@{ img: "..." }`) makes Mermaid fetch the
+   picture while it draws, before any output could be filtered, so a diagram
+   is parsed and inspected first and refused when it has one. */
+export function hasImageNodes(db: DiagramDB): boolean {
+  const vertices = db.getVertices?.();
+  const list = !vertices
+    ? []
+    : Symbol.iterator in Object(vertices)
+      ? Array.from(vertices as Iterable<[string, { img?: unknown }]>).map(
+          ([, v]) => v,
+        )
+      : Object.values(vertices as Record<string, { img?: unknown }>);
+  if (list.some((v) => v?.img)) return true;
+  let nodes: { img?: unknown }[] | undefined;
+  try {
+    nodes = db.getData?.()?.nodes;
+  } catch {
+    // Some databases can only build layout data after a render; the vertex
+    // check above already covers the diagrams that carry images.
+  }
+  return !!nodes?.some((n) => n?.img);
+}
+
+/* Mermaid's strict mode encodes HTML in labels and DOMPurify-sanitises the
+   SVG, but it still lets through elements that fetch on their own (`<img>`
+   inside a label, `<image>`), `click` links and `url()` fills, and any of
+   those would let the agent reach the network or navigate the owner. The
+   rendered SVG therefore gets a second pass: these elements are dropped
+   and these attributes stripped before the SVG is injected. */
+export const DROP_TAGS = new Set([
+  "img",
+  "image",
+  "picture",
+  "source",
+  "video",
+  "audio",
+  "track",
+  "iframe",
+  "frame",
+  "object",
+  "embed",
+  "script",
+  "link",
+  "meta",
+  "base",
+  "form",
+  "input",
+  "button",
+  "textarea",
+  "select",
+]);
+
+/* Attributes that reference something outside the document. */
+export const REF_ATTRS = new Set([
+  "href",
+  "xlink:href",
+  "src",
+  "srcset",
+  "ping",
+  "formaction",
+  "action",
+  "data",
+]);
+
+/* Mermaid runs DOMPurify over label text before it draws, and this is the
+   profile it uses. Its default keeps `<img src>`, and a `$$…$$` label is
+   drawn through KaTeX as HTML in the live document even with `htmlLabels`
+   off, so the fetching tags and referencing attributes are forbidden there
+   too; the fence cannot change this because `dompurifyConfig` is secure. */
+export const LABEL_PURIFY = {
+  FORBID_TAGS: [...DROP_TAGS, "style"],
+  FORBID_ATTR: [...REF_ATTRS, "style"],
+};
+
+/* A label with `$$` goes through Mermaid's KaTeX path (see LABEL_PURIFY),
+   which ignores `htmlLabels` and renders HTML into the live document while
+   it measures; a fence carrying one is refused before Mermaid loads. */
+export function hasMathLabels(text: string): boolean {
+  return text.includes("$$");
+}
+
+/* A `url()` that is not a same-document fragment (`url(#marker)`), an
+   `@import`, or one of the CSS image functions that take a bare string
+   (`image-set("https://…" 1x)`, `image("…")`, `src("…")`); all would fetch. */
+const remoteCSS =
+  /@import|\burl\((?!\s*['"]?\s*#)|\bimage-set\(|\bimage\(|\bsrc\(|\bcross-fade\(/i;
+
+/* Event handlers, references outside the document (`href`, `src`, ...) and
+   attribute values with a remote `url()` are all stripped. */
+export function unsafeAttribute(name: string, value: string): boolean {
+  const key = name.toLowerCase();
+  if (key.startsWith("on")) return true;
+  if (REF_ATTRS.has(key)) return !value.trim().startsWith("#");
+  return remoteCSS.test(value);
+}
+
+/* A `<style>` the diagram carries must not reach out either. */
+export function unsafeCSS(text: string): boolean {
+  return remoteCSS.test(text);
+}
+
+/* The slice of an element the second pass touches, so the walk can be
+   exercised on a hand-built tree where no DOM is available. */
+export type Scrubbable = {
+  localName: string;
+  textContent: string | null;
+  attributes: ArrayLike<{ name: string; value: string }>;
+  remove(): void;
+  removeAttribute(name: string): void;
+};
+
+/* The second pass itself: drops the elements in DROP_TAGS and any `<style>`
+   that fetches, and strips the unsafe attributes from what remains. */
+export function scrub(elements: Iterable<Scrubbable>): void {
+  for (const el of elements) {
+    const tag = el.localName.toLowerCase();
+    if (
+      DROP_TAGS.has(tag) ||
+      (tag === "style" && unsafeCSS(el.textContent ?? ""))
+    ) {
+      el.remove();
+      continue;
+    }
+    for (const attr of Array.from(el.attributes))
+      if (unsafeAttribute(attr.name, attr.value)) el.removeAttribute(attr.name);
+  }
+}
+
+/* Mermaid's errors span several lines ("Parse error on line 3:\n...^\nExpecting
+   ..."); the first line is what fits under the code block. */
+export function errorLine(err: unknown): string {
+  const message =
+    err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  const line = message.split("\n").find((l) => l.trim()) ?? "";
+  const trimmed = line.trim();
+  if (!trimmed) return "Diagram could not be rendered";
+  return trimmed.length > 160 ? `${trimmed.slice(0, 159)}…` : trimmed;
+}

@@ -34,6 +34,35 @@
   width: 100%;
   height: 40px;
 }
+/* Opens the ⌘K palette; sits under "New chat" with its shortcut. */
+.chat-search {
+  width: 100%;
+  height: 36px;
+  margin-top: -8px;
+  justify-content: flex-start;
+  padding: 0 10px;
+  gap: 10px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-2);
+  font-weight: 400;
+}
+.chat-search:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.chat-search span {
+  flex: 1;
+  text-align: left;
+}
+.chat-search kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-family: var(--font);
+  font-size: 11px;
+  color: var(--muted);
+}
 .chat-section-label {
   font-size: 11px;
   font-weight: 600;
@@ -281,6 +310,132 @@
   border: 0;
   border-top: 1px solid var(--line);
   margin: 6px 0;
+}
+/* The export dialog: format radios and the activity checkbox as rows. */
+.export-format {
+  border: 0;
+  padding: 0;
+  margin: 14px 0 0;
+  min-width: 0;
+}
+.export-format legend {
+  padding: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.export-option {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 10px 0;
+  color: var(--text);
+  cursor: pointer;
+}
+.export-option input {
+  margin-top: 2px;
+}
+.export-option span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.export-option small {
+  font-weight: 400;
+  color: var(--muted);
+}
+.export-option:has(input:disabled) {
+  color: var(--muted);
+  cursor: default;
+}
+
+/* The search palette: a query box over a list of chats and matched
+   entries, near the top of the window like an app launcher. */
+.search-palette {
+  width: min(640px, calc(100% - 32px));
+  margin-top: 10vh;
+  padding: 0;
+  overflow: hidden;
+}
+.search-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+.search-input input {
+  flex: 1;
+  min-width: 0;
+  height: 52px;
+  border: 0;
+  background: transparent;
+  outline: none;
+  font-size: 16px;
+}
+.search-palette ul {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: min(50vh, 480px);
+  overflow: auto;
+}
+.search-palette li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 14px;
+}
+.search-palette li > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--muted);
+}
+.search-palette li[aria-selected="true"] {
+  background: var(--surface-3);
+}
+.search-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+.search-main small {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.search-main small svg {
+  vertical-align: -1px;
+}
+.search-snippet {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-main small + .search-snippet {
+  color: var(--text-2);
+}
+.search-palette mark {
+  background: var(--find-soft);
+  color: var(--text);
+  border-radius: 2px;
+}
+.search-hint {
+  margin: 0;
+  padding: 8px 16px 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  min-height: 18px;
 }
 
 .chat-main > .error {
@@ -665,12 +820,14 @@
     height: 10px;
   }
   .chat-new-project,
+  .chat-search,
   .chat-sidebar nav button,
   .chat-sidebar-footer > button {
     justify-content: center;
     padding: 0;
   }
-  .chat-new-project svg + * {
+  .chat-new-project svg + *,
+  .chat-search svg ~ * {
     display: none;
   }
   .chat-connection {
@@ -1372,4 +1529,31 @@ button.danger:hover {
 }
 .size-form .button-row {
   margin: 8px 0 6px;
+}
+
+/* Google Docs suggestions review: the page itself is Panta's suggestion
+   layer (src/documents/suggestions); this is the dialog around it. */
+.doc-review {
+  width: min(1360px, 96vw);
+}
+.doc-review .pr-header h2 {
+  font-size: 18px;
+}
+.doc-content {
+  margin: 12px 0;
+}
+.doc-conflict {
+  margin: 8px 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.pr-badge.applied {
+  background: var(--add-soft);
+  color: var(--add-text);
+}
+.pr-badge.stale,
+.pr-badge.returned {
+  background: var(--info-soft);
+  color: var(--info-text);
 }

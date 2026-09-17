@@ -11,6 +11,7 @@ import {
   Archive,
   ArchiveRestore,
   Box,
+  Download,
   FileText,
   GitPullRequest,
   MoreHorizontal,
@@ -18,12 +19,15 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Search,
   Shield,
   ShieldCheck,
+  TextSearch,
   Timer,
 } from "lucide-react";
-import type { Environment, Resources, State } from "../types";
+import type { Chat, Environment, Resources, State } from "../types";
 import { api, signedIn, subscribe } from "../api";
+import { plural, providerName } from "../export";
 import {
   PullRequestReview,
   type PullRequestReviewHandle,
@@ -38,6 +42,11 @@ import {
   type DocumentSharingHandle,
   type DocumentSharingState,
 } from "./DocumentSharing";
+import {
+  DocumentReview,
+  type DocumentReviewHandle,
+  type DocumentReviewState,
+} from "./DocumentReview";
 import { Previews } from "./Previews";
 import { Conversation, type RequestCard } from "./Conversation";
 import { ModelSelect } from "./ModelSelect";
@@ -45,11 +54,9 @@ import { SizeSelect, sameSize } from "./SizeSelect";
 import { AdminConsole } from "./AdminConsole";
 import { chatStatusLabel } from "../stages";
 import { WorkspacePanel } from "./WorkspacePanel";
-
-const providerName = (provider?: string) =>
-  provider === "claude" ? "Claude" : "Codex";
-const plural = (n: number, one: string, many = one + "s") =>
-  `${n} ${n === 1 ? one : many}`;
+import { ExportDialog } from "./ExportDialog";
+import { SearchPalette } from "./SearchPalette";
+import { modifierKey, type FindRequest } from "./FindBar";
 
 export function ChatShell({
   account,
@@ -84,6 +91,11 @@ export function ChatShell({
   const [busy, setBusy] = useState(false);
   const [workspaceState, setWorkspaceState] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [searching, setSearching] = useState(false);
+  // The find bar's latest request; a new object each time so the same
+  // query can be asked for again.
+  const [find, setFind] = useState<FindRequest>();
   const [previewCount, setPreviewCount] = useState(0);
   const [workspaces, setWorkspaces] = useState<Environment[]>([]);
   const [workspaceOpen, setWorkspaceOpen] = useState(
@@ -97,9 +109,13 @@ export function ChatShell({
   const [pullRequests, setPullRequests] = useState<PullRequestState>({
     local: [],
   });
+  const [documentReviews, setDocumentReviews] = useState<DocumentReviewState>({
+    local: [],
+  });
   const documentsRef = useRef<DocumentSharingHandle>(null);
   const repositoriesRef = useRef<RepositorySharingHandle>(null);
   const pullRequestsRef = useRef<PullRequestReviewHandle>(null);
+  const documentReviewsRef = useRef<DocumentReviewHandle>(null);
   useEffect(() => {
     if (!signedIn()) return;
     const controller = new AbortController();
@@ -129,8 +145,30 @@ export function ChatShell({
   useEffect(() => {
     sessionStorage.setItem("warden-workspace-open", workspaceOpen ? "1" : "0");
   }, [workspaceOpen]);
+  // ⌘K / Ctrl+K opens the search palette from anywhere; again closes it.
+  useEffect(() => {
+    if (!signedIn()) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "k"
+      ) {
+        event.preventDefault();
+        setSearching((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const chats = state.chats.filter((c) => c.archived === archived);
   const chat = chats.find((c) => c.id === selected) || chats[0];
+  // A find request is for one chat; once the reader has moved on it is
+  // forgotten, so coming back later does not replay the jump.
+  useEffect(() => {
+    if (find && chat?.id !== find.chatID) setFind(undefined);
+  }, [chat?.id, find]);
   useEffect(() => {
     if (chat) {
       sessionStorage.setItem("warden-selected-chat", chat.id);
@@ -230,6 +268,10 @@ export function ChatShell({
     (s: PullRequestState) => setPullRequests(s),
     [],
   );
+  const onDocumentReviews = useCallback(
+    (s: DocumentReviewState) => setDocumentReviews(s),
+    [],
+  );
   if (!signedIn())
     return (
       <div className="signin">
@@ -258,6 +300,16 @@ export function ChatShell({
     setAdminOpen(false);
     setSelected(id);
   };
+  // From the palette: a chat, possibly archived, and the entry to land on.
+  const openFound = (target: Chat, entryID?: string, query = "") => {
+    setAdminOpen(false);
+    setArchived(target.archived);
+    setSelected(target.id);
+    if (entryID) setFind({ chatID: target.id, query, entryID });
+  };
+  const findInChat = (query = "") => {
+    if (chat) setFind({ chatID: chat.id, query });
+  };
   // A workspace is shown through one of its chats. Prefer the chat already
   // open, then a live one; the oldest chat is often archived and would fall
   // outside the sidebar's current filter.
@@ -282,7 +334,7 @@ export function ChatShell({
     const what =
       r.access === "create"
         ? `to create a Google document “${r.title}”`
-        : `for ${r.access === "write" ? "read and edit" : "read"} access to Google documents`;
+        : `for ${r.access === "write" ? "read and spreadsheet edit" : r.access === "structure" ? "read and full spreadsheet edit" : "read"} access to Google documents`;
     requests.push({
       id: "documents:" + r.request_id,
       icon: <FileText size={18} />,
@@ -335,6 +387,25 @@ export function ChatShell({
       ],
     });
   }
+  if (chat && documentReviews.pending) {
+    const r = documentReviews.pending;
+    requests.push({
+      id: "doc:" + r.request_id,
+      icon: <FileText size={18} />,
+      title:
+        r.status === "applying"
+          ? `Writing suggested edits to “${r.title}”…`
+          : `${providerName(chat.provider)} suggested ${plural(r.changes, "change")} to “${r.title}”`,
+      detail: r.summary,
+      actions: [
+        {
+          label: "Review suggestions…",
+          primary: true,
+          onClick: () => documentReviewsRef.current?.open(r.request_id),
+        },
+      ],
+    });
+  }
   const facts: string[] = [];
   if (chat) {
     const documentCount = workspace
@@ -368,6 +439,16 @@ export function ChatShell({
         >
           <Plus size={16} />
           <span>New chat</span>
+        </button>
+        <button
+          className="chat-search"
+          aria-label="Search chats"
+          title={`Search chats and messages (${modifierKey}K)`}
+          onClick={() => setSearching(true)}
+        >
+          <Search size={16} />
+          <span>Search</span>
+          <kbd>{modifierKey}K</kbd>
         </button>
         <div className="chat-section-label">
           {archived ? "ARCHIVED" : "CHATS"}
@@ -506,6 +587,14 @@ export function ChatShell({
                   ))}
                 </div>
               </div>
+              <button
+                className="ghost icon"
+                aria-label="Find in chat"
+                title={`Find in chat (${modifierKey}F)`}
+                onClick={() => findInChat()}
+              >
+                <TextSearch size={16} />
+              </button>
               {previewCount > 0 && (
                 <button
                   className="ghost"
@@ -564,6 +653,16 @@ export function ChatShell({
                   </button>
                   <button
                     role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setExporting(true);
+                    }}
+                  >
+                    <Download size={15} />
+                    Export…
+                  </button>
+                  <button
+                    role="menuitem"
                     disabled={chatBusy}
                     onClick={() => {
                       setMenuOpen(false);
@@ -609,12 +708,21 @@ export function ChatShell({
                 {error}
               </p>
             )}
+            {exporting && (
+              <ExportDialog
+                key={chat.id + "export"}
+                chat={chat}
+                onClose={() => setExporting(false)}
+              />
+            )}
             <div className="warden-chat-content">
               <Conversation
                 key={chat.id}
                 chat={chat}
                 live={live}
                 requests={requests}
+                find={find}
+                onExport={() => setExporting(true)}
                 onModel={(next) =>
                   api(`chats/${chat.id}/agent`, {
                     provider: chat.provider || "codex",
@@ -635,10 +743,14 @@ export function ChatShell({
                   workspace={workspace}
                   siblings={siblings}
                   pullRequests={pullRequests.local}
+                  documentReviews={documentReviews.local}
                   onSelectChat={showChat}
                   onShareDocuments={() => documentsRef.current?.open()}
                   onShareRepositories={() => repositoriesRef.current?.open()}
                   onOpenPullRequest={(id) => pullRequestsRef.current?.open(id)}
+                  onOpenDocumentReview={(id) =>
+                    documentReviewsRef.current?.open(id)
+                  }
                   onChanged={refresh}
                   limits={state.sandboxes}
                 />
@@ -669,6 +781,15 @@ export function ChatShell({
               trigger={null}
               onState={onPullRequests}
             />
+            <DocumentReview
+              ref={documentReviewsRef}
+              key={chat.id + "document-reviews"}
+              chatID={chat.id}
+              author={providerName(chat.provider)}
+              autoOpen={false}
+              trigger={null}
+              onState={onDocumentReviews}
+            />
           </>
         ) : (
           <div className="empty">
@@ -682,6 +803,15 @@ export function ChatShell({
           </div>
         )}
       </main>
+      {searching && (
+        <SearchPalette
+          chats={state.chats}
+          current={adminOpen ? undefined : chat}
+          onOpen={openFound}
+          onFind={findInChat}
+          onClose={() => setSearching(false)}
+        />
+      )}
       {creating && (
         <div className="modal-backdrop">
           <section

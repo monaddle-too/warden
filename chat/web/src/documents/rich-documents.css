@@ -1,0 +1,124 @@
+/* Scoped adaptation of the prototype's paper, toolbar, and comment presentation. */
+.rich-document {
+  min-width: 0;
+}
+.rich-document-title {
+  box-sizing: border-box;
+  width: 100%;
+  background: transparent;
+  color: inherit;
+  border: 0;
+  border-bottom: 1px solid var(--border, #ddd);
+  padding: 12px 4px;
+  font-size: 1.35rem;
+  font-weight: 650;
+}
+.rich-document-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border, #ddd);
+}
+.rich-document-toolbar button,
+.rich-document-toolbar select {
+  font-size: 12px;
+  padding: 5px 8px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 5px;
+  background: var(--surface, transparent);
+  color: inherit;
+  cursor: pointer;
+}
+.rich-document-toolbar button[aria-pressed="true"] {
+  background: #dde9df;
+  color: #223e29;
+}
+.rich-document-page {
+  outline: none;
+  min-height: 280px;
+  line-height: 1.65;
+  padding: 20px 12px;
+  overflow-wrap: anywhere;
+}
+.rich-document-page > :first-child {
+  margin-top: 0;
+}
+.rich-document-page h1,
+.rich-document-page h2,
+.rich-document-page h3 {
+  line-height: 1.25;
+  margin: 1.4em 0 0.55em;
+}
+.rich-document-page p {
+  margin: 0.65em 0;
+}
+.rich-document-page ul,
+.rich-document-page ol {
+  padding-left: 1.6em;
+}
+.rich-document-page img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+.rich-document-page blockquote {
+  border-left: 3px solid #a7b6a9;
+  padding-left: 16px;
+  margin-left: 0;
+  color: #68766c;
+}
+.rich-document-page pre {
+  overflow: auto;
+  background: #20251f;
+  color: #f0f3ed;
+  border-radius: 6px;
+  padding: 12px;
+}
+.rich-document-page table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+  margin: 14px 0;
+}
+.rich-document-page td,
+.rich-document-page th {
+  border: 1px solid #b7c0b8;
+  padding: 7px 10px;
+  vertical-align: top;
+  position: relative;
+  min-width: 1em;
+}
+.rich-document-page th {
+  background: #edf0e9;
+  color: #253629;
+  text-align: left;
+}
+.rich-document-page .selectedCell:after {
+  position: absolute;
+  inset: 0;
+  background: #5380aa25;
+  content: "";
+  pointer-events: none;
+}
+.rich-document-page .comment-highlight {
+  background: #f6db863d;
+  border-bottom: 2px solid #d4b453;
+  cursor: pointer;
+}
+.rich-document-preview {
+  min-height: 0;
+  padding: 8px 0;
+}
+.rich-document-notice {
+  padding: 10px;
+  background: #f6db8625;
+  border-radius: 5px;
+  font-size: 13px;
+}
+.rich-document-notice button {
+  display: block;
+  margin-top: 8px;
+}

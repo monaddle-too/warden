@@ -30,6 +30,9 @@ type fakeWorker struct {
 	steal       bool
 	rejectSteer bool
 	turns       int
+	inputs      [][]any  // the input items of every turn/start and turn/steer
+	turnID      string   // the ID of the next turn/start's turn; "turn-one" when empty
+	paths       []string // what a "paths" completion answers
 	// prepareGate, when set, holds prepare until it is closed; progress is
 	// what the progress operation answers meanwhile (startup_test.go).
 	prepareGate chan struct{}
@@ -61,6 +64,9 @@ func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 	id := r.SandboxID
 	if f.steal {
 		id = "other"
+	}
+	if r.Operation == "paths" {
+		return sandbox.Response{Version: 2, Paths: f.paths}, nil
 	}
 	return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: id, ProjectID: r.ProjectID}}, nil
 }
@@ -104,9 +110,17 @@ func (f *fakeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWriteC
 			case "turn/start":
 				f.mu.Lock()
 				f.turns++
+				f.inputs = append(f.inputs, agent.Array(frame.Params["input"]))
+				turnID := f.turnID
 				f.mu.Unlock()
-				result = map[string]any{"turn": map[string]any{"id": "turn-one", "status": "inProgress"}}
+				if turnID == "" {
+					turnID = "turn-one"
+				}
+				result = map[string]any{"turn": map[string]any{"id": turnID, "status": "inProgress"}}
 			case "turn/steer":
+				f.mu.Lock()
+				f.inputs = append(f.inputs, agent.Array(frame.Params["input"]))
+				f.mu.Unlock()
 				if f.rejectSteer {
 					f.send(map[string]any{"id": frame.ID, "error": map[string]any{"code": -32000, "message": "turn completed before steering"}})
 					continue
@@ -647,5 +661,66 @@ func TestAttributionAndTypingIndicators(t *testing.T) {
 	now = time.Unix(1008, 0)
 	if len(e.View().chat(id).Typing) != 0 {
 		t.Fatal("indicator outlived its ttl")
+	}
+}
+
+// A turn's record: begun when the agent accepts the message, its usage the
+// growth of the process's running total (a repeated report of the same
+// total counts nothing), ended when the turn completes; a stopped run ends
+// the turn it cut short.
+func TestTurnTimingAndTokenUsage(t *testing.T) {
+	e, w, _ := setup(t)
+	id, _ := e.Create("Usage", "", "", nil)
+	before := float64(time.Now().UnixMilli()) / 1000
+	_ = e.Message(id, "Count", cv.ID())
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Conversation.Entries[0].Delivery == "sent" })
+	c := e.Store.Snapshot().chat(id)
+	if len(c.Conversation.Turns) != 1 || c.Conversation.Turns[0].ID != "turn-one" || c.Conversation.Turns[0].StartedAt < before || c.Conversation.Turns[0].EndedAt != 0 || c.Conversation.Turns[0].Usage != nil {
+		t.Fatalf("turn not begun: %+v", c.Conversation.Turns)
+	}
+	report := func(turn string, input, cached, output, total float64) {
+		breakdown := map[string]any{"inputTokens": input, "cachedInputTokens": cached, "outputTokens": output, "reasoningOutputTokens": 0, "totalTokens": total}
+		w.send(agent.Frame{Method: "thread/tokenUsage/updated", Params: map[string]any{"threadId": "thread-one", "turnId": turn, "tokenUsage": map[string]any{"last": breakdown, "total": breakdown}}})
+	}
+	report("turn-one", 1000, 600, 200, 1200)
+	usage := func() *cv.Usage {
+		turns := e.Store.Snapshot().chat(id).Conversation.Turns
+		if len(turns) == 0 {
+			return nil
+		}
+		return turns[0].Usage
+	}
+	until(t, func() bool { u := usage(); return u != nil && u.Total == 1200 })
+	report("turn-one", 2500, 1500, 700, 3200)
+	until(t, func() bool { u := usage(); return u != nil && u.Total == 3200 })
+	if u := usage(); u.Input != 2500 || u.Cached != 1500 || u.Output != 700 {
+		t.Fatalf("usage %+v", u)
+	}
+	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
+	c = e.Store.Snapshot().chat(id)
+	first := c.Conversation.Turns[0]
+	if first.EndedAt < first.StartedAt || first.Usage.Total != 3200 {
+		t.Fatalf("turn not ended: %+v", first)
+	}
+	// The next turn is a new process here (one run per message), whose
+	// total starts again: its usage is that total, not a difference.
+	w.mu.Lock()
+	w.turnID = "turn-two"
+	w.mu.Unlock()
+	_ = e.Message(id, "Again", cv.ID())
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Turns) == 2 })
+	report("turn-two", 800, 100, 100, 900)
+	until(t, func() bool {
+		turns := e.Store.Snapshot().chat(id).Conversation.Turns
+		return turns[1].Usage != nil && turns[1].Usage.Total == 900
+	})
+	if err := e.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "interrupted" })
+	turns := e.Store.Snapshot().chat(id).Conversation.Turns
+	if turns[0].EndedAt != first.EndedAt || turns[1].EndedAt < turns[1].StartedAt || turns[1].Usage.Input != 800 {
+		t.Fatalf("stopped run left the turn wrong: %+v", turns)
 	}
 }

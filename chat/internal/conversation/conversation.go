@@ -111,7 +111,34 @@ func (c *Conversation) Delta(id, turn, delta string, command bool) {
 	}
 	c.Entries = append(c.Entries, e)
 }
-func (c *Conversation) Finish(turn string) {
+
+// Turn is the record of turn `id`, added when there is none yet.
+func (c *Conversation) Turn(id string) *Turn {
+	for i := range c.Turns {
+		if c.Turns[i].ID == id {
+			return &c.Turns[i]
+		}
+	}
+	c.Turns = append(c.Turns, Turn{ID: id})
+	return &c.Turns[len(c.Turns)-1]
+}
+
+// Begin records that the agent accepted a message into turn `id` at `at`;
+// a turn already begun (a steer joining it) keeps its start.
+func (c *Conversation) Begin(id string, at float64) {
+	if t := c.Turn(id); t.StartedAt == 0 {
+		t.StartedAt = at
+	}
+}
+
+// Report records the tokens turn `id` has used so far.
+func (c *Conversation) Report(id string, usage Usage) {
+	c.Turn(id).Usage = &usage
+}
+
+// Finish ends turn `id` at `at`: its entries stop streaming and its record
+// gets its end (kept if the turn already ended).
+func (c *Conversation) Finish(turn string, at float64) {
 	if c.ActiveTurnID != nil && *c.ActiveTurnID == turn {
 		c.ActiveTurnID = nil
 	}
@@ -119,6 +146,19 @@ func (c *Conversation) Finish(turn string) {
 		e := &c.Entries[i]
 		if e.TurnID != nil && *e.TurnID == turn {
 			e.IsStreaming = false
+		}
+	}
+	if t := c.Turn(turn); t.EndedAt == 0 {
+		t.EndedAt = at
+	}
+}
+
+// EndTurns ends every begun turn that has no end yet, for a run that
+// stopped or failed without the agent completing its turn.
+func (c *Conversation) EndTurns(at float64) {
+	for i := range c.Turns {
+		if c.Turns[i].EndedAt == 0 {
+			c.Turns[i].EndedAt = at
 		}
 	}
 }

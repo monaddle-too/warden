@@ -9,11 +9,20 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@tiptap/core": "3.31.3",
+    "@tiptap/pm": "3.31.3",
+    "@tiptap/react": "3.31.3",
+    "@tiptap/starter-kit": "3.31.3",
+    "katex": "~0.16.47",
     "lucide-react": "1.43.0",
+    "mermaid": "^11.17.2",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-markdown": "10.1.0",
-    "remark-gfm": "4.0.1"
+    "rehype-highlight": "^7.0.2",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "4.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",

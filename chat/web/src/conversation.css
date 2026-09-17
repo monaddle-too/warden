@@ -6,12 +6,70 @@
   flex: 1;
   overflow: hidden;
 }
+/* The scroll box and the jump button floating over its end. */
+.conversation-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
 .conversation-scroll {
   flex: 1;
   overflow: auto;
   padding: 28px 24px 8px;
   min-height: 120px;
   scrollbar-gutter: stable;
+}
+/* Shown once the reader has scrolled away from the end; says how many
+   messages arrived since. */
+.jump-bottom {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 32px;
+  padding: 0 14px 0 10px;
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  color: var(--text-2);
+  animation: rise 120ms ease-out;
+}
+.jump-bottom:hover {
+  color: var(--text);
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .jump-bottom {
+    animation: none;
+  }
+}
+/* Before the first entry the reader has not seen. The label is CSS
+   content so it is neither selected nor found by the find bar. */
+.unread-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -8px 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+.unread-divider::before {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--accent-line);
+}
+.unread-divider::after {
+  content: "New messages";
 }
 .transcript {
   max-width: 760px;
@@ -22,6 +80,57 @@
 }
 .conversation-scroll .empty {
   padding-top: 12vh;
+}
+
+/* Find in chat: the bar above the transcript and the highlights it paints
+   over the rendered text (CSS Custom Highlight API; only colour and
+   decoration apply to a ::highlight). */
+.find-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px 6px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+}
+.find-bar input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  outline: none;
+  font-size: 14px;
+}
+.find-bar input:focus {
+  border-color: var(--line);
+  background: var(--bg);
+}
+.find-bar .find-count {
+  flex-shrink: 0;
+  min-width: 64px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.find-bar .find-count.none {
+  color: var(--danger);
+}
+.find-bar button {
+  width: 30px;
+  height: 30px;
+}
+::highlight(warden-find) {
+  background-color: var(--find-soft);
+  color: var(--text);
+}
+::highlight(warden-find-current) {
+  background-color: var(--find-current);
+  color: var(--text);
 }
 
 /* Messages */
@@ -81,6 +190,64 @@
   padding: 12px 16px;
   border-radius: 14px 14px 4px 14px;
   background: var(--bubble);
+}
+/* Copy, retry and edit under a message: hidden until the message is
+   hovered or one of its buttons has focus, always shown when delivery
+   failed, and always on a touch screen, which has no hover. Under an
+   agent message the bar keeps its height so the transcript does not shift
+   as the pointer moves. */
+.message-actions {
+  display: flex;
+  gap: 2px;
+  margin-top: -2px;
+  opacity: 0;
+  transition: opacity 120ms;
+}
+.message-actions button {
+  width: 28px;
+  height: 28px;
+}
+.message-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 0 -6px;
+}
+/* What the turn took (TurnStats.tsx): beside the action row of the turn's
+   last message, or on its own after a tool-step group. The separators are
+   CSS content, so a selection copies the figures only. */
+.turn-stats {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.turn-stats span + span::before {
+  content: "·";
+  margin-right: 6px;
+}
+.turn-stats.block {
+  margin-top: -14px;
+}
+.turn-stats.active {
+  color: var(--text-2);
+}
+.turn-stats.active svg {
+  color: var(--accent-text);
+}
+.message:hover .message-actions,
+.message:focus-within .message-actions,
+.message-actions.shown {
+  opacity: 1;
+}
+@media (hover: none) {
+  .message-actions {
+    opacity: 1;
+  }
 }
 .stream-label {
   color: var(--accent-text);
@@ -150,6 +317,24 @@
 }
 .activity-group > pre {
   margin: 0 10px 10px;
+}
+/* A step whose detail is a diff (DiffView.tsx) scrolls like the raw text. */
+.activity-detail {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.activity-group > .activity-detail {
+  margin: 0 10px 10px;
+}
+.activity-entry .activity-detail {
+  margin: 4px 0 6px;
+}
+.activity-detail pre {
+  max-height: none;
+  border-radius: 0;
 }
 .activity-list {
   border-top: 1px solid var(--line);
@@ -278,6 +463,7 @@
   margin-bottom: 10px;
 }
 .composer {
+  position: relative;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-lg);
   box-shadow: 0 1px 3px rgb(28 27 24 / 0.08);
@@ -361,6 +547,131 @@
   padding: 6px 4px 0;
   font-size: 12px;
   color: var(--muted);
+}
+
+/* Slash commands and @path mentions: a list floating over the composer,
+   rows as in the search palette; the textarea keeps the focus. */
+.suggest {
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  bottom: calc(100% + 6px);
+  z-index: 3;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.suggest ul {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: min(40vh, 320px);
+  overflow: auto;
+}
+.suggest li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  cursor: pointer;
+}
+.suggest li > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.suggest li[aria-selected="true"] {
+  background: var(--surface-3);
+}
+.suggest li[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+.suggest li small {
+  margin-left: auto;
+  padding-left: 12px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.suggest-label,
+.suggest-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.suggest-path {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.suggest-note {
+  margin: 0;
+  padding: 7px 16px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+ul + .suggest-note {
+  border-top: 1px solid var(--line);
+}
+
+/* Attachments: chips above the composer's text while they upload, a
+   dashed accent border while files are dragged over, and thumbnails or
+   file chips beneath the sent message. */
+.composer.dragging {
+  border-style: dashed;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px 0;
+}
+.attachment-chip {
+  height: 30px;
+  padding: 0 6px 0 8px;
+}
+.attachment-chip > span:first-of-type {
+  color: var(--text);
+}
+.attachment-chip .attachment-thumb {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.attachment-chip .attachment-remove {
+  width: 22px;
+  height: 22px;
+  margin-right: -2px;
+}
+.attachment-chip.failed {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+button.attachment-chip {
+  cursor: pointer;
+}
+.entry-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+.message-body .rich-text + .entry-attachments {
+  margin-top: 6px;
+}
+.entry-attachments .attachment-image {
+  margin: 0;
+}
+.entry-attachments .attachment-image img {
+  max-height: 240px;
 }
 @media (max-width: 650px) {
   .conversation-scroll {
