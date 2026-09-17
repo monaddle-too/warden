@@ -85,6 +85,16 @@ gvisor
 {{- end -}}
 {{- end -}}
 
+{{/* A NetworkPolicyPeer list item selecting one core-namespace component. */}}
+{{- define "warden.peer" -}}
+- namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: {{ .root.Release.Namespace }}
+  podSelector:
+    matchLabels:
+      {{- include "warden.selectorLabels" (dict "root" .root "component" .component) | nindent 6 }}
+{{- end -}}
+
 {{/* Number of sandbox pods the quota allows. */}}
 {{- define "warden.sandboxPods" -}}
 {{ add (int .Values.sandboxes.maxRunning) (int .Values.sandboxes.warmSpares) (int .Values.sandboxes.extraPods) }}
