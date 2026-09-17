@@ -103,7 +103,7 @@ for target in linux-amd64 linux-arm64 darwin-arm64; do
     find "$stage" -exec touch -m -d "@$mtime" {} + 2>/dev/null || find "$stage" -exec touch -m -t "$(date -r "$mtime" +%Y%m%d%H%M.%S)" {} +
   fi
   # shellcheck disable=SC2086
-  tar -C dist/stage $TARFLAGS -czf "dist/release/$name.tar.gz" "$name"
+  COPYFILE_DISABLE=1 tar -C dist/stage $TARFLAGS --no-xattrs -czf "dist/release/$name.tar.gz" "$name"
 done
 (cd dist/release && { command -v sha256sum >/dev/null 2>&1 && sha256sum -- *.tar.gz || shasum -a 256 -- *.tar.gz; } > SHA256SUMS && cat SHA256SUMS)
 
