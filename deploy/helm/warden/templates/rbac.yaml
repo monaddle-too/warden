@@ -47,6 +47,12 @@ rules:
     resources: [configmaps]
     resourceNames: [warden-guest-trust]
     verbs: [get, list, watch]
+  # Live CPU and memory of the sandbox pods for the workspace panel and the
+  # admin console's Cluster section (docs/warden-startup-visibility-plan.md);
+  # absent metrics leave those columns empty.
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods]
+    verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -148,6 +154,79 @@ subjects:
   - kind: ServiceAccount
     name: warden-policy
     namespace: {{ .Release.Namespace }}
+# The admin console's Cluster section also lists the four Warden service
+# pods and reads their logs: the runner's read-only view of its own
+# namespace's pods.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-runner-view
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: runner
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-runner-view
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-runner-view
+subjects:
+  - kind: ServiceAccount
+    name: warden-runner
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.rbac.runnerClusterView }}
+---
+# The Cluster section's node table: names, readiness, allocatable
+# resources and live usage. Read-only and cluster-scoped, so it is a value.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "warden.clusterPrefix" . }}-runner-view
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: runner
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+  - apiGroups: [metrics.k8s.io]
+    resources: [nodes]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "warden.clusterPrefix" . }}-runner-view
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "warden.clusterPrefix" . }}-runner-view
+subjects:
+  - kind: ServiceAccount
+    name: warden-runner
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- if .Values.rbac.policyClusterFacts }}
 ---
 # Read-only view of the cluster-scoped hardening the policy service proves

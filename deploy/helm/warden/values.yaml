@@ -330,6 +330,11 @@ rbac:
   # sandbox Namespace, RuntimeClasses, ValidatingAdmissionPolicies and
   # their bindings.
   policyClusterFacts: true
+  # Also give the runner ServiceAccount a read-only ClusterRole on nodes and
+  # their metrics, for the admin console's Cluster section
+  # (docs/warden-startup-visibility-plan.md). Off, the section lists pods
+  # only and says why the nodes are missing.
+  runnerClusterView: true
 
 # Extra environment variables for each service container.
 extraEnv:

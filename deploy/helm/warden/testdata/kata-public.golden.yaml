@@ -749,6 +749,51 @@ spec:
 
 ---
 # Source: warden/templates/rbac.yaml
+# The Cluster section's node table: names, readiness, allocatable
+# resources and live usage. Read-only and cluster-scoped, so it is a value.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: warden-warden-prod-sandboxes-runner-view
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+  - apiGroups: [metrics.k8s.io]
+    resources: [nodes]
+    verbs: [get, list]
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: warden-warden-prod-sandboxes-runner-view
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: warden-warden-prod-sandboxes-runner-view
+subjects:
+  - kind: ServiceAccount
+    name: warden-runner
+    namespace: warden
+
+---
+# Source: warden/templates/rbac.yaml
 # The runner owns sandbox pods and workspace PVCs and runs exec sessions
 # in them; nothing outside the sandbox namespace. pods/log is for the
 # guest-init output of a sandbox that failed to start (decision 6 lists it
@@ -782,6 +827,12 @@ rules:
     resources: [configmaps]
     resourceNames: [warden-guest-trust]
     verbs: [get, list, watch]
+  # Live CPU and memory of the sandbox pods for the workspace panel and the
+  # admin console's Cluster section (docs/warden-startup-visibility-plan.md);
+  # absent metrics leave those columns empty.
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods]
+    verbs: [get, list]
 
 ---
 # Source: warden/templates/rbac.yaml
@@ -850,6 +901,54 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
+  name: warden-policy-credentials
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: policy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-policy-credentials
+subjects:
+  - kind: ServiceAccount
+    name: warden-policy
+    namespace: warden
+# The admin console's Cluster section also lists the four Warden service
+# pods and reads their logs: the runner's read-only view of its own
+# namespace's pods.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-runner-view
+  namespace: warden
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: runner
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods]
+    verbs: [get, list]
+
+---
+# Source: warden/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
   name: warden-runner
   namespace: warden-prod-sandboxes
   labels:
@@ -896,7 +995,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: warden-policy-credentials
+  name: warden-runner-view
   namespace: warden
   labels:
     app.kubernetes.io/name: warden
@@ -904,14 +1003,14 @@ metadata:
     app.kubernetes.io/version: "v0.0.0-dev"
     app.kubernetes.io/managed-by: Helm
     helm.sh/chart: warden-0.0.0-dev
-    warden.monaddle.com/component: policy
+    warden.monaddle.com/component: runner
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: warden-policy-credentials
+  name: warden-runner-view
 subjects:
   - kind: ServiceAccount
-    name: warden-policy
+    name: warden-runner
     namespace: warden
 
 ---
