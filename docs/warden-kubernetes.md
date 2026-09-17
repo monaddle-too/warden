@@ -258,19 +258,34 @@ kubectl -n warden port-forward svc/warden-edge 18781:18781
 ```
 
 In this shape the chat service writes no `endpoint.json` the edge could
-read (they share no volume), so the edge mints the owner sign-in capability
-itself, stores it in `/var/lib/warden/edge/endpoint.json` and logs the
-launch URL (to be verified in step 7). Read it from the log or the state:
+read (they share no volume; the edge reaches the chat with its certificate
+alone), so the edge mints the owner sign-in capability itself at every
+start, as the chat does on the other shapes: it stores it in
+`/var/lib/warden/edge/endpoint.json` (mode 0600, the chat's file shape,
+`{"url":"http://127.0.0.1:18781","token":"<64 hex>"}`) and logs one line
+with the launch URL. Read that line:
 
 ```sh
-kubectl -n warden logs deploy/warden-edge | grep -m1 'http://127.0.0.1'
-kubectl -n warden exec deploy/warden-edge -- cat /var/lib/warden/edge/endpoint.json
+kubectl -n warden logs deploy/warden-edge | grep -m1 'launch URL'
 ```
 
-Open the URL. Previews are `http://<binding-id>.localhost:18781/…` through
-the same forward, with the same ticket, per-request binding check and
-revocation model as the other shapes. The capability rotates when the edge
-restarts; read it again after an upgrade.
+It looks like `Warden launch URL (owner capability; rotates at every edge
+start; kept in /var/lib/warden/edge/endpoint.json): http://127.0.0.1:18781/?launch=<time>#session=<capability>`,
+the same URL `warden open --print` builds on the Mac. If the log has been
+rotated away, the state file still holds the capability
+(`kubectl -n warden exec deploy/warden-edge -- cat /var/lib/warden/edge/endpoint.json`;
+the launch URL is `<url>/#session=<token>`).
+
+Open the URL. The web app stores the capability, drops it from the address
+bar and sends it as a bearer; the edge identifies you as the owner by it and
+mints the cookie session that preview navigations need. Previews are
+`http://<binding-id>.localhost:18781/…` through the same forward, with the
+same ticket, per-request binding check and revocation model as the other
+shapes. The capability rotates when the edge restarts (every session made
+from the old one ends with it, as on the Mac when the chat restarts); read
+the log again after an upgrade. Anyone who can read the edge pod's log or
+its PVC can sign in as the owner, which is the same trust the Mac places in
+the state directory.
 
 **Google mode.** Open `auth.publicURL` and sign in with a Google account
 listed in `auth.google.owners`; any other account is refused, as on OVH.
