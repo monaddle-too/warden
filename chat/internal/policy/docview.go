@@ -32,7 +32,7 @@ const (
 	markLink        = "link"
 	markInsert      = "suggestInsert"
 	markDelete      = "suggestDelete"
-	docSimilarity   = 0.4 // token overlap below which a replaced paragraph shows as delete + insert
+	docSimilarity   = 0.5 // share of the shorter paragraph's tokens kept, below which a replacement shows as delete + insert
 	docSummaryLimit = 80
 )
 
@@ -388,7 +388,9 @@ type tokenChange struct {
 }
 
 // inlineDiff merges two paragraphs' runs into one sequence with each token
-// marked kept, deleted or inserted; ratio is the token overlap.
+// marked kept, deleted or inserted; ratio is the token overlap relative to
+// the shorter side, so a short paragraph rewritten into a long one still
+// reads as an edit of it.
 func inlineDiff(before, after []docRun, id int) (runs []viewRun, ratio float64) {
 	a, b := tokenize(before), tokenize(after)
 	keysA := make([]string, len(a))
@@ -414,8 +416,8 @@ func inlineDiff(before, after []docRun, id int) (runs []viewRun, ratio float64) 
 			}
 		}
 	}
-	if len(a)+len(b) > 0 {
-		ratio = float64(2*same) / float64(len(a)+len(b))
+	if shorter := min(len(a), len(b)); shorter > 0 {
+		ratio = float64(same) / float64(shorter)
 	}
 	push := func(token docToken, change string) {
 		run := viewRun{docRun: token.docRun, change: change, id: id}

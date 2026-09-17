@@ -118,6 +118,10 @@ func TestSuggestionDocumentShowsChangesInPlaceAndStripsBackToTheDraft(t *testing
 	if ratio < 0.7 || len(runs) != 4 || runs[0].text != "a b" || runs[1].change != "delete" || runs[2].text != " x" || runs[3].text != " d" {
 		t.Fatalf("inline diff %v %v", runs, ratio)
 	}
+	// A short paragraph grown into a long one is still an edit of it.
+	if _, ratio := inlineDiff(parseInline("Scope creep"), parseInline("Scope creep in the landing page (freeze the outline by September 25)"), 1); ratio < docSimilarity {
+		t.Fatalf("short-to-long ratio %v", ratio)
+	}
 	// Tiny kept islands between edits read as one replacement.
 	runs, _ = inlineDiff(parseInline("page for the developer docs, with a reference to the existing overview."), parseInline("page for the developer docs; it complements the overview rather than repeating it."), 1)
 	var shape []string

@@ -120,16 +120,45 @@ stores nothing about Google Docs.
 
 ## Steps
 
-0. Owner decision: layer in Panta + vendored into Warden (recommended,
-   this plan) or Warden-only; whether step 4b is wanted.
-1. Warden Go: `docview.go`, inline diff, `doc_preview.view`, `doc_draft
-   {document}`, tests.
-2. Panta: suggestion layer, editor, margin, fixture page, Playwright.
-3. Warden web: vendor, replace the tabs, live test on the local install
-   with the existing "Warden suggestions test" document (rounds: accept,
-   reject, type inside a suggestion, comment, send back, approve, stale).
-4. Panta: (a) its proposals on the same layer; (b) Warden proposals in
+0. [x] Owner decision (2026-09-17): layer in Panta, vendored into Warden.
+1. [x] Warden Go: `docview.go` (canonical ↔ Tiptap, inline diff with
+   semantic cleanup, suggestion document, cards), `doc_preview.view`,
+   `doc_draft {document | comments}`, `doc_decide {change}` (accept marks a
+   change accepted by content signature; reject reverts it), tests.
+2. [x] Panta: `web/src/documents/suggestions/` (schema, read-only plugin,
+   positions, comment highlights, margin, editor, CSS, README) with vitest
+   in jsdom; branch `feat/doc-suggestions-layer`, worktree
+   `.local/panta-doc-suggestions`. Playwright not added.
+3. [x] Warden web: vendored under `chat/web/src/documents/` with
+   `PROVENANCE.md`, Tiptap in a lazy chunk (~127 KB gzipped), the dialog's
+   Suggestions and Draft tabs replaced by the page. Live-tested on the local
+   install against the real document (below).
+4. [ ] Panta: (a) its proposals on the same layer; (b) Warden proposals in
    Panta via Warden's API.
+
+## Progress
+
+2026-09-17, live on the local install (build 66c2ce0 →), document "Warden
+suggestions test": the agent's proposal rendered as a page with word-level
+insertions and deletions in place; Accept turned a change into plain text
+and its card to "accepted"; Reject put the base paragraph back; typing on
+the page saved and came back as a suggestion; a comment anchored to a
+selected word reached the agent with its quote and offsets; *Send back*
+carried the owner's edits and the comment; the revision (`revises`) drew
+against the base with the kept changes and reasons; Approve wrote the
+page and a read-back matched every decision.
+
+Fixed on the way: `useEditor` effects running against an editor React had
+already destroyed (lazy mount), rejected cards placed at infinity, the
+paper inheriting the app's dark surface, tokens splitting on spaces (the
+LCS preferred matching spaces to words), pairing by symmetric ratio
+(short → long rewrites showed as delete + insert).
+
+Known: the owner's own typed text shows as the agent's suggestion (the
+page diffs against the Google base; authorship is not tracked per run);
+accepted-state does not carry into a revision; the fixture used by the
+UI check has an empty table (the projection of real tables carries cell
+text and renders read-only).
 
 ## Out of scope / later
 

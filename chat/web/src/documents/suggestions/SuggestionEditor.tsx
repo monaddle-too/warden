@@ -81,6 +81,7 @@ export function SuggestionEditor({
   header,
 }: SuggestionEditorProps) {
   const container = useRef<HTMLDivElement>(null);
+  const paper = useRef<HTMLDivElement>(null);
   const commentsRef = useRef(comments);
   commentsRef.current = comments;
   const [selected, setSelected] = useState<string>();
@@ -190,13 +191,14 @@ export function SuggestionEditor({
   useEffect(() => {
     if (!editor) return;
     const onSelection = () => {
-      const { from, to, empty } = editor.state.selection;
-      if (empty || !container.current || !editable) {
+      const { from, empty } = editor.state.selection;
+      if (empty || !paper.current || !editable) {
         setSelection(undefined);
         return;
       }
       try {
-        const rect = container.current.getBoundingClientRect();
+        // The button sits inside the paper, so offsets are the paper's.
+        const rect = paper.current.getBoundingClientRect();
         const start = editor.view.coordsAtPos(from);
         setSelection({
           top: start.top - rect.top - 34,
@@ -205,7 +207,6 @@ export function SuggestionEditor({
       } catch {
         setSelection(undefined);
       }
-      void to;
     };
     editor.on("selectionUpdate", onSelection);
     return () => {
@@ -410,7 +411,7 @@ export function SuggestionEditor({
             </button>
           </div>
         )}
-        <div className="suggestion-paper">
+        <div className="suggestion-paper" ref={paper}>
           <EditorContent
             editor={editor}
             className="rich-document-page suggestion-document"
