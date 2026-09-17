@@ -34,6 +34,23 @@ func TestClusterFactsPassAndCache(t *testing.T) {
 	}
 }
 
+// Canaries a killed service left behind are swept before a proof.
+func TestStaleCanariesAreSwept(t *testing.T) {
+	f := cluster(t)
+	stale := sandboxPod("warden-canary-deny-00000000", "")
+	stale.Spec.Volumes = nil
+	stale.Metadata.Labels[LabelCanary] = CanaryDeny
+	f.seed(api.Pods, testNamespace, stale)
+	i := newInspector(t, f, nil)
+	if err := i.ClusterFacts(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	var gone api.Pod
+	if f.object(api.Pods, testNamespace, "warden-canary-deny-00000000", &gone) {
+		t.Fatal("stale canary not swept")
+	}
+}
+
 // The canary pods satisfy the namespace's admission policy and carry the
 // role labels; only the gateway canary holds the egress label.
 func TestCanarySpecIsAdmissible(t *testing.T) {

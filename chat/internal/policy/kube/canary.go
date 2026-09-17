@@ -89,6 +89,7 @@ func (i *Inspector) runCanaries(ctx context.Context) error {
 		{Name: "API_HOST", Value: apiHost}, {Name: "API_PORT", Value: apiPort},
 		{Name: "EXTERNAL_HOST", Value: externalHost}, {Name: "EXTERNAL_PORT", Value: externalPort},
 	}
+	i.sweepCanaries(ctx)
 	suffix := randomSuffix()
 	type run struct {
 		role string
@@ -134,6 +135,18 @@ func (i *Inspector) runCanaries(ctx context.Context) error {
 		verdicts[r.role] = r.out
 	}
 	return ClassifyCanaries(verdicts[CanaryDeny], verdicts[CanaryGateway])
+}
+
+// sweepCanaries deletes canaries a previous proof left behind (a policy
+// service killed mid-proof); they hold quota and nothing else.
+func (i *Inspector) sweepCanaries(ctx context.Context) {
+	var list api.List[api.Pod]
+	if err := i.o.Client.List(ctx, api.Pods, i.o.Namespace, api.ListOptions{LabelSelector: LabelCanary}, &list); err != nil {
+		return
+	}
+	for _, pod := range list.Items {
+		_ = i.o.Client.Delete(ctx, api.Pods, i.o.Namespace, pod.Metadata.Name, api.DeleteOptions{GracePeriodSeconds: api.Int64(0), UID: pod.Metadata.UID})
+	}
 }
 
 // canarySpec is the pod of one canary: admitted by the namespace's
