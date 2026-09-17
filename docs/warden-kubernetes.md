@@ -72,10 +72,10 @@ section of `warden.json`.
 | Requirement | What is needed | Notes |
 |---|---|---|
 | Kubernetes | 1.30 or later (`Chart.yaml` sets `kubeVersion: ">=1.30.0"`) | ValidatingAdmissionPolicy is GA from 1.30; the sandbox namespace's hardening depends on it. |
-| CNI | One that enforces NetworkPolicy, ingress and egress | The spike proved k3s's embedded controller; Cilium, Calico and GKE Dataplane V2 enforce; plain flannel does not. The policy service's canaries refuse a cluster where the policies are not enforced (to be verified in step 7). **Anti-spoofing caveat:** the spike showed a pod cannot bind another pod's address, which is not a proof that the CNI drops spoofed source addresses. The gateway treats the binding credential as the authority and the source pod as a second check for that reason; choose a CNI with source-address filtering (Cilium and Calico document it) where the difference matters. |
+| CNI | One that enforces NetworkPolicy, ingress and egress | The spike proved k3s's embedded controller; Cilium, Calico and GKE Dataplane V2 enforce; plain flannel does not. The policy service's canaries refuse a cluster where the policies are not enforced (the canary proof runs at every policy start and passed on the dev cluster). **Anti-spoofing caveat:** the spike showed a pod cannot bind another pod's address, which is not a proof that the CNI drops spoofed source addresses. The gateway treats the binding credential as the authority and the source pod as a second check for that reason; choose a CNI with source-address filtering (Cilium and Calico document it) where the difference matters. |
 | RuntimeClass, `gvisor` tier | A RuntimeClass whose handler is the `runsc` shim, on nodes with `allow-suid = "true"` in the runsc configuration | GKE Sandbox provides RuntimeClass `gvisor` and sets allow-suid; a self-managed node needs the shim registered in containerd and `/etc/containerd/runsc.toml` with `allow-suid = "true"` (see "Development"), or the guest's passwordless `sudo` does not work. |
 | RuntimeClass, `kata` tier | A RuntimeClass from kata-deploy (`kata-qemu` by default; `runtime.runtimeClassName` names another such as `kata-clh`) on nodes with `/dev/kvm` | Bare metal, VMs with nested virtualization, or cloud nodes that expose KVM. Kata nodes are usually a pool: set `sandboxes.nodeSelector` and `sandboxes.tolerations`. |
-| StorageClass | ReadWriteOnce volumes; `dataSource` PVC cloning for chat forks | Cloning is a CSI feature (GKE `pd.csi.storage.gke.io`, Longhorn, Ceph RBD and others); without it the runner copies the workspace with tar through exec and reports which it used. k3s's `local-path` does not clone. (Both paths to be verified in step 7.) |
+| StorageClass | ReadWriteOnce volumes; `dataSource` PVC cloning for chat forks | Cloning is a CSI feature (GKE `pd.csi.storage.gke.io`, Longhorn, Ceph RBD and others); without it the runner copies the workspace with tar through exec and reports which it used. k3s's `local-path` does not clone, and the copy fallback is what the dev cluster exercises (the clone path is covered by the driver's tests against a fake API server). |
 | cert-manager | Optional | With it, the four service certificates are `Certificate` objects renewed automatically; without it a bootstrap Job issues them once. Public previews need cert-manager (or another issuer) for the wildcard preview certificate. |
 | Ingress controller | Public previews only | Any controller; the chart renders one Ingress with the app host and `*.<hostSuffix>`. Loopback previews need no Ingress. |
 | Helm | 3 | `helm.sh/resource-policy: keep` and hooks are used. |
@@ -106,9 +106,10 @@ kubectl -n warden create secret generic warden-codex-login --from-file=auth.json
 rm -rf "$TMPDIR/codex-login"
 ```
 
-Codex refreshes its tokens; in this shape the policy service writes the
-refreshed value back into the Secret through the API (to be verified in
-step 7), so the file you created from is stale afterwards.
+Codex refreshes its tokens on the host in the sbx shapes; in this shape
+the Secret store can write a refreshed value back through the API, but no
+loader does so yet, so replace the Secret yourself when the login expires
+(see "Provider Secret rotation").
 
 **Claude** (`warden-claude-login`): the file `warden login claude` writes
 from a `claude setup-token` value, `{"claudeAiOauth":{"accessToken":…,
@@ -134,7 +135,7 @@ kubectl -n warden create secret generic warden-github-login --from-file=github.j
 In GitHub App mode (`providers.github.appID` set) the same Secret holds the
 App broker's credential instead of a user token, under the keys
 `broker.json` and `app-private-key.pem`; the App-mode broker on Kubernetes
-is not wired yet (to be verified in step 7).
+is not wired yet.
 
 A provider you do not use is turned off with `providers.<p>.enabled:
 false`; its Secret is then not required and not granted.
@@ -332,8 +333,9 @@ helm upgrade warden oci://ghcr.io/monaddle-too/charts/warden --version <chart ve
 - Each Deployment uses `Recreate`: the old pod stops before the new one
   starts, so each service is down for the restart. An edge restart signs
   viewers out (chat and agent work stay server-side); a runner restart
-  reconciles the sandbox pods and PVCs it finds by label (to be verified in
-  step 7).
+  reconciles the sandbox pods and PVCs it finds by label (every registered
+  sandbox is stopped, spares are removed and recreated, unregistered claims
+  are kept and logged; seen on every runner restart on the dev cluster).
 - The pods carry a checksum of the rendered `warden.json`, so a values
   change that alters it rolls the pods; a change that does not (for
   example `resources`) rolls only what Kubernetes needs to.
@@ -345,7 +347,8 @@ helm upgrade warden oci://ghcr.io/monaddle-too/charts/warden --version <chart ve
 - Guest image bumps are a values change (`guestImage.digest`); new
   sandboxes use the new digest, existing pods keep theirs until they are
   stopped, and the verifier checks each pod's `imageID` against the pinned
-  digest of its own generation (to be verified in step 7).
+  digest of its own generation (the check is exercised by the policy
+  package's tests; a live image bump has not been run yet).
 
 ### 6. Uninstall
 
@@ -481,8 +484,10 @@ buy nothing and would leak into support. The admission policy refuses a
 sandbox pod without the configured RuntimeClass, and the verifier refuses a
 RuntimeClass whose handler is outside the tier's allowlist (the allowlist
 per tier lives in the policy service; that it accepts the handler names
-GKE Sandbox, kata-deploy and a self-managed `runsc` use is to be verified
-in step 4).
+GKE Sandbox, kata-deploy and a self-managed `runsc` use is `runsc` and
+`gvisor` for the gVisor tier and `kata`, `kata-qemu`, `kata-clh`,
+`kata-fc` and `kata-qemu-runtime-rs` for Kata; `runtime.handlers` in the
+chart overrides it).
 
 ## Operations
 
@@ -513,14 +518,15 @@ API server, cluster DNS and an external address, and one with the label
 that must reach the gateway and nothing else. A failed fact refuses every
 sandbox (chats report enforcement unavailable, as "unsupported SBX
 version" does today); nothing is worked around and no sandbox gets egress
-until the fact passes again (to be verified in step 7). Per-sandbox
+until the fact passes again (the suite's `unlabelled-pod` and
+`cluster-addresses` rows and the policy restart cover this). Per-sandbox
 verification is control-plane facts only: the pod's spec and labels, the
 policies that select it, its `imageID`, the PVC UID and the per-generation
 pod UID pin. Nothing runs inside a guest on the verifier's behalf.
 
 **Provider Secret rotation.** Replace the Secret's `auth.json`; the policy
 service watches the named Secrets and picks up the new value without a
-restart (to be verified in step 7):
+restart (verified against the dev cluster):
 
 ```sh
 kubectl -n warden create secret generic warden-claude-login --from-file=claude.json="$TMPDIR/claude.json" --dry-run=client -o yaml | kubectl apply -f -
@@ -530,7 +536,7 @@ Until a Secret exists or while its token is rejected, chats on that
 provider fail with the same "Refresh the … sign-in" message as the other
 shapes. The Admin console's Disconnect for GitHub and Google works as
 before; for GitHub it empties the stored token in the Secret rather than
-deleting a file (to be verified in step 7), and the token stays valid at
+deleting a file (not exercised live yet), and the token stays valid at
 GitHub until you revoke it there.
 
 **Gateway CA rotation.** The gateway CA is in the policy PVC at
@@ -541,11 +547,11 @@ after a rotation; the runner mounts that ConfigMap at `/opt/warden/trust`
 in every sandbox pod, which is where the image's system bundle symlink and
 every client environment variable point, so the kubelet's in-place refresh
 delivers a rotated CA to running guests without exec, root or restart
-(about 48 s on gVisor, 3 s on Kata; the publisher and the mount are to be
-verified in step 7). The service rotates the CA itself at start when it is
-older than the configured maximum age (the sbx shapes set it as
-`sbx.inspectionCertMaxAgeDays`; the name of that setting in the
-`kubernetes` kind is to be verified in step 4). To rotate on demand, stop
+(about 48 s on gVisor, 3 s on Kata; the publisher and the mount run on
+the dev cluster, every guest there trusts the published bundle). The
+service rotates the CA itself at start when it is older than the
+configured maximum age (`sbx.inspectionCertMaxAgeDays` in the sbx shapes,
+`kubernetes.gatewayCAMaxAgeDays` here). To rotate on demand, stop
 the policy service, run the subcommand against its PVC, and start it again;
 the previous CA directory is kept as `gateway-ca.retired-<timestamp>`:
 
@@ -613,7 +619,7 @@ snapshot or copy mechanism your StorageClass has. What each holds:
 | `warden-runner-state` | release | `managed-v2.json` and the sandbox registry |
 | `warden-app-state` | release | `chats.json` (every chat and transcript) |
 | `warden-edge-state` | release | `logins.json` (the Google sign-in ledger); in owner mode `endpoint.json` (the launch capability; regenerated at start) |
-| one per sandbox, labelled `warden.monaddle.com/sandbox=<runtime name>` | sandbox | `/home/agent` of that sandbox (to be verified in step 7) |
+| one per sandbox, labelled `warden.monaddle.com/sandbox=<runtime name>` | sandbox | `/home/agent` of that sandbox (the suite's stop/resume row proves it persists) |
 
 The provider logins are Secrets, not PVC content; export them with
 `kubectl get secret -o yaml` or keep the files you created them from. The
