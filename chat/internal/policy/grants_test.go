@@ -121,7 +121,7 @@ func TestGoogleSheetsOperations(t *testing.T) {
 		{"GET", "/v4/spreadsheets/abc", "", "read", "abc"},
 		{"GET", "/v4/spreadsheets/abc/values/Sheet1!A1:B2", "", "read", "abc"},
 		{"GET", "/v4/spreadsheets/abc/values:batchGet", "", "read", "abc"},
-		{"POST", "/v4/spreadsheets/abc:batchUpdate", `{"requests":[]}`, "write", "abc"},
+		{"POST", "/v4/spreadsheets/abc:batchUpdate", `{"requests":[]}`, "structure", "abc"},
 		{"PUT", "/v4/spreadsheets/abc/values/A1", `{"values":[[1]]}`, "write", "abc"},
 		{"POST", "/v4/spreadsheets/abc/values/A1:append", `{"values":[[1]]}`, "write", "abc"},
 		{"POST", "/v4/spreadsheets/abc/values:batchUpdate", `{"data":[]}`, "write", "abc"},

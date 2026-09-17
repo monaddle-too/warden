@@ -373,6 +373,39 @@ func TestWriteGrantIsScopedAndRevocable(t *testing.T) {
 	}
 }
 
+// A write grant stops at text edits and cell values; structure edits on
+// Docs and Sheets need a structure grant, which also covers the lower
+// levels. Requests name only known levels.
+func TestStructureGrantLevels(t *testing.T) {
+	f := newSharingFixture(t)
+	f.writeGrant("write", "1")
+	table := []any{map[string]any{"insertTable": map[string]any{"rows": 1, "columns": 1}}}
+	if err := f.write("", "", table, ""); err == nil {
+		t.Fatal("write grant allowed a table")
+	}
+	sheetStructure := map[string]any{"scheme": "https", "port": 443, "host": "sheets.googleapis.com", "method": "POST", "path": "/v4/spreadsheets/doc:batchUpdate", "body_base64": base64.StdEncoding.EncodeToString([]byte(`{"requests":[{"addSheet":{}}]}`))}
+	if _, _, err := f.s.Authorize("chat", "sbx", sheetStructure); err == nil {
+		t.Fatal("write grant allowed a sheet structure edit")
+	}
+	sheetValues := map[string]any{"scheme": "https", "port": 443, "host": "sheets.googleapis.com", "method": "POST", "path": "/v4/spreadsheets/doc/values/A1:append?valueInputOption=RAW", "body_base64": base64.StdEncoding.EncodeToString([]byte(`{"values":[["x"]]}`))}
+	if _, _, err := f.s.Authorize("chat", "sbx", sheetValues); err != nil {
+		t.Fatal(err)
+	}
+	f.writeGrant("structure", "2")
+	if err := f.write("", "", table, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.s.Authorize("chat", "sbx", sheetStructure); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.write("", "", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.Dispatch("request", map[string]any{"chatID": "chat", "sandboxID": "sbx", "callID": "3", "reason": "x", "access": "admin"}); err == nil {
+		t.Fatal("unknown level accepted")
+	}
+}
+
 func TestReadGrantNeverAuthorizesWrite(t *testing.T) {
 	f := newSharingFixture(t)
 	f.writeGrant("read", "1")

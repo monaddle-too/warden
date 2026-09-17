@@ -111,11 +111,41 @@ func GoogleSheetsOperation(method, path string, query []QueryPair, body []byte) 
 	if err := json.Unmarshal(body, &data); err != nil || data == nil {
 		return "", "", errors.New("invalid Google Sheets write")
 	}
+	// Cell values are "write"; spreadsheets:batchUpdate (sheets, ranges,
+	// formats, charts, deleting tabs) needs the "structure" level.
+	if strings.HasSuffix(path, ":batchUpdate") && !strings.Contains(path, "/values:") {
+		return "structure", m[1], nil
+	}
 	return "write", m[1], nil
 }
 
-// DocumentWriteOperation classifies shared-document reads and allowlisted
-// batchUpdate edits. Creation is host-executed after owner approval only.
+// AccessRank orders document grant levels: a grant authorizes every
+// operation of its own level and below. "create" is a structure-level
+// grant on a document Warden created for the agent.
+func AccessRank(access string) int {
+	switch access {
+	case "read":
+		return 0
+	case "write":
+		return 1
+	case "structure", "create":
+		return 2
+	}
+	return -1
+}
+
+// docsImageEdits fetch a remote URI on Google's side, which would let an
+// agent exfiltrate data through the URL; no grant level permits them.
+var docsImageEdits = stringSet("insertInlineImage", "replaceImage")
+
+// docsTextEdits are the requests a "write" grant covers; every other
+// batchUpdate request (tables, tabs, headers, named ranges, page breaks, ...)
+// is "structure".
+var docsTextEdits = stringSet("insertText", "deleteContentRange", "updateTextStyle", "updateParagraphStyle")
+
+// DocumentWriteOperation classifies shared-document reads and batchUpdate
+// edits as "read", "write" (text and styling) or "structure" (everything
+// else). Creation is host-executed after owner approval only.
 func DocumentWriteOperation(method, path string, query []QueryPair, body []byte) (access, document string, err error) {
 	if strings.HasPrefix(path, "/v4/spreadsheets/") {
 		return GoogleSheetsOperation(method, path, query, body)
@@ -161,24 +191,22 @@ func DocumentWriteOperation(method, path string, query []QueryPair, body []byte)
 			}
 		}
 	}
+	access = "write"
 	for _, item := range edits {
 		edit, ok := item.(map[string]any)
 		if !ok || len(edit) != 1 {
 			return "", "", errors.New("invalid edit")
 		}
 		for key, value := range edit {
-			_, isObject := value.(map[string]any)
-			switch key {
-			case "insertText", "deleteContentRange", "updateTextStyle", "updateParagraphStyle":
-			default:
-				isObject = false
+			if _, isObject := value.(map[string]any); !isObject || docsImageEdits[key] {
+				return "", "", errors.New("remote image edits are not allowed")
 			}
-			if !isObject {
-				return "", "", errors.New("only text, text styling and paragraph styling edits are allowed")
+			if !docsTextEdits[key] {
+				access = "structure"
 			}
 		}
 	}
-	return "write", m[1], nil
+	return access, m[1], nil
 }
 
 // Figma.

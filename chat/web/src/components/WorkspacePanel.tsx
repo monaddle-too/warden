@@ -32,7 +32,13 @@ function describe(e: AccessEvent): string {
   const docs = (e.documents || []).map((d) => d.title).join(", ");
   const what = docs || e.title || "documents";
   const access =
-    e.access === "read" ? "read" : e.access === "create" ? "create" : "edit";
+    e.access === "read"
+      ? "read"
+      : e.access === "create"
+        ? "create"
+        : e.access === "structure"
+          ? "full edit"
+          : "edit";
   switch (e.status) {
     case "pending":
       return `Requested ${access} access to ${what}`;
@@ -253,7 +259,7 @@ export function WorkspacePanel({
                 <small>
                   {g.expired
                     ? "access expired"
-                    : `${g.access === "read" ? "read" : "edit"} · ${remaining(g.expires_at)}`}
+                    : `${g.access === "read" ? "read" : g.access === "write" ? "edit" : "full edit"} · ${remaining(g.expires_at)}`}
                 </small>
               </li>
             )),

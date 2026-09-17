@@ -431,8 +431,11 @@ answer and who gave it land in the workspace's Access history.
   proposal.
 - **Spreadsheets** are part of document sharing: the picker lists Google
   Sheets beside Docs, and a grant covers the Sheets API for the chosen
-  IDs (reads, and value or structure writes with write access). Reconnect
-  Google once after upgrading so the spreadsheet scope is granted.
+  IDs. Document grants come in three levels, each including the ones
+  below: **read**; **write** (Docs text and styling, Sheets cell values);
+  **structure** (tables, tabs, adding or deleting sheets, formats, charts).
+  Reconnect Google once after upgrading so the spreadsheet scope is
+  granted.
 - **Host directories** (local installs only; `request_host_directory` and
   `sync_host_directory`): copy a directory from this machine into the
   sandbox at `/home/agent/host/<name>` (a snapshot, up to 1 GiB, never

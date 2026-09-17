@@ -920,7 +920,7 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 				return nil, errors.New("invalid document access or title")
 			}
 		}
-		if (access != "read" && access != "write" && access != "create") || len(title) > 200 || (access == "create" && strings.TrimSpace(title) == "") {
+		if AccessRank(access) < 0 || len(title) > 200 || (access == "create" && strings.TrimSpace(title) == "") {
 			return nil, errors.New("invalid document access or title")
 		}
 		// Retry the same tool call without creating duplicate prompts.
@@ -963,7 +963,7 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		var expiry any
 		status := "denied"
 		if allow, _ := data["allow"].(bool); allow {
-			if (r.access == "create" || r.access == "write") && (s.Google == nil || !s.Google.CanWrite()) {
+			if AccessRank(r.access) > 0 && (s.Google == nil || !s.Google.CanWrite()) {
 				return nil, errors.New("Reconnect Google to allow writing documents")
 			}
 			ttl, ttlOK := asInt(data["duration"])
@@ -1114,8 +1114,9 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 	return nil, errors.New("unknown sharing operation")
 }
 
-// Authorize finds the grant covering one docs.googleapis.com request and
-// returns it with the owner's credential.
+// Authorize finds the grant covering one Docs or Sheets API request (a
+// grant covers its own access level and below) and returns it with the
+// owner's credential.
 func (s *Sharing) Authorize(chat, sandbox string, request map[string]any) (map[string]any, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1144,7 +1145,7 @@ func (s *Sharing) Authorize(chat, sandbox string, request map[string]any) (map[s
 	}
 	var grant map[string]any
 	for _, r := range rows {
-		if !(access == "read" || r.access == "write" || r.access == "create") {
+		if AccessRank(r.access) < AccessRank(access) {
 			continue
 		}
 		var documents []map[string]any
