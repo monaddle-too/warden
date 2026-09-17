@@ -5,13 +5,21 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type DragEvent,
   type FormEvent,
   type ReactNode,
 } from "react";
-import { ArrowUp, Bot, Square } from "lucide-react";
+import { ArrowUp, Bot, Paperclip, Square } from "lucide-react";
 import { readLocalAttempt, messageAttempt, type Attempt } from "../drafts";
-import { api, me, newID, downloadFile } from "../api";
+import { api, me, newID, downloadFile, uploadAttachment } from "../api";
+import {
+  attachmentError,
+  hasFiles,
+  pastedName,
+  transferFiles,
+} from "../attachments";
 import type { Chat, Entry } from "../types";
+import { ComposerAttachments, type Pending } from "./Attachments";
 import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
 import { ModelSelect } from "./ModelSelect";
@@ -60,6 +68,77 @@ export function Conversation({
   const [text, setText] = useState(() => draft(key));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Files chosen for the next message. Each uploads as soon as it is added
+  // and the message names the uploaded IDs; a chip that failed stays until
+  // removed so the reason is visible.
+  const [pending, setPending] = useState<Pending[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const nextKey = useRef(0);
+  const picker = useRef<HTMLInputElement>(null);
+  const uploading = pending.some((p) => p.status === "uploading");
+  const ready = pending.filter((p) => p.status === "ready");
+  function addFiles(files: File[], pasted = false) {
+    if (!files.length || chat.archived) return;
+    setError("");
+    let count = pending.length;
+    for (const original of files) {
+      const file = pasted
+        ? new File([original], pastedName(original, new Date()), {
+            type: original.type,
+          })
+        : original;
+      const refused = attachmentError(file, count);
+      if (refused) {
+        setError(refused);
+        continue;
+      }
+      count++;
+      const key = nextKey.current++;
+      setPending((list) => [...list, { key, file, status: "uploading" }]);
+      void uploadAttachment(chat.id, file).then(
+        (attachment) =>
+          setPending((list) =>
+            list.map((p) =>
+              p.key === key ? { ...p, status: "ready", attachment } : p,
+            ),
+          ),
+        (e: unknown) =>
+          setPending((list) =>
+            list.map((p) =>
+              p.key === key
+                ? {
+                    ...p,
+                    status: "failed",
+                    error: e instanceof Error ? e.message : String(e),
+                  }
+                : p,
+            ),
+          ),
+      );
+    }
+  }
+  function removePending(key: number) {
+    const item = pending.find((p) => p.key === key);
+    setPending((list) => list.filter((p) => p.key !== key));
+    if (item?.attachment)
+      void api(
+        `chats/${chat.id}/attachments/${item.attachment.id}/remove`,
+        {},
+      ).catch(() => {
+        /* an unsent upload is forgotten by the service after a day anyway */
+      });
+  }
+  function dragOver(event: DragEvent) {
+    if (!hasFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    if (!dragging) setDragging(true);
+  }
+  function drop(event: DragEvent) {
+    if (!hasFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    setDragging(false);
+    addFiles(transferFiles(event.dataTransfer));
+  }
   // Stable per chat so memoised entries do not re-render on every streamed
   // chunk of another message.
   const onFile = useCallback(
@@ -118,10 +197,16 @@ export function Conversation({
   }, [chat, requests.length]);
   async function send(event: FormEvent) {
     event.preventDefault();
-    if (!text.trim() || busy) return;
+    const attachments = ready.map((p) => p.attachment!.id);
+    if ((!text.trim() && !attachments.length) || busy || uploading) return;
     setBusy(true);
     setError("");
-    const message = messageAttempt(attempted.current, text.trim(), newID);
+    const message = messageAttempt(
+      attempted.current,
+      text.trim(),
+      newID,
+      attachments,
+    );
     attempted.current = message;
     try {
       localStorage.setItem(key + ":attempt", JSON.stringify(message));
@@ -130,6 +215,7 @@ export function Conversation({
       await api(`chats/${chat.id}/message`, message);
       lastTyping.current = 0;
       setText("");
+      setPending([]);
       attempted.current = undefined;
       try {
         localStorage.removeItem(key + ":attempt");
@@ -228,7 +314,16 @@ export function Conversation({
           )}
         </div>
       </div>
-      <form className="composer-wrap" onSubmit={send}>
+      <form
+        className="composer-wrap"
+        onSubmit={send}
+        onDragOver={dragOver}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node))
+            setDragging(false);
+        }}
+        onDrop={drop}
+      >
         {error && (
           <p className="error" role="alert">
             {error}
@@ -242,16 +337,27 @@ export function Conversation({
             </>
           )}
         </p>
-        <div className="composer">
+        <div className={`composer${dragging ? " dragging" : ""}`}>
+          <ComposerAttachments items={pending} onRemove={removePending} />
           <textarea
             aria-label="Message agent"
             placeholder={
-              chat.archived ? "This chat is archived" : "Message your agent…"
+              chat.archived
+                ? "This chat is archived"
+                : dragging
+                  ? "Drop files to attach them"
+                  : "Message your agent…"
             }
             value={text}
             onChange={(e) => {
               setText(e.target.value);
               if (e.target.value) reportTyping();
+            }}
+            onPaste={(e) => {
+              const files = transferFiles(e.clipboardData);
+              if (!files.length) return;
+              e.preventDefault();
+              addFiles(files, true);
             }}
             disabled={busy || chat.archived}
             rows={3}
@@ -290,6 +396,26 @@ export function Conversation({
               </span>
             </span>
             <div>
+              <input
+                ref={picker}
+                type="file"
+                multiple
+                hidden
+                onChange={(e) => {
+                  addFiles(Array.from(e.target.files || []));
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                className="ghost icon"
+                aria-label="Attach files"
+                title="Attach files (or paste, or drop them here)"
+                disabled={busy || chat.archived}
+                onClick={() => picker.current?.click()}
+              >
+                <Paperclip size={16} />
+              </button>
               {running && (
                 <button
                   type="button"
@@ -304,7 +430,8 @@ export function Conversation({
                 className="send-button"
                 aria-label="Send message"
                 disabled={
-                  !text.trim() ||
+                  (!text.trim() && !ready.length) ||
+                  uploading ||
                   busy ||
                   !live ||
                   chat.archived ||

@@ -51,6 +51,8 @@ type Request struct {
 	Directory       string   `json:"directory,omitempty"`
 	Args            []string `json:"args,omitempty"`
 	Expected        string   `json:"expected,omitempty"`
+	// Bytes is the content an attachment-write puts into the sandbox.
+	Bytes []byte `json:"bytes,omitempty"`
 }
 type Response struct {
 	PublishPlan       *RepositoryPublishPlan `json:"publishPlan,omitempty"`

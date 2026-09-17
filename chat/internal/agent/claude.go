@@ -40,7 +40,9 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		go func() {
 			defer close(commands)
 			scan := bufio.NewScanner(bridge)
-			scan.Buffer(make([]byte, 65536), 8<<20)
+			// Commands come from the chat service; a turn's input may carry a
+			// few images as base64.
+			scan.Buffer(make([]byte, 65536), 32<<20)
 			for scan.Scan() {
 				var f Frame
 				if json.Unmarshal(scan.Bytes(), &f) != nil {
@@ -115,7 +117,17 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 					}
 					content := []any{}
 					for _, v := range Array(f.Params["input"]) {
-						content = append(content, map[string]any{"type": "text", "text": String(Map(v)["text"])})
+						item := Map(v)
+						if String(item["type"]) != "localImage" {
+							content = append(content, map[string]any{"type": "text", "text": String(item["text"])})
+							continue
+						}
+						// The CLI runs in the sandbox but this adapter does not, so an
+						// image comes with its bytes (a normalised PNG); without them the
+						// path in the text is all Claude gets, and it can read the file.
+						if data := String(item["data"]); data != "" {
+							content = append(content, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": data}})
+						}
 					}
 					_ = cli.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil})
 				case "":

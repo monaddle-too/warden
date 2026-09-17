@@ -186,3 +186,49 @@ func TestClaudeTextBlocksAroundToolsAreSeparateItems(t *testing.T) {
 		}
 	}
 }
+
+// An image attachment reaches Claude as an image content block when its
+// bytes came along; a path-only localImage adds nothing (the text names it).
+func TestClaudeTurnInputImages(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	raw, fake := net.Pipe()
+	defer fake.Close()
+	user := make(chan map[string]any, 1)
+	go func() {
+		d := json.NewDecoder(fake)
+		e := json.NewEncoder(fake)
+		var v map[string]any
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
+		for d.Decode(&v) == nil {
+			if v["type"] == "user" {
+				user <- v
+				return
+			}
+		}
+	}()
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(*Client, Frame) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err = c.Call(ctx, "thread/start", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	input := []any{map[string]any{"type": "text", "text": "see"}, map[string]any{"type": "localImage", "path": "/w/a.png", "data": "aGk="}, map[string]any{"type": "localImage", "path": "/w/b.png"}}
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"input": input}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case v := <-user:
+		content := Array(Map(v["message"])["content"])
+		if len(content) != 2 || Map(content[0])["text"] != "see" || Map(content[1])["type"] != "image" || Map(Map(content[1])["source"])["data"] != "aGk=" || Map(Map(content[1])["source"])["media_type"] != "image/png" {
+			t.Fatalf("%v", content)
+		}
+	case <-ctx.Done():
+		t.Fatal("no user message reached the CLI")
+	}
+}

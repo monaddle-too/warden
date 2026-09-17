@@ -14,6 +14,37 @@ describe("uncertain message delivery", () => {
       "b".repeat(32),
     );
   });
+  it("treats a change of attachments as a new message", () => {
+    const files = ["c".repeat(32), "d".repeat(32)];
+    const sent = messageAttempt(undefined, "Look", () => "a".repeat(32), files);
+    expect(sent).toEqual({
+      id: "a".repeat(32),
+      text: "Look",
+      attachments: files,
+    });
+    expect(messageAttempt(sent, "Look", () => "b".repeat(32), files)).toBe(
+      sent,
+    );
+    expect(
+      messageAttempt(sent, "Look", () => "b".repeat(32), [files[0]]).id,
+    ).toBe("b".repeat(32));
+    expect(messageAttempt(sent, "Look", () => "b".repeat(32)).id).toBe(
+      "b".repeat(32),
+    );
+    const recovered = readAttempt(
+      { getItem: () => JSON.stringify(sent) },
+      "draft",
+    );
+    expect(recovered).toEqual(sent);
+    expect(
+      readAttempt(
+        {
+          getItem: () => JSON.stringify({ ...sent, attachments: ["../x", 5] }),
+        },
+        "draft",
+      ),
+    ).toEqual({ id: sent.id, text: "Look" });
+  });
   it("tolerates corrupt or unavailable draft storage", () => {
     expect(readAttempt({ getItem: () => "{bad" }, "draft")).toBeUndefined();
     expect(

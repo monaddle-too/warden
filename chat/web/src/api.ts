@@ -1,4 +1,4 @@
-import type { State } from "./types";
+import type { Attachment, State } from "./types";
 const key = "warden-chat-session";
 let token = "";
 try {
@@ -28,6 +28,18 @@ export function remoteSession(
   if (user) me = { principalID: user.sub, email: user.email, name: user.name };
 }
 export const signedIn = () => !!token || !!remoteCSRF;
+const credentials = () => ({
+  ...(token ? { Authorization: "Bearer " + token } : {}),
+  ...(remoteCSRF ? { "X-Warden-CSRF": remoteCSRF } : {}),
+});
+async function failure(response: Response) {
+  const text = await response.text();
+  try {
+    return new Error(JSON.parse(text).error || text);
+  } catch {
+    return new Error(text);
+  }
+}
 export async function api<T = unknown>(
   path: string,
   body?: unknown,
@@ -35,22 +47,48 @@ export async function api<T = unknown>(
   const response = await fetch("/api/" + path, {
     method: body === undefined ? "GET" : "POST",
     headers: {
-      ...(token ? { Authorization: "Bearer " + token } : {}),
-      ...(remoteCSRF ? { "X-Warden-CSRF": remoteCSRF } : {}),
+      ...credentials(),
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (!response.ok) {
-    const text = await response.text();
-    try {
-      throw new Error(JSON.parse(text).error || text);
-    } catch (error) {
-      if (error instanceof SyntaxError) throw new Error(text);
-      throw error;
-    }
-  }
+  if (!response.ok) throw await failure(response);
   return response.json();
+}
+
+/* One file for the composer: multipart, answered with the stored record
+   whose ID the message then names. */
+export async function uploadAttachment(
+  chatID: string,
+  file: File,
+): Promise<Attachment> {
+  const body = new FormData();
+  body.append("file", file, file.name);
+  const response = await fetch(
+    `/api/chats/${encodeURIComponent(chatID)}/attachments`,
+    { method: "POST", headers: credentials(), body },
+  );
+  if (!response.ok) throw await failure(response);
+  return response.json();
+}
+
+/* The service's copy of an attachment. Images are PNGs it normalised, so
+   the same content-type check as imageBlob keeps anything else out of an
+   <img>; files come back as blobs for a download link. */
+export async function attachmentBlob(
+  chatID: string,
+  id: string,
+  kind: Attachment["kind"],
+): Promise<Blob> {
+  const response = await fetch(
+    `/api/chats/${encodeURIComponent(chatID)}/attachments/${encodeURIComponent(id)}`,
+    { headers: credentials() },
+  );
+  if (!response.ok) throw new Error("Attachment unavailable");
+  const type = response.headers.get("Content-Type");
+  if (kind === "image" && type !== "image/png")
+    throw new Error("Image unavailable");
+  return response.blob();
 }
 export async function subscribe(
   signal: AbortSignal,

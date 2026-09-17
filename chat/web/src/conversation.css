@@ -380,6 +380,62 @@
   font-size: 12px;
   color: var(--muted);
 }
+
+/* Attachments: chips above the composer's text while they upload, a
+   dashed accent border while files are dragged over, and thumbnails or
+   file chips beneath the sent message. */
+.composer.dragging {
+  border-style: dashed;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px 0;
+}
+.attachment-chip {
+  height: 30px;
+  padding: 0 6px 0 8px;
+}
+.attachment-chip > span:first-of-type {
+  color: var(--text);
+}
+.attachment-chip .attachment-thumb {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.attachment-chip .attachment-remove {
+  width: 22px;
+  height: 22px;
+  margin-right: -2px;
+}
+.attachment-chip.failed {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+button.attachment-chip {
+  cursor: pointer;
+}
+.entry-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+.message-body .rich-text + .entry-attachments {
+  margin-top: 6px;
+}
+.entry-attachments .attachment-image {
+  margin: 0;
+}
+.entry-attachments .attachment-image img {
+  max-height: 240px;
+}
 @media (max-width: 650px) {
   .conversation-scroll {
     padding: 20px 16px 8px;

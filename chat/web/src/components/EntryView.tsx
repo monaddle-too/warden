@@ -3,6 +3,7 @@ import { memo, useMemo } from "react";
 import { Bot, ChevronRight, FileText, LoaderCircle, User } from "lucide-react";
 import { hasDiff, parseDiff } from "../diff";
 import type { Entry } from "../types";
+import { EntryAttachments } from "./Attachments";
 import { DiffView } from "./DiffView";
 import { ImageAttachment } from "./ImageAttachment";
 import { RichText } from "./RichText";
@@ -119,12 +120,17 @@ export const EntryView = memo(function EntryView({
       <article className="message message-user">
         {header}
         <div className="message-body">
-          <RichText
-            text={entry.text}
-            chatID={chatID}
-            entryID={entry.id}
-            onFile={onFile}
-          />
+          {entry.text && (
+            <RichText
+              text={entry.text}
+              chatID={chatID}
+              entryID={entry.id}
+              onFile={onFile}
+            />
+          )}
+          {!!entry.attachments?.length && (
+            <EntryAttachments chatID={chatID} attachments={entry.attachments} />
+          )}
         </div>
       </article>
     );

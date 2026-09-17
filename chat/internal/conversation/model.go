@@ -26,6 +26,22 @@ type Entry struct {
 	CreatedAt   float64 `json:"createdAt"`
 	IsStreaming bool    `json:"isStreaming"`
 	Delivery    string  `json:"delivery"`
+	// Attachments are the files the sender added to a user message. Each
+	// is written into the sandbox workspace at Path when the message is
+	// delivered; the chat service keeps its own copy for the transcript.
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment is one file sent with a user message. Kind is "image" for a
+// PNG/JPEG (stored and delivered as an imageguard-normalised PNG) and
+// "file" for anything else. Name is the sender's file name, for display
+// only; Path is where the agent finds the file, relative to the workspace.
+type Attachment struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+	Size int64  `json:"size"`
 }
 
 func ID() string {

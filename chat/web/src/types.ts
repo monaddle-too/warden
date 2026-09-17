@@ -7,6 +7,17 @@ export type Entry = {
   isStreaming: boolean;
   delivery: string;
   sender?: { email?: string; name?: string; principalID: string };
+  attachments?: Attachment[];
+};
+/* A file sent with a user message: `kind` is "image" for a PNG/JPEG the
+   service normalised to PNG, "file" for anything else; `path` is where the
+   agent finds it in the workspace. */
+export type Attachment = {
+  id: string;
+  name: string;
+  path: string;
+  kind: "image" | "file";
+  size: number;
 };
 export type Question = {
   id: string;

@@ -87,6 +87,13 @@ func (e *Engine) workspaceImage(ctx context.Context, c *Chat, path string) ([]by
 	if len(result.Bytes) > 8<<20 {
 		return nil, errors.New("image too large")
 	}
+	return e.normalizeImage(ctx, result.Bytes)
+}
+
+// normalizeImage re-encodes an untrusted PNG/JPEG as PNG in a separate,
+// memory-capped process (imageguard); every image shown in the transcript
+// or sent to an agent passes through here.
+func (e *Engine) normalizeImage(ctx context.Context, raw []byte) ([]byte, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -96,7 +103,7 @@ func (e *Engine) workspaceImage(ctx context.Context, c *Chat, path string) ([]by
 	cmd := exec.CommandContext(ctx, exe, "serve", "--normalize-image")
 	cmd.Env = []string{"GOMEMLIMIT=96MiB", "GOMAXPROCS=1"}
 	cmd.Dir = "/tmp"
-	cmd.Stdin = bytes.NewReader(result.Bytes)
+	cmd.Stdin = bytes.NewReader(raw)
 	var out imageOutput
 	cmd.Stdout = &out
 	if err = cmd.Run(); err != nil {

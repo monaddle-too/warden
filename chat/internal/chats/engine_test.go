@@ -30,6 +30,7 @@ type fakeWorker struct {
 	steal       bool
 	rejectSteer bool
 	turns       int
+	inputs      [][]any // the input items of every turn/start and turn/steer
 }
 
 func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
@@ -88,9 +89,13 @@ func (f *fakeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWriteC
 			case "turn/start":
 				f.mu.Lock()
 				f.turns++
+				f.inputs = append(f.inputs, agent.Array(frame.Params["input"]))
 				f.mu.Unlock()
 				result = map[string]any{"turn": map[string]any{"id": "turn-one", "status": "inProgress"}}
 			case "turn/steer":
+				f.mu.Lock()
+				f.inputs = append(f.inputs, agent.Array(frame.Params["input"]))
+				f.mu.Unlock()
 				if f.rejectSteer {
 					f.send(map[string]any{"id": frame.ID, "error": map[string]any{"code": -32000, "message": "turn completed before steering"}})
 					continue

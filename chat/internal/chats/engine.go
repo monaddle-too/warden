@@ -248,13 +248,15 @@ func (e *Engine) Message(id, text, messageID string) error {
 
 // MessageFrom appends a user message attributed to actor (the person the
 // edge identified, or the owner) and clears that person's typing indicator.
-func (e *Engine) MessageFrom(id, text, messageID string, actor cv.Actor) error {
+// attachments names uploads (storeAttachment) the message sends along; a
+// message may be attachments alone.
+func (e *Engine) MessageFrom(id, text, messageID string, actor cv.Actor, attachments ...string) error {
 	if actor.PrincipalID == "" {
 		actor.PrincipalID = "owner"
 	}
 	defer e.stopTyping(id, actor.PrincipalID)
 	text = strings.TrimSpace(text)
-	if text == "" || len(text) > 128<<10 || len(messageID) != 32 {
+	if text == "" && len(attachments) == 0 || len(text) > 128<<10 || len(messageID) != 32 {
 		return errors.New("valid message and message ID required")
 	}
 	err := e.Store.update(func(st *State) error {
@@ -276,11 +278,16 @@ func (e *Engine) MessageFrom(id, text, messageID string, actor cv.Actor) error {
 		if c.Archived || c.Status == "stopping" {
 			return errors.New("chat is archived or stopping")
 		}
+		files, err := e.claimAttachments(c, attachments)
+		if err != nil {
+			return err
+		}
 		v := cv.NewEntry("user", text)
 		v.ID = messageID
 		sender := actor
 		v.Sender = &sender
 		v.Delivery = "queued"
+		v.Attachments = files
 		c.Conversation.Entries = append(c.Conversation.Entries, v)
 		if c.Status != "running" && c.Status != "queued" {
 			// A live resident session picks the message up under its own run ID;
@@ -677,7 +684,11 @@ func (e *Engine) run(parent context.Context, id string) {
 		err = errors.New("no pending message")
 		return
 	}
-	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": input(*message)})
+	var items []any
+	if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
+		return
+	}
+	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 	if err != nil {
 		return
 	}
@@ -691,7 +702,7 @@ func (e *Engine) run(parent context.Context, id string) {
 		return
 	}
 	for {
-		if err = e.turn(ctx, id, &current, client, frames, threadID, turnID, turn); err != nil || !a.resident {
+		if err = e.turn(ctx, id, &current, client, frames, threadID, turnID, prep.Directory, turn); err != nil || !a.resident {
 			return
 		}
 		// The turn finished but the session stays open: settle the transcript,
@@ -701,7 +712,10 @@ func (e *Engine) run(parent context.Context, id string) {
 		if message == nil {
 			return // released, timed out, stopped or ended by the worker: a clean end
 		}
-		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": input(*message)})
+		if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
+			return
+		}
+		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 		if err != nil {
 			return
 		}
@@ -720,7 +734,7 @@ func (e *Engine) run(parent context.Context, id string) {
 // turn drives one agent turn to completion. It returns nil once the turn
 // completed and an error when it failed, the run was cancelled or the agent
 // stream ended.
-func (e *Engine) turn(ctx context.Context, id string, current *Chat, client *agent.Client, frames chan agent.Frame, threadID, turnID string, turn map[string]any) error {
+func (e *Engine) turn(ctx context.Context, id string, current *Chat, client *agent.Client, frames chan agent.Frame, threadID, turnID, cwd string, turn map[string]any) error {
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -757,7 +771,11 @@ func (e *Engine) turn(ctx context.Context, id string, current *Chat, client *age
 				return err
 			}
 			if message != nil {
-				result, callErr := client.Call(ctx, "turn/steer", map[string]any{"threadId": threadID, "expectedTurnId": turnID, "clientUserMessageId": message.ID, "input": input(*message)})
+				items, err := e.input(ctx, current, cwd, *message)
+				if err != nil {
+					return err
+				}
+				result, callErr := client.Call(ctx, "turn/steer", map[string]any{"threadId": threadID, "expectedTurnId": turnID, "clientUserMessageId": message.ID, "input": items})
 				if callErr == nil && agent.String(result["turnId"]) == turnID {
 					if err = e.confirm(id, message.ID, turnID); err != nil {
 						return err
@@ -882,9 +900,6 @@ func (e *Engine) resume(id string) (*cv.Entry, error) {
 		return nil
 	})
 	return message, err
-}
-func input(m cv.Entry) []any {
-	return []any{map[string]any{"type": "text", "text": m.Text, "text_elements": []any{}}}
 }
 func (e *Engine) attempt(id, turn string) (*cv.Entry, error) {
 	var message *cv.Entry

@@ -118,6 +118,9 @@ func Open(root string) (*Store, error) {
 	return s, nil
 }
 func (s *Store) Close() { s.unlock() }
+
+// dir is the private state directory; attachments live beside chats.json.
+func (s *Store) dir() string { return filepath.Dir(s.path) }
 func (s *Store) save() error {
 	b, err := json.Marshal(s.state)
 	if err != nil {
