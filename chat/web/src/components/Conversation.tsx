@@ -1,5 +1,6 @@
 // Panta's transcript/composer layout adapted to Warden's standalone API.
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -59,6 +60,14 @@ export function Conversation({
   const [text, setText] = useState(() => draft(key));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Stable per chat so memoised entries do not re-render on every streamed
+  // chunk of another message.
+  const onFile = useCallback(
+    (href: string) => {
+      void downloadFile(chat.id, href).catch((e) => setError(String(e)));
+    },
+    [chat.id],
+  );
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const attempted = useRef<Attempt | undefined>(
@@ -174,11 +183,7 @@ export function Conversation({
                 chatID={chat.id}
                 key={item.entry.id}
                 entry={item.entry}
-                onFile={(href) => {
-                  void downloadFile(chat.id, href).catch((e) =>
-                    setError(String(e)),
-                  );
-                }}
+                onFile={onFile}
               />
             ),
           )}

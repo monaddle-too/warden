@@ -1,7 +1,9 @@
 // Pure helpers behind the fenced code block in RichText. They work on the
 // hast node react-markdown hands the `pre` override, so the block can read
 // its own language and text without a second parse of the markdown.
-export type HastNode = {
+import type { Positioned } from "./streaming";
+
+export type HastNode = Positioned & {
   type: string;
   tagName?: string;
   value?: string;

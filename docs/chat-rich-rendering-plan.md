@@ -46,7 +46,7 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
 | 3 | Inline images in markdown | done | `![alt](relative/path)` → new `GET chats/{id}/image-file?path=` (worker `image-file` op + the same imageguard subprocess as `attach_image`, shared as `Engine.workspaceImage`; nothing stored, PNG served with the images route's headers); `InlineImage.tsx` shows a thumbnail that opens `Lightbox.tsx` (also used by `ImageAttachment`); `images.ts` accepts only plain relative paths (no scheme, host, absolute or `..`), so `http(s)`, `data:` and the rest stay as alt text; fetches are shared per (chat, entry, path) and capped at 3 in flight |
 | 4 | Diff rendering | done | `diff.ts` finds unified diffs in any text (git `diff` lines, `---`/`+++` pairs that lead to a hunk, bare `@@` hunks) and keeps the prose around them; `DiffView.tsx` shows a header per file (path, new/deleted/renamed/binary, +/− counts), a fold button per hunk (long hunks start folded), +/- rows on the `--add-*`/`--del-*` tokens, numbers and marks as CSS content so a selection copies only the code. Activity `detail` switches to it when a real hunk is found (Codex `fileChange`, a `git diff` an agent ran); ```` ```diff ````/```` ```patch ```` fences always, falling back to prefix colouring for hand-written diffs without hunk headers. Text nodes only, no fetch surface |
 | 5 | Math | done | `remark-math` + `rehype-katex` with KaTeX and its CSS in one lazy chunk (`katex.ts`), loaded only when `math.ts` `hasMath` finds display math, a ```` ```math ```` fence or Pandoc-style inline math, so "$5 and $10" in a message without math is left alone; `KATEX_OPTIONS`: `trust: false` (no `\href`/`\url`/`\includegraphics`/`\html*`, they render as errors), `throwOnError: false`, `strict: "ignore"`, `maxSize` 10 em, `maxExpand` 1000, error colour on the danger token; KaTeX output reaches React as hast, never `innerHTML`; wide display math scrolls in its line |
-| 6 | Streaming-safe rendering | pending | while `entry.isStreaming`: close an unterminated fence for display, defer Mermaid/KaTeX; no flicker of half-parsed tables |
+| 6 | Streaming-safe rendering | done | `streaming.ts`: while `entry.isStreaming`, `displayText` holds back the tail lines whose reading is not settled (a fence opener until its info string ends, a closing fence in progress, a pipe line until its newline, a would-be table header until its delimiter row is complete), so a table never shows as a paragraph first and a row appears whole; an unterminated fence needs no closing (CommonMark runs it to the end) but `touchesEnd` tells the block that reaches the end of the text from a settled one, so Mermaid waits only for its own fence to close (not for the whole message) and `holdOpenMath` (a remark plugin, added only while streaming) shows a formula that reaches the end as its source instead of a KaTeX error; an open fence never folds and stays expanded once it closes. Also fixed two remount bugs that made every block flicker on every chunk: the `components` map in `RichText.tsx` was rebuilt per render (a new component type to React, so every `CodeBlock` remounted and lost its state and diagram) and `Conversation.tsx` passed a fresh `onFile` to every memoised `EntryView` |
 | 7 | Composer attachments: paste / drag-drop / picker for images and files | pending | backend: `POST chats/{id}/attachments` (multipart, ≤ 8 MiB) writes the file into the sandbox workspace under `.warden/attachments/<id>.<ext>` via a new worker op; images also go through imageguard and become an `image` entry; the turn input carries the path (and a `localImage` / image content block for image-capable providers); front-end chips in the composer with remove buttons |
 | 8 | Edit-and-resend / retry last message | pending | user entry hover actions; retry re-sends the same text with a new ID; edit prefills the composer |
 | 9 | Copy message as markdown, export chat (markdown + JSON) | pending | per-message copy button; chat menu "Export…" builds the file client-side from `chat.conversation` |
@@ -117,6 +117,27 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
   `\htmlStyle{background:url(…)}` and `\textcolor{url(…)}` produced no
   `<a>`, no `<img>` and no request, `\rule{10000em}` was capped, a macro
   bomb hit `maxExpand` and rendered as its source.
+- Streaming is settled by position, not by holding the whole message.
+  CommonMark already closes an unterminated fence or `$$` block at the end
+  of the text, so nothing is appended (a closer appended at column 0 would
+  open a new empty fence after a fence inside a list or quote). Instead a
+  block whose `position.end.offset` reaches the end of the rendered text is
+  "open": Mermaid renders a closed fence while the rest of the message is
+  still streaming, and an open `$$`/`$…$` stays as its source (the
+  `holdOpenMath` remark plugin runs after remark-math, so the rest of the
+  message keeps its math). Only the lines that would flicker through a wrong
+  reading are held back, so text still appears as it arrives: a pipe line
+  waits for its newline because micromark reads `| a | b |` + `|---|-` as a
+  table the moment the delimiter row has enough cells and as a paragraph
+  before, and a fence opener waits for its newline because every character
+  of its info string is a different language. The holds are regex
+  heuristics over the tail; a wrong guess only delays a line, never changes
+  how it parses. Two pre-existing remount bugs surfaced in the browser
+  probe and were fixed here because they defeat every other streaming
+  measure: the `components` map handed to react-markdown must be the same
+  object across renders (a new inline `pre` function is a new component
+  type, so React remounted every block on every chunk), and the memoised
+  `EntryView` needs a stable `onFile`.
 - Attachments live in the sandbox (the agent reads them like any file)
   rather than in a host-side store, so nothing new needs sharing policy.
 
@@ -129,3 +150,4 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
 - 2026-09-17: step 3 done — "Show workspace images inline in the transcript" (`InlineImage.tsx`, `Lightbox.tsx`, `images.ts`, `chats/{id}/image-file`; main chunk 463.8 → 466.4 kB; verified in a browser that remote, `data:` and `..` sources stay as alt text and no request leaves for them).
 - 2026-09-17: step 4 done — "Render unified diffs in activity detail and diff fences" (`DiffView.tsx`, `diff.ts`; no lazy chunk needed, main chunk 466.4 → 471.1 kB; verified in a browser in light and dark that an `<img>` in a diff line stays text and nothing is fetched).
 - 2026-09-17: step 5 done — "Render math with remark-math and KaTeX" (`math.ts`, `katex.ts`; KaTeX and its stylesheet are lazy chunks of 259 + 11 kB JS and 29 kB CSS, main chunk 471.1 → 471.6 kB; verified in a browser in light and dark that trusted-only commands render as errors and nothing is fetched).
+- 2026-09-17: step 6 done — "Keep streamed messages from flickering while they render" (`streaming.ts`, `streaming.test.ts`; no new chunk, main chunk 471.6 → 473.3 kB; verified in a browser with a chunked probe that a table never renders as a paragraph, rows and fence openers appear whole, a diagram renders as soon as its fence closes and stays, open math never shows a KaTeX error, and a long open fence does not fold).

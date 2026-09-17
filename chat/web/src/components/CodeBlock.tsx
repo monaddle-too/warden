@@ -28,11 +28,12 @@ import { MermaidDiagram, useMermaid } from "./Mermaid";
    ```diff fence a coloured diff whose hunks fold on their own. */
 export function CodeBlock({
   node,
-  streaming,
+  open,
   children,
 }: {
   node?: HastNode;
-  streaming?: boolean;
+  /* Set while the fence is still being written (see `touchesEnd`). */
+  open?: boolean;
   children?: ReactNode;
 }) {
   const code = codeChild(node);
@@ -45,9 +46,9 @@ export function CodeBlock({
   const [source, setSource] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
-  // While the entry streams the fence may still be open, so the diagram waits
-  // for the final text; the source stays visible until it renders.
-  const diagram = useMermaid(text, isMermaidFence(language) && !streaming);
+  // An open fence may still grow, so the diagram waits for the final text;
+  // the source stays visible until it renders.
+  const diagram = useMermaid(text, isMermaidFence(language) && !open);
   const svg = source ? undefined : diagram?.svg;
   // The parse is line-by-line string work, safe on a fence that is still
   // streaming; the last hunk simply grows.
@@ -55,8 +56,14 @@ export function CodeBlock({
     () => (isDiffFence(language) ? fenceDiff(text) : undefined),
     [language, text],
   );
-  const collapsible = lines > COLLAPSE_LINES && !svg && !diff;
+  // A fence that is still being written never folds (the reader is watching
+  // its tail arrive), and one that grew past the limit while open stays
+  // expanded once it closes rather than snapping shut.
+  const collapsible = lines > COLLAPSE_LINES && !svg && !diff && !open;
   const collapsed = collapsible && !expanded;
+  useEffect(() => {
+    if (open && lines > COLLAPSE_LINES) setExpanded(true);
+  }, [open, lines]);
   const copy = () => {
     // The clipboard is unavailable outside secure contexts; the button then
     // simply stays "Copy" and the user selects the text by hand.
