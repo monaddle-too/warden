@@ -1,10 +1,10 @@
 # Warden on Kubernetes
 
-Status: implemented on the dev cluster, September 17, 2026. Steps 0 to 8
-are done and verified live; what remains is the owner's: a real cluster
-for public previews (step 9), the Google Docs consent in the cluster's
-Admin console, the Kata rows on a host with real KVM, and the first chart
-publication (step 10). Branch `plan/warden-kubernetes`, started from
+Status: implemented, September 17, 2026. Steps 0 to 8 are done and
+verified on the dev cluster; step 9 (public previews) is done live on a
+GKE Autopilot cluster; what remains is the owner's: the Google Docs
+consent in the cluster's Admin console, the Kata rows on a host with real
+KVM, and the first chart publication (step 10). Branch `plan/warden-kubernetes`, started from
 origin/main a45aeaf (v0.1.0-alpha.8), not pushed. This document records
 the inventory, decisions, work, the development environment and progress.
 
@@ -751,7 +751,7 @@ Decisions this changes:
       `TestKubernetes` PASS in 209 s, every flow and all eleven adversarial
       rows under gVisor. Kata rows: deferred to a host with real KVM
       (decision 15, spike results); the suite runs unchanged there.
-- [~] 9 Public-preview mode with an Ingress and cert-manager on a real
+- [x] 9 Public-preview mode with an Ingress and cert-manager on a real
       cluster (Owner: which cluster; the OVH server with k3s alongside the
       Compose install is the cheapest, a managed cluster with gVisor nodes
       the most representative). 2026-09-17: the chart's public mode
@@ -774,9 +774,31 @@ Decisions this changes:
       images are built in the dev VM under QEMU user emulation (proven: the
       server image in 58 s and the guest base image in about two minutes
       cold; Ubuntu's qemu-user-static 8.2 segfaulted in the runtimes'
-      installer, the binfmt image's QEMU 10.2 does not). The gcloud side
-      is unexecuted here (no gcloud, no project on this machine); what the
-      owner supplies is listed in the guide and in Handoff 4.
+      installer, the binfmt image's QEMU 10.2 does not).
+      2026-09-17 (done): live on GKE Autopilot in the Monaddle project,
+      `https://cloud.warden.monaddle.com` (a zone delegated from
+      Squarespace to Cloud DNS). Verified in the owner's browser: Google
+      sign-in through ingress-nginx with a Let's Encrypt production
+      wildcard certificate; a Codex turn in a GKE Sandbox pod (gVisor
+      kernel 4.4.0, uid 1000, sudo works, 2 CPU / 1536 MiB, the pinned
+      amd64 digest from Artifact Registry) through the shared gateway;
+      `preview_attach` → owner approval → the page served at
+      `https://<binding>.cloud.warden.monaddle.com/`; an anonymous request
+      gets the sign-in redirect; unpublish → 410. The canary proof passed
+      on a real GKE Sandbox node. Found and fixed on the way (all
+      committed): cert-manager's leader election must leave kube-system on
+      Autopilot; `kubeVersion` must be `>=1.30.0-0` for GKE's suffixed
+      versions; Autopilot's NodeLocal DNSCache (169.254.20.10) needs the
+      new `networkPolicy.dns.cidr` or the service pods have no DNS; the
+      Cloud DNS issuer needs `hostedZoneName` or cert-manager backs off
+      for half an hour after finding the parent zone; `warmSpares: 0` was
+      read as 1 by the config merge; Spot capacity ran out in us-central1
+      (Spot is opt-in); the project's SSD quota (500 GB, node boot disks
+      count) blocked the gVisor node until raised to 2000 GB. Not covered
+      here: the e2e suite in Google mode (it signs in with the owner
+      capability, which only owner mode mints; the suite's rows were run
+      on the dev cluster) — a follow-up would let the harness act as the
+      edge with the edge's client certificate.
 - [~] 10 Documentation and chart release (work item 9). Docs merged
       12b489e (`docs/warden-kubernetes.md`, chart README, architecture and
       README links); chart publishing merged 9a7a8b1 (`release.yml`
@@ -915,18 +937,13 @@ the repository and in the chart values.
    real KVM (the OVH server with k3s, or a bare-metal node) and run the
    suite there; under nested virtualization on this Mac Kata works but
    half its boots stall for minutes.
-4. Public previews (step 9), on GKE Autopilot with `scripts/k8s-gke.sh`
-   (guide, "A real cluster: GKE Autopilot with public previews"). Yours to
-   supply, in `deploy/k8s/gke/env`: a Google Cloud project with billing and
-   `gcloud` signed in (`brew install --cask google-cloud-sdk`, `gcloud auth
-   login`, `gcloud components install gke-gcloud-auth-plugin`); the
-   hostname (`WARDEN_GKE_DOMAIN`, for example a name under monaddle.com,
-   whose DNS is at Squarespace: after `up`, add the NS records `dns`
-   prints there); a Google sign-in web client ID with `https://<domain>`
-   as an authorized JavaScript origin (`WARDEN_GKE_CLIENT_ID`). Then `up`,
-   `dns`, `build-images`, `secrets`, `deploy`, sign in, and the suite with
-   `WARDEN_K8S_EDGE_URL=https://<domain>`. Start with
-   `WARDEN_GKE_ACME=staging`; `production` once the delegation resolves.
+4. Public previews (step 9): done, live at `https://cloud.warden.monaddle.com`
+   on GKE Autopilot in the Monaddle project (`scripts/k8s-gke.sh`, settings
+   in the git-ignored `deploy/k8s/gke/env`). The cluster costs about
+   $25-45 a month while it exists (service pods on demand, the ingress load
+   balancer, disks); `scripts/k8s-gke.sh park` scales the pods to zero and
+   `down` deletes the cluster (the zone, the delegation and the images
+   stay). The e2e suite does not run against Google mode (see step 9).
 5. Publish (step 10): tag a release; `release.yml` pushes
    `ghcr.io/monaddle-too/warden:<tag>`, the guest images and
    `oci://ghcr.io/monaddle-too/charts/warden`; without Actions minutes,
@@ -938,6 +955,15 @@ the repository and in the chart values.
 
 ## Progress
 
+- 2026-09-17 (later): step 9 done live on GKE Autopilot; details in the
+  step. The recipe survived its first real run with seven fixes, all
+  committed on the branch; the biggest lesson is that Autopilot differs
+  from a plain cluster in exactly the places the chart touches (DNS through
+  a node-local cache, no leases in kube-system, node boot disks against
+  the SSD quota, Spot capacity that can be absent). The owner did the
+  parts that are theirs (billing, the quota request, the Squarespace
+  sign-in, the Google sign-in); the NS records and the OAuth origin were
+  entered through the owner's browser.
 - 2026-09-17 (evening): step 9's cluster chosen and its recipe written.
   Costing (us-central1 list prices, Hetzner and OVH after their 2026
   increases, Oracle's free tier after its June cut): GKE Autopilot at
