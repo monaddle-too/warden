@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -53,10 +54,22 @@ func openPrivate(path string, limit int64, description string) ([]byte, error) {
 var jwtShape = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$`)
 var accountShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$`)
 
-// CodexCredentials reads an existing host-owned Codex login.
+// CodexCredentials reads an existing host-owned Codex login from a
+// CredentialStore: Store and Name when set, else the private file at Path.
 type CodexCredentials struct {
 	Path  string
+	Store CredentialStore
+	Name  string
 	Clock Clock
+}
+
+// loadCredential reads a login through its store: the given store and
+// name, or the file store at path with the loader's limit and description.
+func loadCredential(store CredentialStore, name, path string, limit int64, description string) ([]byte, error) {
+	if store == nil {
+		store, name = FileCredentials{Limit: limit, Description: description}, path
+	}
+	return store.Load(context.Background(), name)
 }
 
 func (c *CodexCredentials) clock() float64 {
@@ -67,7 +80,7 @@ func (c *CodexCredentials) clock() float64 {
 }
 
 func (c *CodexCredentials) read() (token, account string, err error) {
-	raw, err := openPrivate(c.Path, 1024*1024, "Codex credential file")
+	raw, err := loadCredential(c.Store, c.Name, c.Path, 1024*1024, "Codex credential file")
 	if err != nil {
 		return "", "", err
 	}
@@ -143,10 +156,13 @@ func claudeTokenShape(s string) bool {
 	return boundedClass(s, 16, 4096, func(c byte) bool { return isAlnum(c) || c == '_' || c == '.' || c == '-' })
 }
 
-// ClaudeCredentials reads a host-owned Claude Code login; only the access
-// token reaches the gateway.
+// ClaudeCredentials reads a host-owned Claude Code login (Store and Name,
+// else the private file at Path); only the access token reaches the
+// gateway.
 type ClaudeCredentials struct {
 	Path  string
+	Store CredentialStore
+	Name  string
 	Clock Clock
 }
 
@@ -158,7 +174,7 @@ func (c *ClaudeCredentials) clock() float64 {
 }
 
 func (c *ClaudeCredentials) read() (string, error) {
-	raw, err := openPrivate(c.Path, 1024*1024, "Claude credential file")
+	raw, err := loadCredential(c.Store, c.Name, c.Path, 1024*1024, "Claude credential file")
 	if err != nil {
 		return "", err
 	}
