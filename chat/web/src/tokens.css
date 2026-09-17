@@ -48,6 +48,9 @@
   --code-type: #0e6b8a;
   --code-attr: #6b5a00;
 
+  --find-soft: #fbe7a1;
+  --find-current: #f0b23c;
+
   --radius: 8px;
   --radius-lg: 12px;
   --shadow: 0 1px 2px rgb(28 27 24 / 0.06), 0 8px 24px rgb(28 27 24 / 0.1);
@@ -95,6 +98,9 @@
     --code-title: #8fb0e0;
     --code-type: #6fc3d8;
     --code-attr: #d8c46a;
+
+    --find-soft: #4a3d12;
+    --find-current: #7a5410;
 
     --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px rgb(0 0 0 / 0.5);
     --ring: 0 0 0 3px rgb(217 122 69 / 0.35);

@@ -24,6 +24,57 @@
   padding-top: 12vh;
 }
 
+/* Find in chat: the bar above the transcript and the highlights it paints
+   over the rendered text (CSS Custom Highlight API; only colour and
+   decoration apply to a ::highlight). */
+.find-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px 6px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+}
+.find-bar input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  outline: none;
+  font-size: 14px;
+}
+.find-bar input:focus {
+  border-color: var(--line);
+  background: var(--bg);
+}
+.find-bar .find-count {
+  flex-shrink: 0;
+  min-width: 64px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.find-bar .find-count.none {
+  color: var(--danger);
+}
+.find-bar button {
+  width: 30px;
+  height: 30px;
+}
+::highlight(warden-find) {
+  background-color: var(--find-soft);
+  color: var(--text);
+}
+::highlight(warden-find-current) {
+  background-color: var(--find-current);
+  color: var(--text);
+}
+
 /* Messages */
 .message {
   display: flex;

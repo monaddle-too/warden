@@ -28,6 +28,7 @@ import type { Chat, Entry } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
 import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
+import { FindBar, isFindKey, type FindRequest } from "./FindBar";
 import { ModelSelect } from "./ModelSelect";
 
 /* An agent request that the owner answers from the transcript: document
@@ -63,11 +64,16 @@ export function Conversation({
   chat,
   live,
   requests = [],
+  find,
   onModel,
 }: {
   chat: Chat;
   live: boolean;
   requests?: RequestCard[];
+  /* Opens the find bar: from the header's button, or from the palette
+     with the entry to land on. A request for another chat is ignored, so
+     one made before a switch does not follow the reader. */
+  find?: FindRequest;
   onModel: (model: string) => Promise<unknown>;
 }) {
   const key = "warden-draft:" + location.origin + ":" + chat.id;
@@ -162,7 +168,33 @@ export function Conversation({
     [chat.id],
   );
   const scroll = useRef<HTMLDivElement>(null);
+  const transcript = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
+  const [finding, setFinding] = useState(() =>
+    find?.chatID === chat.id ? find : undefined,
+  );
+  useEffect(() => {
+    if (find?.chatID === chat.id) setFinding(find);
+  }, [find, chat.id]);
+  // ⌘F / Ctrl+F while the transcript or composer has focus opens the find
+  // bar (an open bar handles the key itself); elsewhere the browser's own
+  // find keeps working.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!isFindKey(event)) return;
+      const target = event.target as Element | null;
+      const here =
+        target === document.body ||
+        (target instanceof Element &&
+          !!target.closest(".conversation") &&
+          !target.closest("dialog"));
+      if (!here) return;
+      event.preventDefault();
+      setFinding((open) => open ?? { chatID: chat.id, query: "" });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [chat.id]);
   // The composer's current contents, for the transcript's edit action,
   // which is a stable callback and cannot close over state.
   const current = useRef({ text, pending });
@@ -311,6 +343,17 @@ export function Conversation({
   }
   return (
     <div className="conversation">
+      {finding && (
+        <FindBar
+          root={transcript}
+          scroller={scroll}
+          request={finding}
+          onClose={() => {
+            setFinding(undefined);
+            input.current?.focus();
+          }}
+        />
+      )}
       <div
         className="conversation-scroll"
         ref={scroll}
@@ -330,7 +373,7 @@ export function Conversation({
             </p>
           </div>
         )}
-        <div className="transcript">
+        <div className="transcript" ref={transcript}>
           {groupEntries(chat.conversation.entries).map((item) =>
             "group" in item ? (
               <ActivityGroup key={item.group[0].id} entries={item.group} />

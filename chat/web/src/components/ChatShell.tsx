@@ -19,11 +19,13 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Search,
   Shield,
   ShieldCheck,
+  TextSearch,
   Timer,
 } from "lucide-react";
-import type { Environment, State } from "../types";
+import type { Chat, Environment, State } from "../types";
 import { api, signedIn, subscribe } from "../api";
 import { providerName } from "../export";
 import {
@@ -46,6 +48,8 @@ import { ModelSelect } from "./ModelSelect";
 import { AdminConsole } from "./AdminConsole";
 import { WorkspacePanel } from "./WorkspacePanel";
 import { ExportDialog } from "./ExportDialog";
+import { SearchPalette } from "./SearchPalette";
+import { modifierKey, type FindRequest } from "./FindBar";
 
 const plural = (n: number, one: string, many = one + "s") =>
   `${n} ${n === 1 ? one : many}`;
@@ -82,6 +86,10 @@ export function ChatShell({
   const [workspaceState, setWorkspaceState] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [searching, setSearching] = useState(false);
+  // The find bar's latest request; a new object each time so the same
+  // query can be asked for again.
+  const [find, setFind] = useState<FindRequest>();
   const [previewCount, setPreviewCount] = useState(0);
   const [workspaces, setWorkspaces] = useState<Environment[]>([]);
   const [workspaceOpen, setWorkspaceOpen] = useState(
@@ -127,8 +135,30 @@ export function ChatShell({
   useEffect(() => {
     sessionStorage.setItem("warden-workspace-open", workspaceOpen ? "1" : "0");
   }, [workspaceOpen]);
+  // ⌘K / Ctrl+K opens the search palette from anywhere; again closes it.
+  useEffect(() => {
+    if (!signedIn()) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "k"
+      ) {
+        event.preventDefault();
+        setSearching((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const chats = state.chats.filter((c) => c.archived === archived);
   const chat = chats.find((c) => c.id === selected) || chats[0];
+  // A find request is for one chat; once the reader has moved on it is
+  // forgotten, so coming back later does not replay the jump.
+  useEffect(() => {
+    if (find && chat?.id !== find.chatID) setFind(undefined);
+  }, [chat?.id, find]);
   useEffect(() => {
     if (chat) {
       sessionStorage.setItem("warden-selected-chat", chat.id);
@@ -249,6 +279,16 @@ export function ChatShell({
     setAdminOpen(false);
     setSelected(id);
   };
+  // From the palette: a chat, possibly archived, and the entry to land on.
+  const openFound = (target: Chat, entryID?: string, query = "") => {
+    setAdminOpen(false);
+    setArchived(target.archived);
+    setSelected(target.id);
+    if (entryID) setFind({ chatID: target.id, query, entryID });
+  };
+  const findInChat = (query = "") => {
+    if (chat) setFind({ chatID: chat.id, query });
+  };
   // A workspace is shown through one of its chats. Prefer the chat already
   // open, then a live one; the oldest chat is often archived and would fall
   // outside the sidebar's current filter.
@@ -359,6 +399,16 @@ export function ChatShell({
         >
           <Plus size={16} />
           <span>New chat</span>
+        </button>
+        <button
+          className="chat-search"
+          aria-label="Search chats"
+          title={`Search chats and messages (${modifierKey}K)`}
+          onClick={() => setSearching(true)}
+        >
+          <Search size={16} />
+          <span>Search</span>
+          <kbd>{modifierKey}K</kbd>
         </button>
         <div className="chat-section-label">
           {archived ? "ARCHIVED" : "CHATS"}
@@ -488,6 +538,14 @@ export function ChatShell({
                   ))}
                 </div>
               </div>
+              <button
+                className="ghost icon"
+                aria-label="Find in chat"
+                title={`Find in chat (${modifierKey}F)`}
+                onClick={() => findInChat()}
+              >
+                <TextSearch size={16} />
+              </button>
               {previewCount > 0 && (
                 <button
                   className="ghost"
@@ -614,6 +672,7 @@ export function ChatShell({
                 chat={chat}
                 live={live}
                 requests={requests}
+                find={find}
                 onModel={(next) =>
                   api(`chats/${chat.id}/agent`, {
                     provider: chat.provider || "codex",
@@ -680,6 +739,15 @@ export function ChatShell({
           </div>
         )}
       </main>
+      {searching && (
+        <SearchPalette
+          chats={state.chats}
+          current={adminOpen ? undefined : chat}
+          onOpen={openFound}
+          onFind={findInChat}
+          onClose={() => setSearching(false)}
+        />
+      )}
       {creating && (
         <div className="modal-backdrop">
           <section

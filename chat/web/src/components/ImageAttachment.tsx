@@ -5,10 +5,13 @@ export function ImageAttachment({
   chatID,
   id,
   caption = "Image attachment",
+  entryID,
 }: {
   chatID: string;
   id: string;
   caption?: string;
+  /* The transcript entry, for the find bar to land on. */
+  entryID?: string;
 }) {
   const [url, setURL] = useState("");
   const [error, setError] = useState(false);
@@ -34,7 +37,7 @@ export function ImageAttachment({
     };
   }, [chatID, id]);
   return (
-    <figure className="image-attachment">
+    <figure className="image-attachment" data-entry={entryID}>
       {url ? (
         <button
           type="button"

@@ -44,9 +44,10 @@ export const ActivityGroup = memo(function ActivityGroup({
 }) {
   const streaming = entries.some((e) => e.isStreaming);
   const latest = entries[entries.length - 1];
+  // `data-entry` is how the find bar lands on an entry from the palette.
   if (entries.length === 1)
     return (
-      <details className="activity-group">
+      <details className="activity-group" data-entry={latest.id}>
         <summary>
           <ChevronRight size={14} className="chevron" />
           <span>{latest.text || "Agent activity"}</span>
@@ -65,7 +66,11 @@ export const ActivityGroup = memo(function ActivityGroup({
       </summary>
       <div className="activity-list">
         {entries.map((entry) => (
-          <details className="activity-entry" key={entry.id}>
+          <details
+            className="activity-entry"
+            key={entry.id}
+            data-entry={entry.id}
+          >
             <summary>
               <FileText size={13} />
               <span>{entry.text || "Agent activity"}</span>
@@ -164,11 +169,20 @@ export const EntryView = memo(function EntryView({
 }) {
   if (entry.role === "image")
     return (
-      <ImageAttachment chatID={chatID} id={entry.detail} caption={entry.text} />
+      <ImageAttachment
+        chatID={chatID}
+        id={entry.detail}
+        caption={entry.text}
+        entryID={entry.id}
+      />
     );
   if (entry.role === "activity") return <ActivityGroup entries={[entry]} />;
   if (entry.role === "system")
-    return <div className="system-entry">{entry.text}</div>;
+    return (
+      <div className="system-entry" data-entry={entry.id}>
+        {entry.text}
+      </div>
+    );
   const user = entry.role === "user";
   const header = (
     <header>
@@ -193,7 +207,7 @@ export const EntryView = memo(function EntryView({
   );
   if (user)
     return (
-      <article className="message message-user">
+      <article className="message message-user" data-entry={entry.id}>
         {header}
         <div className="message-body">
           {entry.text && (
@@ -217,7 +231,7 @@ export const EntryView = memo(function EntryView({
       </article>
     );
   return (
-    <article className={`message message-${entry.role}`}>
+    <article className={`message message-${entry.role}`} data-entry={entry.id}>
       <div className="message-avatar" aria-hidden="true">
         {entry.role === "user" ? <User size={15} /> : <Bot size={16} />}
       </div>
