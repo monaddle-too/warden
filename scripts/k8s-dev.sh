@@ -56,12 +56,25 @@ RC
 cmd_build_images() {
   need limactl
   local rev; rev="$(git -C "$ROOT" describe --always --dirty)"
-  # The workspace is mounted read-only at the same path inside the VM.
-  limactl shell "$NAME" sudo nerdctl build --platform linux/arm64 -f "$ROOT/deploy/guest/Dockerfile.base" \
-    -t "warden-guest-base:${rev}" "$ROOT/deploy/guest"
-  limactl shell "$NAME" sudo nerdctl build --platform linux/arm64 -f "$ROOT/deploy/chat/Dockerfile" \
-    -t "warden:${rev}" "$ROOT"
-  limactl shell "$NAME" sudo nerdctl images | grep -E "warden(-guest-base)?\s+${rev}"
+  # Frontend and the linux/arm64 binary are built on the host the same way
+  # scripts/release.sh does; the image builds run inside the VM against
+  # k3s's containerd, with the workspace mounted read-only at the same path.
+  local pnpm=""
+  if command -v pnpm >/dev/null 2>&1; then pnpm="pnpm"
+  elif corepack pnpm --version >/dev/null 2>&1; then pnpm="corepack pnpm"
+  else
+    local cached; cached="$(ls "$HOME"/.cache/node/corepack/v1/pnpm/*/bin/pnpm.cjs 2>/dev/null | sort -V | tail -1 || true)"
+    [ -n "$cached" ] || { echo "pnpm not found (install it or run corepack enable)" >&2; exit 1; }
+    pnpm="node $cached"
+  fi
+  $pnpm --dir "$ROOT/chat/web" install --frozen-lockfile
+  $pnpm --dir "$ROOT/chat/web" build
+  rm -rf "$ROOT/dist/linux-arm64"; mkdir -p "$ROOT/dist/linux-arm64"
+  GOPROXY=off GOFLAGS=-mod=mod CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go -C "$ROOT/chat" build -trimpath \
+    -ldflags "-s -w -X warden/chat/internal/release.Revision=${rev}" -o ../dist/linux-arm64/warden ./cmd/warden
+  limactl shell "$NAME" sudo bash -c "cd '$ROOT' && deploy/guest/build-base.sh --k3s --platform linux/arm64 --tag warden-guest-base:${rev} && nerdctl tag warden-guest-base:${rev} warden-guest-base:dev"
+  limactl shell "$NAME" sudo bash -c "cd '$ROOT' && nerdctl build --platform linux/arm64 -f deploy/chat/Dockerfile -t warden:${rev} -t warden:dev ."
+  limactl shell "$NAME" sudo nerdctl images | grep -E "^warden(-guest-base)?\s+(${rev}|dev)\b"
 }
 
 cmd_deploy() {
