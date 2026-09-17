@@ -43,13 +43,17 @@ load_env() {
   esac
   mkdir -p "$ROOT/dist/gke"
   export KUBECONFIG="$ROOT/dist/gke/kubeconfig"
+  # kubectl authenticates to GKE through gke-gcloud-auth-plugin, which the
+  # Homebrew cask installs beside gcloud without linking it onto PATH.
+  local sdk; sdk="$(gcloud info --format='value(installation.sdk_root)' 2>/dev/null || true)"
+  [ -z "$sdk" ] || export PATH="$PATH:$sdk/bin"
 }
 
 gcloud_() { gcloud --project "$PROJECT" --quiet "$@"; }
 
 cmd_up() {
   load_env
-  need gcloud "brew install --cask google-cloud-sdk; gcloud auth login; gcloud config set project $PROJECT"
+  need gcloud "brew install --cask google-cloud-sdk; gcloud auth login"
   need gke-gcloud-auth-plugin "gcloud components install gke-gcloud-auth-plugin"
   need kubectl "brew install kubectl"; need helm "brew install helm"
   gcloud_ services enable container.googleapis.com dns.googleapis.com artifactregistry.googleapis.com compute.googleapis.com
@@ -95,8 +99,11 @@ cmd_up() {
   # 10250 for exactly that reason.
   helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx --create-namespace \
     --set controller.admissionWebhooks.enabled=false --wait --timeout 10m
+  # Leader election in cert-manager's own namespace: Autopilot forbids the
+  # leases cert-manager would otherwise keep in kube-system (cainjector then
+  # never injects the webhook CA and the startup check fails).
   helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace \
-    --set crds.enabled=true \
+    --set crds.enabled=true --set global.leaderElection.namespace=cert-manager \
     --set "serviceAccount.annotations.iam\.gke\.io/gcp-service-account=${GSA}" --wait --timeout 10m
   sed -e "s/__PROJECT__/${PROJECT}/g" -e "s/__EMAIL__/${OWNER}/g" "$ROOT/deploy/k8s/gke/cluster-issuer.yaml" | kubectl apply -f -
   cmd_dns
