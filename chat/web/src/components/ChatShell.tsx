@@ -53,10 +53,12 @@ export function ChatShell({
   account,
   canConnectGoogle = true,
   admin = false,
+  signIn = false,
 }: {
   account?: ReactNode;
   canConnectGoogle?: boolean;
   admin?: boolean;
+  signIn?: boolean;
 }) {
   const [state, setState] = useState<State>({ version: 1, chats: [] });
   const [live, setLive] = useState(false);
@@ -463,7 +465,7 @@ export function ChatShell({
       </aside>
       <main className="chat-main">
         {adminOpen && admin ? (
-          <AdminConsole />
+          <AdminConsole signIn={signIn} />
         ) : chat ? (
           <>
             <header className="chat-header">

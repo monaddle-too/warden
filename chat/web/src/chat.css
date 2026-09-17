@@ -1002,3 +1002,21 @@ button.danger:hover {
     padding: 8px 16px 40px;
   }
 }
+
+.admin-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0 4px;
+}
+.admin-actions p {
+  margin: 0;
+  flex: 1 1 240px;
+}
+.admin-actions button.danger {
+  margin-left: auto;
+  color: var(--danger, #b3261e);
+  border-color: var(--danger, #b3261e);
+  background: transparent;
+}

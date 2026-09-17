@@ -270,7 +270,7 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 			data["page"] = r.URL.Query().Get("page")
 		}
 	} else if r.Method == "POST" {
-		if op != "select" && op != "connect" && op != "resolve" && op != "revoke" && op != "block" && op != "unblock" && op != "github_select" && op != "pr_resolve" {
+		if op != "select" && op != "connect" && op != "disconnect" && op != "resolve" && op != "revoke" && op != "block" && op != "unblock" && op != "github_select" && op != "pr_resolve" {
 			http.Error(w, "not found", 404)
 			return
 		}

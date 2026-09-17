@@ -370,7 +370,7 @@ func (s *Server) main(w http.ResponseWriter, r *http.Request) {
 func ownerOnly(path string) bool {
 	trimmed := strings.Trim(path, "/")
 	return strings.HasPrefix(path, "/oauth/") || strings.HasPrefix(path, "/api/admin/") ||
-		trimmed == "api/sharing/connect" || trimmed == "api/sharing/block" || trimmed == "api/sharing/unblock"
+		trimmed == "api/sharing/connect" || trimmed == "api/sharing/disconnect" || trimmed == "api/sharing/block" || trimmed == "api/sharing/unblock"
 }
 
 // admin answers from the edge's own login ledger; identity is verified only here

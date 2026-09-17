@@ -202,7 +202,7 @@ func TestUserTokenMissingFileFailsClosedEverywhere(t *testing.T) {
 	defer sharing.Close()
 	status, _ := sharing.Dispatch("status", nil)
 	// configured: the source exists; connected: only once the file is readable.
-	if !jsonEqual(status["github"], map[string]any{"configured": true, "connected": false, "owner": "", "appSlug": ""}) {
+	if !jsonEqual(status["github"], map[string]any{"configured": true, "connected": false, "owner": "", "appSlug": "", "mode": "user", "disconnectable": true}) {
 		t.Fatalf("status: %v", status)
 	}
 	if _, err := sharing.Dispatch("github_repositories", nil); err == nil || err.Error() != GitHubRefreshMessage {
@@ -214,7 +214,8 @@ func TestUserTokenMissingFileFailsClosedEverywhere(t *testing.T) {
 	// A sign-in written later is picked up without a restart.
 	writeGitHubUser(t, path, userToken, "owner")
 	status, _ = sharing.Dispatch("status", nil)
-	if !jsonEqual(status["github"], map[string]any{"configured": true, "connected": true, "owner": "owner", "appSlug": ""}) {
+	github, _ := status["github"].(map[string]any)
+	if github["connected"] != true || github["owner"] != "owner" || github["login"] != "owner" || github["disconnectable"] != true {
 		t.Fatalf("status after login: %v", status)
 	}
 }

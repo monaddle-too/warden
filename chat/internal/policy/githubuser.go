@@ -3,6 +3,7 @@ package policy
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -235,6 +236,33 @@ func (c *GitHubUserCredentials) Repositories(page int64) (map[string]any, error)
 		next = page + 1
 	}
 	return map[string]any{"owner": f.Login, "app_id": int64(0), "repositories": repos, "next_page": next}, nil
+}
+
+// Details reports the sign-in as the UI shows it: login, scopes and when
+// the token was stored. Never the token. Empty when no sign-in is readable.
+func (c *GitHubUserCredentials) Details() map[string]any {
+	f, err := c.read()
+	if err != nil {
+		return map[string]any{"mode": "user"}
+	}
+	scopes := []any{}
+	for _, s := range f.Scopes {
+		scopes = append(scopes, s)
+	}
+	return map[string]any{"mode": "user", "login": f.Login, "scopes": scopes, "obtained": f.Obtained}
+}
+
+// Disconnect deletes the sign-in file. GitHub OAuth tokens can only be
+// revoked with the App's client secret, which a release does not ship, so
+// the token stays valid at GitHub until the person revokes it under
+// Settings, Applications; the UI says so. Every later use fails closed.
+func (c *GitHubUserCredentials) Disconnect() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := os.Remove(c.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // Snapshot describes the source without the token.

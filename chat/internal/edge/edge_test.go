@@ -254,7 +254,7 @@ func TestDemoSharesWorkspaceAndGrantsButCannotConnectGoogle(t *testing.T) {
 		{"GET", "/api/state", 204}, {"POST", "/api/chats", 204},
 		{"GET", "/api/sharing/files", 204}, {"POST", "/api/sharing/select", 204},
 		{"POST", "/api/sharing/resolve", 204}, {"POST", "/api/sharing/revoke", 204},
-		{"POST", "/api/sharing/connect", 403}, {"POST", "/api/sharing/connect/", 403},
+		{"POST", "/api/sharing/connect", 403}, {"POST", "/api/sharing/connect/", 403}, {"POST", "/api/sharing/disconnect", 403},
 		{"GET", "/oauth/google_docs/callback?state=test&code=test", 403},
 	} {
 		before := count
@@ -321,6 +321,7 @@ func TestLoginLedgerPersistsAndAdminConsoleIsOwnerOnly(t *testing.T) {
 		{demoAuth{a}, "GET", "/api/sharing/blocked", 204}, {demoAuth{a}, "GET", "/api/sharing/files", 204},
 		{a, "GET", "/api/admin/users", 200}, {a, "POST", "/api/admin/users", 404}, {a, "GET", "/api/admin/other", 404},
 		{a, "POST", "/api/sharing/block", 204}, {a, "POST", "/api/sharing/unblock", 204},
+		{demoAuth{a}, "POST", "/api/sharing/disconnect", 403}, {a, "POST", "/api/sharing/disconnect", 204},
 	} {
 		s.Auth = tc.auth
 		before := count

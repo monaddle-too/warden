@@ -64,7 +64,8 @@ export function AuthRoot() {
   return (
     <ChatShell
       canConnectGoogle={!auth.enabled || auth.user?.role === "admin"}
-      admin={auth.enabled && auth.user?.role === "admin"}
+      admin={!auth.enabled || auth.user?.role === "admin"}
+      signIn={auth.enabled}
       account={
         auth.enabled ? (
           <div className="warden-account">

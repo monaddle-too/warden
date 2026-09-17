@@ -41,6 +41,9 @@ type GoogleSharing interface {
 	File(id string) (map[string]any, error)
 	Create(title string) (map[string]any, error)
 	Authorization() (string, error)
+	// Disconnect forgets the stored Google credential (revoking it with
+	// Google on a best-effort basis) so the account must be connected again.
+	Disconnect() error
 }
 
 // GoogleConnection is the durable, write-capable Google connection used by
@@ -234,6 +237,23 @@ func (g *GoogleConnection) Install(data map[string]any, initial bool) error {
 	sortStrings(sorted)
 	record := map[string]any{"client_id": g.ClientID, "access_token": g.AccessToken, "refresh_token": g.RefreshToken, "expires": g.Expires, "scopes": sorted}
 	_, err := g.DB.Exec("INSERT OR REPLACE INTO credentials (id,data,principal) VALUES (1,?,?)", string(mustJSON(record)), OwnerPrincipal)
+	return err
+}
+
+// Disconnect revokes the refresh token with Google when it can (a failure
+// there is not fatal: the token is forgotten locally either way), clears the
+// in-memory credential and deletes the stored record.
+func (g *GoogleConnection) Disconnect() error {
+	if token := g.RefreshToken; token != "" && g.HTTP != nil {
+		form := url.Values{"token": {token}}
+		_, _, _ = g.HTTP("oauth2.googleapis.com", "POST", "/revoke", []byte(form.Encode()), map[string]string{"Content-Type": "application/x-www-form-urlencoded"}, 10*time.Second, 65537)
+	}
+	g.OAuthConnection.Disconnect()
+	g.grantedScopes = map[string]bool{}
+	if g.DB == nil {
+		return nil
+	}
+	_, err := g.DB.Exec("DELETE FROM credentials WHERE id=1")
 	return err
 }
 
@@ -583,6 +603,15 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 			owner, _, err := s.GitHub.Identity()
 			github["connected"] = err == nil
 			github["owner"] = owner
+			// The user-token source can say who signed in, with which scopes
+			// and when, and can be disconnected from the UI; the App broker
+			// is the operator's and cannot.
+			if d, ok := s.GitHub.(interface{ Details() map[string]any }); ok {
+				for k, v := range d.Details() {
+					github[k] = v
+				}
+			}
+			_, github["disconnectable"] = s.GitHub.(interface{ Disconnect() error })
 		}
 		// google.configured: a usable Docs client exists (an operator file, or
 		// the built-in client with a shipped ID). A provider section alone,
@@ -590,6 +619,37 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		// button that can only fail.
 		google := map[string]any{"configured": s.Google != nil && s.Google.Configured(), "connected": s.Google != nil && s.Google.Connected()}
 		return map[string]any{"configured": s.Google != nil && s.Google.Configured(), "connected": s.Google != nil && s.Google.Connected(), "can_write": s.Google != nil && s.Google.CanWrite(), "google": google, "github": github}, nil
+	case "disconnect":
+		// Forget one provider's sign-in. Everything that credential backed
+		// is revoked with it: Google document grants, GitHub repository
+		// selections (a later sign-in, perhaps as someone else, must not
+		// inherit them). The stored secret is gone after this returns.
+		switch stringField(data, "provider") {
+		case "google":
+			if s.Google == nil || !s.Google.Connected() {
+				return nil, errors.New("Google is not connected")
+			}
+			if err := s.Google.Disconnect(); err != nil {
+				return nil, err
+			}
+			if _, err := s.DB.Exec("UPDATE requests SET status='revoked' WHERE status='granted'"); err != nil {
+				return nil, err
+			}
+		case "github":
+			d, ok := s.GitHub.(interface{ Disconnect() error })
+			if !ok {
+				return nil, errors.New("this GitHub connection is managed by the operator and cannot be disconnected here")
+			}
+			if err := d.Disconnect(); err != nil {
+				return nil, err
+			}
+			if _, err := s.DB.Exec("DELETE FROM repositories"); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, errors.New("provider must be google or github")
+		}
+		return map[string]any{"ok": true}, nil
 	case "connect":
 		if s.Google == nil {
 			return nil, errors.New("Google is not configured")

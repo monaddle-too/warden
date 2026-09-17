@@ -868,3 +868,13 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   0.43.0 upgrade made every sbx call fail with "cannot prompt for restart:
   stdin is not a terminal"), doctor reports the mismatch, and settings an
   sbx build does not define are skipped.
+- 2026-09-16: the Admin console is available in local mode (the owner is
+  the admin; the sign-in ledger section appears only with an edge that
+  authenticates people). Its Connected accounts section shows the GitHub
+  sign-in (login, scopes, when stored) and the Google Docs connection, and
+  can disconnect either: `sharing/disconnect` on the policy service revokes
+  the Google token with Google and forgets it (revoking document grants) or
+  deletes the GitHub token file (dropping repository selections); the edge
+  gates it owner-only. Verified live on the Mac (GitHub disconnect and
+  re-login). Released as `v0.1.0-alpha.3`.
+

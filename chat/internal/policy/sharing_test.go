@@ -19,6 +19,7 @@ type fakeGoogle struct {
 	configured    bool
 	connected     bool
 	canWrite      bool
+	disconnected  bool
 }
 
 func (g *fakeGoogle) Configured() bool { return g.configured }
@@ -28,6 +29,10 @@ func (g *fakeGoogle) Start() (string, error) {
 	return "https://accounts.google.com/o/oauth2/v2/auth?state=x", nil
 }
 func (g *fakeGoogle) Complete(string, string) error { return nil }
+func (g *fakeGoogle) Disconnect() error {
+	g.connected, g.authorization, g.disconnected = false, "", true
+	return nil
+}
 func (g *fakeGoogle) Files(page string) (map[string]any, error) {
 	if g.filesResult == nil {
 		return map[string]any{"files": []any{}}, nil
@@ -548,5 +553,78 @@ func TestLegacyReadConnectionSurvivesUpgrade(t *testing.T) {
 	os.Chmod(config, 0o644)
 	if _, err := NewGoogleConnection(root, config, nil); err == nil {
 		t.Fatal("public config accepted")
+	}
+}
+
+// Disconnecting a provider from the console forgets its credential and
+// everything it backed: Google grants are revoked, GitHub repository
+// selections are dropped, and status reports the provider as disconnected.
+func TestDisconnectForgetsProviderAndRevokesWhatItBacked(t *testing.T) {
+	f := newSharingFixture(t)
+	g := f.grant()
+	if _, err := f.s.Dispatch("disconnect", map[string]any{"provider": "figma"}); err == nil {
+		t.Fatal("unknown provider accepted")
+	}
+	if r := f.dispatch("disconnect", map[string]any{"provider": "google"}); r["ok"] != true || !f.google.disconnected {
+		t.Fatalf("google disconnect: %v", r)
+	}
+	if f.dispatch("get", map[string]any{"id": g["request_id"], "chatID": "chat-a", "sandboxID": "sbx-a"})["status"] != "revoked" {
+		t.Fatal("grant survived the disconnect")
+	}
+	if status := f.dispatch("status", nil); status["connected"] != false {
+		t.Fatalf("status after disconnect: %v", status)
+	}
+	if _, err := f.s.Dispatch("disconnect", map[string]any{"provider": "google"}); err == nil {
+		t.Fatal("second disconnect accepted")
+	}
+	// No GitHub provider: nothing to disconnect.
+	if _, err := f.s.Dispatch("disconnect", map[string]any{"provider": "github"}); err == nil {
+		t.Fatal("github disconnect without a provider accepted")
+	}
+}
+
+func TestDisconnectGitHubUserTokenDeletesTheFileAndSelections(t *testing.T) {
+	api := newUserAPI(t, 1)
+	source, path := newUserSource(t, api)
+	s, err := NewSharing(t.TempDir(), nil, nil, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	status, _ := s.Dispatch("status", nil)
+	github := status["github"].(map[string]any)
+	if github["connected"] != true || github["login"] != "owner" || github["disconnectable"] != true || github["mode"] != "user" {
+		t.Fatalf("status before: %v", github)
+	}
+	if _, ok := github["scopes"].([]any); !ok {
+		t.Fatalf("scopes missing: %v", github)
+	}
+	if _, err = s.Dispatch("github_select", map[string]any{"chatID": "c1", "sandboxID": "s1", "repositories": []any{"owner/repo1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.Dispatch("disconnect", map[string]any{"provider": "github"}); err != nil || r["ok"] != true {
+		t.Fatalf("disconnect: %v %v", r, err)
+	}
+	if _, err = os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("token file still present: %v", err)
+	}
+	status, _ = s.Dispatch("status", nil)
+	if status["github"].(map[string]any)["connected"] != false {
+		t.Fatalf("status after: %v", status["github"])
+	}
+	if list, err := s.Dispatch("github_list", map[string]any{"chatID": "c1", "sandboxID": "s1"}); err == nil {
+		t.Fatalf("selection survived the disconnect: %v", list)
+	}
+	// The App broker cannot be disconnected from the UI.
+	app, err := NewSharing(t.TempDir(), nil, nil, &GitHubAppCredentials{Owner: "org", AppID: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	if _, err = app.Dispatch("disconnect", map[string]any{"provider": "github"}); err == nil {
+		t.Fatal("app broker disconnect accepted")
+	}
+	if status, _ := app.Dispatch("status", nil); status["github"].(map[string]any)["disconnectable"] != false {
+		t.Fatalf("app status: %v", status["github"])
 	}
 }

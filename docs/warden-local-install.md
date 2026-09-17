@@ -246,25 +246,35 @@ Run `claude setup-token` on a machine with a browser and paste the
 session tokens. This replaces `scripts/warden-claude-token`.
 
 **GitHub** (`warden login github`, default file `provider/github.json`).
-GitHub's device flow with Warden's own OAuth App runs once a release ships
-the client ID; this release does not (`release.GitHubOAuthClientID` is
-empty), so the command answers `this Warden release has no GitHub OAuth
-client ID yet; store a token with `warden login github --paste-stdin``. The
-fallback works today:
+The command runs GitHub's device flow with Warden's own OAuth App (the
+client ID ships in the release): it prints a one-time code, opens
+github.com/login/device in your browser, and stores the resulting user
+token once you approve. To store a token you already have instead:
 
 ```sh
 gh auth token | warden login github --paste-stdin
 ```
 
 (`--paste TOKEN` also exists; prefer stdin so the token stays out of your
-shell history.) The token is verified against GitHub and stored with your
-login and scopes. Actions then appear as you; the repository allowlist and
-per-request approvals stay the boundary, as for the other providers.
+shell history.) Either way the token is verified against GitHub and stored
+with your login and scopes. Actions then appear as you; the repository
+allowlist and per-request approvals stay the boundary, as for the other
+providers.
 
-**Google Docs** has no `warden login` yet: the Docs connection uses a
-Warden-wide Desktop client whose ID also ships in a later release
-(`release.GoogleDocsClientID` is empty), and until then the UI hides the
-Google section.
+**Google Docs** is connected from the browser, not the terminal: the Docs
+connection uses the Desktop OAuth client shipped in the release. Open the
+Admin console (sidebar) or a chat's Documents panel and choose "Sign in with
+Google"; the sign-in completes in a popup and the token is stored by the
+policy service.
+
+**Signing out.** The Admin console lists every connected account. "Disconnect
+Google" revokes the token with Google, forgets it and revokes every document
+grant; "Disconnect GitHub" deletes the stored token and drops every
+repository selection (the token itself stays valid at GitHub until you
+revoke it under Settings, Applications, because revoking needs the OAuth
+App's secret, which releases do not ship). Codex and Claude sign-ins are
+files under `<state>/provider/`; delete the file, or run the login again
+with `--replace`.
 
 ## 5. `warden start` and `warden open`
 
@@ -404,8 +414,10 @@ own sbx namespace is unaffected by any of this.
 
 ## 9. Limits
 
-- One owner. The launcher capability is the only identity; no admin
-  console, no other users. Multi-user installs are server mode.
+- One owner. The launcher capability is the only identity and it is the
+  admin: the Admin console shows connected accounts, lets you disconnect
+  them and manage documents tagged unsharable; there are no other users.
+  Multi-user installs are server mode.
 - Google Docs and GitHub use the OAuth clients shipped in
   `chat/internal/release` (a Desktop client and a device-flow OAuth App).
   While the Google project stays in Testing, its refresh tokens expire after

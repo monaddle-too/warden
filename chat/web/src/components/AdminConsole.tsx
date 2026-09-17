@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { FileText, GitBranch, RefreshCw, ShieldOff, Users } from "lucide-react";
+import {
+  FileText,
+  GitBranch,
+  KeyRound,
+  RefreshCw,
+  ShieldOff,
+  Users,
+} from "lucide-react";
 import { api } from "../api";
 
 type LoginRecord = {
@@ -15,7 +22,17 @@ type Status = {
   configured: boolean;
   connected: boolean;
   can_write: boolean;
-  github?: { connected: boolean; owner: string };
+  github?: {
+    configured: boolean;
+    connected: boolean;
+    owner: string;
+    appSlug?: string;
+    mode?: string;
+    login?: string;
+    scopes?: string[];
+    obtained?: number;
+    disconnectable?: boolean;
+  };
 };
 type File = { id: string; name: string; blocked: boolean };
 type Repo = { id: number; full_name: string; private?: boolean };
@@ -24,7 +41,9 @@ type Blocked = { id: string; name: string; blocked_at: number };
 const when = (value: string | number) =>
   new Date(typeof value === "number" ? value * 1000 : value).toLocaleString();
 
-export function AdminConsole() {
+// signIn: the edge authenticates people (server mode). Without it the
+// install has one owner and no sign-in ledger, so that section is omitted.
+export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
   const [users, setUsers] = useState<LoginRecord[]>([]);
   const [persistent, setPersistent] = useState(true);
   const [status, setStatus] = useState<Status>();
@@ -65,7 +84,9 @@ export function AdminConsole() {
     setError("");
     try {
       const [u, s, b] = await Promise.all([
-        api<{ persistent: boolean; users: LoginRecord[] }>("admin/users"),
+        signIn
+          ? api<{ persistent: boolean; users: LoginRecord[] }>("admin/users")
+          : Promise.resolve({ persistent: true, users: [] }),
         api<Status>("sharing/status"),
         api<{ documents: Blocked[] }>("sharing/blocked"),
       ]);
@@ -82,10 +103,56 @@ export function AdminConsole() {
     } finally {
       setLoading(false);
     }
-  }, [loadFiles, loadRepos]);
+  }, [loadFiles, loadRepos, signIn]);
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Disconnect forgets the stored credential on the policy service and
+  // revokes everything it backed; the account can be connected again.
+  async function disconnect(provider: "google" | "github") {
+    const what = provider === "google" ? "Google Docs" : "GitHub";
+    const extra =
+      provider === "google"
+        ? " Every document grant is revoked."
+        : " Every repository selection is dropped. The token itself stays valid at GitHub until you revoke it under Settings → Applications.";
+    if (!window.confirm(`Disconnect ${what} from Warden?${extra}`)) return;
+    setBusy(provider);
+    setError("");
+    setNotice("");
+    try {
+      await api("sharing/disconnect", { provider });
+      setNotice(`${what} disconnected.`);
+      if (provider === "google") {
+        setFiles([]);
+        setPage("");
+      } else {
+        setRepos([]);
+        setRepoPage(null);
+      }
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function connectGoogle() {
+    const popup = window.open(
+      "about:blank",
+      "warden-google",
+      "width=600,height=760",
+    );
+    setError("");
+    try {
+      const r = await api<{ authorization_url: string }>("sharing/connect", {});
+      if (popup) popup.location.href = r.authorization_url;
+      else setError("Allow popups for Warden, then try Google sign-in again.");
+    } catch (e) {
+      popup?.close();
+      setError(String(e));
+    }
+  }
 
   async function tag(id: string, name: string, block: boolean) {
     setBusy(id);
@@ -115,100 +182,163 @@ export function AdminConsole() {
   const owners = users.filter((u) => u.role === "admin");
   const google = status?.connected ? status : undefined;
   const github = status?.github?.connected ? status.github : undefined;
-  const accounts = (u: LoginRecord) => {
-    if (u.role !== "admin")
-      return (
-        <p className="muted">
-          No connected accounts. Only the demo owner can connect accounts.
-        </p>
-      );
-    if (!google && !github)
-      return <p className="muted">No accounts connected.</p>;
-    return (
-      <>
-        {google && (
-          <details open className="admin-account">
-            <summary>
-              <FileText size={14} />
-              Google Docs
-              <small>
-                {google.can_write ? "read, edit and create" : "read only"}
-              </small>
-            </summary>
-            <p className="muted">
-              Documents created September 9, 2026 or later. Tagged documents can
-              never be shared with a conversation.
-            </p>
-            <ul className="admin-list">
-              {files.map((f) => (
-                <li key={f.id} className={f.blocked ? "blocked" : ""}>
-                  <span>{f.name}</span>
-                  <label className="admin-toggle">
-                    <input
-                      type="checkbox"
-                      checked={f.blocked}
-                      disabled={busy === f.id}
-                      onChange={(e) => void tag(f.id, f.name, e.target.checked)}
-                    />
-                    Unsharable with AI
-                  </label>
-                </li>
-              ))}
-              {!files.length && (
-                <li className="muted">No Google documents found.</li>
-              )}
-            </ul>
-            {page && (
-              <button
-                disabled={!!busy}
-                onClick={() => {
-                  setBusy(true);
-                  void loadFiles(page)
-                    .catch((e) => setError(String(e)))
-                    .finally(() => setBusy(false));
-                }}
-              >
-                Load more documents
-              </button>
-            )}
-          </details>
-        )}
-        {github && (
-          <details open className="admin-account">
-            <summary>
-              <GitBranch size={14} />
-              GitHub App
-              <small>{github.owner}</small>
-            </summary>
-            <p className="muted">
-              Repositories the installation can share, read only.
-            </p>
-            {repoError && (
-              <p role="alert" className="error">
-                {repoError}
+  const accounts = (
+    <>
+      {status?.configured && (
+        <details open className="admin-account">
+          <summary>
+            <FileText size={14} />
+            Google Docs
+            <small>
+              {google
+                ? google.can_write
+                  ? "connected · read, edit and create"
+                  : "connected · read only"
+                : "not connected"}
+            </small>
+          </summary>
+          {google ? (
+            <>
+              <p className="muted">
+                Documents created September 9, 2026 or later. Tagged documents
+                can never be shared with a conversation.
               </p>
-            )}
-            <ul className="admin-list">
-              {repos.map((r) => (
-                <li key={r.id}>
-                  <span>{r.full_name}</span>
-                  <small>{r.private ? "private" : "public"}</small>
-                </li>
-              ))}
-              {!repos.length && !repoError && (
-                <li className="muted">No repositories available.</li>
-              )}
-            </ul>
-            {repoPage && (
-              <button onClick={() => void loadRepos(repoPage)}>
-                Load more repositories
+              <ul className="admin-list">
+                {files.map((f) => (
+                  <li key={f.id} className={f.blocked ? "blocked" : ""}>
+                    <span>{f.name}</span>
+                    <label className="admin-toggle">
+                      <input
+                        type="checkbox"
+                        checked={f.blocked}
+                        disabled={busy === f.id}
+                        onChange={(e) =>
+                          void tag(f.id, f.name, e.target.checked)
+                        }
+                      />
+                      Unsharable with AI
+                    </label>
+                  </li>
+                ))}
+                {!files.length && (
+                  <li className="muted">No Google documents found.</li>
+                )}
+              </ul>
+              <div className="admin-actions">
+                {page && (
+                  <button
+                    disabled={!!busy}
+                    onClick={() => {
+                      setBusy(true);
+                      void loadFiles(page)
+                        .catch((e) => setError(String(e)))
+                        .finally(() => setBusy(false));
+                    }}
+                  >
+                    Load more documents
+                  </button>
+                )}
+                <button
+                  className="danger"
+                  disabled={!!busy}
+                  onClick={() => void disconnect("google")}
+                >
+                  Disconnect Google
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="admin-actions">
+              <p className="muted">
+                Connect a Google account to share documents with conversations.
+              </p>
+              <button disabled={!!busy} onClick={() => void connectGoogle()}>
+                Sign in with Google
               </button>
-            )}
-          </details>
-        )}
-      </>
-    );
-  };
+            </div>
+          )}
+        </details>
+      )}
+      {status?.github?.configured && (
+        <details open className="admin-account">
+          <summary>
+            <GitBranch size={14} />
+            {status.github.mode === "user" ? "GitHub" : "GitHub App"}
+            <small>
+              {github
+                ? github.login
+                  ? `connected as ${github.login}`
+                  : github.owner
+                : "not connected"}
+            </small>
+          </summary>
+          {github ? (
+            <>
+              <p className="muted">
+                {github.mode === "user"
+                  ? `Signed in with a user token${github.scopes?.length ? ` (${github.scopes.join(", ")})` : ""}${github.obtained ? `, stored ${when(github.obtained)}` : ""}. Repositories the account can share, read only.`
+                  : "Repositories the installation can share, read only."}
+              </p>
+              {repoError && (
+                <p role="alert" className="error">
+                  {repoError}
+                </p>
+              )}
+              <ul className="admin-list">
+                {repos.map((r) => (
+                  <li key={r.id}>
+                    <span>{r.full_name}</span>
+                    <small>{r.private ? "private" : "public"}</small>
+                  </li>
+                ))}
+                {!repos.length && !repoError && (
+                  <li className="muted">No repositories available.</li>
+                )}
+              </ul>
+              <div className="admin-actions">
+                {repoPage && (
+                  <button onClick={() => void loadRepos(repoPage)}>
+                    Load more repositories
+                  </button>
+                )}
+                {github.disconnectable && (
+                  <button
+                    className="danger"
+                    disabled={!!busy}
+                    onClick={() => void disconnect("github")}
+                  >
+                    Disconnect GitHub
+                  </button>
+                )}
+              </div>
+            </>
+          ) : (
+            <p className="muted">
+              {status.github.mode === "user" || !status.github.appSlug
+                ? "Sign in from a terminal: "
+                : "Install the GitHub App to connect: "}
+              {status.github.mode === "user" || !status.github.appSlug ? (
+                <code>warden login github</code>
+              ) : (
+                <a
+                  href={`https://github.com/apps/${status.github.appSlug}/installations/new`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  github.com/apps/{status.github.appSlug}
+                </a>
+              )}
+            </p>
+          )}
+        </details>
+      )}
+      {!status?.configured && !status?.github?.configured && !loading && (
+        <p className="muted">
+          No providers are configured. Add Google or GitHub to warden.json.
+        </p>
+      )}
+    </>
+  );
 
   return (
     <div className="admin-console">
@@ -230,47 +360,55 @@ export function AdminConsole() {
           </p>
         )}
         {notice && <p className="admin-notice">{notice}</p>}
-        {!persistent && (
+        <section aria-labelledby="admin-accounts">
+          <h2 id="admin-accounts">
+            <KeyRound size={16} />
+            Connected accounts
+          </h2>
+          {loading && !status && <p className="muted">Loading…</p>}
+          {accounts}
+        </section>
+        {signIn && !persistent && (
           <p className="admin-notice">
             The sign-in ledger is not persisted; it lists sign-ins since the
             edge last started.
           </p>
         )}
-        <section aria-labelledby="admin-users">
-          <h2 id="admin-users">
-            <Users size={16} />
-            Signed-in users
-          </h2>
-          {loading && !users.length && <p className="muted">Loading…</p>}
-          {!loading && !users.length && (
-            <p className="muted">No sign-ins recorded yet.</p>
-          )}
-          {users.map((u) => (
-            <article key={u.email} className="admin-user">
-              <header>
-                <div>
-                  <strong>{u.email}</strong>
-                  <span className={"admin-role " + u.role}>
-                    {u.role === "admin" ? "Owner" : "Demo"}
-                  </span>
-                  {u.hosted_domain && <small>{u.hosted_domain}</small>}
-                </div>
-                <small>
-                  {u.logins} sign-in{u.logins === 1 ? "" : "s"} · first{" "}
-                  {when(u.first_login)} · last {when(u.last_login)}
-                </small>
-              </header>
-              <h3>Connected accounts</h3>
-              {accounts(u)}
-            </article>
-          ))}
-          {!loading && !owners.length && (google || github) && (
-            <p className="muted">
-              Accounts are connected but the owner has not signed in since the
-              ledger started, so they are not listed under a user yet.
-            </p>
-          )}
-        </section>
+        {signIn && (
+          <section aria-labelledby="admin-users">
+            <h2 id="admin-users">
+              <Users size={16} />
+              Signed-in users
+            </h2>
+            {loading && !users.length && <p className="muted">Loading…</p>}
+            {!loading && !users.length && (
+              <p className="muted">No sign-ins recorded yet.</p>
+            )}
+            {users.map((u) => (
+              <article key={u.email} className="admin-user">
+                <header>
+                  <div>
+                    <strong>{u.email}</strong>
+                    <span className={"admin-role " + u.role}>
+                      {u.role === "admin" ? "Owner" : "Demo"}
+                    </span>
+                    {u.hosted_domain && <small>{u.hosted_domain}</small>}
+                  </div>
+                  <small>
+                    {u.logins} sign-in{u.logins === 1 ? "" : "s"} · first{" "}
+                    {when(u.first_login)} · last {when(u.last_login)}
+                  </small>
+                </header>
+              </article>
+            ))}
+            {!loading && !owners.length && (google || github) && (
+              <p className="muted">
+                Accounts are connected but the owner has not signed in since the
+                ledger started.
+              </p>
+            )}
+          </section>
+        )}
         <section aria-labelledby="admin-blocked">
           <h2 id="admin-blocked">
             <ShieldOff size={16} />
