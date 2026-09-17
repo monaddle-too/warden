@@ -1,0 +1,51 @@
+# Stand-ins for the policy gateway (an HTTP listener on 7000) and the runner
+# (the only pod allowed to reach sandboxes), plus a decoy listener that no
+# sandbox may reach.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gateway
+  namespace: warden-spike
+  labels: {app: gateway}
+spec:
+  containers:
+  - name: httpd
+    image: docker.io/library/busybox:1.37
+    command: ["sh", "-c", "mkdir -p /www && echo gateway-ok > /www/index.html && exec httpd -f -p 7000 -h /www"]
+    ports: [{containerPort: 7000}]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: decoy
+  namespace: warden-spike
+  labels: {app: decoy}
+spec:
+  containers:
+  - name: httpd
+    image: docker.io/library/busybox:1.37
+    command: ["sh", "-c", "mkdir -p /www && echo decoy > /www/index.html && exec httpd -f -p 7000 -h /www"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: runner
+  namespace: warden-spike
+  labels: {app: runner}
+spec:
+  containers:
+  - name: shell
+    image: docker.io/library/alpine:3.22
+    command: ["sleep", "infinity"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: outsider
+  namespace: warden-spike
+  labels: {app: outsider}
+spec:
+  containers:
+  - name: shell
+    image: docker.io/library/alpine:3.22
+    command: ["sleep", "infinity"]
