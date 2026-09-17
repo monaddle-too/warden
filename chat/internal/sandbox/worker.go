@@ -53,6 +53,8 @@ type Worker struct {
 	controls                      *controlState
 	progress                      *progressState // startup stage by sandbox ID (its own lock; progress.go)
 	progressOnce                  sync.Once
+	snapshots                     *snapshotState // registry snapshot for reads while mu is busy (snapshot.go)
+	snapshotOnce                  sync.Once
 	// PrepareTimeout bounds one prepare operation: sandbox creation, the
 	// boot and the guest provisioning. Two minutes when unset (the sbx
 	// shapes); the Kubernetes runner allows ten, since a node may have to

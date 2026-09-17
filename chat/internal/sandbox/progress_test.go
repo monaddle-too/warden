@@ -39,6 +39,30 @@ func TestProgressReportsStagesWithoutTheWorkerLock(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("progress waited behind the creation")
 	}
+	// The reads the workspace panel polls answer from the registry snapshot
+	// meanwhile: the sandbox is starting, and there is no pod to show.
+	status := r
+	status.Operation = "status"
+	statused := make(chan Response, 1)
+	go func() {
+		res, err := w.dispatch(context.Background(), status)
+		if err != nil {
+			t.Error(err)
+		}
+		statused <- res
+	}()
+	select {
+	case res := <-statused:
+		if res.Sandbox == nil || res.Sandbox.ID != r.SandboxID || res.Sandbox.State != "starting" || res.Sandbox.RuntimeName == "" {
+			t.Fatalf("status during creation: %+v", res.Sandbox)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("status waited behind the creation")
+	}
+	status.ChatID = "chat-two"
+	if _, err := w.dispatch(context.Background(), status); err == nil {
+		t.Fatal("unbound chat read the snapshot")
+	}
 	cancel()
 	if err := <-done; err == nil {
 		t.Fatal("cancelled creation succeeded")

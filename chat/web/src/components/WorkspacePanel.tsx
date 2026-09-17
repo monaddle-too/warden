@@ -87,7 +87,8 @@ function Pod({ pod }: { pod: PodInfo }) {
   ];
   if (pod.runtimeClass) facts.push(["Isolation", pod.runtimeClass]);
   if (pod.ip) facts.push(["Address", pod.ip]);
-  if (pod.started) facts.push(["Started", new Date(pod.started).toLocaleString()]);
+  if (pod.started)
+    facts.push(["Started", new Date(pod.started).toLocaleString()]);
   if (pod.restarts) facts.push(["Restarts", String(pod.restarts)]);
   facts.push([
     "CPU",

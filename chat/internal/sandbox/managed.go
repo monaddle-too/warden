@@ -109,6 +109,7 @@ func (w *Worker) defaultsLocked() {
 	}
 }
 func (w *Worker) saveManagedLocked() error {
+	w.refreshSnapshotsLocked()
 	return atomicJSON(filepath.Join(w.Root, "managed-v2.json"), w.managed)
 }
 func (w *Worker) initializeManaged(ctx context.Context) error {
@@ -579,12 +580,21 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	switch r.Operation {
 	case "progress":
 		return w.progressOp(r)
-	case "pod":
-		return w.podOp(ctx, r)
 	case "cluster.status", "cluster.logs":
 		return w.clusterOp(ctx, r)
 	}
-	w.mu.Lock()
+	if r.Operation == "pod" {
+		// The pod read is a cluster call; it never holds the registry.
+		return w.snapshotOp(ctx, r)
+	}
+	if r.Operation == "status" {
+		// The read the workspace panel polls: never behind a creation.
+		if !w.mu.TryLock() {
+			return w.snapshotOp(ctx, r)
+		}
+	} else {
+		w.mu.Lock()
+	}
 	defer w.mu.Unlock()
 	w.defaultsLocked()
 	if r.Operation == "bind-chat" {

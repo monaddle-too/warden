@@ -1163,8 +1163,6 @@ button.danger:hover {
   border-collapse: collapse;
   font-size: 13px;
   margin: 0 0 8px;
-  display: block;
-  overflow-x: auto;
 }
 .cluster-table th,
 .cluster-table td {
@@ -1172,7 +1170,13 @@ button.danger:hover {
   padding: 6px 10px 6px 0;
   border-top: 1px solid var(--line);
   vertical-align: middle;
-  white-space: nowrap;
+}
+.cluster-table td {
+  overflow-wrap: anywhere;
+}
+.cluster-table td code,
+.cluster-table td small {
+  overflow-wrap: normal;
 }
 .cluster-table th {
   border-top: 0;
@@ -1194,10 +1198,11 @@ button.danger:hover {
   display: inline-flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 110px;
+  min-width: 96px;
 }
 .cluster-usage small {
   color: var(--muted);
+  white-space: nowrap;
 }
 .cluster-meter {
   width: 100%;

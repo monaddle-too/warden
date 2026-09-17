@@ -45,7 +45,11 @@ type usageState struct {
 const usageCacheTTL = 3 * time.Second
 
 func (w *Worker) usage(ctx context.Context, r Request) (Response, error) {
-	w.mu.Lock()
+	if !w.mu.TryLock() {
+		// A creation holds the registry: the last sample is better than
+		// a stall (snapshot.go).
+		return w.snapshotOp(ctx, r)
+	}
 	w.defaultsLocked()
 	s, _, err := w.bindingLocked(r)
 	if err != nil {
@@ -75,6 +79,7 @@ func (w *Worker) usage(ctx context.Context, r Request) (Response, error) {
 		state.total, state.idle = 0, 0
 		state.sample = sample
 		w.mu.Unlock()
+		w.rememberUsage(s.ID, sample)
 		return Response{Usage: &sample}, nil
 	}
 	name, dir := s.RuntimeName, s.Directory
@@ -95,13 +100,16 @@ func (w *Worker) usage(ctx context.Context, r Request) (Response, error) {
 		percent := 100 * (1 - float64(idle-previousIdle)/float64(total-previousTotal))
 		sample.CPUPercent = &percent
 	}
-	w.mu.Lock()
+	w.rememberUsage(s.ID, sample)
 	// The state may have been replaced by a newer generation meanwhile; only
-	// record counters for the generation they came from.
-	if current := w.usages[s.ID]; current != nil && current.generation == state.generation {
-		current.total, current.idle, current.sample = total, idle, sample
+	// record counters for the generation they came from. A creation that
+	// took the registry meanwhile just loses this pair of counters.
+	if w.mu.TryLock() {
+		if current := w.usages[s.ID]; current != nil && current.generation == state.generation {
+			current.total, current.idle, current.sample = total, idle, sample
+		}
+		w.mu.Unlock()
 	}
-	w.mu.Unlock()
 	return Response{Usage: &sample}, nil
 }
 

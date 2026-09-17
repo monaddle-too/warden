@@ -26,3 +26,15 @@ export const age = (since?: string, now = Date.now()) => {
   if (s < 86400) return `${Math.floor(s / 3600)} h`;
   return `${Math.floor(s / 86400)} d`;
 };
+
+/* The kubelet stamps each line with an RFC 3339 time; show it as the
+   local clock time instead. */
+export function shortenTimestamp(line: string): string {
+  const space = line.indexOf(" ");
+  if (space < 20) return line;
+  const stamp = line.slice(0, space);
+  if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/.test(stamp)) return line;
+  const t = new Date(stamp);
+  if (Number.isNaN(t.getTime())) return line;
+  return t.toLocaleTimeString() + " " + line.slice(space + 1);
+}

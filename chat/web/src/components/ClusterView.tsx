@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw, ScrollText, Server, X } from "lucide-react";
 import { api } from "../api";
 import type { Cluster, NodeInfo, PodInfo, PodLogs, Resources } from "../types";
-import { age, cpu, memory, percent } from "../units";
+import { age, cpu, memory, percent, shortenTimestamp } from "../units";
 
 /* The admin console's Cluster section (docs/warden-startup-visibility-
    plan.md): the nodes, the sandbox pods, the Warden service pods and a log
@@ -45,7 +45,11 @@ function Usage({
   kind: "cpu" | "memory";
 }) {
   const format = kind === "cpu" ? cpu : memory;
-  const used = usage ? (kind === "cpu" ? usage.cpuMilli : usage.memoryBytes) : 0;
+  const used = usage
+    ? kind === "cpu"
+      ? usage.cpuMilli
+      : usage.memoryBytes
+    : 0;
   return (
     <span className="cluster-usage">
       <small>
@@ -86,9 +90,7 @@ function NodesTable({ nodes, now }: { nodes: NodeInfo[]; now: number }) {
               {n.os && <small className="muted"> · {n.os}</small>}
             </td>
             <td>
-              <span
-                className={`status-dot ${n.ready ? "running" : "error"}`}
-              />{" "}
+              <span className={`status-dot ${n.ready ? "running" : "error"}`} />{" "}
               {n.ready ? "Ready" : "Not ready"}
               {n.unschedulable && " · cordoned"}
             </td>
@@ -329,7 +331,9 @@ function LogViewer({
             <p className="muted">Older lines are not shown.</p>
           )}
           <pre ref={pre}>
-            {logs.lines.length ? logs.lines.join("\n") : "(no output)"}
+            {logs.lines.length
+              ? logs.lines.map(shortenTimestamp).join("\n")
+              : "(no output)"}
           </pre>
           <small className="muted">
             Read {new Date(logs.at).toLocaleTimeString()}

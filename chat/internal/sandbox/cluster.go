@@ -139,30 +139,6 @@ var ErrClusterUnavailable = errors.New("cluster visibility is available on the K
 // runner has not bound.
 var errBindingRequired = errors.New("chat is not authorized for this project sandbox")
 
-// podOp answers the pod operation for a bound sandbox.
-func (w *Worker) podOp(ctx context.Context, r Request) (Response, error) {
-	w.mu.Lock()
-	w.defaultsLocked()
-	s, _, err := w.bindingLocked(r)
-	if err != nil {
-		w.mu.Unlock()
-		return Response{}, err
-	}
-	name, created := s.RuntimeName, s.Created || s.Creating
-	w.mu.Unlock()
-	if w.Cluster == nil {
-		return Response{}, ErrClusterUnavailable
-	}
-	if !created {
-		return Response{}, nil
-	}
-	pod, err := w.Cluster.Pod(ctx, name)
-	if err != nil {
-		return Response{}, err
-	}
-	return Response{Pod: pod}, nil
-}
-
 func (w *Worker) clusterOp(ctx context.Context, r Request) (Response, error) {
 	if w.Cluster == nil {
 		if r.Operation == "cluster.status" {
