@@ -761,6 +761,22 @@ Decisions this changes:
       dev cluster. The live run needs the owner's cluster, a domain with
       wildcard DNS, and the Google sign-in web client (the built-in Desktop
       client is for Docs, not sign-in), so it waits for the owner.
+      2026-09-17 (later): the cluster is chosen, GKE Autopilot (costed
+      against GKE Standard, a plain VM, Hetzner, OVH and Oracle's free
+      tier: it is the only option with gVisor and NetworkPolicy enforcement
+      pre-installed and it bills pod requests only, about $10-27 a month
+      idle plus $18 for the ingress load balancer). The recipe is in
+      `deploy/k8s/gke/{env.example,values.yaml,cluster-issuer.yaml}` and
+      `scripts/k8s-gke.sh` (`up`, `dns`, `build-images`, `secrets`,
+      `deploy`, `status`, `park`, `down`, `delete`) with a guide section;
+      one delegated zone serves as app host and preview suffix, cert-manager
+      solves DNS-01 in Cloud DNS through Workload Identity, and the amd64
+      images are built in the dev VM under QEMU user emulation (proven: the
+      server image in 58 s and the guest base image in about two minutes
+      cold; Ubuntu's qemu-user-static 8.2 segfaulted in the runtimes'
+      installer, the binfmt image's QEMU 10.2 does not). The gcloud side
+      is unexecuted here (no gcloud, no project on this machine); what the
+      owner supplies is listed in the guide and in Handoff 4.
 - [~] 10 Documentation and chart release (work item 9). Docs merged
       12b489e (`docs/warden-kubernetes.md`, chart README, architecture and
       README links); chart publishing merged 9a7a8b1 (`release.yml`
@@ -899,10 +915,18 @@ the repository and in the chart values.
    real KVM (the OVH server with k3s, or a bare-metal node) and run the
    suite there; under nested virtualization on this Mac Kata works but
    half its boots stall for minutes.
-4. Public previews (step 9): choose the cluster, point a domain with
-   wildcard DNS at its ingress, register a Google sign-in web client, and
-   install with `auth.mode: google`, `previews.mode: public` and
-   cert-manager or a wildcard certificate Secret.
+4. Public previews (step 9), on GKE Autopilot with `scripts/k8s-gke.sh`
+   (guide, "A real cluster: GKE Autopilot with public previews"). Yours to
+   supply, in `deploy/k8s/gke/env`: a Google Cloud project with billing and
+   `gcloud` signed in (`brew install --cask google-cloud-sdk`, `gcloud auth
+   login`, `gcloud components install gke-gcloud-auth-plugin`); the
+   hostname (`WARDEN_GKE_DOMAIN`, for example a name under monaddle.com,
+   whose DNS is at Squarespace: after `up`, add the NS records `dns`
+   prints there); a Google sign-in web client ID with `https://<domain>`
+   as an authorized JavaScript origin (`WARDEN_GKE_CLIENT_ID`). Then `up`,
+   `dns`, `build-images`, `secrets`, `deploy`, sign in, and the suite with
+   `WARDEN_K8S_EDGE_URL=https://<domain>`. Start with
+   `WARDEN_GKE_ACME=staging`; `production` once the delegation resolves.
 5. Publish (step 10): tag a release; `release.yml` pushes
    `ghcr.io/monaddle-too/warden:<tag>`, the guest images and
    `oci://ghcr.io/monaddle-too/charts/warden`; without Actions minutes,
@@ -914,6 +938,27 @@ the repository and in the chart values.
 
 ## Progress
 
+- 2026-09-17 (evening): step 9's cluster chosen and its recipe written.
+  Costing (us-central1 list prices, Hetzner and OVH after their 2026
+  increases, Oracle's free tier after its June cut): GKE Autopilot at
+  about $10-27 a month idle with the service pods on Spot and no warm
+  spare, $18 more for the ingress load balancer, five cents per sandbox
+  hour; GKE Standard the same money with more knobs (two node pools are
+  mandatory with GKE Sandbox, node boot disks default to 100 GB); a Kata
+  tier needs an N2 nested-virtualization pool at $0.10 an hour, switched
+  on for the runs; Hetzner CX23/CAX11 at about EUR 6 is the cheapest
+  always-on k3s box but has no nested virtualization and thin stock; OVH
+  MKS has a free control plane and a EUR 15 worker; Oracle's Always Free
+  tier is $0 for the gVisor tier with a Calico add-on and capacity luck.
+  `deploy/k8s/gke/` and `scripts/k8s-gke.sh` implement the Autopilot
+  choice; the amd64 image path is exercised in the dev VM: buildkit with
+  the binfmt image's QEMU 10.2 builds the server image in 58 s and the
+  guest base image in about two minutes (Ubuntu's qemu-user-static 8.2
+  segfaults in the runtimes' installer; and the built image cannot be
+  smoke-tested under emulation, Bun aborts there, so the cluster is its
+  first run). The owner's inputs are in Handoff 4; the gcloud side of the
+  script is written from the documented CLI and untested until a project
+  exists.
 - 2026-09-17 (after the suite): a preview link on the dev cluster opened
   a signed-out tab. Two causes in the edge's owner mode, both fixed in
   `edge/owner.go` with regression tests: the owner-session bound (64) was

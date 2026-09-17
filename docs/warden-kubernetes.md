@@ -952,3 +952,89 @@ pods per tier, and print the egress and ingress table, the label flip, the
 address-binding check, the ConfigMap refresh time and the pod start time
 per tier. They are the evidence behind "Spike results" in the plan and are
 not used by Warden itself.
+
+### A real cluster: GKE Autopilot with public previews
+
+The dev VM cannot exercise public previews (a public address, a domain,
+a browser certificate, Google sign-in). `deploy/k8s/gke/` and
+`scripts/k8s-gke.sh` run the chart on a GKE Autopilot cluster for that,
+as a test cluster that costs little while nothing runs: Autopilot bills
+pod requests only (the four service pods on Spot capacity are about $8 a
+month, the GKE free tier covers one cluster's management fee), GKE Sandbox
+is the gVisor tier with nothing to install on nodes, Dataplane V2 enforces
+the NetworkPolicies, the ingress controller's load balancer is about $18 a
+month while it exists, and a sandbox costs about five cents an hour while
+it runs. `sandboxes.warmSpares` is 0 in `deploy/k8s/gke/values.yaml` for
+that reason (a warm spare is billed around the clock), so the first
+sandbox after an idle period waits for a GKE Sandbox node.
+
+The domain is one delegated zone: the app is `https://<domain>/` and
+previews are `https://<binding-id>.<domain>/`, so `auth.publicURL` and
+`previews.hostSuffix` are the same name, one wildcard certificate covers
+both, and the parent domain gets NS records once. cert-manager solves
+Let's Encrypt's DNS-01 challenge in Cloud DNS as a Google service account
+through Workload Identity; the issuers are
+`deploy/k8s/gke/cluster-issuer.yaml` (staging first, then production).
+
+What the operator supplies, in `deploy/k8s/gke/env` (copy `env.example`;
+the file is git-ignored):
+
+1. A Google Cloud project with billing, `gcloud` signed in to it
+   (`brew install --cask google-cloud-sdk`, `gcloud auth login`,
+   `gcloud components install gke-gcloud-auth-plugin`).
+2. A hostname under a domain you control, `WARDEN_GKE_DOMAIN`; after `up`
+   you add the NS records `dns` prints at the parent domain's DNS host.
+3. A Google sign-in web client: in the project's APIs & Services →
+   Credentials, an OAuth client ID of type Web application with
+   `https://<domain>` as an authorized JavaScript origin (the built-in
+   Desktop client is for Docs, not sign-in); its ID is
+   `WARDEN_GKE_CLIENT_ID`.
+4. The provider logins: `secrets` copies the three Secrets from the dev
+   cluster; otherwise create them as in "The release namespace and the
+   provider Secrets".
+
+Then:
+
+```sh
+scripts/k8s-gke.sh up             # cluster, zone, registry, ingress-nginx, cert-manager, issuers (about ten minutes)
+scripts/k8s-gke.sh dns            # the NS records to add at the parent; A records for <domain> and *.<domain>
+scripts/k8s-gke.sh build-images   # linux/amd64 images, built in the dev VM under emulation, pushed to Artifact Registry
+scripts/k8s-gke.sh secrets        # provider Secrets from the dev cluster
+scripts/k8s-gke.sh deploy         # helm upgrade --install with the values, the domain, the client and the owner
+scripts/k8s-gke.sh status         # pods, certificate, ingress, delegation
+export KUBECONFIG="$(scripts/k8s-gke.sh kubeconfig)"   # dist/gke/kubeconfig, not ~/.kube/config
+```
+
+`build-images` exists because GKE's nodes are x86 and the dev images are
+arm64: the Mac cross-compiles the binary and the VM builds both images
+for `linux/amd64` under QEMU user emulation (the binfmt image's QEMU,
+registered on first use; Ubuntu's own qemu-user-static segfaults in the
+runtimes' installer), about a minute for the server image and two for the
+guest base image, pushes them to the project's Artifact Registry with the
+signed-in account's access token and records the guest image's registry
+manifest digest in `dist/gke/` for `deploy`. The images cannot be
+smoke-tested under emulation (Bun aborts there); the cluster is their
+first run. The published multi-architecture images from `release.yml` do
+the same job once a tag exists (`image.repository` and
+`guestImage.digest` for that platform in the values).
+
+Open `https://<domain>/` and sign in as `WARDEN_GKE_OWNER` once `status`
+shows the certificate ready (with `WARDEN_GKE_ACME=staging` the browser
+warns about the untrusted issuer; switch to `production` and `deploy`
+again when the delegation is proven). The end-to-end suite runs against
+this cluster too, with the public address instead of the loopback edge:
+
+```sh
+WARDEN_K8S_KUBECONFIG="$(scripts/k8s-gke.sh kubeconfig)" WARDEN_K8S_EDGE_URL="https://<domain>" \
+  GOPROXY=off GOFLAGS=-mod=mod go -C chat test -tags k8s ./tests/k8s/ -run TestKubernetes -v -count=1
+```
+
+`park` scales everything to zero (the disks and the load balancer keep
+costing), `unpark` brings it back, `down` deletes the cluster with its
+disks, and `delete` also removes the zone, the registry and the service
+account. Two things to know before the first run: the policy service's
+canary proof has a three-minute budget, and on a cold Autopilot cluster
+the two canary pods first wait for a GKE Sandbox node (one to two
+minutes), so the first start after `up` or `unpark` is the slow one; and
+GKE's `gvisor` RuntimeClass (handler `gvisor`) is in the tier's allowlist,
+so `runtime.runtimeClassName` stays empty.
