@@ -3,11 +3,13 @@ package policysvc
 import (
 	"flag"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"warden/chat/internal/config"
 	"warden/chat/internal/policy"
+	"warden/chat/internal/transport"
 )
 
 // settings are the effective values after reconciling the legacy flags with
@@ -17,6 +19,8 @@ import (
 type settings struct {
 	cfg              config.Config
 	state            string // policy state directory (paths.state/policy)
+	listen           string // services.policy.listen (unix://<state>/sbx-control.sock)
+	tls              *transport.TLS
 	sbx              string // sbx.executable
 	codexAuth        string // providers.codex.authFile
 	claudeAuth       string // providers.claude.authFile
@@ -31,13 +35,27 @@ type settings struct {
 	githubConfigured bool   // providers.github present
 	githubAuthFile   string // providers.github.authFile (local user token)
 	chatListen       string // chat.listen; its port is the built-in Google redirect
+	publicURL        string // auth.publicURL; the Google redirect origin in the kubernetes kind
 	egress           string // sandboxes.egress: restricted or open
-	publicURL        string // auth.publicURL: where attached images are published for Docs edits (https only)
+	// The kubernetes kind (docs/warden-kubernetes-plan.md, work item 5):
+	// kind is runtime.kind; kubernetes the section; the *Secret fields are
+	// providers.<p>.secret; kubeconfig is --kubeconfig or
+	// $WARDEN_KUBECONFIG (empty: the pod's own service account).
+	kind          string
+	kubernetes    *config.Kubernetes
+	codexSecret   string
+	claudeSecret  string
+	githubSecret  string
+	kubeconfig    string
+	coreNamespace string // --kube-namespace; empty: the client's own
 }
 
 type policyFlags struct {
 	configPath, state, sbx, googleConfig, claudeAuth, codexAuth, vendorDir, template, guestDigest, githubAuthFile, chatListen, egress *string
 	caMaxAge                                                                                                                          *time.Duration
+	// kubeconfig and kubeNamespace are the kubernetes kind's development
+	// flags; nil when the flag set does not define them.
+	kubeconfig, kubeNamespace *string
 }
 
 func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
@@ -48,6 +66,13 @@ func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
 	o := config.NewOverrides(fs, source)
 	s := settings{cfg: cfg}
 	s.state = config.Override(o, "state", *f.state, "paths.state (policy directory)", cfg.PolicyState())
+	// The listener: the file's services.policy.listen, or, with the legacy
+	// --state flag alone, the socket inside that directory as before.
+	s.listen = cfg.PolicyListen()
+	if !o.FromFile() {
+		s.listen = "unix://" + filepath.Join(s.state, "sbx-control.sock")
+	}
+	s.tls = cfg.TransportTLS()
 	s.sbx = config.Override(o, "sbx", *f.sbx, "sbx.executable", cfg.SBX.Executable)
 	s.vendorDir = config.Override(o, "vendor-dir", *f.vendorDir, "paths.githubCatalog", cfg.Paths.GitHubCatalog)
 	if s.vendorDir == "" {
@@ -57,20 +82,36 @@ func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
 	if s.template == "" {
 		s.template = defaultPath("config/policy.template.json")
 	}
-	s.caMaxAge = config.Override(o, "gateway-ca-max-age", *f.caMaxAge, "sbx.inspectionCertMaxAgeDays", time.Duration(cfg.SBX.InspectionCertMaxAgeDays)*24*time.Hour)
-	s.guestDigest = config.Override(o, "guest-image-digest", *f.guestDigest, "sbx.guestImageDigest", cfg.GuestDigest())
-	s.egress = config.Override(o, "egress", *f.egress, "sandboxes.egress", cfg.Sandboxes.Egress)
-	if strings.HasPrefix(cfg.Auth.PublicURL, "https://") {
-		s.publicURL = strings.TrimRight(cfg.Auth.PublicURL, "/")
+	s.kind = cfg.RuntimeKind()
+	if s.kind == config.RuntimeKubernetes {
+		k := *cfg.Kubernetes
+		s.kubernetes = &k
+		s.caMaxAge = config.Override(o, "gateway-ca-max-age", *f.caMaxAge, "kubernetes.gatewayCAMaxAgeDays", time.Duration(k.GatewayCAMaxAgeDays)*24*time.Hour)
+		s.guestDigest = config.Override(o, "guest-image-digest", *f.guestDigest, "kubernetes.guestImageDigest", k.GuestImageDigest)
+		if f.kubeconfig != nil {
+			s.kubeconfig = *f.kubeconfig
+		}
+		if s.kubeconfig == "" {
+			s.kubeconfig = os.Getenv("WARDEN_KUBECONFIG")
+		}
+		if f.kubeNamespace != nil {
+			s.coreNamespace = *f.kubeNamespace
+		}
+	} else {
+		s.caMaxAge = config.Override(o, "gateway-ca-max-age", *f.caMaxAge, "sbx.inspectionCertMaxAgeDays", time.Duration(cfg.SBX.InspectionCertMaxAgeDays)*24*time.Hour)
+		s.guestDigest = config.Override(o, "guest-image-digest", *f.guestDigest, "sbx.guestImageDigest", cfg.GuestDigest())
 	}
+	s.egress = config.Override(o, "egress", *f.egress, "sandboxes.egress", cfg.Sandboxes.Egress)
 	codex := ""
 	if cfg.Providers.Codex != nil {
 		codex = cfg.Providers.Codex.AuthFile
+		s.codexSecret = cfg.Providers.Codex.Secret
 	}
 	s.codexAuth = config.Override(o, "codex-auth-file", *f.codexAuth, "providers.codex.authFile", codex)
 	claude := ""
 	if cfg.Providers.Claude != nil {
 		claude = cfg.Providers.Claude.AuthFile
+		s.claudeSecret = cfg.Providers.Claude.Secret
 	}
 	s.claudeAuth = config.Override(o, "claude-auth-file", *f.claudeAuth, "providers.claude.authFile", claude)
 	docs := ""
@@ -93,12 +134,14 @@ func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
 		s.githubSlug = g.AppSlug
 		broker = g.BrokerFile
 		authFile = g.AuthFile
+		s.githubSecret = g.Secret
 	}
 	s.githubAuthFile = config.Override(o, "github-auth-file", *f.githubAuthFile, "providers.github.authFile", authFile)
 	if o.Set("github-auth-file") {
 		s.githubConfigured = true
 	}
 	s.chatListen = config.Override(o, "chat-listen", *f.chatListen, "chat.listen", cfg.Chat.Listen)
+	s.publicURL = strings.TrimRight(cfg.Auth.PublicURL, "/")
 	if env := os.Getenv("WARDEN_GITHUB_APP_BROKER"); env != "" {
 		if source != "" && broker != "" && broker != env {
 			return settings{}, errNamed("$WARDEN_GITHUB_APP_BROKER " + env + " disagrees with providers.github.brokerFile " + broker + " in " + source)

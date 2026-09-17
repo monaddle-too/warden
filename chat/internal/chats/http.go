@@ -11,11 +11,29 @@ import (
 	"strings"
 	"time"
 	"warden/chat/internal/conversation"
+	"warden/chat/internal/transport"
 )
 
+// HTTP is the chat API and web UI. Requests are admitted by Token, the
+// owner capability rotated at every start that the edge reads from
+// endpoint.json (the sbx shapes), or, when Peer is set, by the mutual-TLS
+// client certificate carrying that identity (Kubernetes, where the edge's
+// certificate is its authority to forward the X-Warden-* identity headers
+// and no capability exists).
 type HTTP struct {
 	Engine                      *Engine
 	Token, Host, Origin, WebDir string
+	Peer                        string
+}
+
+// admitted reports whether the request carries the capability or, with
+// Peer set, was made over a connection whose client certificate is Peer's.
+func (h *HTTP) admitted(r *http.Request) bool {
+	if h.Peer != "" {
+		return r.TLS != nil && transport.IdentityOf(*r.TLS) == h.Peer
+	}
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return h.Token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(h.Token)) == 1
 }
 
 func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -51,8 +69,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.FileServer(http.Dir(h.WebDir)).ServeHTTP(w, r)
 		return
 	}
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if h.Token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(h.Token)) != 1 {
+	if !h.admitted(r) {
 		http.Error(w, "Warden sign-in required", 401)
 		return
 	}
@@ -89,6 +106,11 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" && path == "events" {
 		h.events(w, r)
+		return
+	}
+	if r.Method == "GET" && (path == "cluster" || path == "cluster/logs") {
+		// Owner-only at the edge (ownerOnly lists api/cluster).
+		h.clusterHTTP(w, r, path)
 		return
 	}
 	parts := strings.Split(path, "/")

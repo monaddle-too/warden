@@ -1,0 +1,28 @@
+{{- /*
+One state PVC per service (plan decision 8): policy, runner, app (the
+chat) and edge, ReadWriteOnce, kept on uninstall by default because they
+hold the chats, the sandbox registry and the sign-in ledger.
+*/ -}}
+{{- range $c := include "warden.components" . | fromJsonArray }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: warden-{{ $c.state }}-state
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "warden.labels" $ | nindent 4 }}
+    warden.monaddle.com/component: {{ $c.name }}
+  {{- if $.Values.storage.keepOnUninstall }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with $.Values.storage.className }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ index $.Values.storage $c.state }}
+{{- end }}

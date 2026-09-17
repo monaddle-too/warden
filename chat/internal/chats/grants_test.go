@@ -88,7 +88,7 @@ func (f *fakeSharing) op(i int) map[string]any {
 func TestGrantRequestsBecomeApprovalsAndResolve(t *testing.T) {
 	e, w, c := portEngine(t, "")
 	sharing, socket := newFakeSharing(t)
-	e.WardenSocket = socket
+	e.PolicyAddress = "unix://" + socket
 	call := func(tool string, args map[string]any) map[string]any {
 		t.Helper()
 		if err := e.requestGrant(c, nil, agent.Frame{ID: json.RawMessage(`1`), Params: map[string]any{"tool": tool, "arguments": args}}); err != nil {
@@ -172,7 +172,7 @@ func TestGrantRequestsBecomeApprovalsAndResolve(t *testing.T) {
 func TestRepositoryAccessAlreadySharedAndFailures(t *testing.T) {
 	e, _, c := portEngine(t, "")
 	sharing, socket := newFakeSharing(t)
-	e.WardenSocket = socket
+	e.PolicyAddress = "unix://" + socket
 	e.LocalMode = true
 	sharing.results["github_list"] = map[string]any{"repositories": []any{map[string]any{"full_name": "Owner/Repo", "access": []any{"contents", "issues"}}}}
 	text := func(err error) string {

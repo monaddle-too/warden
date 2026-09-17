@@ -8,29 +8,36 @@ import (
 
 	"warden/chat/internal/config"
 	"warden/chat/internal/hostinfo"
+	"warden/chat/internal/transport"
 )
 
 // settings are the effective runner values after reconciling the legacy
 // flags with the optional warden.json. Each flag maps to one field; a flag
 // that disagrees with a loaded file is an error.
 type settings struct {
-	cfg          config.Config
-	root         string        // paths.state/runner
-	socket       string        // paths.state/runner/worker.sock
-	wardenSocket string        // paths.state/policy/sbx-control.sock
-	sbx          string        // sbx.executable
-	template     string        // sbx.guestImage@sbx.guestImageDigest
-	runtimeDir   string        // runtimes.codex
-	claudePath   string        // runtimes.claude
-	idle         time.Duration // sandboxes.stopAfterIdleMinutes
-	memoryMB     int           // sandboxes.memoryMB
-	residents    int           // sandboxes.maxRunning
-	spares       int           // sandboxes.warmSpares
-	retained     int           // sandboxes.keepStopped
+	cfg        config.Config
+	root       string         // paths.state/runner
+	listen     string         // services.runner.listen (unix://paths.state/runner/worker.sock)
+	policy     string         // services.policy.address (unix://paths.state/policy/sbx-control.sock)
+	tls        *transport.TLS // tls.*, present when any transport URL is tls://
+	sbx        string         // sbx.executable
+	template   string         // sbx.guestImage@sbx.guestImageDigest
+	runtimeDir string         // runtimes.codex
+	claudePath string         // runtimes.claude
+	idle       time.Duration  // sandboxes.stopAfterIdleMinutes
+	memoryMB   int            // sandboxes.memoryMB
+	residents  int            // sandboxes.maxRunning
+	spares     int            // sandboxes.warmSpares
+	retained   int            // sandboxes.keepStopped
+	// previewListen and previewAddress are services.runner.previews, the
+	// shared mutual-TLS preview server and its advertised address; both ""
+	// on the sbx shapes (per-publication loopback listeners). File only.
+	previewListen, previewAddress string
 }
 
 type runnerFlags struct {
 	configPath, root, socket, wardenSocket, sbx, template, runtimeDir, claudePath *string
+	tlsListen, tlsCA, tlsCert, tlsKey                                             *string
 	idle                                                                          *time.Duration
 	memoryMB, residents, spares, retained                                         *int
 }
@@ -43,8 +50,26 @@ func resolveSettings(fs *flag.FlagSet, f runnerFlags) (settings, error) {
 	o := config.NewOverrides(fs, source)
 	s := settings{cfg: cfg}
 	s.root = config.Override(o, "root", *f.root, "paths.state (runner directory)", cfg.RunnerState())
-	s.socket = config.Override(o, "socket", *f.socket, "paths.state (runner socket)", cfg.RunnerSocket())
-	s.wardenSocket = config.Override(o, "warden-socket", *f.wardenSocket, "paths.state (policy socket)", cfg.PolicySocket())
+	// The listener is the Unix socket of --socket or the mutual-TLS port of
+	// --tls-listen, both against services.runner.listen.
+	s.listen = config.Override(o, "socket", "unix://"+str(f.socket), "services.runner.listen", cfg.RunnerListen())
+	if o.Set("tls-listen") {
+		s.listen = config.Override(o, "tls-listen", "tls://"+str(f.tlsListen), "services.runner.listen", cfg.RunnerListen())
+	}
+	s.policy = config.Override(o, "warden-socket", "unix://"+str(f.wardenSocket), "services.policy.address", cfg.PolicyAddress())
+	s.previewListen, s.previewAddress = cfg.RunnerPreviewListen(), cfg.RunnerPreviewAddress()
+	s.tls = cfg.TransportTLS()
+	if o.Set("tls-ca") || o.Set("tls-cert") || o.Set("tls-key") {
+		var current transport.TLS
+		if s.tls != nil {
+			current = *s.tls
+		}
+		s.tls = &transport.TLS{
+			CAFile:   config.Override(o, "tls-ca", str(f.tlsCA), "tls.caFile", current.CAFile),
+			CertFile: config.Override(o, "tls-cert", str(f.tlsCert), "tls.certFile", current.CertFile),
+			KeyFile:  config.Override(o, "tls-key", str(f.tlsKey), "tls.keyFile", current.KeyFile),
+		}
+	}
 	s.sbx = config.Override(o, "sbx", *f.sbx, "sbx.executable", cfg.SBX.Executable)
 	s.template = config.Override(o, "template", *f.template, "sbx.guestImage", cfg.GuestTemplate())
 	s.runtimeDir = config.Override(o, "runtime-dir", *f.runtimeDir, "runtimes.codex", cfg.Runtimes.Codex)
@@ -66,6 +91,14 @@ func resolveSettings(fs *flag.FlagSet, f runnerFlags) (settings, error) {
 		})
 	}
 	return s, nil
+}
+
+// str reads an optional flag pointer (tests leave the TLS flags unset).
+func str(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 var findSBX = hostinfo.FindSBX

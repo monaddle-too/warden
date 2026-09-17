@@ -1,16 +1,21 @@
-// Package policysvc is `warden policy`, the private SBX control and
-// credential broker: registry, per-sandbox policy engines, SBX verifier,
-// inspected loopback gateways, sharing services and the GitHub App broker
-// subcommand.
+// Package policysvc is `warden policy`, the private sandbox control and
+// credential broker: registry, per-sandbox policy engines, the runtime
+// verifier over the kind's inspector (SBX, or Kubernetes with its canaries),
+// inspected gateways (per-binding loopback listeners, or one shared listener
+// behind the warden-gateway Service), sharing services and the GitHub App
+// broker subcommand.
 package policysvc
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +23,7 @@ import (
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/policy"
 	"warden/chat/internal/services"
+	"warden/chat/internal/transport"
 )
 
 // Main runs the policy service (or one of its one-shot subcommands:
@@ -66,6 +72,8 @@ func run(args []string) error {
 	githubAuthFile := fs.String("github-auth-file", "", "private user OAuth token file written by warden login github; exclusive with WARDEN_GITHUB_APP_BROKER")
 	chatListen := fs.String("chat-listen", "127.0.0.1:18780", "chat listen address; its port is the loopback redirect of the built-in Google Docs client")
 	egress := fs.String("egress", config.EgressRestricted, "what sandboxes may reach besides the brokered providers: restricted (the template's destination list) or open (any public HTTP/HTTPS host; credentials still only after approval) (sandboxes.egress)")
+	kubeconfig := fs.String("kubeconfig", "", "runtime.kind kubernetes, development only: a kubeconfig file instead of the pod's service account (default $WARDEN_KUBECONFIG)")
+	kubeNamespace := fs.String("kube-namespace", "", "runtime.kind kubernetes with --kubeconfig: the core namespace holding the provider Secrets (default: the kubeconfig context's)")
 	if err := services.ParseFlags(fs, args); err != nil {
 		return err
 	}
@@ -73,11 +81,14 @@ func run(args []string) error {
 		fmt.Println(handshake.Self("warden-policy"))
 		return nil
 	}
-	s, err := resolveSettings(fs, policyFlags{configPath: configPath, state: state, sbx: sbx, googleConfig: googleConfig, claudeAuth: claudeAuth, codexAuth: codexAuth, vendorDir: vendorDir, template: template, guestDigest: guestDigest, caMaxAge: caMaxAge, githubAuthFile: githubAuthFile, chatListen: chatListen, egress: egress})
+	s, err := resolveSettings(fs, policyFlags{configPath: configPath, state: state, sbx: sbx, googleConfig: googleConfig, claudeAuth: claudeAuth, codexAuth: codexAuth, vendorDir: vendorDir, template: template, guestDigest: guestDigest, caMaxAge: caMaxAge, githubAuthFile: githubAuthFile, chatListen: chatListen, egress: egress, kubeconfig: kubeconfig, kubeNamespace: kubeNamespace})
 	if err != nil {
 		return err
 	}
-	if *manageNetwork && s.sbx == "" {
+	if err := supportedKind(s.kind); err != nil {
+		return err
+	}
+	if *manageNetwork && s.sbx == "" && s.kind == config.RuntimeSBX {
 		return errors.New("managed mode requires --sbx")
 	}
 	state, sbx, googleConfig, claudeAuth, codexAuth, vendorDir, template, guestDigest, caMaxAge = &s.state, &s.sbx, &s.googleConfig, &s.claudeAuth, &s.codexAuth, &s.vendorDir, &s.template, &s.guestDigest, &s.caMaxAge
@@ -108,8 +119,11 @@ func run(args []string) error {
 		return errors.New("another Warden policy service holds this state directory")
 	}
 	defer lock.Close()
-	socketPath := filepath.Join(*state, "sbx-control.sock")
-	if len(socketPath) > 100 {
+	listen, err := transport.Parse(s.listen)
+	if err != nil {
+		return err
+	}
+	if listen.Scheme == transport.SchemeUnix && len(listen.Path) > 100 {
 		return errors.New("state path too long for private Unix socket")
 	}
 	operations, err := policy.LoadOperations(filepath.Join(*vendorDir, "github-operations.json"))
@@ -137,7 +151,18 @@ func run(args []string) error {
 	if rotated {
 		fmt.Printf("gateway CA rotated (older than %s); guests reinstall it on their next run; fingerprint %s\n", *caMaxAge, ca.Fingerprint())
 	}
-	github, err := s.github()
+	// The kubernetes kind: the API client, the Secret credential store and
+	// the trust publisher come first; the gateway and inspector attach to
+	// the registry below.
+	var k8s *kubernetesRuntime
+	var store policy.CredentialStore
+	if s.kind == config.RuntimeKubernetes {
+		if k8s, err = newKubernetesRuntime(s); err != nil {
+			return err
+		}
+		store = k8s.store
+	}
+	github, err := s.github(store)
 	if err != nil {
 		return err
 	}
@@ -174,7 +199,10 @@ func run(args []string) error {
 	sharing.GitHubConfigured, sharing.GitHubAppSlug = s.githubConfigured, s.githubSlug
 	sharing.Egress = registry
 	sharing.Network = registry
-	sharing.PublicURL = s.publicURL
+	// Attached images are published for Docs edits only at an https origin.
+	if strings.HasPrefix(s.publicURL, "https://") {
+		sharing.PublicURL = s.publicURL
+	}
 	registry.Sharing = sharing
 	if *claudeAuth != "" {
 		registry.ClaudeSource = &policy.ClaudeCredentials{Path: *claudeAuth}
@@ -182,39 +210,86 @@ func run(args []string) error {
 	if *codexAuth != "" {
 		registry.ProviderSource = &policy.CodexCredentials{Path: *codexAuth}
 	}
+	if k8s != nil {
+		k8s.credentials(registry)
+	}
 	// Gateway rules are always managed; --manage-network is accepted and ignored.
-	managed := *sbx != ""
+	managed := *sbx != "" || k8s != nil
+	serviceCtx, stopService := context.WithCancel(context.Background())
+	defer stopService()
 	if managed {
 		if exe, err := os.Executable(); err == nil {
 			policy.LimitedGitLauncher = []string{exe, "policy", "git-limited"}
 		}
-		registry.GatewayPool = policy.NewGatewayPool(registry, networks)
-		verifier, err := policy.NewSbxCliVerifier(registry, *sbx, true, nil)
-		if err != nil {
-			return errors.New("verifier: " + err.Error())
+		if k8s != nil {
+			// The trust bundle precedes the control listener (decision 9);
+			// the gateway precedes the inspector, whose canaries dial it.
+			if err := k8s.publishTrust(serviceCtx, ca); err != nil {
+				return err
+			}
+			if err := k8s.enforce(serviceCtx, registry, networks); err != nil {
+				return err
+			}
+		} else if err := enforcement(s, registry, networks); err != nil {
+			return err
 		}
-		if !policy.ValidImageDigest(*guestDigest) {
-			return errors.New("--guest-image-digest must be sha256:<64 hex>")
-		}
-		verifier.ShellDigest = *guestDigest
-		registry.Verifier = verifier
-		verifier.StartRefresher()
 	}
-	server, err := policy.ListenControl(socketPath, registry)
+	server, err := policy.ListenControl(s.listen, s.tls, registry)
 	if err != nil {
 		return errors.New("control socket: " + err.Error())
 	}
-	if managed {
+	switch {
+	case k8s != nil:
+		fmt.Printf("policy control ready on %s; gateway %s:%d; readiness requires the cluster proof and verified pods\n", s.listen, k8s.gatewayHost, s.kubernetes.GatewayPort)
+	case managed:
 		fmt.Println("SBX control ready; readiness requires verified gateway policy")
-	} else {
+	default:
 		fmt.Println("SBX control ready; runtime enforcement unsupported (fail closed)")
 	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 	<-signals
+	// The watches and any canary proof in flight end first, so closing the
+	// registry (which waits for background verifications) does not wait on
+	// canary pods.
+	stopService()
 	server.Close()
-	_ = os.Remove(socketPath)
+	if listen.Scheme == transport.SchemeUnix {
+		_ = os.Remove(listen.Path)
+	}
 	registry.Close()
+	return nil
+}
+
+// supportedKind refuses a runtime kind this build has no inspector, gateway
+// or credential store for.
+func supportedKind(kind string) error {
+	switch kind {
+	case config.RuntimeSBX, config.RuntimeKubernetes:
+		return nil
+	}
+	return errors.New("unknown runtime.kind " + kind)
+}
+
+// enforcement wires the sbx shapes' gateway and verifier into the
+// registry: per-binding loopback gateways and the SBX inspector over the
+// pinned sbx executable. The kubernetes kind attaches through
+// kubernetesRuntime.enforce.
+func enforcement(s settings, registry *policy.Registry, networks []*net.IPNet) error {
+	if s.cfg.GatewayMode() != config.GatewayLoopback {
+		return errors.New("gateway mode " + s.cfg.GatewayMode() + " is not wired for runtime.kind " + s.cfg.RuntimeKind())
+	}
+	registry.Gateways = policy.NewLoopbackGateways(registry, networks)
+	verifier, err := policy.NewSbxCliVerifier(registry, s.sbx, true, nil)
+	if err != nil {
+		return errors.New("verifier: " + err.Error())
+	}
+	if !policy.ValidImageDigest(s.guestDigest) {
+		return errors.New("--guest-image-digest must be sha256:<64 hex>")
+	}
+	verifier.Inspector.(*policy.SbxInspector).ShellDigest = s.guestDigest
+	registry.Verifier = verifier
+	verifier.StartRefresher()
 	return nil
 }
 

@@ -1,0 +1,22 @@
+# Golden input: Kata tier with pod overhead, a node pool for sandboxes, the
+# chart-created RuntimeClass, loopback previews, TLS from the bootstrap Job.
+guestImage:
+  digest: sha256:cd77d0ff2af115f3cb700414c7c54840c2c1c87c3322ea0a98c17880ef07b63e
+runtime:
+  tier: kata
+  createRuntimeClasses: true
+  overhead:
+    memoryMi: 160
+    cpuMillis: 250
+sandboxes:
+  memoryMB: 2048
+  cpuMillis: 2000
+  maxRunning: 4
+  warmSpares: 2
+  keepStopped: 16
+  nodeSelector:
+    warden.monaddle.com/pool: kata
+tls:
+  bootstrap: true
+  bootstrapJob:
+    days: 90

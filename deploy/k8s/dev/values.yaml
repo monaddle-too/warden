@@ -1,0 +1,76 @@
+# Chart values for the Lima dev cluster (docs/warden-kubernetes-plan.md,
+# appendix B): k3s with the gVisor RuntimeClass, images built inside the VM
+# and imported into containerd (scripts/k8s-dev.sh build-images), so
+# nothing is pulled; loopback previews through the Lima port forward; the
+# local-path StorageClass; TLS from the bootstrap Job (no cert-manager).
+#
+#   helm upgrade --install warden deploy/helm/warden -n warden --create-namespace \
+#     -f deploy/k8s/dev/values.yaml
+
+image:
+  repository: warden
+  tag: dev
+  pullPolicy: Never
+
+guestImage:
+  repository: warden-guest-base
+  # The manifest digest deploy/guest/build-base.sh --k3s prints for the
+  # image on the node (the plan records this one for linux/arm64,
+  # 2026-09-17). Replace it after a rebuild.
+  digest: sha256:cd77d0ff2af115f3cb700414c7c54840c2c1c87c3322ea0a98c17880ef07b63e
+
+runtime:
+  tier: gvisor
+
+sandboxes:
+  memoryMB: 1024
+  cpuMillis: 500
+  maxRunning: 2
+  warmSpares: 1
+  keepStopped: 8
+
+auth:
+  mode: owner
+
+previews:
+  mode: loopback
+
+storage:
+  className: local-path
+  policy: 1Gi
+  runner: 1Gi
+  app: 2Gi
+  edge: 256Mi
+  workspaceGi: 4
+
+tls:
+  bootstrap: true
+  bootstrapJob:
+    # The kubectl image is pulled from Docker Hub by the VM's containerd
+    # (the only image the dev loop pulls).
+    kubectlPullPolicy: IfNotPresent
+
+resources:
+  policy:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 512Mi}
+  runner:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 512Mi}
+  chat:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {memory: 256Mi}
+  edge:
+    requests: {cpu: 50m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
+# k3s's ServiceLB binds a LoadBalancer Service on the node, and Lima forwards
+# node ports to the Mac's 127.0.0.1, so *.localhost previews need no
+# port-forward in the dev VM (to be verified in step 7).
+edge:
+  # 28781, not the 18781 a local `warden start` on the same Mac already
+  # binds: Lima forwards the node port to the Mac's 127.0.0.1 and would
+  # silently lose the race for a taken port.
+  port: 28781
+  service:
+    type: LoadBalancer

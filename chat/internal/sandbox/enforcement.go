@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"time"
+	"warden/chat/internal/transport"
 )
 
 // GrantContext is constructed from worker records, never guest tool arguments.
@@ -40,18 +40,26 @@ type BrokerConfig struct {
 	ProviderBaseURL   string `json:"providerBaseURL"`
 	ProxyURL          string `json:"proxyURL"`
 }
-type UnixEnforcement struct{ Socket string }
 
-func (g *UnixEnforcement) exchange(ctx context.Context, operation string, c GrantContext, phase string) (BrokerConfig, error) {
+// PolicyEnforcement is the runner's client of the policy service's control
+// protocol at Address, a unix:// socket (the sbx shapes) or a tls://
+// host:port (Kubernetes, with TLS naming this service's material; the
+// policy service admits warden-runner and warden-chat).
+type PolicyEnforcement struct {
+	Address string
+	TLS     *transport.TLS
+}
+
+func (g *PolicyEnforcement) exchange(ctx context.Context, operation string, c GrantContext, phase string) (BrokerConfig, error) {
 	var broker BrokerConfig
-	if g == nil || g.Socket == "" {
+	if g == nil || g.Address == "" {
 		return broker, errors.New("Warden enforcement is not configured")
 	}
 	// Two resident sandboxes share the policy verifier; allow its serialized
 	// attestation to finish while staying below the 60-second worker lease.
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", g.Socket)
+	conn, err := transport.Dial(ctx, g.Address, transport.DialOptions{TLS: g.TLS})
 	if err != nil {
 		return broker, fmt.Errorf("Warden unavailable: %w", err)
 	}
@@ -77,6 +85,7 @@ func (g *UnixEnforcement) exchange(ctx context.Context, operation string, c Gran
 		OK      bool   `json:"ok"`
 		Ready   bool   `json:"ready"`
 		Reason  string `json:"reason"`
+		Detail  string `json:"detail"`
 		Error   string `json:"error"`
 		BrokerConfig
 	}
@@ -91,6 +100,11 @@ func (g *UnixEnforcement) exchange(ctx context.Context, operation string, c Gran
 		if reason == "" {
 			reason = "no verified enforcement readiness"
 		}
+		if response.Detail != "" {
+			// The verifier's last failure, for the operator; the reason stays
+			// the stable word the UI shows.
+			return broker, fmt.Errorf("Warden denied %s: %s (%s)", operation, reason, response.Detail)
+		}
 		return broker, fmt.Errorf("Warden denied %s: %s", operation, reason)
 	}
 	broker = response.BrokerConfig
@@ -99,22 +113,22 @@ func (g *UnixEnforcement) exchange(ctx context.Context, operation string, c Gran
 	}
 	return broker, nil
 }
-func (g *UnixEnforcement) call(ctx context.Context, op string, c GrantContext, phase string) error {
+func (g *PolicyEnforcement) call(ctx context.Context, op string, c GrantContext, phase string) error {
 	_, err := g.exchange(ctx, op, c, phase)
 	return err
 }
-func (g *UnixEnforcement) Register(ctx context.Context, c GrantContext) error {
+func (g *PolicyEnforcement) Register(ctx context.Context, c GrantContext) error {
 	return g.call(ctx, "register", c, "")
 }
-func (g *UnixEnforcement) Check(ctx context.Context, c GrantContext, phase string) error {
+func (g *PolicyEnforcement) Check(ctx context.Context, c GrantContext, phase string) error {
 	return g.call(ctx, "check", c, phase)
 }
-func (g *UnixEnforcement) Begin(ctx context.Context, c GrantContext) (BrokerConfig, error) {
+func (g *PolicyEnforcement) Begin(ctx context.Context, c GrantContext) (BrokerConfig, error) {
 	return g.exchange(ctx, "begin", c, "")
 }
-func (g *UnixEnforcement) Renew(ctx context.Context, c GrantContext) error {
+func (g *PolicyEnforcement) Renew(ctx context.Context, c GrantContext) error {
 	return g.call(ctx, "renew", c, "")
 }
-func (g *UnixEnforcement) End(ctx context.Context, c GrantContext) error {
+func (g *PolicyEnforcement) End(ctx context.Context, c GrantContext) error {
 	return g.call(ctx, "end", c, "")
 }

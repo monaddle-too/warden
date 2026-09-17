@@ -14,3 +14,6 @@ native/.build/
 *.key
 
 chat/web/node_modules/
+
+# The GKE test cluster settings name the owner (scripts/k8s-gke.sh).
+deploy/k8s/gke/env

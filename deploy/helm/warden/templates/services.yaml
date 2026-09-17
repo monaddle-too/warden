@@ -1,0 +1,59 @@
+{{- /*
+Services. The three control Services carry the names the certificates
+and warden.json use (warden-policy, warden-runner, warden-chat; appendix
+A). warden-gateway is the policy pod's shared gateway (decision 4): the
+policy service advertises this Service's ClusterIP to sandboxes, which
+the label-gated NetworkPolicy lets reach the policy pod on that port.
+warden-runner also exposes the runner's shared preview server, which the
+chat dials for every published preview (decisions 5 and 10). warden-edge
+is what the Ingress fronts in public mode and what NOTES.txt
+port-forwards in loopback mode.
+*/ -}}
+{{- range $s := list
+  (dict "name" "warden-policy" "component" "policy" "ports" (list (dict "name" "control" "port" (int .Values.services.policy.port))))
+  (dict "name" "warden-gateway" "component" "policy" "ports" (list (dict "name" "gateway" "port" (int .Values.gateway.port))))
+  (dict "name" "warden-runner" "component" "runner" "ports" (list (dict "name" "control" "port" (int .Values.services.runner.port)) (dict "name" "previews" "port" (int .Values.services.runner.previewPort))))
+  (dict "name" "warden-chat" "component" "chat" "ports" (list (dict "name" "control" "port" (int .Values.services.chat.port)))) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $s.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "warden.labels" $ | nindent 4 }}
+    warden.monaddle.com/component: {{ $s.component }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "warden.selectorLabels" (dict "root" $ "component" $s.component) | nindent 4 }}
+  ports:
+    {{- range $p := $s.ports }}
+    - name: {{ $p.name }}
+      port: {{ $p.port }}
+      targetPort: {{ $p.name }}
+      protocol: TCP
+    {{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: warden-edge
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: edge
+  {{- with .Values.edge.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.edge.service.type }}
+  selector:
+    {{- include "warden.selectorLabels" (dict "root" . "component" "edge") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ int .Values.edge.port }}
+      targetPort: http
+      protocol: TCP

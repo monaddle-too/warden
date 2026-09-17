@@ -18,7 +18,7 @@ func TestPublishedImageRouteIsTokenGated(t *testing.T) {
 	sharing, socket := newFakeSharing(t)
 	sharing.results["image_published"] = map[string]any{"png": "iVBORw0KGgo="}
 	e := NewEngine(store, nil)
-	e.WardenSocket = socket
+	e.PolicyAddress = "unix://" + socket
 	h := &HTTP{Engine: e, Token: "owner-secret", Host: "localhost:18780", Origin: "http://localhost:18780", WebDir: t.TempDir()}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "http://localhost:18780/published/0123456789abcdef0123456789abcdef.png", nil))

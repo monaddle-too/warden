@@ -329,6 +329,7 @@ func TestLoginLedgerPersistsAndAdminConsoleIsOwnerOnly(t *testing.T) {
 		{a, "POST", "/api/sharing/block", 204}, {a, "POST", "/api/sharing/unblock", 204},
 		{demoAuth{a}, "POST", "/api/sharing/disconnect", 403}, {a, "POST", "/api/sharing/disconnect", 204},
 		{demoAuth{a}, "POST", "/api/sharing/egress_set", 403}, {a, "POST", "/api/sharing/egress_set", 204}, {demoAuth{a}, "GET", "/api/sharing/egress", 204},
+		{demoAuth{a}, "GET", "/api/cluster", 403}, {demoAuth{a}, "GET", "/api/cluster/logs?pod=x", 403}, {a, "GET", "/api/cluster", 204},
 	} {
 		s.Auth = tc.auth
 		before := count
@@ -373,9 +374,13 @@ func loopbackServer(t *testing.T, handler http.Handler) (*Server, string) {
 	s.lastRefresh = time.Now()
 	return s, token
 }
+
+// bearer is a capability-authenticated call as the web app's fetch makes
+// it: browsers add fetch metadata, which is what earns a cookie session.
 func bearer(s *Server, method, target, token string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, target, nil)
 	r.Header.Set("Authorization", "Bearer "+token)
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	for _, c := range cookies {
 		r.AddCookie(c)
 	}
@@ -392,7 +397,7 @@ func ownerCookieFor(t *testing.T, s *Server, token string) *http.Cookie {
 	if out.Code != 200 {
 		t.Fatal(out.Code, out.Body.String())
 	}
-	c := cookie(out, ownerCookie)
+	c := cookie(out, s.Auth.(*ownerAuth).cookie)
 	if c == nil || !c.HttpOnly || c.Secure || c.Domain != "" {
 		t.Fatal("owner session cookie missing or not host scoped over loopback HTTP")
 	}
@@ -598,5 +603,50 @@ func TestProxyForwardsIdentityHeadersItOwns(t *testing.T) {
 	}
 	if seen.Get(HeaderPrincipal) != "google-subject" || seen.Get(HeaderEmail) != "owner@gmail.com" || seen.Get(HeaderName) != "Owner Person" {
 		t.Fatalf("identity headers: %v", seen)
+	}
+}
+
+// The owner cookie exists for the browser alone (the preview ticket flow
+// starts with a navigation that carries no bearer), so clients that ignore
+// Set-Cookie must not consume sessions: a curl loop, the TUI or the e2e
+// suite once filled the 64-session bound within its 8-hour life and the
+// web app then got no cookie at all, which made every preview link land on
+// a signed-out tab.
+func TestLoopbackOwnerSessionIsMintedForBrowsersOnlyAndNeverRefused(t *testing.T) {
+	s, token := loopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") }))
+	r := httptest.NewRequest("GET", "http://127.0.0.1:18781/api/state", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	out := httptest.NewRecorder()
+	s.ServeHTTP(out, r)
+	if out.Code != 200 || cookie(out, s.Auth.(*ownerAuth).cookie) != nil {
+		t.Fatal("a request without fetch metadata (curl, the TUI) minted a cookie session", out.Code, out.Header())
+	}
+	var first *http.Cookie
+	for i := 0; i < 200; i++ {
+		c := ownerCookieFor(t, s, token)
+		if i == 0 {
+			first = c
+		}
+	}
+	if r := invoke(s, "http://127.0.0.1:18781/api/state", first); r.Code != 401 {
+		t.Fatal("the bound no longer evicts the oldest session", r.Code)
+	}
+	if r := invoke(s, "http://127.0.0.1:18781/api/state", ownerCookieFor(t, s, token)); r.Code != 200 {
+		t.Fatal("a browser was refused a session", r.Code)
+	}
+}
+
+// Browsers scope host-only cookies by host, never by port, so a local
+// `warden start` on 127.0.0.1:18781 and a port-forwarded cluster edge on
+// 127.0.0.1:28781 would otherwise overwrite each other's owner cookie at
+// every API call and take turns signing the other out of previews.
+func TestLoopbackOwnerCookieNameCarriesThePort(t *testing.T) {
+	s, token := loopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") }))
+	if c := ownerCookieFor(t, s, token); c.Name != "warden-owner-18781" {
+		t.Fatal(c.Name)
+	}
+	other := &http.Cookie{Name: "warden-owner", Value: "from-the-other-warden"}
+	if r := bearer(s, "GET", "http://127.0.0.1:18781/api/state", token, other); r.Code != 200 || cookie(r, "warden-owner-18781") == nil || cookie(r, "warden-owner") != nil {
+		t.Fatal("another Warden's cookie on the same address must be ignored, not overwritten", r.Code, r.Header())
 	}
 }

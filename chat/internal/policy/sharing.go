@@ -66,10 +66,25 @@ type GoogleConnection struct {
 // which warden-chat serves itself. With neither, the connection is not
 // configured and the UI hides it.
 type GoogleClientOptions struct {
-	ConfigFile          string
-	ChatListen          string
+	ConfigFile string
+	ChatListen string
+	// RedirectBase, when set, replaces the chat-port loopback redirect with
+	// <RedirectBase>/oauth/google_docs/callback: the Kubernetes shape, where
+	// the browser reaches chat only through the edge's public origin. A
+	// Desktop client accepts loopback origins (http://127.0.0.1:<port>); a
+	// public https origin needs an operator Web client in ConfigFile.
+	RedirectBase        string
 	BuiltinClientID     string
 	BuiltinClientSecret string
+}
+
+// GoogleRedirectFromBase is the built-in client's callback under an origin.
+func GoogleRedirectFromBase(base string) (string, error) {
+	u, err := url.Parse(strings.TrimRight(base, "/"))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" {
+		return "", errors.New("Google redirect base must be an origin (scheme://host[:port])")
+	}
+	return u.String() + googleDocsProvider.callbackPath, nil
 }
 
 // BuiltinGoogleRedirect derives the loopback callback for the built-in
@@ -98,8 +113,14 @@ func NewGoogleConnection(root, config string, clock Clock) (*GoogleConnection, e
 func NewGoogleConnectionWithClient(root string, options GoogleClientOptions, clock Clock) (*GoogleConnection, error) {
 	g := &GoogleConnection{OAuthConnection: NewGoogleDocsConnection(NewRedactor(), clock), Root: root, grantedScopes: map[string]bool{}, HTTP: directHTTPS}
 	config := options.ConfigFile
-	if config == "" && options.BuiltinClientID != "" && options.ChatListen != "" {
-		redirect, err := BuiltinGoogleRedirect(options.ChatListen)
+	if config == "" && options.BuiltinClientID != "" && (options.ChatListen != "" || options.RedirectBase != "") {
+		var redirect string
+		var err error
+		if options.RedirectBase != "" {
+			redirect, err = GoogleRedirectFromBase(options.RedirectBase)
+		} else {
+			redirect, err = BuiltinGoogleRedirect(options.ChatListen)
+		}
 		if err != nil {
 			return nil, err
 		}

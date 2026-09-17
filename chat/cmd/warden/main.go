@@ -52,6 +52,7 @@ const usageText = `usage: warden COMMAND [flags]
   stop      stop a detached Warden (see start --detach)
   status    show whether Warden is running and its versions
   uninstall stop Warden, delete its sandboxes, stop its private sbx daemon and remove the state
+  tls       bootstrap: write a deployment CA and the four service certificates for tls:// transport
   version   print the build revision and protocol number
 
 The services themselves (started by warden start; also usable directly):
@@ -85,6 +86,8 @@ func (c *cli) run(args []string) int {
 		err = c.status(args[1:])
 	case "uninstall":
 		err = c.uninstall(args[1:])
+	case "tls":
+		err = c.tls(args[1:])
 	case "policy":
 		return policysvc.Main(args[1:])
 	case "runner":

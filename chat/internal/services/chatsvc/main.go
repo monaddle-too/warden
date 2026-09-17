@@ -23,6 +23,7 @@ import (
 	"warden/chat/internal/imageguard"
 	"warden/chat/internal/sandbox"
 	"warden/chat/internal/services"
+	"warden/chat/internal/transport"
 )
 
 // Main runs the chat service and returns the exit status.
@@ -35,10 +36,10 @@ func run(args []string) error {
 	}
 	fs := flag.NewFlagSet("warden serve", flag.ContinueOnError)
 	configPath := fs.String("config", "", "optional warden.json (default $WARDEN_CONFIG); flags override its computed defaults and must agree with its values")
-	wardenSocket := fs.String("warden-socket", "", "Private Warden sharing/broker socket (paths.state/policy/sbx-control.sock)")
+	wardenSocket := fs.String("warden-socket", "", "Private Warden sharing/broker socket (services.policy.address, default paths.state/policy/sbx-control.sock)")
 	root := fs.String("state", "", "Private persistent Warden chat state directory (paths.state/app)")
-	socket := fs.String("runner-socket", "", "Warden runner Unix socket (paths.state/runner/worker.sock)")
-	listen := fs.String("listen", "127.0.0.1:18780", "Loopback chat address (chat.listen)")
+	socket := fs.String("runner-socket", "", "Warden runner Unix socket (services.runner.address, default paths.state/runner/worker.sock)")
+	listen := fs.String("listen", "127.0.0.1:18780", "Loopback chat address (chat.listen; services.chat.listen may be tls:// instead)")
 	web := fs.String("web-dir", "chat/web/dist", "Built Warden chat assets (paths.webAssets)")
 	suffix := fs.String("preview-suffix", "", "Authenticated preview hostname suffix (previews.hostSuffix); empty leaves external previews unconfigured")
 	version := fs.Bool("version", false, "print the build revision and protocol number")
@@ -53,13 +54,18 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	root, socket, wardenSocket, listen, web, suffix = &s.state, &s.runnerSocket, &s.wardenSocket, &s.listen, &s.web, &s.suffix
-	if *root == "" || *socket == "" {
+	root, listen, web, suffix = &s.state, &s.listen, &s.web, &s.suffix
+	if *root == "" || s.runner == "" {
 		return errors.New("--state and --runner-socket are required")
 	}
 	if err := chats.ValidatePreviewSuffix(*suffix); err != nil {
 		return err
 	}
+	// The listener is either today's loopback HTTP server, reached by the
+	// edge with the bearer capability from endpoint.json, or a mutual-TLS
+	// server that admits only the edge's certificate (docs/warden-kubernetes-plan.md,
+	// decision 5). Everything the edge forwards is the same either way.
+	mutual := transport.IsTLS(s.listenURL)
 	host, port, err := net.SplitHostPort(*listen)
 	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
 		return errors.New("listen must be an IP loopback address")
@@ -74,7 +80,7 @@ func run(args []string) error {
 	// naming both revisions; another revision on the same protocol is a
 	// warning (one service at a time is how OVH updates).
 	self := handshake.Self("warden-chat")
-	peers, err := handshake.Verify(ctx, self, *socket, *wardenSocket, handshake.Options{Wait: handshakeWait, Warn: func(s string) { log.Print("warning: ", s) }})
+	peers, err := handshake.Verify(ctx, self, s.runner, s.policy, handshake.Options{Wait: handshakeWait, TLS: s.tls, Warn: func(s string) { log.Print("warning: ", s) }})
 	if err != nil {
 		return err
 	}
@@ -84,34 +90,61 @@ func run(args []string) error {
 		return err
 	}
 	defer store.Close()
-	// Rotate the private owner capability on each start. It is never given to SBX.
-	token := conversation.ID() + conversation.ID()
-	origin := "http://" + net.JoinHostPort(host, port)
-	endpoint := map[string]string{"url": origin, "token": token}
-	b, _ := json.Marshal(endpoint)
-	endpointPath := filepath.Join(*root, "endpoint.json")
-	if err = os.WriteFile(endpointPath, b, 0600); err != nil {
-		return err
+	handler := &chats.HTTP{Host: net.JoinHostPort(host, port), Origin: "http://" + net.JoinHostPort(host, port), WebDir: *web}
+	endpointPath := ""
+	if mutual {
+		// The edge's certificate is its authority; no capability exists and
+		// no endpoint file is written.
+		handler.Peer = transport.Edge
+		handler.Host = config.HostOf(s.address)
+		handler.Origin = "https://" + handler.Host
+	} else {
+		// Rotate the private owner capability on each start. It is never given to SBX.
+		handler.Token = conversation.ID() + conversation.ID()
+		endpoint := map[string]string{"url": handler.Origin, "token": handler.Token}
+		b, _ := json.Marshal(endpoint)
+		endpointPath = filepath.Join(*root, "endpoint.json")
+		if err = os.WriteFile(endpointPath, b, 0600); err != nil {
+			return err
+		}
+		if err = os.Chmod(endpointPath, 0600); err != nil {
+			return err
+		}
 	}
-	if err = os.Chmod(endpointPath, 0600); err != nil {
-		return err
-	}
-	engine := chats.NewEngine(store, &sandbox.Client{Socket: *socket})
+	engine := chats.NewEngine(store, &sandbox.Client{Address: s.runner, TLS: s.tls})
 	engine.PublicPreviewSuffix = *suffix
 	engine.PreviewScheme, engine.PreviewPort = s.previewScheme, s.previewPort
-	engine.WardenSocket = *wardenSocket
-	engine.LocalMode = s.cfg.Auth.Mode == config.AuthOwner
+	engine.PolicyAddress, engine.PolicyTLS = s.policy, s.tls
+	// The runner's shared preview server on Kubernetes (services.runner.
+	// previews.address, a tls:// URL the ports proxy dials as https:// with
+	// this service's certificate); "" keeps the loopback attachment URLs.
+	engine.RunnerPreviewHost, engine.RunnerPreviewTLS = config.HostOf(s.runnerPreviews), s.tls
+	// LocalMode offers the owner's own directories to an agent: a
+	// single-owner install on a machine with such directories, which the
+	// Kubernetes shape is not (the runner is a pod).
+	engine.LocalMode = s.cfg.Auth.Mode == config.AuthOwner && s.cfg.RuntimeKind() != config.RuntimeKubernetes
+	handler.Engine = engine
 	go engine.Serve(ctx)
 	defer func() { cancel(); <-engine.Done() }()
-	server := &http.Server{Addr: *listen, Handler: &chats.HTTP{Engine: engine, Token: token, Host: net.JoinHostPort(host, port), Origin: origin, WebDir: *web}, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
+	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	go func() {
 		<-ctx.Done()
 		shutdown, done := context.WithTimeout(context.Background(), 10*time.Second)
 		defer done()
 		server.Shutdown(shutdown)
 	}()
-	fmt.Printf("Warden chat listening at %s; private launcher: %s\n", origin, endpointPath)
-	if err = server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if mutual {
+		l, err := transport.Listen(s.listenURL, transport.ListenOptions{TLS: s.tls, Peers: []string{transport.Edge}})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Warden chat listening at %s as %s; admitting %s\n", s.listenURL, handler.Host, transport.Edge)
+		err = server.Serve(l)
+	} else {
+		fmt.Printf("Warden chat listening at %s; private launcher: %s\n", handler.Origin, endpointPath)
+		err = server.ListenAndServe()
+	}
+	if err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil

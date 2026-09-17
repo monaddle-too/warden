@@ -16,16 +16,16 @@ type GatewayPool struct {
 	mu       sync.Mutex
 	gateways map[string]*poolEntry
 	// Factory is replaceable in tests.
-	Factory func(cfg GatewayConfig) (*Gateway, error)
+	Factory func(cfg GatewayConfig) (*BindingGateway, error)
 }
 
 type poolEntry struct {
 	signature string
-	gateway   *Gateway
+	gateway   *BindingGateway
 }
 
 func NewGatewayPool(registry *Registry, networks []*net.IPNet) *GatewayPool {
-	return &GatewayPool{registry: registry, networks: networks, gateways: map[string]*poolEntry{}, Factory: NewGateway}
+	return &GatewayPool{registry: registry, networks: networks, gateways: map[string]*poolEntry{}, Factory: NewBindingGateway}
 }
 
 // Ensure starts (or restarts) the binding's gateway and waits for health.
