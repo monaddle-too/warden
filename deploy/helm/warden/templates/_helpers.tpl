@@ -114,6 +114,12 @@ gvisor
 {{- if not (has .Values.egress (list "restricted" "open")) -}}
 {{ fail (printf "egress must be \"restricted\" or \"open\", not %q" .Values.egress) }}
 {{- end -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" .Values.guestImage.digest) -}}
+{{ fail "guestImage.digest is required: the sha256:<64 hex> platform manifest digest of the guest base image (deploy/guest/build-base.sh prints it)" }}
+{{- end -}}
+{{- if and .Values.image.digest (not (regexMatch "^sha256:[0-9a-f]{64}$" .Values.image.digest)) -}}
+{{ fail "image.digest must be sha256:<64 hex>" }}
+{{- end -}}
 {{- end -}}
 
 {{/*

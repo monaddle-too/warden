@@ -1,0 +1,179 @@
+{{- /*
+Four ServiceAccounts, least privilege (plan decision 11). Only the policy
+service and the runner talk to the API server; the chat and the edge get a
+ServiceAccount with nothing bound so their pods can name one without a
+token (automountServiceAccountToken is false on their pods).
+*/ -}}
+{{- $sandboxNS := include "warden.sandboxNamespace" . -}}
+{{- range $sa := list "policy" "runner" "chat" "edge" }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: warden-{{ $sa }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "warden.labels" $ | nindent 4 }}
+    warden.monaddle.com/component: {{ $sa }}
+automountServiceAccountToken: false
+{{- end }}
+---
+# The runner owns sandbox pods and workspace PVCs and runs exec sessions
+# in them; nothing outside the sandbox namespace. pods/log is for the
+# guest-init output of a sandbox that failed to start (decision 6 lists it
+# among the client's verbs).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-runner
+  namespace: {{ $sandboxNS }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: runner
+rules:
+  - apiGroups: [""]
+    resources: [pods, persistentvolumeclaims]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-runner
+  namespace: {{ $sandboxNS }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-runner
+subjects:
+  - kind: ServiceAccount
+    name: warden-runner
+    namespace: {{ .Release.Namespace }}
+---
+# The policy service verifies sandbox pods and grants egress by label
+# (get/list/watch/patch on pods), reads the NetworkPolicies that select
+# them, runs the two canary pods of decision 12 (create/delete, pods/log
+# for their verdicts) and publishes the trust bundle into the ConfigMap the
+# chart pre-created (update/patch by name).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-policy
+  namespace: {{ $sandboxNS }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: policy
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, patch, create, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [warden-guest-trust]
+    verbs: [get, list, watch, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-policy
+  namespace: {{ $sandboxNS }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: policy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-policy
+subjects:
+  - kind: ServiceAccount
+    name: warden-policy
+    namespace: {{ .Release.Namespace }}
+---
+# In the core namespace the policy service is the credential store
+# (decision 8): the named provider login Secrets, read and written through
+# the API (Codex refreshes its token), watched so a rotation is picked up.
+# list and watch on named Secrets need a metadata.name field selector.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-policy-credentials
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: policy
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: {{ include "warden.providerSecretNames" . }}
+    verbs: [get, list, watch, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-policy-credentials
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: policy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-policy-credentials
+subjects:
+  - kind: ServiceAccount
+    name: warden-policy
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.rbac.policyClusterFacts }}
+---
+# Read-only view of the cluster-scoped hardening the policy service proves
+# is in place (decision 12): the sandbox Namespace's labels, the
+# RuntimeClass it pins, and the admission policy and binding.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "warden.clusterPrefix" . }}-policy-facts
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: policy
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [{{ $sandboxNS }}]
+    verbs: [get, list, watch]
+  - apiGroups: [node.k8s.io]
+    resources: [runtimeclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [validatingadmissionpolicies, validatingadmissionpolicybindings]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "warden.clusterPrefix" . }}-policy-facts
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: policy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "warden.clusterPrefix" . }}-policy-facts
+subjects:
+  - kind: ServiceAccount
+    name: warden-policy
+    namespace: {{ .Release.Namespace }}
+{{- end }}

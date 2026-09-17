@@ -1,0 +1,39 @@
+{{- /*
+The sandbox namespace (plan decision 11): Pod Security Admission enforces
+baseline (root in the guest is a product feature; the RuntimeClass is the
+boundary), warns at restricted, and the role label is what the policy
+service's cluster facts look for. The core namespace is the release
+namespace (helm install --create-namespace); its automatic
+kubernetes.io/metadata.name label is what the NetworkPolicies select.
+*/ -}}
+{{- include "warden.validate" . -}}
+{{- if .Values.sandboxNamespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "warden.sandboxNamespace" . }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    warden.monaddle.com/role: sandboxes
+    warden.monaddle.com/core-namespace: {{ .Release.Namespace }}
+  {{- if .Values.sandboxNamespace.keep }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+{{- end }}
+---
+# The guest trust bundle (decision 9): created empty here so the policy
+# service only ever updates it (create cannot be scoped to a name in RBAC),
+# and living in the sandbox namespace because a pod can mount only a
+# ConfigMap of its own namespace. Helm's three-way merge leaves the data
+# the policy service writes alone on upgrade.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: warden-guest-trust
+  namespace: {{ include "warden.sandboxNamespace" . }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: policy

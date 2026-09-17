@@ -65,6 +65,9 @@ runtime:
 sandboxNamespace:
   name: warden-sandboxes
   create: true
+  # Keep the namespace (and the workspace PVCs in it) when the release is
+  # uninstalled; `kubectl delete namespace` removes it deliberately.
+  keep: true
 
 # Sandbox sizing; mirrors sandboxes.* in warden.json and also sizes the
 # sandbox namespace's ResourceQuota and LimitRange.
@@ -72,8 +75,8 @@ sandboxes:
   # Memory per sandbox in MiB (512-16384). The LimitRange makes it both the
   # request and the limit of every container in the sandbox namespace.
   memoryMB: 1536
-  # CPU per sandbox (the LimitRange default and maximum).
-  cpu: "1"
+  # CPU per sandbox in millicores (the LimitRange default and maximum).
+  cpuMillis: 1000
   # Resident sandboxes at most.
   maxRunning: 2
   # Pre-started sandboxes waiting for a chat.
@@ -87,6 +90,9 @@ sandboxes:
   # Extra pods the quota allows beyond maxRunning + warmSpares, for the
   # policy service's two short-lived canary pods (plan decision 12).
   extraPods: 2
+  # Extra workspace PVCs the quota allows beyond maxRunning + warmSpares +
+  # keepStopped, for a chat fork's clone in flight.
+  extraPVCs: 2
   # Scheduling constraints the runner applies to sandbox pods. Kata nodes
   # are usually a pool; gVisor nodes on managed clusters often carry a
   # taint. Rendered into warden.json (kubernetes.nodeSelector and
@@ -176,6 +182,9 @@ storage:
   edge: 1Gi
   # Size of each sandbox's workspace PVC (/home/agent, the persisted set).
   workspaceGi: 20
+  # Keep the four service PVCs when the release is uninstalled
+  # (helm.sh/resource-policy: keep); delete them by hand to start over.
+  keepOnUninstall: true
 
 # Names of existing Secrets in the release namespace holding provider
 # logins (plan decision 8). The chart creates none of them and only the
@@ -229,9 +238,10 @@ tls:
   # delete all four to re-issue).
   bootstrap: false
   bootstrapJob:
-    # The image that stores the generated material as Secrets; needs
-    # kubectl. Any kubectl image works.
-    kubectlImage: docker.io/rancher/kubectl:v1.34.1
+    # The image that stores the generated material as Secrets: any image
+    # with kubectl and a POSIX shell (the warden image has neither an HTTP
+    # client nor kubectl, so the Job runs two containers).
+    kubectlImage: docker.io/alpine/k8s:1.34.1
     kubectlPullPolicy: IfNotPresent
     # Certificate validity in days (the CA lasts ten times as long).
     days: 365
@@ -285,6 +295,16 @@ networkPolicy:
   # The policy pod's provider egress: the gateway is the deployment's only
   # egress point, so it may reach these TCP ports anywhere.
   providerEgress:
+    cidr: 0.0.0.0/0
+    ports: [443]
+  # Who may reach the edge on edge.port: empty admits every source (the
+  # Ingress controller in public mode; kubectl port-forward does not cross
+  # the pod network). Otherwise a list of NetworkPolicyPeer objects, e.g.
+  # the Ingress controller's namespace.
+  edgeIngressFrom: []
+  # The edge's own egress in Google mode: it fetches Google's signing keys
+  # over HTTPS to verify ID tokens.
+  edgeEgress:
     cidr: 0.0.0.0/0
     ports: [443]
 
