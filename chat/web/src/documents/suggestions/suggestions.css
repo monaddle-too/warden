@@ -1,0 +1,258 @@
+/* The review page and its margin. Colours follow Google Docs' suggesting
+   mode: one colour for the suggesting author, insertions underlined,
+   deletions struck through. */
+.suggestion-review {
+  --suggest: #188038;
+  --suggest-soft: rgb(24 128 56 / 0.1);
+  --suggest-del: #b3261e;
+  --suggest-del-soft: rgb(179 38 30 / 0.08);
+  --comment: #d4b453;
+  --comment-soft: #f6db863d;
+  /* The page is paper: white with dark text whatever the app's theme, as
+     Google Docs keeps it; the margin follows the app. */
+  --paper: #ffffff;
+  --paper-ink: #1f1f1f;
+  --paper-line: #dadce0;
+  --paper-muted: #5f6368;
+  --card: var(--surface, #fff);
+  --card-line: var(--line, #ddd);
+  --card-muted: var(--muted, #6b675f);
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .suggestion-review {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .suggestion-margin {
+    position: static !important;
+    min-height: 0 !important;
+  }
+  .suggestion-margin .suggestion-card {
+    position: static;
+    margin: 0 0 8px;
+  }
+}
+.suggestion-page {
+  min-width: 0;
+}
+.suggestion-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--card);
+  border-bottom: 1px solid var(--card-line);
+}
+.suggestion-toolbar select {
+  width: auto;
+  min-width: 130px;
+}
+.suggestion-paper {
+  position: relative;
+  color: var(--paper-ink);
+  background: var(--paper);
+  border: 1px solid var(--paper-line);
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+  padding: 48px 56px;
+}
+.suggestion-paper a {
+  color: #1a56c4;
+}
+.suggestion-document {
+  min-height: 320px;
+}
+.suggestion-document .ProseMirror {
+  outline: none;
+}
+.suggestion-document .doc-style-title {
+  font-size: 26px;
+  font-weight: 400;
+  margin: 0 0 0.3em;
+}
+.suggestion-document .doc-style-subtitle {
+  font-size: 15px;
+  color: var(--paper-muted);
+  margin: 0 0 1em;
+}
+
+/* Suggestions */
+.suggest-insert {
+  color: var(--suggest);
+  text-decoration: underline;
+  text-decoration-color: var(--suggest);
+  text-underline-offset: 2px;
+}
+.suggest-delete {
+  color: var(--suggest-del);
+  text-decoration: line-through;
+  text-decoration-color: var(--suggest-del);
+  cursor: default;
+}
+.suggest-block {
+  border-left: 3px solid var(--suggest);
+  margin-left: -14px;
+  padding-left: 11px;
+}
+.suggest-block-delete {
+  border-left-color: var(--suggest-del);
+}
+.suggest-block-restyle::before,
+.suggest-block-accepted {
+  border-left-color: transparent;
+}
+.suggest-block-restyle {
+  border-left-style: dashed;
+}
+.suggest-active,
+.suggest-active .suggest-insert,
+.suggest-active .suggest-delete {
+  background: var(--suggest-soft);
+}
+.suggest-block-delete.suggest-active {
+  background: var(--suggest-del-soft);
+}
+
+/* Frozen content */
+.frozen-block {
+  margin: 0.65em 0;
+  padding: 6px 10px;
+  border: 1px dashed var(--paper-line);
+  border-radius: 4px;
+  color: var(--paper-muted);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  user-select: none;
+}
+.frozen-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 14px 0;
+  user-select: none;
+}
+.frozen-table td {
+  border: 1px solid var(--paper-line);
+  padding: 6px 10px;
+  vertical-align: top;
+  color: var(--paper-muted);
+}
+
+/* Comments */
+.suggestion-document .comment-highlight {
+  background: var(--comment-soft);
+  border-bottom: 2px solid var(--comment);
+  cursor: pointer;
+}
+.suggestion-document .comment-highlight.suggest-active {
+  background: #f6db8680;
+}
+.suggestion-comment-button {
+  position: absolute;
+  z-index: 3;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.15);
+}
+
+/* Margin */
+.suggestion-margin {
+  position: relative;
+  min-width: 0;
+}
+.suggestion-card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--card-line);
+  border-left: 3px solid var(--suggest);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+  font-size: 13px;
+  line-height: 1.45;
+  cursor: pointer;
+  transition: top 120ms ease;
+}
+.suggestion-card.active {
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.16);
+  border-color: var(--suggest);
+}
+.suggestion-card-comment,
+.suggestion-card-composer {
+  border-left-color: var(--comment);
+}
+.suggestion-card-comment.active,
+.suggestion-card-composer.active {
+  border-color: var(--comment);
+}
+.suggestion-card-rejected {
+  border-left-color: var(--card-line);
+  opacity: 0.8;
+}
+.suggestion-card-accepted {
+  border-left-color: transparent;
+}
+.suggestion-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.suggestion-card header .muted {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--card-muted);
+}
+.suggestion-card p {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+.suggestion-summary {
+  color: inherit;
+}
+.suggestion-reason {
+  color: var(--card-muted);
+  font-style: italic;
+}
+.suggestion-card blockquote {
+  margin: 4px 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--comment);
+  color: var(--card-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.suggestion-card textarea {
+  width: 100%;
+  min-height: 60px;
+  margin: 6px 0;
+  font-size: 13px;
+}
+.suggestion-card footer {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+.suggestion-card footer button {
+  height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+.suggestion-accept {
+  color: var(--suggest);
+  border-color: var(--suggest) !important;
+}
+.suggestion-reject {
+  color: var(--suggest-del);
+  border-color: var(--suggest-del) !important;
+}

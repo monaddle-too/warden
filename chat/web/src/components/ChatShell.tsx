@@ -688,6 +688,7 @@ export function ChatShell({
               ref={documentReviewsRef}
               key={chat.id + "document-reviews"}
               chatID={chat.id}
+              author={providerName(chat.provider)}
               autoOpen={false}
               trigger={null}
               onState={onDocumentReviews}

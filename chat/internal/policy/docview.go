@@ -364,29 +364,27 @@ type docToken struct {
 	key string
 }
 
-var tokenBoundary = regexp.MustCompile(`\s+`)
+// A token is a word or a run of punctuation with the whitespace before it,
+// so spaces never compete with words for a match and "overview." still
+// matches "overview".
+var wordPattern = regexp.MustCompile(`\s*[\p{L}\p{N}_]+|\s*[^\p{L}\p{N}_\s]+|\s+`)
 
 func tokenize(runs []docRun) []docToken {
 	var out []docToken
 	for _, run := range runs {
-		text := run.text
-		for len(text) > 0 {
-			loc := tokenBoundary.FindStringIndex(text)
-			var part string
-			switch {
-			case loc == nil:
-				part, text = text, ""
-			case loc[0] == 0:
-				part, text = text[:loc[1]], text[loc[1]:]
-			default:
-				part, text = text[:loc[0]], text[loc[0]:]
-			}
+		for _, part := range wordPattern.FindAllString(run.text, -1) {
 			token := docToken{docRun: docRun{text: part, bold: run.bold, italic: run.italic, link: run.link}}
 			token.key = part + "\x00" + strconv.FormatBool(run.bold) + strconv.FormatBool(run.italic) + run.link
 			out = append(out, token)
 		}
 	}
 	return out
+}
+
+// tokenChange is one token of a diff with what happened to it.
+type tokenChange struct {
+	token  docToken
+	change string // "", "delete", "insert"
 }
 
 // inlineDiff merges two paragraphs' runs into one sequence with each token
@@ -401,7 +399,24 @@ func inlineDiff(before, after []docRun, id int) (runs []viewRun, ratio float64) 
 	for i, t := range b {
 		keysB[i] = t.key
 	}
+	var changes []tokenChange
 	same := 0
+	for _, op := range lcsOps(keysA, keysB) {
+		for k := 0; k < op.length; k++ {
+			switch op.kind {
+			case '=':
+				changes = append(changes, tokenChange{token: a[op.a+k]})
+				same++
+			case '-':
+				changes = append(changes, tokenChange{token: a[op.a+k], change: "delete"})
+			case '+':
+				changes = append(changes, tokenChange{token: b[op.b+k], change: "insert"})
+			}
+		}
+	}
+	if len(a)+len(b) > 0 {
+		ratio = float64(2*same) / float64(len(a)+len(b))
+	}
 	push := func(token docToken, change string) {
 		run := viewRun{docRun: token.docRun, change: change, id: id}
 		if n := len(runs); n > 0 && runs[n-1].change == change && runs[n-1].bold == run.bold && runs[n-1].italic == run.italic && runs[n-1].link == run.link {
@@ -410,23 +425,85 @@ func inlineDiff(before, after []docRun, id int) (runs []viewRun, ratio float64) 
 		}
 		runs = append(runs, run)
 	}
-	for _, op := range lcsOps(keysA, keysB) {
-		for k := 0; k < op.length; k++ {
-			switch op.kind {
-			case '=':
-				push(a[op.a+k], "")
-				same++
-			case '-':
-				push(a[op.a+k], "delete")
-			case '+':
-				push(b[op.b+k], "insert")
-			}
-		}
-	}
-	if len(a)+len(b) > 0 {
-		ratio = float64(2*same) / float64(len(a)+len(b))
+	for _, c := range cleanupSemantic(changes) {
+		push(c.token, c.change)
 	}
 	return runs, ratio
+}
+
+// cleanupSemantic reads like an editor, not a diff engine: a few kept
+// characters wedged between two edits ("the", a space) are absorbed into
+// one replacement, and each replacement shows its deletions before its
+// insertions.
+func cleanupSemantic(changes []tokenChange) []tokenChange {
+	type segment struct {
+		change string
+		items  []tokenChange
+	}
+	var segments []segment
+	for _, c := range changes {
+		if n := len(segments); n > 0 && segments[n-1].change == c.change {
+			segments[n-1].items = append(segments[n-1].items, c)
+			continue
+		}
+		segments = append(segments, segment{change: c.change, items: []tokenChange{c}})
+	}
+	length := func(s segment) int {
+		n := 0
+		for _, c := range s.items {
+			n += utf8.RuneCountInString(strings.TrimSpace(c.token.text))
+		}
+		return n
+	}
+	// Absorb short equalities between edits, repeating until stable.
+	for changed := true; changed; {
+		changed = false
+		for i := 1; i+1 < len(segments); i++ {
+			s := segments[i]
+			if s.change != "" || segments[i-1].change == "" || segments[i+1].change == "" {
+				continue
+			}
+			if length(s) > 4 || length(s) >= length(segments[i-1])+length(segments[i+1]) {
+				continue
+			}
+			var merged []tokenChange
+			for _, side := range []string{"delete", "insert"} {
+				for _, part := range []segment{segments[i-1], s, segments[i+1]} {
+					for _, c := range part.items {
+						if part.change == side || part.change == "" {
+							merged = append(merged, tokenChange{token: c.token, change: side})
+						}
+					}
+				}
+			}
+			segments = append(segments[:i-1], append([]segment{{change: "mixed", items: merged}}, segments[i+2:]...)...)
+			changed = true
+			break
+		}
+	}
+	// Adjacent edits read as one replacement: deletions, then insertions.
+	var out []tokenChange
+	for i := 0; i < len(segments); {
+		if segments[i].change == "" {
+			out = append(out, segments[i].items...)
+			i++
+			continue
+		}
+		j := i
+		var deleted, inserted []tokenChange
+		for ; j < len(segments) && segments[j].change != ""; j++ {
+			for _, c := range segments[j].items {
+				if c.change == "delete" {
+					deleted = append(deleted, c)
+				} else {
+					inserted = append(inserted, c)
+				}
+			}
+		}
+		out = append(append(out, deleted...), inserted...)
+		i = j
+	}
+	return out
 }
 
 // suggestionView is what the page needs: the document and one card per
@@ -436,15 +513,20 @@ type suggestionCard struct {
 	Kind       string   `json:"kind"` // replace, insert, delete, restyle
 	Summary    string   `json:"summary"`
 	Reasons    []string `json:"reasons"`
-	Status     string   `json:"status"` // pending, rejected
+	Status     string   `json:"status"` // pending, accepted, rejected
 	Acceptable bool     `json:"acceptable,omitempty"`
 	Hunk       int      `json:"hunk,omitempty"` // the proposal's hunk, for rejected cards
 }
 
-// suggestionDocument renders base → draft as a page with suggestions.
-func suggestionDocument(base, draft []DocParagraph, current []DocHunk) (tipNode, []suggestionCard) {
+// suggestionDocument renders base → draft as a page with suggestions;
+// changes whose signature the owner accepted read as plain draft text.
+func suggestionDocument(base, draft []DocParagraph, current []DocHunk, accepted []string) (tipNode, []suggestionCard) {
 	var blocks []viewParagraph
 	cards := []suggestionCard{}
+	acknowledged := map[string]bool{}
+	for _, s := range accepted {
+		acknowledged[s] = true
+	}
 	pos := 0
 	for _, h := range current {
 		for ; pos < h.From; pos++ {
@@ -455,6 +537,21 @@ func suggestionDocument(base, draft []DocParagraph, current []DocHunk) (tipNode,
 			card.Reasons = []string{}
 		}
 		removed, added := h.Removed, h.Added
+		if acknowledged[hunkSignature(h)] {
+			var deleted, inserted []string
+			for _, p := range removed {
+				deleted = append(deleted, plainInline(p.Text))
+			}
+			for _, p := range added {
+				inserted = append(inserted, plainInline(p.Text))
+				blocks = append(blocks, viewParagraph{DocParagraph: p, runs: plainRuns(p), suggestion: map[string]any{"id": h.ID, "kind": "accepted"}})
+			}
+			card.Kind, card.Summary = summarize(deleted, inserted, "")
+			card.Status = "accepted"
+			cards = append(cards, card)
+			pos = h.To
+			continue
+		}
 		var deleted, inserted []string
 		restyled := ""
 		// Paragraphs edited in place show their words changing; the rest

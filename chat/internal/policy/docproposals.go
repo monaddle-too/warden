@@ -52,6 +52,10 @@ type docComment struct {
 type docDraft struct {
 	Paragraphs []DocParagraph `json:"paragraphs"`
 	Comments   []docComment   `json:"comments"`
+	// Accepted holds signatures of changes the owner marked accepted so
+	// the page shows them as plain text; a signature is the change's
+	// content, so editing the paragraph again makes it a suggestion again.
+	Accepted []string `json:"accepted,omitempty"`
 }
 
 // docAwaiting are the statuses in which the owner still holds the proposal.
@@ -136,7 +140,7 @@ func reviewView(proposal docProposal, draft docDraft) map[string]any {
 			}
 		}
 	}
-	document, cards := suggestionDocument(proposal.Base, draft.Paragraphs, current)
+	document, cards := suggestionDocument(proposal.Base, draft.Paragraphs, current, draft.Accepted)
 	rejected := []map[string]any{}
 	for _, h := range proposal.Hunks {
 		if applied[h.ID] {
@@ -467,7 +471,7 @@ func (d *DocumentProposals) Dispatch(op string, data map[string]any) (map[string
 	case "doc_draft":
 		// The page posts the edited Tiptap document; the older paragraph
 		// list is still accepted.
-		var paragraphs []DocParagraph
+		paragraphs := draft.Paragraphs
 		if document, present := data["document"]; present {
 			var frozen []DocParagraph
 			for _, p := range proposal.Base {
@@ -476,7 +480,7 @@ func (d *DocumentProposals) Dispatch(op string, data map[string]any) (map[string
 				}
 			}
 			paragraphs, err = docToCanonical(document, frozen)
-		} else {
+		} else if _, present := data["paragraphs"]; present {
 			paragraphs, err = decodeDraft(data["paragraphs"], proposal.Base)
 		}
 		if err != nil {
@@ -503,9 +507,10 @@ func (d *DocumentProposals) Dispatch(op string, data map[string]any) (map[string
 		}
 		if changeID, ok := asInt(data["change"]); ok {
 			if accept {
-				return nil, errors.New("a current change is already in the draft")
+				err = acknowledge(proposal, &draft, int(changeID))
+			} else {
+				err = revert(proposal, &draft, int(changeID))
 			}
-			err = revert(proposal, &draft, int(changeID))
 		} else if hunkID, ok := asInt(data["hunk"]); ok {
 			err = decide(proposal, &draft, int(hunkID), accept)
 		} else {
@@ -567,6 +572,34 @@ func revert(proposal docProposal, draft *docDraft, changeID int) error {
 		}
 	}
 	return errors.New("unknown change")
+}
+
+// acknowledge marks one current change accepted: it stays in the draft
+// and the page shows it as plain text.
+func acknowledge(proposal docProposal, draft *docDraft, changeID int) error {
+	for _, c := range currentHunks(proposal, *draft) {
+		if c.ID == changeID {
+			signature := hunkSignature(c)
+			for _, s := range draft.Accepted {
+				if s == signature {
+					return nil
+				}
+			}
+			draft.Accepted = append(draft.Accepted, signature)
+			return nil
+		}
+	}
+	return errors.New("unknown change")
+}
+
+// hunkSignature identifies a change by what it does, not where it sits.
+func hunkSignature(h DocHunk) string {
+	var b strings.Builder
+	b.WriteString(strconv.Itoa(h.From) + ":" + strconv.Itoa(h.To))
+	for _, p := range h.Added {
+		b.WriteString("\x00" + p.key())
+	}
+	return sha256Hex([]byte(b.String()))
 }
 
 // decide applies or reverts one of the proposal's hunks in the draft.

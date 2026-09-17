@@ -78,7 +78,7 @@ func TestSuggestionDocumentShowsChangesInPlaceAndStripsBackToTheDraft(t *testing
 		draft[i].N = i + 1
 	}
 	current := documentHunks(base, draft)
-	doc, cards := suggestionDocument(base, draft, current)
+	doc, cards := suggestionDocument(base, draft, current, nil)
 	raw, _ := json.Marshal(doc)
 	text := string(raw)
 	// Adjacent changed paragraphs form one hunk, so one card: the heading
@@ -112,10 +112,20 @@ func TestSuggestionDocumentShowsChangesInPlaceAndStripsBackToTheDraft(t *testing
 	if !sameDocument(back, draft) {
 		t.Fatalf("stripped view is not the draft:\n%s\nvs\n%s", joinTexts(back), joinTexts(draft))
 	}
-	// Words that only moved are neither deleted nor inserted.
-	runs, ratio := inlineDiff(parseInline("a b c"), parseInline("a c b"), 1)
-	if ratio < 0.5 || len(runs) < 3 {
+	// Unchanged words stay kept around an edit; a token is a word with its
+	// trailing whitespace so the stripped page reproduces the draft exactly.
+	runs, ratio := inlineDiff(parseInline("a b c d"), parseInline("a b x d"), 1)
+	if ratio < 0.7 || len(runs) != 4 || runs[0].text != "a b" || runs[1].change != "delete" || runs[2].text != " x" || runs[3].text != " d" {
 		t.Fatalf("inline diff %v %v", runs, ratio)
+	}
+	// Tiny kept islands between edits read as one replacement.
+	runs, _ = inlineDiff(parseInline("page for the developer docs, with a reference to the existing overview."), parseInline("page for the developer docs; it complements the overview rather than repeating it."), 1)
+	var shape []string
+	for _, r := range runs {
+		shape = append(shape, r.change+":"+r.text)
+	}
+	if got := strings.Join(shape, "|"); got != ":page for the developer docs|delete:, with a reference to the existing|insert:; it complements the|: overview|insert: rather than repeating it|:." {
+		t.Fatalf("cleanup: %s", got)
 	}
 }
 
@@ -184,5 +194,30 @@ func TestPagePostsBackAsTheDraftAndChangesCanBeReverted(t *testing.T) {
 	}
 	if _, err := f.s.Dispatch("doc_draft", map[string]any{"id": id, "document": map[string]any{"type": "doc", "content": []any{map[string]any{"type": "table"}}}}); err == nil {
 		t.Fatal("unsupported nodes must be refused")
+	}
+	// Accepting a change keeps it and shows it as plain text; editing that
+	// paragraph again makes it a suggestion again.
+	cards = restored["view"].(map[string]any)["suggestions"].([]suggestionCard)
+	accepted := f.dispatch("doc_decide", map[string]any{"id": id, "change": cards[0].ID, "accept": true})
+	view = accepted["view"].(map[string]any)
+	if got := view["suggestions"].([]suggestionCard); got[0].Status != "accepted" {
+		t.Fatalf("accepted card: %+v", got)
+	}
+	if raw, _ := json.Marshal(view["document"]); strings.Contains(string(raw), `"kind":"replace"`) || !strings.Contains(string(raw), `"kind":"accepted"`) {
+		t.Fatalf("accepted change still drawn as a suggestion: %s", raw)
+	}
+	page := roundTrip(t, view["document"].(tipNode)).(map[string]any)
+	walk = func(node map[string]any) {
+		if node["type"] == "text" && node["text"] == "hi" {
+			node["text"] = "hey"
+		}
+		for _, child := range listOf(node["content"]) {
+			walk(child.(map[string]any))
+		}
+	}
+	walk(page)
+	again := f.dispatch("doc_draft", map[string]any{"id": id, "document": page})
+	if got := again["view"].(map[string]any)["suggestions"].([]suggestionCard); got[0].Status != "pending" || !strings.Contains(got[0].Summary, "hey") {
+		t.Fatalf("edited accepted change: %+v", got)
 	}
 }
