@@ -6,7 +6,6 @@ package sandbox
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"time"
 	"warden/chat/internal/hoststats"
 	"warden/chat/internal/release"
+	"warden/chat/internal/transport"
 )
 
 // ProtocolVersion is the worker protocol number carried in every request and
@@ -98,22 +98,22 @@ type PreviewAttachment struct {
 	State     string `json:"state"`
 }
 
+// Client reaches a runner at Address, a unix:// socket (the sbx shapes) or
+// a tls:// host:port (Kubernetes, with TLS naming this service's material;
+// the runner admits only warden-chat).
 type Client struct {
-	Socket  string
 	Address string
-	TLS     *tls.Config
+	TLS     *transport.TLS
 	Pool    bool
 	Legacy  bool // Explicit compatibility with existing protocol 1 task workers.
 }
 
 func (c *Client) dial(ctx context.Context) (net.Conn, error) {
-	if c.Address != "" {
-		if c.TLS == nil {
-			return nil, fmt.Errorf("remote workers require mutual TLS")
-		}
-		return (&tls.Dialer{NetDialer: &net.Dialer{Timeout: 3 * time.Second}, Config: c.TLS}).DialContext(ctx, "tcp", c.Address)
+	o := transport.DialOptions{TLS: c.TLS}
+	if transport.IsTLS(c.Address) {
+		o.Timeout = 3 * time.Second
 	}
-	return (&net.Dialer{}).DialContext(ctx, "unix", c.Socket)
+	return transport.Dial(ctx, c.Address, o)
 }
 
 type connection struct {

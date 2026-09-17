@@ -72,7 +72,7 @@ func busy(chats []*Chat) *Chat {
 func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 	st := e.Store.Snapshot()
 	var grants []any
-	if e.WardenSocket != "" {
+	if e.PolicyAddress != "" {
 		if result, err := e.sharingCall(ctx, "state", map[string]any{}); err == nil {
 			grants = agent.Array(result["requests"])
 		}
@@ -108,7 +108,7 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 			if res, err := e.Runtime(ctx, ran.ID, "status"); err == nil && res.Sandbox != nil {
 				env.Runtime = res.Sandbox
 			}
-			if e.WardenSocket != "" {
+			if e.PolicyAddress != "" {
 				if result, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": ran.ID, "sandboxID": c.SandboxID}); err == nil {
 					env.Repositories = agent.Array(result["repositories"])
 				}
@@ -176,7 +176,7 @@ func (e *Engine) DeleteEnvironment(ctx context.Context, id string) error {
 		return errors.New("workspace is running chat “" + c.Title + "”; stop that chat first")
 	}
 	ran := ranChat(chats)
-	if e.WardenSocket != "" {
+	if e.PolicyAddress != "" {
 		result, err := e.sharingCall(ctx, "state", map[string]any{})
 		if err != nil {
 			return errors.New("sharing service unavailable; workspace not deleted")

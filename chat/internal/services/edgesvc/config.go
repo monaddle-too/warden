@@ -8,6 +8,7 @@ import (
 
 	"warden/chat/internal/config"
 	"warden/chat/internal/edge"
+	"warden/chat/internal/transport"
 )
 
 // loadEdgeConfig reads --config (or $WARDEN_CONFIG). A warden.json (it has a
@@ -42,16 +43,21 @@ func loadEdgeConfig(path string) (edge.Config, error) {
 }
 
 // edgeConfig maps warden.json onto the edge's settings: previews.*, auth.*,
-// chat.listen and the owner capability file derived from paths.state.
+// the chat's address (services.chat.address, http://<chat.listen> unless the
+// file says tls://, in which case the tls section is the edge's material)
+// and the owner capability file derived from paths.state.
 func edgeConfig(cfg config.Config) edge.Config {
 	c := edge.Config{
 		Mode:           cfg.Auth.Mode,
 		Origin:         cfg.Auth.PublicURL,
 		PreviewSuffix:  cfg.Previews.HostSuffix,
-		Upstream:       "http://" + cfg.Chat.Listen,
-		UpstreamHost:   cfg.Chat.Listen,
+		Upstream:       cfg.ChatAddress(),
+		UpstreamHost:   config.HostOf(cfg.ChatAddress()),
 		OwnerTokenFile: cfg.OwnerTokenFile(),
 		Listen:         cfg.Previews.EdgeListen,
+	}
+	if transport.IsTLS(c.Upstream) {
+		c.UpstreamTLS = cfg.TransportTLS()
 	}
 	if g := cfg.Auth.Google; g != nil && cfg.Auth.Mode == config.AuthGoogle {
 		c.ClientID = g.SignInClientID

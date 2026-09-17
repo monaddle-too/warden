@@ -2,6 +2,7 @@ package policy
 
 import (
 	"bufio"
+	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"warden/chat/internal/release"
+	"warden/chat/internal/transport"
 )
 
 var contextKeys = []string{"projectID", "sandboxID", "runtimeName", "generation", "chatID", "runID", "principalID"}
@@ -1250,7 +1252,9 @@ func (r *Registry) Close() {
 	r.Bindings = map[string]*Binding{}
 }
 
-// ControlServer serves the private line-delimited JSON protocol on a Unix socket.
+// ControlServer serves the private line-delimited JSON protocol on the
+// policy service's listener: a Unix socket (0600) on the sbx shapes, a
+// mutual-TLS port admitting warden-runner and warden-chat on Kubernetes.
 type ControlServer struct {
 	registry *Registry
 	listener net.Listener
@@ -1260,15 +1264,14 @@ type ControlServer struct {
 	once     sync.Once
 }
 
-// ListenControl binds the socket privately (0600) and starts serving.
-func ListenControl(path string, registry *Registry) (*ControlServer, error) {
-	_ = os.Remove(path)
-	listener, err := net.Listen("unix", path)
+// ControlPeers are the identities the control listener admits over tls://.
+var ControlPeers = []string{transport.Runner, transport.Chat}
+
+// ListenControl binds address (unix://<path>, bound privately at 0600, or
+// tls://<host>:<port> with the service's material) and starts serving.
+func ListenControl(address string, material *transport.TLS, registry *Registry) (*ControlServer, error) {
+	listener, err := transport.Listen(address, transport.ListenOptions{Mode: 0o600, TLS: material, Peers: ControlPeers})
 	if err != nil {
-		return nil, err
-	}
-	if err = os.Chmod(path, 0o600); err != nil {
-		listener.Close()
 		return nil, err
 	}
 	s := &ControlServer{registry: registry, listener: listener, slots: make(chan struct{}, 64), closed: make(chan struct{})}
@@ -1363,9 +1366,12 @@ func (s *ControlServer) Close() {
 	s.wg.Wait()
 }
 
-// ControlRPC performs one request against a control socket.
-func ControlRPC(path string, message map[string]any) (map[string]any, error) {
-	conn, err := net.DialTimeout("unix", path, 30*time.Second)
+// ControlRPC performs one request against a control endpoint (a unix:// or
+// tls:// URL; material is the caller's for tls://).
+func ControlRPC(address string, material *transport.TLS, message map[string]any) (map[string]any, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := transport.Dial(ctx, address, transport.DialOptions{TLS: material})
 	if err != nil {
 		return nil, err
 	}

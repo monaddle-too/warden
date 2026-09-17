@@ -14,6 +14,7 @@ import (
 	"warden/chat/internal/agent"
 	cv "warden/chat/internal/conversation"
 	"warden/chat/internal/sandbox"
+	"warden/chat/internal/transport"
 )
 
 type Worker interface {
@@ -35,7 +36,11 @@ type activeRun struct {
 	done     chan struct{}
 }
 type Engine struct {
-	WardenSocket        string
+	// PolicyAddress is the policy service's control endpoint (a unix:// or
+	// tls:// URL; "" leaves sharing unconfigured), dialed with PolicyTLS on
+	// tls://.
+	PolicyAddress string
+	PolicyTLS     *transport.TLS
 	PublicPreviewSuffix string
 	// PreviewScheme and PreviewPort shape approved binding URLs:
 	// <scheme>://<binding-id>.<suffix>[:port]/path. The scheme defaults to
@@ -142,7 +147,7 @@ func (e *Engine) Wake() {
 }
 func (e *Engine) Serve(ctx context.Context) {
 	defer close(e.done)
-	if e.WardenSocket != "" {
+	if e.PolicyAddress != "" {
 		deliveryCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
 		go func() { defer close(done); e.sharingDelivery(deliveryCtx) }()

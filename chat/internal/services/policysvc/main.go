@@ -18,6 +18,7 @@ import (
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/policy"
 	"warden/chat/internal/services"
+	"warden/chat/internal/transport"
 )
 
 // Main runs the policy service (or one of its one-shot subcommands:
@@ -108,8 +109,11 @@ func run(args []string) error {
 		return errors.New("another Warden policy service holds this state directory")
 	}
 	defer lock.Close()
-	socketPath := filepath.Join(*state, "sbx-control.sock")
-	if len(socketPath) > 100 {
+	listen, err := transport.Parse(s.listen)
+	if err != nil {
+		return err
+	}
+	if listen.Scheme == transport.SchemeUnix && len(listen.Path) > 100 {
 		return errors.New("state path too long for private Unix socket")
 	}
 	operations, err := policy.LoadOperations(filepath.Join(*vendorDir, "github-operations.json"))
@@ -198,7 +202,7 @@ func run(args []string) error {
 		registry.Verifier = verifier
 		verifier.StartRefresher()
 	}
-	server, err := policy.ListenControl(socketPath, registry)
+	server, err := policy.ListenControl(s.listen, s.tls, registry)
 	if err != nil {
 		return errors.New("control socket: " + err.Error())
 	}
@@ -211,7 +215,9 @@ func run(args []string) error {
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 	<-signals
 	server.Close()
-	_ = os.Remove(socketPath)
+	if listen.Scheme == transport.SchemeUnix {
+		_ = os.Remove(listen.Path)
+	}
 	registry.Close()
 	return nil
 }

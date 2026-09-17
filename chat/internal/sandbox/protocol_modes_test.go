@@ -49,7 +49,7 @@ func TestClientWorkerProtocolModes(t *testing.T) {
 						worker.handle(context.Background(), c)
 					}
 				}()
-				client := &Client{Socket: socket, Legacy: clientLegacy}
+				client := &Client{Address: "unix://" + socket, Legacy: clientLegacy}
 				response, err := client.Call(context.Background(), Request{Operation: "health"})
 				<-done
 				if workerLegacy == clientLegacy && err != nil {

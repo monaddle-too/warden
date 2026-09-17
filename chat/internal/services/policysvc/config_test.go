@@ -39,7 +39,7 @@ func TestOVHFlagsReproduceCurrentBehaviour(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.state != "/state" || s.sbx != "/usr/local/bin/sbx" || s.codexAuth != "/run/provider/auth.json" || s.claudeAuth != "/run/provider/claude.json" || s.googleConfig != "/run/provider/google.json" || s.guestDigest != release.StockTemplateDigest {
+	if s.state != "/state" || s.listen != "unix:///state/sbx-control.sock" || s.tls != nil || s.sbx != "/usr/local/bin/sbx" || s.codexAuth != "/run/provider/auth.json" || s.claudeAuth != "/run/provider/claude.json" || s.googleConfig != "/run/provider/google.json" || s.guestDigest != release.StockTemplateDigest {
 		t.Fatalf("%+v", s)
 	}
 	if s.caMaxAge != policy.DefaultGatewayCAMaxAge || s.vendorDir != defaultPath("vendor") || s.template != defaultPath("config/policy.template.json") {
@@ -57,7 +57,7 @@ func TestStateAloneRunsWithComputedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.state != "/tmp/w/policy" || s.cfg.Paths.State != "/tmp/w" || s.codexAuth != "/tmp/w/provider/auth.json" || s.claudeAuth != "/tmp/w/provider/claude.json" {
+	if s.state != "/tmp/w/policy" || s.listen != "unix:///tmp/w/policy/sbx-control.sock" || s.tls != nil || s.cfg.Paths.State != "/tmp/w" || s.codexAuth != "/tmp/w/provider/auth.json" || s.claudeAuth != "/tmp/w/provider/claude.json" {
 		t.Fatalf("%+v", s)
 	}
 	if s.googleConfig != "" || !s.googleConfigured || s.githubBroker != "" || !s.githubConfigured || s.githubSlug != "" || s.sbx != "" {
@@ -112,7 +112,7 @@ func TestOVHExampleFileMatchesTheComposeDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.state != "/var/lib/warden/policy" || s.sbx != "/usr/bin/sbx" || s.codexAuth != "/var/lib/warden/provider/auth.json" || s.claudeAuth != "/var/lib/warden/provider/claude.json" || s.googleConfig != "/var/lib/warden/provider/google.json" || s.guestDigest != release.StockTemplateDigest {
+	if s.state != "/var/lib/warden/policy" || s.listen != "unix:///var/lib/warden/policy/sbx-control.sock" || s.tls != nil || s.sbx != "/usr/bin/sbx" || s.codexAuth != "/var/lib/warden/provider/auth.json" || s.claudeAuth != "/var/lib/warden/provider/claude.json" || s.googleConfig != "/var/lib/warden/provider/google.json" || s.guestDigest != release.StockTemplateDigest {
 		t.Fatalf("%+v", s)
 	}
 	if s.caMaxAge != policy.DefaultGatewayCAMaxAge || s.vendorDir != "/app/vendor" || s.template != "/app/config/policy.template.json" || s.chatListen != "127.0.0.1:18780" {
@@ -125,5 +125,31 @@ func TestOVHExampleFileMatchesTheComposeDeployment(t *testing.T) {
 	t.Setenv("WARDEN_GITHUB_APP_BROKER", "/run/github/broker.json")
 	if _, err = policySettings(t, "--config", filepath.Join("..", "..", "..", "..", "deploy", "chat", "warden.example.json")); err == nil || !strings.Contains(err.Error(), "brokerFile") {
 		t.Fatal("broker path disagreement accepted", err)
+	}
+}
+
+// A file with tls:// services gives the policy service its mutual-TLS
+// listener and material; the legacy --state flag still names the
+// directory beside it.
+func TestPolicyTransportSettings(t *testing.T) {
+	t.Setenv(config.Env, "")
+	t.Setenv("WARDEN_GITHUB_APP_BROKER", "")
+	path := filepath.Join(t.TempDir(), "warden.json")
+	os.WriteFile(path, []byte(`{"version":1,"paths":{"state":"/var/lib/warden"},
+		"services":{"policy":{"listen":"tls://0.0.0.0:7443","address":"tls://warden-policy:7443"},"runner":{"listen":"tls://0.0.0.0:7444","address":"tls://warden-runner:7444"},"chat":{"listen":"tls://0.0.0.0:7445","address":"tls://warden-chat:7445"}},
+		"tls":{"caFile":"/etc/warden/tls/ca.crt","certFile":"/etc/warden/tls/tls.crt","keyFile":"/etc/warden/tls/tls.key"}}`), 0600)
+	s, err := policySettings(t, "--config", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.listen != "tls://0.0.0.0:7443" || s.state != "/var/lib/warden/policy" || s.tls == nil || s.tls.CAFile != "/etc/warden/tls/ca.crt" || s.tls.CertFile != "/etc/warden/tls/tls.crt" || s.tls.KeyFile != "/etc/warden/tls/tls.key" {
+		t.Fatalf("%+v %+v", s, s.tls)
+	}
+	if s, err = policySettings(t, "--config", path, "--state", "/var/lib/warden/policy"); err != nil || s.listen != "tls://0.0.0.0:7443" {
+		t.Fatalf("%+v %v", s, err)
+	}
+	os.WriteFile(path, []byte(`{"version":1,"paths":{"state":"/tmp/w"},"services":{"policy":{"listen":"unix:///run/warden/policy.sock"}}}`), 0600)
+	if s, err = policySettings(t, "--config", path); err != nil || s.listen != "unix:///run/warden/policy.sock" || s.state != "/tmp/w/policy" || s.tls != nil {
+		t.Fatalf("%+v %v", s, err)
 	}
 }

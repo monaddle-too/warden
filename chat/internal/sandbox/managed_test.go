@@ -546,7 +546,7 @@ func TestRunnerRootLockPreventsSecondOwner(t *testing.T) {
 		t.Fatal("second runner acquired root")
 	}
 }
-func TestUnixEnforcementRejectsRegistrationAsReadiness(t *testing.T) {
+func TestPolicyEnforcementRejectsRegistrationAsReadiness(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "wg-")
 	if err != nil {
 		t.Fatal(err)
@@ -569,7 +569,7 @@ func TestUnixEnforcementRejectsRegistrationAsReadiness(t *testing.T) {
 			c.Close()
 		}
 	}()
-	gate := &UnixEnforcement{Socket: socket}
+	gate := &PolicyEnforcement{Address: "unix://" + socket}
 	if err = gate.Register(context.Background(), GrantContext{}); err != nil {
 		t.Fatal(err)
 	}

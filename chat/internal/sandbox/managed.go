@@ -99,7 +99,7 @@ func (w *Worker) defaultsLocked() {
 		w.MaxResident = 3
 	}
 	if w.Gate == nil {
-		w.Gate = &UnixEnforcement{}
+		w.Gate = &PolicyEnforcement{}
 	}
 }
 func (w *Worker) saveManagedLocked() error {

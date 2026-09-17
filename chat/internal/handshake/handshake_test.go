@@ -45,7 +45,7 @@ func fakeSocket(t *testing.T, name string, reply func(request map[string]any) ma
 			}()
 		}
 	}()
-	return path
+	return "unix://" + path
 }
 
 func runnerLike(protocol int, revision string) func(map[string]any) map[string]any {
@@ -108,12 +108,12 @@ func TestCompareRefusesProtocolAndWarnsOnRevision(t *testing.T) {
 func TestRunnerAndPolicyExchanges(t *testing.T) {
 	ctx := context.Background()
 	runner := fakeSocket(t, "worker.sock", runnerLike(2, "r1"))
-	p, err := Runner(ctx, runner)
+	p, err := Runner(ctx, runner, nil)
 	if err != nil || p != (Peer{Name: "warden-runner", Revision: "r1", Protocol: 2}) {
 		t.Fatalf("%+v %v", p, err)
 	}
 	policy := fakeSocket(t, "control.sock", policyLike(2, "p1"))
-	p, err = Policy(ctx, policy)
+	p, err = Policy(ctx, policy, nil)
 	if err != nil || p != (Peer{Name: "warden-policy", Revision: "p1", Protocol: 2}) {
 		t.Fatalf("%+v %v", p, err)
 	}
@@ -121,10 +121,10 @@ func TestRunnerAndPolicyExchanges(t *testing.T) {
 	older := fakeSocket(t, "old.sock", func(map[string]any) map[string]any {
 		return map[string]any{"version": 1, "ok": false, "ready": false, "allow": false, "reason": "control_request_rejected"}
 	})
-	if _, err = Policy(ctx, older); !errors.Is(err, ErrNoHandshake) {
+	if _, err = Policy(ctx, older, nil); !errors.Is(err, ErrNoHandshake) {
 		t.Fatal(err)
 	}
-	if _, err = Runner(ctx, filepath.Join(t.TempDir(), "absent.sock")); err == nil {
+	if _, err = Runner(ctx, "unix://"+filepath.Join(t.TempDir(), "absent.sock"), nil); err == nil {
 		t.Fatal("absent socket answered")
 	}
 }
@@ -180,7 +180,7 @@ func TestVerifyRefusesOnProtocolWarnsOtherwise(t *testing.T) {
 	}
 	warnings = nil
 	start := time.Now()
-	peers, err = Verify(ctx, self, filepath.Join(t.TempDir(), "absent.sock"), "", Options{Wait: 300 * time.Millisecond, Warn: warn})
+	peers, err = Verify(ctx, self, "unix://"+filepath.Join(t.TempDir(), "absent.sock"), "", Options{Wait: 300 * time.Millisecond, Warn: warn})
 	if err != nil || len(peers) != 0 || len(warnings) != 1 || !strings.Contains(warnings[0], "could not verify the version of warden-runner") {
 		t.Fatalf("%v %v %v", peers, err, warnings)
 	}
@@ -211,7 +211,7 @@ func TestVerifyWaitsForAPeerThatIsStillStarting(t *testing.T) {
 		conn.Close()
 		l.Close()
 	}()
-	peers, err := Verify(context.Background(), Peer{Name: "warden-chat", Revision: "late", Protocol: 2}, path, "", Options{Wait: 5 * time.Second})
+	peers, err := Verify(context.Background(), Peer{Name: "warden-chat", Revision: "late", Protocol: 2}, "unix://"+path, "", Options{Wait: 5 * time.Second})
 	if err != nil || len(peers) != 1 || peers[0].Revision != "late" {
 		t.Fatalf("%v %v", peers, err)
 	}

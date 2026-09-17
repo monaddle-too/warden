@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"warden/chat/internal/config"
+	"warden/chat/internal/transport"
 )
 
 // settings are the effective chat values after reconciling the legacy flags
@@ -13,11 +14,14 @@ import (
 // disagrees with a loaded file is an error.
 type settings struct {
 	cfg           config.Config
-	state         string // paths.state/app
-	wardenSocket  string // paths.state/policy/sbx-control.sock
-	runnerSocket  string // paths.state/runner/worker.sock
-	listen        string // chat.listen
-	web           string // paths.webAssets
+	state         string         // paths.state/app
+	policy        string         // services.policy.address (unix://paths.state/policy/sbx-control.sock)
+	runner        string         // services.runner.address (unix://paths.state/runner/worker.sock)
+	listen        string         // chat.listen, the loopback host:port
+	listenURL     string         // services.chat.listen (http://<chat.listen>) or tls://
+	address       string         // services.chat.address: what the edge dials; its host is this server's name
+	tls           *transport.TLS // tls.*, present when any transport URL is tls://
+	web           string         // paths.webAssets
 	suffix        string // previews.hostSuffix; "" leaves previews unconfigured
 	previewScheme string // from previews.mode
 	previewPort   string // previews.edgeListen port in loopback mode
@@ -35,9 +39,15 @@ func resolveSettings(fs *flag.FlagSet, f chatFlags) (settings, error) {
 	o := config.NewOverrides(fs, source)
 	s := settings{cfg: cfg}
 	s.state = config.Override(o, "state", *f.state, "paths.state (app directory)", cfg.AppState())
-	s.wardenSocket = config.Override(o, "warden-socket", *f.wardenSocket, "paths.state (policy socket)", cfg.PolicySocket())
-	s.runnerSocket = config.Override(o, "runner-socket", *f.runnerSocket, "paths.state (runner socket)", cfg.RunnerSocket())
+	s.policy = config.Override(o, "warden-socket", "unix://"+*f.wardenSocket, "services.policy.address", cfg.PolicyAddress())
+	s.runner = config.Override(o, "runner-socket", "unix://"+*f.runnerSocket, "services.runner.address", cfg.RunnerAddress())
 	s.listen = config.Override(o, "listen", *f.listen, "chat.listen", cfg.Chat.Listen)
+	s.listenURL = config.Override(o, "listen", "http://"+*f.listen, "services.chat.listen", cfg.ChatListen())
+	s.address = cfg.ChatAddress()
+	if o.Set("listen") && !o.FromFile() {
+		s.address = s.listenURL
+	}
+	s.tls = cfg.TransportTLS()
 	s.web = config.Override(o, "web-dir", *f.web, "paths.webAssets", cfg.Paths.WebAssets)
 	if s.web == "" {
 		s.web = defaultWebDir()
