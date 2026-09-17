@@ -11,7 +11,18 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { ArrowDown, ArrowUp, Bot, Paperclip, Square } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Bot,
+  Cpu,
+  Download,
+  Eraser,
+  File as FileIcon,
+  Folder,
+  Paperclip,
+  Square,
+} from "lucide-react";
 import {
   canResend,
   messageAttempt,
@@ -20,6 +31,15 @@ import {
   type Attempt,
 } from "../drafts";
 import { api, me, newID, downloadFile, uploadAttachment } from "../api";
+import {
+  commandItems,
+  exactCommand,
+  mentionFor,
+  replaceTrigger,
+  triggerAt,
+  withoutCommand,
+  type CommandItem,
+} from "../composer";
 import {
   attachmentError,
   hasFiles,
@@ -39,7 +59,8 @@ import { ComposerAttachments, type Pending } from "./Attachments";
 import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
 import { FindBar, isFindKey, type FindRequest } from "./FindBar";
-import { ModelSelect } from "./ModelSelect";
+import { ModelSelect, modelOptions } from "./ModelSelect";
+import { Suggest, usePathCompletion, type Suggestion } from "./Suggest";
 import { TurnStats } from "./TurnStats";
 
 /* An agent request that the owner answers from the transcript: document
@@ -82,12 +103,25 @@ const SCROLL_KEYS = new Set([
 const editable = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
   (target.isContentEditable || target.matches("input, textarea, select"));
+/* The worker answers at most this many paths; a full page means more. */
+const PATH_LIMIT = 50;
+const commandIcon = (name: string) =>
+  name === "stop" ? (
+    <Square size={15} />
+  ) : name === "model" ? (
+    <Cpu size={15} />
+  ) : name === "export" ? (
+    <Download size={15} />
+  ) : (
+    <Eraser size={15} />
+  );
 export function Conversation({
   chat,
   live,
   requests = [],
   find,
   onModel,
+  onExport,
 }: {
   chat: Chat;
   live: boolean;
@@ -97,6 +131,8 @@ export function Conversation({
      one made before a switch does not follow the reader. */
   find?: FindRequest;
   onModel: (model: string) => Promise<unknown>;
+  /* The /export command; the chat menu's dialog lives in the shell. */
+  onExport?: () => void;
 }) {
   const key = "warden-draft:" + location.origin + ":" + chat.id;
   const [text, setText] = useState(() => draft(key));
@@ -376,6 +412,113 @@ export function Conversation({
     chat.status === "running" ||
     chat.status === "queued" ||
     chat.status === "stopping";
+  // Slash commands and @path mentions: the caret decides which list is
+  // up; Escape puts a trigger away until the caret leaves it, and the list
+  // is only shown while the textarea has the focus.
+  const [caret, setCaret] = useState(0);
+  const [focused, setFocused] = useState(false);
+  const [dismissed, setDismissed] = useState("");
+  const [active, setActive] = useState(0);
+  const trigger = useMemo(() => triggerAt(text, caret), [text, caret]);
+  const triggerKey = trigger ? `${trigger.kind}:${trigger.start}` : "";
+  const open =
+    !!trigger && focused && !chat.archived && dismissed !== triggerKey;
+  const models = useMemo(
+    () => modelOptions(chat.provider || "codex"),
+    [chat.provider],
+  );
+  const commands = useMemo(
+    () =>
+      open && trigger.kind === "command"
+        ? commandItems(trigger.query, models)
+        : [],
+    [open, trigger, models],
+  );
+  const { paths, error: pathError } = usePathCompletion(
+    chat.id,
+    open && trigger.kind === "path" ? trigger.query : undefined,
+  );
+  const { items, note } = useMemo((): {
+    items: Suggestion[];
+    note?: string;
+  } => {
+    if (!open) return { items: [] };
+    if (trigger.kind === "command") {
+      const items = commands.map(
+        (item): Suggestion =>
+          item.kind === "command"
+            ? {
+                id: "command:" + item.command.name,
+                label: item.command.label,
+                hint: item.command.hint,
+                icon: commandIcon(item.command.name),
+                disabled:
+                  item.command.name === "stop"
+                    ? !running || chat.status === "stopping"
+                    : item.command.name === "model"
+                      ? running
+                      : false,
+              }
+            : {
+                id: "model:" + item.model.value,
+                label: item.model.label,
+                hint: item.model.value,
+                icon: <Cpu size={15} />,
+                disabled: running,
+              },
+      );
+      return { items, note: items.length ? undefined : "No such command" };
+    }
+    if (pathError) return { items: [], note: pathError };
+    if (!paths) return { items: [], note: "Looking up paths…" };
+    const items = paths.map(
+      (path): Suggestion => ({
+        id: "path:" + path,
+        label: path,
+        mono: true,
+        icon: path.endsWith("/") ? (
+          <Folder size={15} />
+        ) : (
+          <FileIcon size={15} />
+        ),
+      }),
+    );
+    return {
+      items,
+      note: !items.length
+        ? "No matching paths"
+        : items.length >= PATH_LIMIT
+          ? "Keep typing to narrow the list"
+          : undefined,
+    };
+  }, [open, trigger, commands, paths, pathError, running, chat.status]);
+  // The row the keys act on: never a disabled one, so Enter on a fresh
+  // list runs something. -1 when every row is disabled.
+  const selected = active < 0 ? -1 : Math.min(active, items.length - 1);
+  const enabledFrom = (from: number, by: number) => {
+    for (let n = 0, i = from; n < items.length; n++) {
+      i = (i + by + items.length) % items.length;
+      if (!items[i].disabled) return i;
+    }
+    return -1;
+  };
+  useEffect(() => {
+    setActive(items.findIndex((item) => !item.disabled));
+  }, [items]);
+  useEffect(() => {
+    if (!trigger) setDismissed("");
+  }, [trigger]);
+  // Puts text into the textarea with the caret where the pick left it.
+  function place(next: { text: string; caret: number }) {
+    setText(next.text);
+    setCaret(next.caret);
+    requestAnimationFrame(() => {
+      const el = input.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(next.caret, next.caret);
+    });
+  }
   // Each turn's timing and usage line, keyed by the entry it goes under.
   // A line that would read the same keeps its object, so the memoised
   // entry it belongs to is not re-rendered by every streamed chunk.
@@ -447,8 +590,57 @@ export function Conversation({
     el.scrollTop += top - 12;
     setFollow(false, entries[unread - 1].id);
   }, [chat, requests.length, unread, entries, setFollow]);
+  // A command picked from the list, or sent as exactly "/name": the
+  // command line leaves the composer and `rest` of the draft stays.
+  function runCommand(item: CommandItem, rest: string) {
+    if (item.kind === "model") {
+      setError("");
+      void onModel(item.model.value).catch((e) => setError(String(e)));
+      place({ text: rest, caret: 0 });
+      return;
+    }
+    switch (item.command.name) {
+      case "stop":
+        if (running && chat.status !== "stopping") void stop();
+        place({ text: rest, caret: 0 });
+        break;
+      case "model":
+        // The list then shows the models.
+        place({ text: "/model " + rest, caret: 7 });
+        break;
+      case "export":
+        onExport?.();
+        place({ text: rest, caret: 0 });
+        break;
+      case "clear":
+        for (const item of pending) forget(item);
+        setPending([]);
+        setError("");
+        place({ text: "", caret: 0 });
+        break;
+    }
+  }
+  function pick(item: Suggestion) {
+    if (!trigger || item.disabled) return;
+    if (trigger.kind === "path") {
+      place(replaceTrigger(text, trigger, mentionFor(item.id.slice(5))));
+      return;
+    }
+    const chosen = commands.find(
+      (c) =>
+        (c.kind === "command"
+          ? "command:" + c.command.name
+          : "model:" + c.model.value) === item.id,
+    );
+    if (chosen) runCommand(chosen, withoutCommand(text, trigger));
+  }
   async function send(event: FormEvent) {
     event.preventDefault();
+    const command = exactCommand(text, models);
+    if (command) {
+      runCommand(command, "");
+      return;
+    }
     const attachments = ready.map((p) => p.attachment!.id);
     if ((!text.trim() && !attachments.length) || busy || uploading) return;
     setBusy(true);
@@ -651,6 +843,16 @@ export function Conversation({
           )}
         </p>
         <div className={`composer${dragging ? " dragging" : ""}`}>
+          {open && (
+            <Suggest
+              id="composer-suggest"
+              items={items}
+              active={selected}
+              note={note}
+              onHover={setActive}
+              onPick={pick}
+            />
+          )}
           <ComposerAttachments
             chatID={chat.id}
             items={pending}
@@ -659,6 +861,14 @@ export function Conversation({
           <textarea
             ref={input}
             aria-label="Message agent"
+            aria-haspopup="listbox"
+            aria-autocomplete="list"
+            aria-controls={
+              open && items.length ? "composer-suggest" : undefined
+            }
+            aria-activedescendant={
+              open && selected >= 0 ? `composer-suggest-${selected}` : undefined
+            }
             placeholder={
               chat.archived
                 ? "This chat is archived"
@@ -669,8 +879,12 @@ export function Conversation({
             value={text}
             onChange={(e) => {
               setText(e.target.value);
+              setCaret(e.target.selectionStart);
               if (e.target.value) reportTyping();
             }}
+            onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
             onPaste={(e) => {
               const files = transferFiles(e.clipboardData);
               if (!files.length) return;
@@ -680,6 +894,28 @@ export function Conversation({
             disabled={busy || chat.archived}
             rows={3}
             onKeyDown={(e) => {
+              if (open) {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setDismissed(triggerKey);
+                  return;
+                }
+                if (
+                  items.length &&
+                  (e.key === "ArrowDown" || e.key === "ArrowUp")
+                ) {
+                  e.preventDefault();
+                  setActive(
+                    enabledFrom(selected, e.key === "ArrowDown" ? 1 : -1),
+                  );
+                  return;
+                }
+                if (selected >= 0 && (e.key === "Enter" || e.key === "Tab")) {
+                  e.preventDefault();
+                  pick(items[selected]);
+                  return;
+                }
+              }
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
                 e.currentTarget.form?.requestSubmit();
@@ -769,7 +1005,7 @@ export function Conversation({
               ? chat.provider === "claude"
                 ? "Queued for the next turn"
                 : "Send to steer the current run"
-              : "⌘ / Ctrl + Enter to send"}
+              : "⌘ / Ctrl + Enter to send · / for commands · @ to name a file"}
         </div>
       </form>
     </div>

@@ -571,6 +571,14 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 			return Response{}, errors.New("invalid sandbox file response")
 		}
 		return result, nil
+	case "paths":
+		if s.State != "running" {
+			return Response{}, errors.New("sandbox is stopped; resume the chat before completing paths")
+		}
+		if err = w.Gate.Check(ctx, s.Grant, "runtime"); err != nil {
+			return Response{}, err
+		}
+		return w.completePathsLocked(ctx, s, r)
 	case "attachment-write":
 		if s.State != "running" {
 			return Response{}, errors.New("sandbox is stopped; resume the chat before sending files")

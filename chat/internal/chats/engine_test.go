@@ -30,8 +30,9 @@ type fakeWorker struct {
 	steal       bool
 	rejectSteer bool
 	turns       int
-	inputs      [][]any // the input items of every turn/start and turn/steer
-	turnID      string  // the ID of the next turn/start's turn; "turn-one" when empty
+	inputs      [][]any  // the input items of every turn/start and turn/steer
+	turnID      string   // the ID of the next turn/start's turn; "turn-one" when empty
+	paths       []string // what a "paths" completion answers
 }
 
 func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
@@ -47,6 +48,9 @@ func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 	id := r.SandboxID
 	if f.steal {
 		id = "other"
+	}
+	if r.Operation == "paths" {
+		return sandbox.Response{Version: 2, Paths: f.paths}, nil
 	}
 	return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: id, ProjectID: r.ProjectID}}, nil
 }

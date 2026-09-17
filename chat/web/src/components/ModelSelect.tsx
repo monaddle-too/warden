@@ -1,4 +1,6 @@
-const models: Record<string, { value: string; label: string }[]> = {
+import type { ModelOption } from "../composer";
+
+const models: Record<string, ModelOption[]> = {
   codex: [
     { value: "gpt-6-astra", label: "GPT-6 Astra" },
     { value: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
@@ -12,6 +14,15 @@ const models: Record<string, { value: string; label: string }[]> = {
     { value: "haiku", label: "Claude Haiku" },
   ],
 };
+
+/* The choices the picker offers for a provider, the default first; the
+   composer's /model command lists the same. */
+export function modelOptions(provider: string): ModelOption[] {
+  return [
+    { value: "", label: "Provider default" },
+    ...(models[provider] || []),
+  ];
+}
 
 export function ModelSelect({
   provider,

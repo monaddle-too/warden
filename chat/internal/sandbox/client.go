@@ -79,6 +79,8 @@ type Response struct {
 	Diff              string                 `json:"diff,omitempty"`
 	Bundle            []byte                 `json:"bundle,omitempty"`
 	Bytes             []byte                 `json:"bytes,omitempty"`
+	// Paths is a "paths" completion: workspace paths matching the query.
+	Paths []string `json:"paths,omitempty"`
 }
 type SandboxInfo struct {
 	ID          string `json:"id"`

@@ -186,3 +186,18 @@ export async function workspaceImageBlob(
     throw new Error("Image unavailable");
   return response.blob();
 }
+
+// Workspace paths starting with what the composer has after an "@", from a
+// bounded listing the worker makes inside the sandbox. The names are the
+// agent's; the list shows them as text and never fetches them.
+export async function workspacePaths(
+  chatID: string,
+  query: string,
+): Promise<string[]> {
+  const result = await api<{ paths?: unknown }>(
+    `chats/${encodeURIComponent(chatID)}/paths?q=${encodeURIComponent(query)}`,
+  );
+  return Array.isArray(result.paths)
+    ? result.paths.filter((p): p is string => typeof p === "string")
+    : [];
+}

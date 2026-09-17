@@ -673,6 +673,7 @@ export function ChatShell({
                 live={live}
                 requests={requests}
                 find={find}
+                onExport={() => setExporting(true)}
                 onModel={(next) =>
                   api(`chats/${chat.id}/agent`, {
                     provider: chat.provider || "codex",
