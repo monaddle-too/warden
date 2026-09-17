@@ -109,6 +109,41 @@ export function commentRange(
   return { from, to };
 }
 
+/* The page position of a code-point offset into a draft paragraph's
+   surviving text (the caret's home after the page is replaced). */
+export function anchorPosition(
+  doc: PMNode,
+  paragraph: number,
+  offset: number,
+): number | null {
+  const block = draftBlocks(doc)[paragraph - 1];
+  if (!block) return null;
+  if (block.node.isAtom) return block.pos;
+  let count = 0,
+    found = -1;
+  block.node.forEach((child, childOffset) => {
+    if (found >= 0) return;
+    const at = block.pos + 1 + childOffset;
+    if (child.isText && !deletedText(child)) {
+      let cursor = at;
+      for (const point of Array.from(child.text!)) {
+        if (count === offset) {
+          found = cursor;
+          return;
+        }
+        count += 1;
+        cursor += point.length;
+      }
+      if (count === offset) found = cursor;
+    } else if (child.type.name === "hardBreak") {
+      if (count === offset) found = at;
+      count += 1;
+    }
+  });
+  if (found >= 0) return found;
+  return block.pos + block.node.nodeSize - 1; // past the end: the paragraph's end
+}
+
 /* First page position of each suggestion, for the margin. */
 export function suggestionPositions(doc: PMNode): Map<number, number> {
   const out = new Map<number, number>();

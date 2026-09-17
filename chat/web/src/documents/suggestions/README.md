@@ -12,7 +12,7 @@ and whose changed blocks carry a `suggestion` attribute (`{id, kind:
 replace|insert|delete|restyle|accepted, author?, from?}`). One suggestion
 is one edit as it was made — never a merge of neighbouring edits — and
 the reviewer's own edits are drawn in a second colour with their own
-cards (`author: owner`, an *Undo* instead of accept / reject). Deleted text stays in the document so it can be shown; whoever
+cards (`author: owner`, an _Undo_ instead of accept / reject). Deleted text stays in the document so it can be shown; whoever
 consumes the edited page strips it. Two more block attributes exist for
 what Tiptap nodes cannot express: `docStyle` (`title` | `subtitle`) on
 paragraphs and `synthetic` on list wrapper paragraphs that stand for no

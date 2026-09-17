@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
+import { TextSelection } from "@tiptap/pm/state";
 import type { Editor, JSONContent } from "@tiptap/core";
 import {
   suggestionExtensions,
@@ -19,6 +20,7 @@ import {
 } from "./schema";
 import { commentHighlights } from "./comments";
 import {
+  anchorPosition,
   commentRange,
   selectionAnchor,
   suggestionPositions,
@@ -136,16 +138,26 @@ export function SuggestionEditor({
       const current = editor.state.doc;
       const start = current.content.findDiffStart(next.content);
       if (start !== null) {
+        // The caret's home is a draft paragraph and an offset into its
+        // surviving text, which the new page still has; ProseMirror's
+        // own mapping would push a caret at the edge of the replaced
+        // range past the paragraph.
+        const { from, empty } = editor.state.selection;
+        const home = empty ? selectionAnchor(current, from, from) : null;
         const end = current.content.findDiffEnd(next.content)!;
         const overlap = start - Math.min(end.a, end.b);
         const oldEnd = overlap > 0 ? end.a + overlap : end.a;
         const newEnd = overlap > 0 ? end.b + overlap : end.b;
-        editor.view.dispatch(
-          editor.state.tr
-            .replace(start, oldEnd, next.slice(start, newEnd))
-            .setMeta("suggestions", "server")
-            .setMeta("addToHistory", false),
-        );
+        const tr = editor.state.tr
+          .replace(start, oldEnd, next.slice(start, newEnd))
+          .setMeta("suggestions", "server")
+          .setMeta("addToHistory", false);
+        if (home) {
+          const pos = anchorPosition(tr.doc, home.paragraph, home.from ?? 0);
+          if (pos !== null)
+            tr.setSelection(TextSelection.near(tr.doc.resolve(pos)));
+        }
+        editor.view.dispatch(tr);
       }
     } catch {
       editor
