@@ -128,23 +128,38 @@ func TestResizeEnvironmentByTheOwner(t *testing.T) {
 		t.Fatalf("size on the chat: %+v", got)
 	}
 	// Run once; a restarting resize stops the running chat itself (the
-	// owner asked for the change), then resizes.
+	// owner asked for the change), then resizes, in the background: the
+	// call returns at once and the workspace reports the resize until it
+	// is done.
 	e.Store.update(func(st *State) error { ch := st.chat(id); ch.Status = "running"; ch.RunID = "run"; return nil })
 	if err = e.ResizeEnvironment(ctx, c.SandboxID, &sandbox.Resources{MemoryMB: 4096}); err != nil {
 		t.Fatalf("resize under a running chat: %v", err)
 	}
+	if job := e.resizingOf(c.SandboxID); job == nil || job.Target != (sandbox.Resources{CPUMilli: 2000, MemoryMB: 4096}) {
+		t.Fatalf("resize not reported in flight: %+v", job)
+	}
+	if err = e.ResizeEnvironment(ctx, c.SandboxID, &sandbox.Resources{MemoryMB: 1024}); err == nil || !strings.Contains(err.Error(), "in progress") {
+		t.Fatalf("second resize during the first: %v", err)
+	}
+	resized = awaitResize(t, e, c.SandboxID, w)
 	if status := e.Store.Snapshot().chat(id).Status; status == "running" || status == "stopping" {
 		t.Fatalf("chat still %s after the resize", status)
 	}
-	ops, resized = w.snapshot()
+	ops, _ = w.snapshot()
 	joined := strings.Join(ops, " ")
 	if len(resized) != 1 || resized[0] != (sandbox.Resources{CPUMilli: 2000, MemoryMB: 4096}) || strings.Index(joined, "stop") > strings.LastIndex(joined, "resize") {
 		t.Fatalf("runner ops %v resized %+v", ops, resized)
 	}
+	if job := e.resizingOf(c.SandboxID); job == nil || !job.Done || job.Error != "" {
+		t.Fatalf("finished resize not reported once: %+v", job)
+	}
+	if e.resizingOf(c.SandboxID) != nil {
+		t.Fatal("a finished resize is reported more than once")
+	}
 	if err = e.ResizeEnvironment(ctx, c.SandboxID, &sandbox.Resources{MemoryMB: 1024}); err != nil {
 		t.Fatal(err)
 	}
-	_, resized = w.snapshot()
+	resized = awaitResize(t, e, c.SandboxID, w)
 	if len(resized) != 2 || resized[1] != (sandbox.Resources{CPUMilli: 2000, MemoryMB: 1024}) {
 		t.Fatalf("runner resize: %+v", resized)
 	}
@@ -275,5 +290,33 @@ func TestResourceGrantLiveAndRestarting(t *testing.T) {
 	joined = strings.Join(ops, " ")
 	if len(resized) != 1 || resized[0].MemoryMB != 4096 || strings.Index(joined, "stop") > strings.LastIndex(joined, "resize") {
 		t.Fatalf("runner ops %v resized %v", ops, resized)
+	}
+}
+
+// awaitResize waits for the workspace's background resize to end and
+// returns the runner's resizes so far.
+func awaitResize(t *testing.T, e *Engine, id string, w *sizeWorker) []sandbox.Resources {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		e.resizingMu.Lock()
+		job := e.resizing[id]
+		done := job == nil || job.Done
+		errText := ""
+		if job != nil {
+			errText = job.Error
+		}
+		e.resizingMu.Unlock()
+		if done {
+			if errText != "" {
+				t.Fatalf("resize failed: %s", errText)
+			}
+			_, resized := w.snapshot()
+			return resized
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("resize did not finish")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

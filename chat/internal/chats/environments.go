@@ -27,12 +27,14 @@ type Environment struct {
 	// Resources is the workspace's size: the runner's record once the
 	// sandbox exists, else what its first chat asked for, else nil (the
 	// runner's default).
-	Resources    *sandbox.Resources `json:"resources,omitempty"`
-	Documents    []map[string]any   `json:"documents"`
-	Repositories []any              `json:"repositories"`
-	Ports        []PortBinding      `json:"ports"`
-	Deleted      bool               `json:"deleted"`
-	Archived     bool               `json:"archived"`
+	Resources *sandbox.Resources `json:"resources,omitempty"`
+	// Resizing is a resize in flight or how the last one ended.
+	Resizing     *Resizing        `json:"resizing,omitempty"`
+	Documents    []map[string]any `json:"documents"`
+	Repositories []any            `json:"repositories"`
+	Ports        []PortBinding    `json:"ports"`
+	Deleted      bool             `json:"deleted"`
+	Archived     bool             `json:"archived"`
 }
 type EnvironmentChat struct {
 	ID       string `json:"id"`
@@ -97,7 +99,7 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		}
 		seen[c.SandboxID] = true
 		chats := st.environmentChats(c.SandboxID)
-		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Resources: chats[0].Resources, Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Deleted: st.deleted(c.SandboxID)}
+		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Resources: chats[0].Resources, Resizing: e.resizingOf(c.SandboxID), Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Deleted: st.deleted(c.SandboxID)}
 		env.Archived = true
 		for _, chat := range chats {
 			ec := EnvironmentChat{ID: chat.ID, Title: chat.Title, Status: chat.Status, Archived: chat.Archived}

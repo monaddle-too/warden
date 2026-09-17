@@ -33,11 +33,24 @@ func number(v any) int {
 // wardenActor signs messages Warden itself puts in a chat.
 var wardenActor = cv.Actor{PrincipalID: "warden", Name: "Warden"}
 
+// Resizing is a workspace resize in flight, or the way the last one
+// ended, as the panel shows it (Environment.Resizing).
+type Resizing struct {
+	Target  sandbox.Resources `json:"target"`
+	Started float64           `json:"started"` // unix seconds
+	// Done and Error: set once the resize ended; Error is why it failed.
+	Done  bool   `json:"done"`
+	Error string `json:"error,omitempty"`
+}
+
 // ResizeEnvironment gives the workspace a new size, larger or smaller,
-// within the runner's limits. Where the resize replaces the sandbox (SBX,
-// or a cluster that cannot do it in place) the workspace's running chats
-// are stopped first: the owner asked for the change, and the chat resumes
-// on its next message.
+// within the runner's limits. The size is validated and recorded here;
+// applying it runs in the background (the panel follows Environment.
+// Resizing), since replacing the sandbox (SBX, or a cluster that cannot
+// do it in place) takes longer than a request may: the workspace's
+// running chats are stopped first, the owner asked for the change, and
+// the chat resumes on its next message. A workspace that never ran only
+// takes the size.
 func (e *Engine) ResizeEnvironment(ctx context.Context, id string, r *sandbox.Resources) error {
 	if r == nil || r.IsZero() {
 		return errors.New("a size is required")
@@ -59,7 +72,31 @@ func (e *Engine) ResizeEnvironment(ctx context.Context, id string, r *sandbox.Re
 	if err != nil {
 		return fmt.Errorf("workspace size: %w", err)
 	}
-	if ran := ranChat(chats); ran != nil {
+	ran := ranChat(chats)
+	if ran == nil {
+		return e.recordResources(id, resolved)
+	}
+	e.resizingMu.Lock()
+	if job := e.resizing[id]; job != nil && !job.Done {
+		e.resizingMu.Unlock()
+		return errors.New("a resize of this workspace is in progress")
+	}
+	if e.resizing == nil {
+		e.resizing = map[string]*Resizing{}
+	}
+	e.resizing[id] = &Resizing{Target: resolved, Started: float64(e.now().UnixNano()) / 1e9}
+	e.resizingMu.Unlock()
+	go e.performResize(id, ran, limits, resolved)
+	return nil
+}
+
+// performResize applies a validated size in the background: in place
+// where the platform does it, else by stopping the workspace's chats and
+// replacing the sandbox. The outcome lands in the workspace's Resizing.
+func (e *Engine) performResize(id string, ran *Chat, limits *sandbox.ResourceLimits, resolved sandbox.Resources) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	err := func() error {
 		if limits.Restart {
 			if err := e.stopChats(ctx, id); err != nil {
 				return err
@@ -82,8 +119,34 @@ func (e *Engine) ResizeEnvironment(ctx context.Context, id string, r *sandbox.Re
 		if err != nil {
 			return err
 		}
+		return e.recordResources(id, resolved)
+	}()
+	e.resizingMu.Lock()
+	defer e.resizingMu.Unlock()
+	if job := e.resizing[id]; job != nil {
+		job.Done = true
+		if err != nil {
+			job.Error = err.Error()
+			log.Printf("workspace %s: resize to %s failed: %v", id, resolved, err)
+		}
 	}
-	return e.recordResources(id, resolved)
+}
+
+// resizingOf is the workspace's resize in flight or last outcome; a
+// finished one is reported once more and then forgotten, so the panel
+// sees the outcome and the next poll is clean.
+func (e *Engine) resizingOf(id string) *Resizing {
+	e.resizingMu.Lock()
+	defer e.resizingMu.Unlock()
+	job := e.resizing[id]
+	if job == nil {
+		return nil
+	}
+	copy := *job
+	if job.Done && job.Error == "" {
+		delete(e.resizing, id)
+	}
+	return &copy
 }
 
 // resizeSandbox asks the runner to resize the chat's sandbox, waiting out a

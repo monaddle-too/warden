@@ -1,5 +1,12 @@
 import { useState } from "react";
-import { Archive, ExternalLink, History, Play, Square, Trash2 } from "lucide-react";
+import {
+  Archive,
+  ExternalLink,
+  History,
+  Play,
+  Square,
+  Trash2,
+} from "lucide-react";
 import type {
   AccessEvent,
   Chat,
@@ -287,7 +294,8 @@ export function WorkspacePanel({
         </div>
         {!ws?.deleted && (
           <div className="workspace-actions">
-            {!running && (!state || state === "stopped" || state === "error") ? (
+            {!running &&
+            (!state || state === "stopped" || state === "error") ? (
               <button
                 disabled={!!busy || !ws?.runtime}
                 title={
@@ -353,8 +361,8 @@ export function WorkspacePanel({
       )}
       {running && (
         <p className="workspace-note">
-          A chat is running here. Stop it before stopping or deleting the
-          workspace.
+          A chat is running here. Stop stops it too; delete needs it stopped
+          first.
         </p>
       )}
       {ws?.deleted && (
@@ -370,7 +378,7 @@ export function WorkspacePanel({
             {limits && !sizing && (
               <button
                 className="ghost"
-                disabled={!!busy}
+                disabled={!!busy || (!!ws?.resizing && !ws.resizing.done)}
                 title="Change the CPUs and memory this workspace gets"
                 onClick={() => setSizing(current)}
               >
@@ -378,6 +386,27 @@ export function WorkspacePanel({
               </button>
             )}
           </h2>
+          {ws?.resizing && !ws.resizing.done && (
+            <p className="muted">
+              Resizing to{" "}
+              {resourcesLabel(
+                ws.resizing.target.cpuMilli,
+                ws.resizing.target.memoryMB,
+              )}
+              … the sandbox is being replaced; a chat resumes on its next
+              message.
+            </p>
+          )}
+          {ws?.resizing?.error && (
+            <p role="alert" className="error">
+              Resize to{" "}
+              {resourcesLabel(
+                ws.resizing.target.cpuMilli,
+                ws.resizing.target.memoryMB,
+              )}{" "}
+              failed: {ws.resizing.error}
+            </p>
+          )}
           {!sizing && ws?.usage && <UsageRows usage={ws.usage} />}
           {!sizing && !ws?.usage && (
             <p>
@@ -392,11 +421,9 @@ export function WorkspacePanel({
               className="size-form"
               onSubmit={(e) => {
                 e.preventDefault();
-                void act(
-                  "resize",
-                  `environments/${chat.sandboxID}/resize`,
-                  { resources: sizing },
-                ).then(() => setSizing(null));
+                void act("resize", `environments/${chat.sandboxID}/resize`, {
+                  resources: sizing,
+                }).then(() => setSizing(null));
               }}
             >
               <SizeSelect
@@ -413,7 +440,8 @@ export function WorkspacePanel({
                   (limits.restart
                     ? "The running chat is stopped first. "
                     : "A restart stops the running chat first. ")}
-                Up to {resourcesLabel(limits.max.cpuMilli, limits.max.memoryMB)}.
+                Up to {resourcesLabel(limits.max.cpuMilli, limits.max.memoryMB)}
+                .
               </p>
               <div className="button-row">
                 <button

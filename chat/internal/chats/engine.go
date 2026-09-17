@@ -78,6 +78,10 @@ type Engine struct {
 	limitsMu sync.Mutex
 	limits   *sandbox.ResourceLimits
 	limitsAt time.Time
+	// resizing: workspace id -> the resize in flight or its outcome
+	// (resources.go).
+	resizingMu sync.Mutex
+	resizing   map[string]*Resizing
 	// typing: chat id -> principal -> indicator, see Typing.
 	typingMu sync.Mutex
 	typing   map[string]map[string]Typist

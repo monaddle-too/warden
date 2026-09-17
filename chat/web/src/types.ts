@@ -174,6 +174,13 @@ export type Environment = {
   chats: EnvironmentChat[];
   runtime: { state: string; runtimeName: string } | null;
   resources?: Resources;
+  /* A resize in flight, or how the last one ended. */
+  resizing?: {
+    target: Resources;
+    started: number;
+    done: boolean;
+    error?: string;
+  };
   usage: SandboxUsage | null;
   pod: PodInfo | null;
   documents: DocumentGrant[];
