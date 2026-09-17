@@ -81,15 +81,21 @@ system-wide except the Homebrew formulae.
   running, amd64 emulation and writable bind-mounts verified; workflows,
   `release.sh` and this document updated; `actionlint` clean.
 
+- 2026-09-17: runner `Daniels-MacBook-Pro` registered and online as a
+  LaunchAgent. First `workflow_dispatch` of `release.yml` on the branch
+  (run 35254836046) succeeded in 3 minutes: tests, three targets, tarball
+  artifact, and `ghcr.io/monaddle-too/warden:v0.0.0-dev.8b3eba0…` with
+  linux/amd64 and linux/arm64 manifests.
+
 ## Remaining work / known gaps
 
-- Register the runner and install the LaunchAgent (step 4–6) — needs a
-  valid `gh` login.
 - `ocsf-deploy.yml` build job: `scripts/integration.mjs` and the workflow
   call `sudo install -o 65532 …` on host paths. On the Mac this needs
   passwordless sudo for `/usr/bin/install` (a sudoers rule the owner adds),
   and the virtiofs bind-mount must honour the 65532 ownership for the
   container's mode-600 `queue.db`. Unverified until the first run; if it
   fails, move the data directory to a Docker named volume for CI.
-- First runs of each workflow on the Mac (release via `workflow_dispatch`
-  pushes a dev image to ghcr; guest image likewise).
+- First runs of `guest-image.yml` (retags `warden-guest:latest`) and
+  `ocsf-deploy.yml` on the Mac.
+- Repository setting: fork-PR approval policy was `first_time_contributors`;
+  raise it to all outside collaborators before merging this branch.
