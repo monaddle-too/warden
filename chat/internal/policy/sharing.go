@@ -29,7 +29,7 @@ func isValueError(err error) bool {
 	return errors.As(err, &v)
 }
 
-var sharingScopes = []string{"https://www.googleapis.com/auth/documents", "https://www.googleapis.com/auth/drive.metadata.readonly"}
+var sharingScopes = []string{"https://www.googleapis.com/auth/documents", "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.metadata.readonly"}
 
 // GoogleSharing is the owner's Google connection as seen by Sharing.
 type GoogleSharing interface {
@@ -297,8 +297,8 @@ func (g *GoogleConnection) Create(title string) (map[string]any, error) {
 // Files lists recent Google documents visible to the connected account.
 func (g *GoogleConnection) Files(page string) (map[string]any, error) {
 	params := url.Values{}
-	params.Set("q", "trashed = false and mimeType = 'application/vnd.google-apps.document' and createdTime >= '2026-09-09T00:00:00Z'")
-	params.Set("fields", "nextPageToken,files(id,name)")
+	params.Set("q", "trashed = false and (mimeType = 'application/vnd.google-apps.document' or mimeType = 'application/vnd.google-apps.spreadsheet') and createdTime >= '2026-09-09T00:00:00Z'")
+	params.Set("fields", "nextPageToken,files(id,name,mimeType)")
 	params.Set("pageSize", "100")
 	params.Set("orderBy", "modifiedTime desc")
 	if page != "" {
@@ -316,11 +316,16 @@ func (g *GoogleConnection) File(id string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if trashed, _ := f["trashed"].(bool); trashed || f["mimeType"] != "application/vnd.google-apps.document" {
-		return nil, errors.New("not an available Google document")
-	}
 	name, _ := f["name"].(string)
-	return map[string]any{"id": id, "title": name, "url": "https://docs.google.com/document/d/" + id + "/edit", "api_url": "https://docs.googleapis.com/v1/documents/" + id}, nil
+	switch trashed, _ := f["trashed"].(bool); {
+	case trashed:
+		return nil, errors.New("not an available Google document")
+	case f["mimeType"] == "application/vnd.google-apps.document":
+		return map[string]any{"id": id, "title": name, "kind": "document", "url": "https://docs.google.com/document/d/" + id + "/edit", "api_url": "https://docs.googleapis.com/v1/documents/" + id}, nil
+	case f["mimeType"] == "application/vnd.google-apps.spreadsheet":
+		return map[string]any{"id": id, "title": name, "kind": "spreadsheet", "url": "https://docs.google.com/spreadsheets/d/" + id + "/edit", "api_url": "https://sheets.googleapis.com/v4/spreadsheets/" + id}, nil
+	}
+	return nil, errors.New("not an available Google document or spreadsheet")
 }
 
 func (g *GoogleConnection) get(path string) (map[string]any, error) {
@@ -368,6 +373,15 @@ type Sharing struct {
 	// Egress, when set, is the registry's runtime egress switch exposed to
 	// the console (the "egress" and "egress_set" operations).
 	Egress EgressSwitch
+	// Network, when set, applies owner-approved temporary host grants to a
+	// sandbox's engine (the "network_allow" operation).
+	Network NetworkGrants
+}
+
+// NetworkGrants is the registry as the sharing store needs it for
+// request_network_access approvals.
+type NetworkGrants interface {
+	AllowHost(sandbox, host string, until float64) error
 }
 
 // EgressSwitch is the registry as the console sees it: the current mode
@@ -628,6 +642,8 @@ func (s *Sharing) Dispatch(op string, data map[string]any) (map[string]any, erro
 		return result, err
 	case strings.HasPrefix(op, "pr_"):
 		return s.PullRequests.Dispatch(op, data)
+	case op == "github_write":
+		return s.githubWrite(data)
 	case strings.HasPrefix(op, "github_"):
 		return s.githubDispatch(op, data)
 	}
@@ -664,6 +680,29 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		// button that can only fail.
 		google := map[string]any{"configured": s.Google != nil && s.Google.Configured(), "connected": s.Google != nil && s.Google.Connected()}
 		return map[string]any{"configured": s.Google != nil && s.Google.Configured(), "connected": s.Google != nil && s.Google.Connected(), "can_write": s.Google != nil && s.Google.CanWrite(), "google": google, "github": github}, nil
+	case "network_allow":
+		// The owner approved an agent's request_network_access: one public
+		// host, HTTP/HTTPS, for a bounded time, this sandbox only.
+		if s.Network == nil {
+			return nil, errors.New("network grants unavailable")
+		}
+		sandbox := stringField(data, "sandboxID")
+		host := strings.TrimRight(strings.ToLower(stringField(data, "host")), ".")
+		seconds, ok := asInt(data["duration"])
+		if !validIdentifier(sandbox) || !ValidHost(host) || !ok || seconds < 60 || seconds > 86400 {
+			return nil, errors.New("network grant needs a public hostname and a duration of 1 minute to 24 hours")
+		}
+		until := s.Clock() + float64(seconds)
+		if err := s.Network.AllowHost(sandbox, host, until); err != nil {
+			return nil, err
+		}
+		detail := map[string]any{"host": host, "until": until, "reason": stringField(data, "reason")}
+		if _, err := s.DB.Exec("INSERT INTO repository_events (at,sandbox,actor,kind,detail) VALUES (?,?,?,?,?)", s.Clock(), sandbox, actorOf(data), "network_allowed", string(mustJSON(detail))); err != nil {
+			return nil, err
+		}
+		return map[string]any{"host": host, "expires_at": until}, nil
+	case "github_write":
+		return s.githubWrite(data)
 	case "egress":
 		if s.Egress == nil {
 			return nil, errors.New("egress switch unavailable")
@@ -1081,7 +1120,7 @@ func (s *Sharing) Authorize(chat, sandbox string, request map[string]any) (map[s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	port, _ := asInt(request["port"])
-	if request["scheme"] != "https" || port != 443 || request["host"] != "docs.googleapis.com" {
+	if request["scheme"] != "https" || port != 443 || (request["host"] != "docs.googleapis.com" && request["host"] != "sheets.googleapis.com") {
 		return nil, "", errors.New("unsupported document authority")
 	}
 	path, _ := request["path"].(string)
@@ -1332,6 +1371,86 @@ func accessSummary(stored string) string {
 		return "metadata only"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// githubWrite performs one small GitHub write Warden executes itself after a
+// one-shot owner approval: a comment on an issue or pull request, a new
+// issue, or labels on an issue. The repository must be shared with the
+// sandbox; the credential never leaves this process.
+func (s *Sharing) githubWrite(data map[string]any) (map[string]any, error) {
+	if s.GitHub == nil {
+		return nil, errors.New("GitHub is not connected")
+	}
+	sandbox := stringField(data, "sandboxID")
+	repo := strings.ToLower(stringField(data, "repository"))
+	if !validIdentifier(sandbox) || !repositoryShape.MatchString(repo) {
+		return nil, errors.New("invalid repository")
+	}
+	owner, app, err := s.GitHub.Identity()
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	var id int64
+	err = s.DB.QueryRow("SELECT id FROM repositories WHERE sandbox=? AND name=? AND owner=? AND app=?", sandbox, repo, strings.ToLower(owner), app).Scan(&id)
+	s.mu.Unlock()
+	if err != nil {
+		return nil, errors.New("repository is not shared with this workspace")
+	}
+	number, _ := asInt(data["number"])
+	title := strings.TrimSpace(stringField(data, "title"))
+	body := stringField(data, "body")
+	var operation, method, path string
+	var payload map[string]any
+	switch stringField(data, "action") {
+	case "comment_issue", "comment_pull_request":
+		if number <= 0 || strings.TrimSpace(body) == "" || len(body) > 65536 {
+			return nil, errors.New("a comment needs an issue or pull request number and a body")
+		}
+		operation, method, path = "issues/create-comment", "POST", "/repos/"+repo+"/issues/"+strconv.FormatInt(number, 10)+"/comments"
+		payload = map[string]any{"body": body}
+	case "create_issue":
+		if title == "" || len(title) > 256 || len(body) > 65536 {
+			return nil, errors.New("an issue needs a title (256 characters maximum) and an optional body")
+		}
+		operation, method, path = "issues/create", "POST", "/repos/"+repo+"/issues"
+		payload = map[string]any{"title": title, "body": body}
+	case "add_labels":
+		labels, _ := data["labels"].([]any)
+		if number <= 0 || len(labels) == 0 || len(labels) > 20 {
+			return nil, errors.New("labels need an issue number and 1–20 label names")
+		}
+		for _, l := range labels {
+			if s, ok := l.(string); !ok || strings.TrimSpace(s) == "" || len(s) > 50 {
+				return nil, errors.New("invalid label")
+			}
+		}
+		operation, method, path = "issues/add-labels", "POST", "/repos/"+repo+"/issues/"+strconv.FormatInt(number, 10)+"/labels"
+		payload = map[string]any{"labels": labels}
+	default:
+		return nil, errors.New("action must be comment_issue, comment_pull_request, create_issue or add_labels")
+	}
+	authorization, err := s.GitHub.Authorization(repo, operation, &id)
+	if err != nil {
+		return nil, err
+	}
+	transport := GitHubRequest
+	if s.PullRequests != nil && s.PullRequests.Transport != nil {
+		transport = s.PullRequests.Transport
+	}
+	result, err := transport(method, path, strings.TrimPrefix(authorization, "Bearer "), payload)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"action": stringField(data, "action"), "repository": repo, "url": result["html_url"]}
+	if n, ok := asInt(result["number"]); ok {
+		out["number"] = n
+	}
+	detail := map[string]any{"action": stringField(data, "action"), "repository": repo, "number": number, "url": result["html_url"]}
+	s.mu.Lock()
+	_, err = s.DB.Exec("INSERT INTO repository_events (at,sandbox,actor,kind,detail) VALUES (?,?,?,?,?)", s.Clock(), sandbox, actorOf(data), "github_write", string(mustJSON(detail)))
+	s.mu.Unlock()
+	return out, err
 }
 
 // GitHubGrant returns the persistent read grant covering a GitHub request,

@@ -934,4 +934,15 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   (GET, per sandbox) feeds a collapsible "Access history" in the workspace
   panel listing every document request, grant, denial, revocation and
   repository selection, newest first.
+- 2026-09-17: owner-approved grants an agent can request (`chats/grants.go`,
+  approval methods `warden/network/allow`, `warden/repository/access`,
+  `warden/github/write`, `warden/host/import`, `warden/host/export`):
+  temporary per-sandbox host allows (`Engine.AllowHost`, `network_allow`),
+  repository sharing/widening (merged `github_select`), small GitHub writes
+  performed by the policy service (`github_write`: issue/PR comments, new
+  issues, labels; `issuesWrite` permissions), Google Sheets under document
+  grants (`GoogleSheetsOperation`, `sheets.googleapis.com`, spreadsheet
+  scope; picker lists sheets), and host directory import/export through the
+  runner (`host.import`/`host.export`, local mode only). Approvals record
+  the answering person; all of it appears in Access history.
 

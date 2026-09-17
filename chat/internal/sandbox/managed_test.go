@@ -96,6 +96,10 @@ func (d *testRuntime) Copy(_ context.Context, name, source, target string) error
 	d.record("copy:" + name + ":" + target)
 	return nil
 }
+func (d *testRuntime) CopyOut(_ context.Context, name, source, target string) error {
+	d.record("copyout:" + name + ":" + source + ":" + target)
+	return nil
+}
 func (d *testRuntime) InstallCA(_ context.Context, name, _ string) error {
 	d.record("ca:" + name)
 	return nil

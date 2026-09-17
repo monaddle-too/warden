@@ -544,7 +544,7 @@ func (f *flow) handle() {
 		// their actual SNI and are checked below.
 		f.sni = routeHost
 	}
-	if providerHosts[f.host] || f.host == "docs.googleapis.com" {
+	if providerHosts[f.host] || f.host == "docs.googleapis.com" || f.host == "sheets.googleapis.com" {
 		for _, name := range guestCredentialHeaders {
 			f.removeHeader(name)
 		}

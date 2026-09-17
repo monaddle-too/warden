@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 	"warden/chat/internal/chats"
+	"warden/chat/internal/config"
 	"warden/chat/internal/conversation"
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/imageguard"
@@ -99,6 +100,7 @@ func run(args []string) error {
 	engine.PublicPreviewSuffix = *suffix
 	engine.PreviewScheme, engine.PreviewPort = s.previewScheme, s.previewPort
 	engine.WardenSocket = *wardenSocket
+	engine.LocalMode = s.cfg.Auth.Mode == config.AuthOwner
 	go engine.Serve(ctx)
 	defer func() { cancel(); <-engine.Done() }()
 	server := &http.Server{Addr: *listen, Handler: &chats.HTTP{Engine: engine, Token: token, Host: net.JoinHostPort(host, port), Origin: origin, WebDir: *web}, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}

@@ -173,6 +173,7 @@ func run(args []string) error {
 	defer sharing.Close()
 	sharing.GitHubConfigured, sharing.GitHubAppSlug = s.githubConfigured, s.githubSlug
 	sharing.Egress = registry
+	sharing.Network = registry
 	registry.Sharing = sharing
 	if *claudeAuth != "" {
 		registry.ClaudeSource = &policy.ClaudeCredentials{Path: *claudeAuth}

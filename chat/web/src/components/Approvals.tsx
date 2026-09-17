@@ -4,6 +4,66 @@ import type { Approval } from "../types";
 import { api } from "../api";
 /* Top-level parameters shown as label/value rows; nested values are
    summarised and the full request stays behind "Show raw request". */
+// Owner-approved grants an agent can request (see chats/grants.go): what
+// the card says and what the primary button does.
+function describeGrant(approval: Approval) {
+  const p = approval.params as Record<string, unknown>;
+  const s = (k: string) => (p[k] == null ? "" : String(p[k]));
+  const reason = s("reason");
+  switch (approval.method) {
+    case "warden/network/allow":
+      return {
+        title: `Allow network access to ${s("host")}`,
+        text: `This sandbox could reach ${s("host")} over HTTP and HTTPS for ${s("duration_minutes")} minutes, through Warden's gateway, with no credential attached. Other sandboxes are unaffected.`,
+        reason,
+        button: "Allow for " + s("duration_minutes") + " min",
+      };
+    case "warden/repository/access":
+      return {
+        title: `Share ${s("repository")} with this workspace`,
+        text: `Read-only access to ${(p.categories as string[] | undefined)?.map((c) => c.replace("pull_requests", "pull requests").replace("contents", "code")).join(", ")} of ${s("repository")}, for every chat in this workspace until you remove it. Writes still need their own approval.`,
+        reason,
+        button: "Share repository",
+      };
+    case "warden/github/write": {
+      const action = s("action");
+      const what =
+        action === "create_issue"
+          ? `Open an issue in ${s("repository")}: “${s("title")}”`
+          : action === "add_labels"
+            ? `Add labels ${(p.labels as string[] | undefined)?.join(", ")} to #${s("number")} in ${s("repository")}`
+            : `Comment on #${s("number")} in ${s("repository")}`;
+      return {
+        title: what,
+        text: "Warden posts exactly this with your GitHub credential. The agent never holds a token.",
+        body: action === "add_labels" ? "" : s("body"),
+        reason: "",
+        button:
+          action === "create_issue"
+            ? "Open issue"
+            : action === "add_labels"
+              ? "Add labels"
+              : "Post comment",
+      };
+    }
+    case "warden/host/import":
+      return {
+        title: `Copy ${s("path")} into the sandbox`,
+        text: "A snapshot of this directory from your computer is copied into the sandbox at /home/agent/host, up to 1 GiB. Your original is not touched; the agent can ask later to copy its changes back.",
+        reason,
+        button: "Copy directory in",
+      };
+    case "warden/host/export":
+      return {
+        title: `Copy the sandbox's files back over ${s("path")}`,
+        text: "Files under the sandbox's copy overwrite the same paths in this directory on your computer. Nothing is deleted; files only in your directory stay.",
+        reason: "",
+        button: "Copy changes back",
+      };
+  }
+  return undefined;
+}
+
 function summarize(value: unknown): string {
   if (value === null || value === undefined) return "—";
   if (typeof value === "string") return value;
@@ -44,6 +104,7 @@ export function ApprovalCard({
   }
   const questions = approval.params.questions;
   const port = approval.method === "warden/ports/bind";
+  const grant = describeGrant(approval);
   const rows = Object.entries(approval.params).filter(
     ([key]) => key !== "questions",
   );
@@ -57,11 +118,13 @@ export function ApprovalCard({
           <h3>
             {port
               ? "Bind sandbox port " + String(approval.params.port)
-              : questions
-                ? "The agent has a question"
-                : "Approval requested"}
+              : grant
+                ? grant.title
+                : questions
+                  ? "The agent has a question"
+                  : "Approval requested"}
           </h3>
-          {!questions && (
+          {!questions && !grant && (
             <p>
               <code>{approval.method}</code>
             </p>
@@ -103,6 +166,14 @@ export function ApprovalCard({
           signed-in Warden users can access it. The binding lasts until you
           revoke it; stopping the sandbox makes it unavailable.
         </p>
+      ) : grant ? (
+        <>
+          <p>{grant.text}</p>
+          {grant.body && <pre className="approval-body">{grant.body}</pre>}
+          {grant.reason && (
+            <p className="muted">Agent's reason: {grant.reason}</p>
+          )}
+        </>
       ) : (
         <>
           {rows.length > 0 && (
@@ -133,7 +204,13 @@ export function ApprovalCard({
           }
           onClick={() => resolve(true)}
         >
-          {port ? "Bind port" : questions ? "Send answer" : "Allow once"}
+          {port
+            ? "Bind port"
+            : grant
+              ? grant.button
+              : questions
+                ? "Send answer"
+                : "Allow once"}
         </button>
       </div>
       {error && (

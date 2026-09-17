@@ -288,7 +288,7 @@ func TestUserTokenRevokedOrRenamedRepositoryFailsClosed(t *testing.T) {
 	if _, err := source.Authorization("owner/missing", "repos/get", nil); err == nil || strings.Contains(err.Error(), "Refresh") {
 		t.Fatalf("missing repository: %v", err)
 	}
-	if _, err := source.Authorization("owner/repo1", "issues/create", nil); err == nil {
+	if _, err := source.Authorization("owner/repo1", "repos/delete", nil); err == nil {
 		t.Fatal("unsupported operation authorized")
 	}
 	writeGitHubUser(t, path, "gho_"+strings.Repeat("r", 36), "owner")

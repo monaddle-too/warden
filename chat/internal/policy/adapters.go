@@ -73,9 +73,53 @@ func GoogleDocsOperation(method, path string, query []QueryPair, body []byte) (s
 
 var batchUpdatePath = regexp.MustCompile(`^/v1/documents/([A-Za-z0-9_-]{1,256}):batchUpdate$`)
 
+// Google Sheets: reads of a spreadsheet or its values, and the value and
+// structure writes a write grant covers. The spreadsheet ID is the grant's
+// document ID, exactly as for Docs.
+var sheetsReadPath = regexp.MustCompile(`^/v4/spreadsheets/([A-Za-z0-9_-]{1,256})(?:/values/[^/]{1,512}|/values:batchGet|/values:batchGetByDataFilter)?$`)
+var sheetsWritePath = regexp.MustCompile(`^/v4/spreadsheets/([A-Za-z0-9_-]{1,256})(?::batchUpdate|/values/[^/]{1,512}|/values:batchUpdate|/values:batchClear)$`)
+var sheetsReadQuery = stringSet("ranges", "includeGridData", "fields", "majorDimension", "valueRenderOption", "dateTimeRenderOption")
+var sheetsWriteQuery = stringSet("valueInputOption", "insertDataOption", "includeValuesInResponse", "responseValueRenderOption", "responseDateTimeRenderOption")
+
+// GoogleSheetsOperation classifies a Sheets API request as a read or write
+// of one spreadsheet.
+func GoogleSheetsOperation(method, path string, query []QueryPair, body []byte) (access, spreadsheet string, err error) {
+	if method == "GET" {
+		m := sheetsReadPath.FindStringSubmatch(path)
+		if m == nil || len(body) > 0 || strings.HasSuffix(path, ":append") || strings.HasSuffix(path, ":clear") {
+			return "", "", errors.New("unsupported Google Sheets read")
+		}
+		for _, pair := range query {
+			if !sheetsReadQuery[pair.Key] {
+				return "", "", errors.New("unsupported Google Sheets query parameter")
+			}
+		}
+		return "read", m[1], nil
+	}
+	m := sheetsWritePath.FindStringSubmatch(path)
+	appendOrClear := strings.HasSuffix(path, ":append") || strings.HasSuffix(path, ":clear")
+	valuesPut := strings.Contains(path, "/values/") && !appendOrClear
+	if m == nil || len(body) == 0 || len(body) > 1024*1024 || (method == "PUT" && !valuesPut) || (method == "POST" && valuesPut) || (method != "POST" && method != "PUT") {
+		return "", "", errors.New("unsupported Google Sheets write")
+	}
+	for _, pair := range query {
+		if !sheetsWriteQuery[pair.Key] {
+			return "", "", errors.New("unsupported Google Sheets query parameter")
+		}
+	}
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil || data == nil {
+		return "", "", errors.New("invalid Google Sheets write")
+	}
+	return "write", m[1], nil
+}
+
 // DocumentWriteOperation classifies shared-document reads and allowlisted
 // batchUpdate edits. Creation is host-executed after owner approval only.
 func DocumentWriteOperation(method, path string, query []QueryPair, body []byte) (access, document string, err error) {
+	if strings.HasPrefix(path, "/v4/spreadsheets/") {
+		return GoogleSheetsOperation(method, path, query, body)
+	}
 	if method == "GET" {
 		_, doc, err := GoogleDocsOperation(method, path, query, body)
 		if err != nil {

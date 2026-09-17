@@ -12,6 +12,16 @@ func (a Approval) Summary() string {
 	switch {
 	case a.Method == "warden/ports/bind":
 		return fmt.Sprintf("bind sandbox port %v (%v)", a.Params["port"], a.Params["title"])
+	case a.Method == "warden/network/allow":
+		return fmt.Sprintf("allow network access to %v for %v min: %v", a.Params["host"], a.Params["duration_minutes"], a.Params["reason"])
+	case a.Method == "warden/repository/access":
+		return fmt.Sprintf("share repository %v (%v): %v", a.Params["repository"], a.Params["categories"], a.Params["reason"])
+	case a.Method == "warden/github/write":
+		return fmt.Sprintf("github %v on %v #%v", a.Params["action"], a.Params["repository"], a.Params["number"])
+	case a.Method == "warden/host/import":
+		return fmt.Sprintf("copy host directory %v into the sandbox: %v", a.Params["path"], a.Params["reason"])
+	case a.Method == "warden/host/export":
+		return fmt.Sprintf("copy the sandbox's files back over %v", a.Params["path"])
 	case len(a.Questions()) > 0:
 		qs := a.Questions()
 		return "question: " + qs[0].Question

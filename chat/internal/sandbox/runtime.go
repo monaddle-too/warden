@@ -30,6 +30,8 @@ type RuntimeDriver interface {
 	KeepAlive(string) (io.Closer, error)
 	Exec(context.Context, string, string, ...string) (string, error)
 	Copy(context.Context, string, string, string) error
+	// CopyOut copies a guest path to a host path (the reverse of Copy).
+	CopyOut(context.Context, string, string, string) error
 	// InstallCA makes the guest trust the broker's public gateway CA.
 	InstallCA(context.Context, string, string) error
 	Stream(context.Context, string, string, BrokerConfig) (io.ReadWriteCloser, error)
@@ -123,6 +125,9 @@ func (d *sbxRuntime) Copy(ctx context.Context, name, source, target string) erro
 		}
 	}
 	return command(ctx, d.worker.Executable, "cp", source, name+":"+target).Run()
+}
+func (d *sbxRuntime) CopyOut(ctx context.Context, name, source, target string) error {
+	return command(ctx, d.worker.Executable, "cp", name+":"+source, target).Run()
 }
 func (d *sbxRuntime) Stop(ctx context.Context, name string) error {
 	return command(ctx, d.worker.Executable, "stop", name).Run()

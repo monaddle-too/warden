@@ -178,7 +178,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "approvals":
-		err = h.Engine.Resolve(parts[1], parts[3], body.Allow, body.Answers)
+		err = h.Engine.ResolveAs(parts[1], parts[3], body.Allow, body.Answers, requester(r))
 	default:
 		http.Error(w, "not found", 404)
 		return

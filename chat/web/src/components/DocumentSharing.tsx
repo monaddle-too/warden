@@ -21,7 +21,12 @@ export type DocumentRequest = {
   expires_at: number | null;
   documents: Doc[];
 };
-type File = { id: string; name: string; blocked?: boolean };
+type File = {
+  id: string;
+  name: string;
+  mimeType?: string;
+  blocked?: boolean;
+};
 export type DocumentSharingHandle = {
   open: () => void;
   decline: () => void;
@@ -351,12 +356,16 @@ export function DocumentSharing({
                           />
                           <span>
                             {f.name}
+                            {f.mimeType ===
+                              "application/vnd.google-apps.spreadsheet" && (
+                              <small> · Sheet</small>
+                            )}
                             {f.blocked && <small> · Unsharable with AI</small>}
                           </span>
                         </label>
                       ))}
                     {!files.length && !busy && (
-                      <p>No Google documents found.</p>
+                      <p>No Google documents or spreadsheets found.</p>
                     )}
                   </div>
                   {page && (

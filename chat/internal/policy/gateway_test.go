@@ -807,3 +807,37 @@ func TestGatewayOpenEgressReachesBrokeredHostsAnonymously(t *testing.T) {
 		}
 	}
 }
+
+// A document grant covers the spreadsheet API too: the same ID on
+// sheets.googleapis.com gets the owner's credential, other IDs do not.
+func TestGatewaySheetsShareTheDocumentGrant(t *testing.T) {
+	f := newGatewayFixture(t)
+	google := &fakeGoogle{authorization: "Bearer synthetic-google-credential", canWrite: true, connected: true, configured: true}
+	sharing, err := NewSharing(filepath.Join(f.dir, "sharing"), google, f.clock.wall, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sharing.Close()
+	f.registry.Sharing = sharing
+	r, _ := sharing.Dispatch("request", map[string]any{"chatID": "c1", "sandboxID": "s1", "callID": "tool-1", "reason": "Read sheet", "access": "write"})
+	sharing.Dispatch("resolve", map[string]any{"id": r["request_id"], "allow": true, "documents": []any{"sheet-a"}, "duration": 900})
+	f.setHandler(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"values":[["1"]]}`))
+	})
+	res, _, err := f.do("GET", "https://sheets.googleapis.com/v4/spreadsheets/sheet-a/values/Sheet1!A1:B2", map[string]string{"Authorization": "Bearer forged"}, "")
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("sheet read: %v %v", res, err)
+	}
+	if reqs := f.upstreamRequests(); len(reqs) != 1 || reqs[0].headers.Get("Authorization") != "Bearer synthetic-google-credential" {
+		t.Fatalf("upstream: %+v", reqs)
+	}
+	res, _, err = f.do("POST", "https://sheets.googleapis.com/v4/spreadsheets/sheet-a/values/Sheet1!A1:append?valueInputOption=RAW", map[string]string{"Content-Type": "application/json"}, `{"values":[["x"]]}`)
+	if err != nil || res.StatusCode != 200 || len(f.upstreamRequests()) != 2 {
+		t.Fatalf("sheet write: %v %v", res, err)
+	}
+	res, _, err = f.do("GET", "https://sheets.googleapis.com/v4/spreadsheets/sheet-b", nil, "")
+	if (err == nil && res.StatusCode < 400) || len(f.upstreamRequests()) != 2 {
+		t.Fatalf("unshared sheet: %v %v", res, err)
+	}
+}

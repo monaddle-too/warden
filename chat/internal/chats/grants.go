@@ -1,0 +1,278 @@
+package chats
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"time"
+
+	"warden/chat/internal/agent"
+	cv "warden/chat/internal/conversation"
+)
+
+// Owner-approved grants an agent can ask for. Each tool creates a pending
+// approval on the chat (shown in the web UI, the terminal client and the
+// popups) and the agent's tool call stays open until the owner answers;
+// the answer performs the effect and becomes the tool result. Nothing is
+// granted, and no credential moves, before the approval.
+//
+//   request_network_access    warden/network/allow    one public host, for a bounded time, this sandbox
+//   request_repository_access warden/repository/access share or widen a repository's read categories
+//   github_write              warden/github/write     one comment, issue or label set, posted by Warden
+//   request_host_directory    warden/host/import      copy a host directory into the sandbox (local mode)
+//   sync_host_directory       warden/host/export      copy it back over the host directory (local mode)
+
+const (
+	methodNetworkAllow     = "warden/network/allow"
+	methodRepositoryAccess = "warden/repository/access"
+	methodGitHubWrite      = "warden/github/write"
+	methodHostImport       = "warden/host/import"
+	methodHostExport       = "warden/host/export"
+)
+
+var grantMethods = map[string]string{
+	"request_network_access":    methodNetworkAllow,
+	"request_repository_access": methodRepositoryAccess,
+	"github_write":              methodGitHubWrite,
+	"request_host_directory":    methodHostImport,
+	"sync_host_directory":       methodHostExport,
+}
+
+func isGrantMethod(method string) bool {
+	for _, m := range grantMethods {
+		if m == method {
+			return true
+		}
+	}
+	return false
+}
+
+// grantTools lists the request tools; the host directory ones exist only
+// on a local install, where the owner's own files are the point.
+func grantTools(local bool) []any {
+	str := func(desc string, max int) map[string]any {
+		return map[string]any{"type": "string", "description": desc, "maxLength": max}
+	}
+	tools := []any{
+		map[string]any{"type": "function", "name": "request_network_access", "description": "Ask the owner to let this sandbox reach one public website host (HTTP or HTTPS on ports 80 and 443) for a limited time through Warden's gateway, when the network policy refused it. Give the exact hostname without scheme or path, why you need it, and for how long. Waits for the decision; on approval retry the request. No credential is ever attached to a host allowed this way.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+			"host": str("hostname, e.g. pypi.org", 253), "reason": str("why you need it", 500), "duration_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "how long, in minutes (default 60)"}}, "required": []string{"host", "reason"}, "additionalProperties": false}},
+		map[string]any{"type": "function", "name": "request_repository_access", "description": "Ask the owner to share a GitHub repository with this workspace, or to widen the read categories of one already shared: contents (code, branches, commits, clone), issues (issues, comments, labels, milestones), pull_requests (pull requests, their files and reviews). Read-only; writes need github_write or request_pull_request. Waits for the decision.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+			"repository": str("owner/name", 200), "categories": map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"contents", "issues", "pull_requests"}}, "minItems": 1, "maxItems": 3}, "reason": str("why you need it", 500)}, "required": []string{"repository", "categories", "reason"}, "additionalProperties": false}},
+		map[string]any{"type": "function", "name": "github_write", "description": "Perform one small GitHub write on a repository shared with this workspace, after the owner approves the exact payload: comment_issue or comment_pull_request (number, body), create_issue (title, body), add_labels (number, labels). Warden posts it with the owner's credential; you never hold a token. Waits for the decision and returns the created URL. Larger changes go through request_pull_request.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+			"repository": str("owner/name", 200), "action": map[string]any{"type": "string", "enum": []string{"comment_issue", "comment_pull_request", "create_issue", "add_labels"}}, "number": map[string]any{"type": "integer", "minimum": 1, "description": "issue or pull request number"}, "title": str("issue title (create_issue)", 256), "body": str("Markdown body", 65536), "labels": map[string]any{"type": "array", "items": map[string]any{"type": "string", "maxLength": 50}, "maxItems": 20}}, "required": []string{"repository", "action"}, "additionalProperties": false}},
+	}
+	if local {
+		tools = append(tools,
+			map[string]any{"type": "function", "name": "request_host_directory", "description": "Ask the owner to copy a directory from their computer into this sandbox at /home/agent/host/<name> (a snapshot you can read and change; up to 1 GiB). Give the absolute path on their computer and why. Waits for the decision. Use sync_host_directory to copy your changes back.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": str("absolute directory path on the owner's computer", 1024), "reason": str("why you need it", 500)}, "required": []string{"path", "reason"}, "additionalProperties": false}},
+			map[string]any{"type": "function", "name": "sync_host_directory", "description": "Ask the owner to copy /home/agent/host/<name> back over the original directory on their computer, merging file by file: existing files are overwritten, nothing is deleted. Give the same absolute path used with request_host_directory. Waits for the decision.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": str("absolute directory path on the owner's computer", 1024)}, "required": []string{"path"}, "additionalProperties": false}},
+		)
+	}
+	return tools
+}
+
+// requestGrant validates a grant tool call and parks it as a pending
+// approval; Resolve answers it.
+func (e *Engine) requestGrant(c *Chat, client *agent.Client, f agent.Frame) error {
+	name := agent.String(f.Params["tool"])
+	method := grantMethods[name]
+	// fail answers the agent with the validation error (tests pass no client
+	// and get the error back).
+	fail := func(msg string) error {
+		err := errors.New(msg)
+		if client == nil {
+			return err
+		}
+		return client.Reply(f.ID, toolResult(nil, err))
+	}
+	if (method == methodHostImport || method == methodHostExport) && !e.LocalMode {
+		return fail("host directories are only available on a local Warden install")
+	}
+	raw, _ := json.Marshal(f.Params["arguments"])
+	if s, ok := f.Params["arguments"].(string); ok {
+		raw = []byte(s)
+	}
+	var in struct {
+		Host       string   `json:"host"`
+		Reason     string   `json:"reason"`
+		Duration   int      `json:"duration_minutes"`
+		Repository string   `json:"repository"`
+		Categories []string `json:"categories"`
+		Action     string   `json:"action"`
+		Number     int      `json:"number"`
+		Title      string   `json:"title"`
+		Body       string   `json:"body"`
+		Labels     []string `json:"labels"`
+		Path       string   `json:"path"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		return fail("invalid arguments: " + err.Error())
+	}
+	in.Reason = strings.TrimSpace(in.Reason)
+	params := map[string]any{}
+	switch method {
+	case methodNetworkAllow:
+		in.Host = strings.TrimRight(strings.ToLower(strings.TrimSpace(in.Host)), ".")
+		if in.Duration == 0 {
+			in.Duration = 60
+		}
+		if in.Host == "" || strings.ContainsAny(in.Host, "/: ") || in.Reason == "" || in.Duration < 1 || in.Duration > 1440 {
+			return fail("host (no scheme or path), reason and 1–1440 minutes are required")
+		}
+		params = map[string]any{"host": in.Host, "reason": in.Reason, "duration_minutes": in.Duration}
+	case methodRepositoryAccess:
+		in.Repository = strings.ToLower(strings.TrimSpace(in.Repository))
+		valid := map[string]bool{"contents": true, "issues": true, "pull_requests": true}
+		seen := map[string]bool{}
+		var categories []any
+		for _, cat := range in.Categories {
+			if !valid[cat] || seen[cat] {
+				return fail("categories are contents, issues and pull_requests")
+			}
+			seen[cat] = true
+			categories = append(categories, cat)
+		}
+		if !strings.Contains(in.Repository, "/") || len(categories) == 0 || in.Reason == "" {
+			return fail("repository (owner/name), at least one category and a reason are required")
+		}
+		params = map[string]any{"repository": in.Repository, "categories": categories, "reason": in.Reason}
+	case methodGitHubWrite:
+		in.Repository = strings.ToLower(strings.TrimSpace(in.Repository))
+		if !strings.Contains(in.Repository, "/") {
+			return fail("repository (owner/name) is required")
+		}
+		params = map[string]any{"repository": in.Repository, "action": in.Action}
+		switch in.Action {
+		case "comment_issue", "comment_pull_request":
+			if in.Number < 1 || strings.TrimSpace(in.Body) == "" {
+				return fail("number and body are required")
+			}
+			params["number"], params["body"] = in.Number, in.Body
+		case "create_issue":
+			if strings.TrimSpace(in.Title) == "" {
+				return fail("title is required")
+			}
+			params["title"], params["body"] = strings.TrimSpace(in.Title), in.Body
+		case "add_labels":
+			if in.Number < 1 || len(in.Labels) == 0 {
+				return fail("number and labels are required")
+			}
+			labels := []any{}
+			for _, l := range in.Labels {
+				labels = append(labels, l)
+			}
+			params["number"], params["labels"] = in.Number, labels
+		default:
+			return fail("action must be comment_issue, comment_pull_request, create_issue or add_labels")
+		}
+	case methodHostImport, methodHostExport:
+		in.Path = strings.TrimSpace(in.Path)
+		if !strings.HasPrefix(in.Path, "/") || (method == methodHostImport && in.Reason == "") {
+			return fail("an absolute path is required")
+		}
+		params = map[string]any{"path": in.Path}
+		if method == methodHostImport {
+			params["reason"] = in.Reason
+		}
+	default:
+		return fail("unsupported tool")
+	}
+	return e.Store.update(func(st *State) error {
+		chat := st.chat(c.ID)
+		if chat.Status != "running" || chat.RunID != c.RunID {
+			return errors.New("run expired")
+		}
+		chat.Approvals = append(chat.Approvals, Approval{ID: cv.ID(), RunID: c.RunID, RPCID: append(json.RawMessage(nil), f.ID...), Method: method, Params: params, State: "pending"})
+		return nil
+	})
+}
+
+// resolveGrant performs an approved grant (or reports the decline) and
+// returns the agent's tool result. actor is the person who answered.
+func (e *Engine) resolveGrant(c *Chat, a Approval, allow bool, actor cv.Actor) any {
+	if !allow {
+		return toolResult(nil, errors.New("the owner declined this request"))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	who := actor.Name
+	if who == "" {
+		who = actor.Email
+	}
+	if who == "" {
+		who = actor.PrincipalID
+	}
+	switch a.Method {
+	case methodNetworkAllow:
+		minutes := 60
+		switch v := a.Params["duration_minutes"].(type) {
+		case int:
+			minutes = v
+		case float64:
+			minutes = int(v)
+		}
+		result, err := e.sharingCall(ctx, "network_allow", map[string]any{"sandboxID": c.SandboxID, "host": a.Params["host"], "duration": minutes * 60, "reason": a.Params["reason"], "actor": who})
+		if err == nil {
+			result["note"] = "retry the request now; the host stays reachable until expires_at"
+		}
+		return toolResult(result, err)
+	case methodRepositoryAccess:
+		repo := agent.String(a.Params["repository"])
+		current, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": c.ID, "sandboxID": c.SandboxID})
+		if err != nil {
+			return toolResult(nil, err)
+		}
+		names := []any{}
+		access := map[string]any{}
+		for _, item := range agent.Array(current["repositories"]) {
+			r := agent.Map(item)
+			name := strings.ToLower(agent.String(r["full_name"]))
+			names = append(names, name)
+			access[name] = agent.Array(r["access"])
+		}
+		merged := map[string]bool{}
+		for _, cat := range agent.Array(access[repo]) {
+			merged[agent.String(cat)] = true
+		}
+		for _, cat := range agent.Array(a.Params["categories"]) {
+			merged[agent.String(cat)] = true
+		}
+		if _, present := access[repo]; !present {
+			names = append(names, repo)
+		}
+		list := []any{}
+		for _, cat := range []string{"contents", "issues", "pull_requests"} {
+			if merged[cat] {
+				list = append(list, cat)
+			}
+		}
+		access[repo] = list
+		result, err := e.sharingCall(ctx, "github_select", map[string]any{"chatID": c.ID, "sandboxID": c.SandboxID, "repositories": names, "access": access, "actor": who})
+		if err != nil {
+			return toolResult(nil, err)
+		}
+		return toolResult(map[string]any{"repository": repo, "access": list, "shared": result["repositories"]}, nil)
+	case methodGitHubWrite:
+		data := map[string]any{"sandboxID": c.SandboxID, "actor": who}
+		for k, v := range a.Params {
+			data[k] = v
+		}
+		result, err := e.sharingCall(ctx, "github_write", data)
+		return toolResult(result, err)
+	case methodHostImport, methodHostExport:
+		op := "host.import"
+		if a.Method == methodHostExport {
+			op = "host.export"
+		}
+		r := request(c, op)
+		r.Path = agent.String(a.Params["path"])
+		res, err := e.Worker.Call(ctx, r)
+		if err != nil {
+			return toolResult(nil, err)
+		}
+		return toolResult(map[string]any{"sandbox_path": res.Directory, "host_path": res.Output, "note": map[string]string{"host.import": "the directory is a copy; use sync_host_directory to write changes back", "host.export": "the host directory now has the sandbox's files; nothing was deleted"}[op]}, nil)
+	}
+	return toolResult(nil, errors.New("unknown grant"))
+}

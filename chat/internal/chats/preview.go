@@ -17,6 +17,9 @@ func (e *Engine) tool(ctx context.Context, c *Chat, client *agent.Client, f agen
 	if agent.String(f.Params["tool"]) == "attach_image" {
 		return e.imageTool(ctx, c, client, f)
 	}
+	if _, ok := grantMethods[agent.String(f.Params["tool"])]; ok {
+		return e.requestGrant(c, client, f)
+	}
 	if name := agent.String(f.Params["tool"]); name == "request_google_document_creation" || name == "request_google_docs_access" || name == "list_shared_documents" || name == "list_shared_repositories" || name == "request_pull_request" {
 		return e.sharingTool(ctx, c, client, f)
 	}

@@ -172,6 +172,18 @@ func (r *Registry) SetEgressMode(mode string) error {
 	return os.Rename(tmp, filepath.Join(r.State, egressFile))
 }
 
+// AllowHost applies an owner-approved temporary egress grant to the sandbox
+// with this ID (its current binding's engine).
+func (r *Registry) AllowHost(sandbox, host string, until float64) error {
+	r.mu.Lock()
+	b := r.Bindings[sandbox]
+	r.mu.Unlock()
+	if b == nil || b.Engine == nil {
+		return errors.New("sandbox is not registered with the policy service")
+	}
+	return b.Engine.AllowHost(host, until)
+}
+
 // LoadEgressMode reads a mode persisted by SetEgressMode, or "" when none.
 func LoadEgressMode(state string) (string, error) {
 	raw, err := os.ReadFile(filepath.Join(state, egressFile))
@@ -957,7 +969,7 @@ func (r *Registry) Proxy(sandbox string, capability any, message any) (map[strin
 		}
 		return map[string]any{"active": active}, nil
 	}
-	if sharing != nil && action == "authorize" && requestHost == "docs.googleapis.com" {
+	if sharing != nil && action == "authorize" && (requestHost == "docs.googleapis.com" || requestHost == "sheets.googleapis.com") {
 		denied := map[string]any{"allow": false, "status": 403, "reason": "Google document access requires an active sharing grant"}
 		if !engine.NetworkEnabled() {
 			return denied, nil
@@ -1005,7 +1017,7 @@ func (r *Registry) Proxy(sandbox string, capability any, message any) (map[strin
 		// CONNECT hostnames so rejected names cannot become DNS egress.
 		method, _ := request["method"].(string)
 		scheme, _ := request["scheme"].(string)
-		allow := requestHost == "github.com" || requestHost == "api.github.com" || requestHost == "api.figma.com" || requestHost == "docs.googleapis.com" || EgressPermits(engine.egressPolicyCopy(), requestHost, method, scheme, false)
+		allow := requestHost == "github.com" || requestHost == "api.github.com" || requestHost == "api.figma.com" || requestHost == "docs.googleapis.com" || requestHost == "sheets.googleapis.com" || EgressPermits(engine.egressPolicyCopy(), requestHost, method, scheme, false) || engine.HostAllowed(requestHost)
 		if allow {
 			if _, err := engine.Audit.Emit("dns.query", map[string]any{"hostname": requestHost, "reason": "SBX destination checked before resolution"}); err != nil {
 				return nil, err
