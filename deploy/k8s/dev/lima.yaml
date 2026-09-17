@@ -65,7 +65,9 @@ provision:
       /usr/local/bin/runsc --version
     fi
     mkdir -p /etc/containerd /var/log/runsc
-    printf 'log_path = "/var/log/runsc/%%ID%%/shim.log"\nlog_level = "info"\n[runsc_config]\n  platform = "systrap"\n' > /etc/containerd/runsc.toml
+    # allow-suid: runsc ignores SUID bits by default, which breaks the guest's
+    # passwordless sudo (found in plan step 0).
+    printf 'log_path = "/var/log/runsc/%%ID%%/shim.log"\nlog_level = "info"\n[runsc_config]\n  platform = "systrap"\n  allow-suid = "true"\n' > /etc/containerd/runsc.toml
 # 2. k3s without Traefik (the chart brings its own ingress in the dev values).
 #    The embedded network policy controller stays on. The containerd template
 #    adds the runsc runtime on top of k3s's generated base config.
