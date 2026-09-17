@@ -1,7 +1,9 @@
 // Adapted from Panta Conversation.tsx at bf61d5b; presentation retained, app dependencies removed.
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { Bot, ChevronRight, FileText, LoaderCircle, User } from "lucide-react";
+import { hasDiff, parseDiff } from "../diff";
 import type { Entry } from "../types";
+import { DiffView } from "./DiffView";
 import { ImageAttachment } from "./ImageAttachment";
 import { RichText } from "./RichText";
 const time = (v: number) =>
@@ -9,6 +11,18 @@ const time = (v: number) =>
     hour: "2-digit",
     minute: "2-digit",
   });
+/* A step's detail: a file edit (Codex's fileChange, a `git diff` an agent
+   ran) shows as a diff, anything else as the raw text. */
+function ActivityDetail({ text }: { text: string }) {
+  const segments = useMemo(() => parseDiff(text), [text]);
+  return hasDiff(segments) ? (
+    <div className="activity-detail">
+      <DiffView segments={segments} />
+    </div>
+  ) : (
+    <pre>{text}</pre>
+  );
+}
 /* A run of consecutive tool steps collapses into one row. */
 export const ActivityGroup = memo(function ActivityGroup({
   entries,
@@ -25,7 +39,7 @@ export const ActivityGroup = memo(function ActivityGroup({
           <span>{latest.text || "Agent activity"}</span>
           {streaming && <LoaderCircle size={12} className="spin" />}
         </summary>
-        <pre>{latest.detail}</pre>
+        <ActivityDetail text={latest.detail} />
       </details>
     );
   return (
@@ -44,7 +58,7 @@ export const ActivityGroup = memo(function ActivityGroup({
               <span>{entry.text || "Agent activity"}</span>
               {entry.isStreaming && <LoaderCircle size={12} className="spin" />}
             </summary>
-            <pre>{entry.detail}</pre>
+            <ActivityDetail text={entry.detail} />
           </details>
         ))}
       </div>

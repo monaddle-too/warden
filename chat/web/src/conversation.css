@@ -151,6 +151,24 @@
 .activity-group > pre {
   margin: 0 10px 10px;
 }
+/* A step whose detail is a diff (DiffView.tsx) scrolls like the raw text. */
+.activity-detail {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.activity-group > .activity-detail {
+  margin: 0 10px 10px;
+}
+.activity-entry .activity-detail {
+  margin: 4px 0 6px;
+}
+.activity-detail pre {
+  max-height: none;
+  border-radius: 0;
+}
 .activity-list {
   border-top: 1px solid var(--line);
   padding: 6px 10px 10px;

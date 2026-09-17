@@ -15,14 +15,17 @@ import {
   lineCount,
   type HastNode,
 } from "../code";
+import { fenceDiff, isDiffFence } from "../diff";
 import { isMermaidFence } from "../mermaid";
+import { DiffView } from "./DiffView";
 import { MermaidDiagram, useMermaid } from "./Mermaid";
 
 /* A fenced block from the transcript: language label, copy, wrap toggle and
    a collapse for long output. `children` is the <code> react-markdown already
    rendered (highlighted spans included); `node` is its hast source, which is
    where the text for the clipboard and the line count come from. A closed
-   ```mermaid fence becomes a diagram with a toggle back to its source. */
+   ```mermaid fence becomes a diagram with a toggle back to its source, and a
+   ```diff fence a coloured diff whose hunks fold on their own. */
 export function CodeBlock({
   node,
   streaming,
@@ -46,7 +49,13 @@ export function CodeBlock({
   // for the final text; the source stays visible until it renders.
   const diagram = useMermaid(text, isMermaidFence(language) && !streaming);
   const svg = source ? undefined : diagram?.svg;
-  const collapsible = lines > COLLAPSE_LINES && !svg;
+  // The parse is line-by-line string work, safe on a fence that is still
+  // streaming; the last hunk simply grows.
+  const diff = useMemo(
+    () => (isDiffFence(language) ? fenceDiff(text) : undefined),
+    [language, text],
+  );
+  const collapsible = lines > COLLAPSE_LINES && !svg && !diff;
   const collapsed = collapsible && !expanded;
   const copy = () => {
     // The clipboard is unavailable outside secure contexts; the button then
@@ -95,7 +104,13 @@ export function CodeBlock({
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-      {svg ? <MermaidDiagram svg={svg} /> : <pre>{children}</pre>}
+      {svg ? (
+        <MermaidDiagram svg={svg} />
+      ) : diff ? (
+        <DiffView segments={diff} />
+      ) : (
+        <pre>{children}</pre>
+      )}
       {diagram?.error && <p className="code-error">{diagram.error}</p>}
       {collapsible && (
         <button

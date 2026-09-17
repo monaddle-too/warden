@@ -425,6 +425,121 @@ dialog::backdrop {
   overflow-wrap: anywhere;
 }
 
+/* A unified diff (DiffView.tsx), in a ```diff fence or a step's detail:
+   a header per file, a fold button per hunk, +/- rows on the add/del
+   tokens. Numbers and marks are ::before content so a selection copies only
+   the code. */
+.diff-view pre {
+  margin: 0;
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff-view pre + .diff-file,
+.diff-file + .diff-file,
+.diff-file + pre {
+  border-top: 1px solid var(--line);
+}
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-3);
+  font: 12px/18px var(--mono);
+}
+.diff-path {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.diff-status {
+  color: var(--muted);
+}
+.diff-count {
+  white-space: nowrap;
+}
+.diff-plus {
+  color: var(--add-text);
+}
+.diff-minus {
+  color: var(--del-text);
+}
+.diff-hunk {
+  overflow-x: auto;
+  font: 12px/20px var(--mono);
+}
+.diff-fold {
+  display: flex;
+  width: 100%;
+  min-width: max-content;
+  height: 26px;
+  justify-content: flex-start;
+  border-radius: 0;
+  padding: 0 8px;
+  background: var(--info-soft);
+  color: var(--info-text);
+  font: inherit;
+}
+.diff-fold:hover {
+  background: var(--info-soft);
+  color: var(--text);
+}
+.diff-fold .muted {
+  font-size: 11px;
+}
+.diff-line {
+  display: flex;
+  min-width: max-content;
+}
+.diff-no {
+  flex: 0 0 44px;
+  width: 44px;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--muted);
+  border-right: 1px solid var(--line);
+}
+.diff-no::before {
+  content: attr(data-no);
+}
+.diff-line code {
+  flex: 1;
+  white-space: pre;
+  padding: 0 12px 0 6px;
+  font-size: inherit;
+}
+.diff-line code::before {
+  content: attr(data-mark);
+  display: inline-block;
+  width: 14px;
+  color: var(--muted);
+}
+.diff-add {
+  background: var(--add-soft);
+}
+.diff-add code::before {
+  color: var(--add-text);
+}
+.diff-del {
+  background: var(--del-soft);
+}
+.diff-del code::before {
+  color: var(--del-text);
+}
+.diff-meta {
+  color: var(--muted);
+}
+.code-block.wrap .diff-line {
+  min-width: 0;
+}
+.code-block.wrap .diff-line code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* highlight.js scopes, mapped onto the code tokens so both schemes stay
    readable on --surface-2. */
 .hljs-comment,
