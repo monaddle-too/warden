@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"warden/chat/internal/config"
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/policy"
 	"warden/chat/internal/services"
@@ -64,6 +65,7 @@ func run(args []string) error {
 	version := fs.Bool("version", false, "print the build revision and protocol number")
 	githubAuthFile := fs.String("github-auth-file", "", "private user OAuth token file written by warden login github; exclusive with WARDEN_GITHUB_APP_BROKER")
 	chatListen := fs.String("chat-listen", "127.0.0.1:18780", "chat listen address; its port is the loopback redirect of the built-in Google Docs client")
+	egress := fs.String("egress", config.EgressRestricted, "what sandboxes may reach besides the brokered providers: restricted (the template's destination list) or open (any public HTTP/HTTPS host; credentials still only after approval) (sandboxes.egress)")
 	if err := services.ParseFlags(fs, args); err != nil {
 		return err
 	}
@@ -71,7 +73,7 @@ func run(args []string) error {
 		fmt.Println(handshake.Self("warden-policy"))
 		return nil
 	}
-	s, err := resolveSettings(fs, policyFlags{configPath: configPath, state: state, sbx: sbx, googleConfig: googleConfig, claudeAuth: claudeAuth, codexAuth: codexAuth, vendorDir: vendorDir, template: template, guestDigest: guestDigest, caMaxAge: caMaxAge, githubAuthFile: githubAuthFile, chatListen: chatListen})
+	s, err := resolveSettings(fs, policyFlags{configPath: configPath, state: state, sbx: sbx, googleConfig: googleConfig, claudeAuth: claudeAuth, codexAuth: codexAuth, vendorDir: vendorDir, template: template, guestDigest: guestDigest, caMaxAge: caMaxAge, githubAuthFile: githubAuthFile, chatListen: chatListen, egress: egress})
 	if err != nil {
 		return err
 	}
@@ -139,7 +141,15 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	options := policy.RegistryOptions{Operations: operations, PolicyTemplate: *template, GitHubAppConfig: s.githubBroker, GitHubAuthFile: s.githubAuthFile, DocumentAPI: documentAPI, Networks: networks, CA: ca}
+	egressMode := "restricted"
+	switch s.egress {
+	case config.EgressOpen:
+		egressMode = "public"
+	case config.EgressRestricted:
+	default:
+		return errors.New("--egress must be restricted or open")
+	}
+	options := policy.RegistryOptions{Operations: operations, PolicyTemplate: *template, GitHubAppConfig: s.githubBroker, GitHubAuthFile: s.githubAuthFile, DocumentAPI: documentAPI, Networks: networks, CA: ca, EgressMode: egressMode}
 	registry, err := policy.NewRegistry(*state, options)
 	if err != nil {
 		return errors.New("registry: " + err.Error())

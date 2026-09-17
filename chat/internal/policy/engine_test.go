@@ -409,3 +409,37 @@ func TestEgressDecisionsAndNetworkSwitch(t *testing.T) {
 		t.Fatal("disconnect not durable")
 	}
 }
+
+// The operator's egress mode overrides the stored policy at every load, so
+// flipping sandboxes.egress applies to existing sandboxes on restart and
+// flipping it back restores the template's restricted list.
+func TestEngineEgressModeOverride(t *testing.T) {
+	dir := t.TempDir()
+	mode := func(e *Engine) string {
+		egress, _ := e.PolicyCopy()["egress"].(map[string]any)
+		m, _ := egress["mode"].(string)
+		return m
+	}
+	if m := mode(newTestEngine(t, dir, nil)); m != "restricted" {
+		t.Fatalf("template mode: %q", m)
+	}
+	open, err := NewEngine(dir, EngineOptions{Operations: testOperations(t), PolicyTemplate: templatePath(t), EgressMode: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := mode(open); m != "public" {
+		t.Fatalf("open mode: %q", m)
+	}
+	open.Close()
+	back, err := NewEngine(dir, EngineOptions{Operations: testOperations(t), PolicyTemplate: templatePath(t), EgressMode: "restricted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer back.Close()
+	if m := mode(back); m != "restricted" {
+		t.Fatalf("restricted again: %q", m)
+	}
+	if _, err := NewEngine(t.TempDir(), EngineOptions{Operations: testOperations(t), PolicyTemplate: templatePath(t), EgressMode: "everything"}); err == nil {
+		t.Fatal("invalid override accepted")
+	}
+}

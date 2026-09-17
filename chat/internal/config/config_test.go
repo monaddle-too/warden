@@ -107,3 +107,17 @@ func TestWriteRoundTrip(t *testing.T) {
 		t.Fatal("disagreeing --state accepted")
 	}
 }
+
+func TestSandboxEgressModes(t *testing.T) {
+	c, err := Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"}}`))
+	if err != nil || c.Sandboxes.Egress != EgressRestricted {
+		t.Fatalf("default egress: %q %v", c.Sandboxes.Egress, err)
+	}
+	c, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"sandboxes":{"egress":"open"}}`))
+	if err != nil || c.Sandboxes.Egress != EgressOpen {
+		t.Fatalf("open egress: %q %v", c.Sandboxes.Egress, err)
+	}
+	if _, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"sandboxes":{"egress":"everything"}}`)); err == nil || !strings.Contains(err.Error(), "sandboxes.egress") {
+		t.Fatalf("bad egress accepted: %v", err)
+	}
+}

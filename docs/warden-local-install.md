@@ -412,6 +412,41 @@ chats but keeps sandboxes and logins; deleting only `provider/<file>` (or
 `sbx/login.json` makes the next install run the SBX sign-in again. Your
 own sbx namespace is unaffected by any of this.
 
+## Network access from a sandbox
+
+Every sandbox is created with sbx's network fully denied and exactly one
+exception: its own inspecting gateway on the host loopback. Agents are
+started with `HTTPS_PROXY` pointing at it and Warden's CA installed, so
+all HTTP and HTTPS traffic passes through the gateway, which decides per
+request and injects credentials only for approved operations. The
+sandbox never holds a real token: the Codex and Claude processes get
+placeholders that the gateway swaps for the stored sign-in on the way to
+the provider.
+
+What the gateway lets through depends on `sandboxes.egress` in
+`warden.json`:
+
+- **`restricted`** (the default): the provider hosts, a few package
+  registries and the destination list in the policy template. Anything
+  else is refused with an audit entry, so `curl https://google.com` from
+  the sandbox fails. GitHub, Google Docs and Figma hosts need an active
+  grant (a shared repository or document); without one they are refused.
+- **`open`**: any public HTTP or HTTPS host on port 80 or 443 with a
+  canonical DNS name. GitHub, Google Docs and Figma requests that have a
+  grant are brokered exactly as before; those without one are forwarded
+  anonymously, with the guest's own credential headers stripped and
+  nothing injected, so public repositories clone and public APIs answer
+  while private ones still need the usual approval. Private and
+  special-use addresses, IP literals, other ports and raw TCP (SSH,
+  databases) remain unreachable in both modes.
+
+Change it in `warden.json` and restart Warden; the setting applies to
+existing sandboxes too:
+
+```json
+"sandboxes": { "egress": "open" }
+```
+
 ## 9. Limits
 
 - One owner. The launcher capability is the only identity and it is the

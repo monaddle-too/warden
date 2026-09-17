@@ -791,6 +791,23 @@ func (f *flow) guardRequest() bool {
 		}
 		var review map[string]any
 		body := f.body
+		// In open egress mode a brokered host with no grant is still
+		// reachable, anonymously: the guest's own headers were stripped
+		// above and nothing is injected. The request is then an ordinary
+		// external one, subject to the same egress decision and audit.
+		// forwarded: proceed upstream; denied: the flow was already
+		// refused (audit failure); neither: apply the brokered denial.
+		anonymous := func() (forwarded, denied bool) {
+			decision, err := f.egressDecision(host)
+			if err != nil || !allowed(decision) {
+				return false, false
+			}
+			if !f.forwardExternal(host, filtered, decision, true) {
+				return false, true
+			}
+			f.git = git != nil
+			return true, false
+		}
 		if git != nil && git.Write {
 			// Reading upstream objects is separately authorized. A read
 			// session cannot dispatch a receive-pack request.
@@ -800,6 +817,9 @@ func (f *flow) guardRequest() bool {
 				return fail(err)
 			}
 			if allow, _ := read["allow"].(bool); !allow {
+				if forwarded, denied := anonymous(); forwarded || denied {
+					return forwarded
+				}
 				reason, _ := read["reason"].(string)
 				if reason == "" {
 					reason = "repository read permission required"
@@ -863,6 +883,9 @@ func (f *flow) guardRequest() bool {
 			f.requestID = id
 		}
 		if allow, _ := decision["allow"].(bool); !allow {
+			if forwarded, denied := anonymous(); forwarded || denied {
+				return forwarded
+			}
 			reason, _ := decision["reason"].(string)
 			if reason == "" {
 				reason = "denied"
@@ -907,11 +930,11 @@ func (f *flow) guardRequest() bool {
 		}
 		f.startWatch()
 	} else {
-		decision, err := f.control(map[string]any{"action": "egress", "request": map[string]any{"host": host, "method": f.method, "scheme": f.scheme}})
+		decision, err := f.egressDecision(host)
 		if err != nil {
 			return fail(err)
 		}
-		if allow, _ := decision["allow"].(bool); !allow {
+		if !allowed(decision) {
 			reason, _ := decision["reason"].(string)
 			if reason == "" {
 				reason = "destination denied"
@@ -919,25 +942,55 @@ func (f *flow) guardRequest() bool {
 			f.deny(reason, 403, "")
 			return false
 		}
-		f.decisionID, _ = decision["decision_id"].(string)
-		f.remaining, _ = asNumber(decision["remaining_seconds"])
-		f.startWatch()
-		// Other sites retain their credentials for ordinary application
-		// login, but logs contain only their scrubbed representations.
-		query := ""
-		if strings.Contains(f.path, "?") {
-			query = "[REDACTED]"
-		}
-		contentType, _ := f.header("Content-Type")
-		_ = contentType
-		summary := map[string]any{"method": f.method, "host": host, "path": f.g.Redactor.Text(strings.SplitN(f.path, "?", 2)[0]), "query": query,
-			"headers": pairsToAny(f.g.Redactor.Headers(f.headers)), "body": f.g.Redactor.Body(len(f.body))}
-		if err := f.audit("http.request.external", map[string]any{"request_id": f.requestID, "request": summary}); err != nil {
-			return fail(err)
+		if !f.forwardExternal(host, f.headers, decision, false) {
+			return false
 		}
 	}
 	if f.providerRequest() {
 		f.setHeader("Accept-Encoding", "identity")
+	}
+	return true
+}
+
+func allowed(decision map[string]any) bool {
+	allow, _ := decision["allow"].(bool)
+	return allow
+}
+
+// egressDecision asks the destination policy about an ordinary
+// (unbrokered) request to host.
+func (f *flow) egressDecision(host string) (map[string]any, error) {
+	return f.control(map[string]any{"action": "egress", "request": map[string]any{"host": host, "method": f.method, "scheme": f.scheme}})
+}
+
+// forwardExternal prepares an allowed external request: the given headers,
+// the decision's lease and watch, and the audit entry. anonymous marks a
+// brokered host reached without a grant in open egress mode. It denies the
+// flow and returns false only when the audit entry cannot be written.
+func (f *flow) forwardExternal(host string, headers [][]string, decision map[string]any, anonymous bool) bool {
+	f.headers = headers
+	f.setHeader("Host", host)
+	f.decisionID, _ = decision["decision_id"].(string)
+	f.remaining, _ = asNumber(decision["remaining_seconds"])
+	f.startWatch()
+	// Other sites retain their credentials for ordinary application
+	// login, but logs contain only their scrubbed representations.
+	query := ""
+	if strings.Contains(f.path, "?") {
+		query = "[REDACTED]"
+	}
+	summary := map[string]any{"method": f.method, "host": host, "path": f.g.Redactor.Text(strings.SplitN(f.path, "?", 2)[0]), "query": query,
+		"headers": pairsToAny(f.g.Redactor.Headers(f.headers)), "body": f.g.Redactor.Body(len(f.body))}
+	if anonymous {
+		summary["anonymous"] = true
+	}
+	if err := f.audit("http.request.external", map[string]any{"request_id": f.requestID, "request": summary}); err != nil {
+		if isValueError(err) {
+			f.deny(err.Error(), 403, "")
+		} else {
+			f.deny("inspection or control plane unavailable", 503, "")
+		}
+		return false
 	}
 	return true
 }

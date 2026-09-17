@@ -26,6 +26,11 @@ type EngineOptions struct {
 	Clock          Clock  // wall clock
 	Monotonic      Clock  // monotonic clock
 	GitHubApp      GitHubCredentials
+	// EgressMode, when set ("restricted" or "public"), overrides the egress
+	// mode of the sandbox's stored policy at every load: the operator's
+	// sandboxes.egress setting is authoritative, whatever the policy file
+	// copied from the template said when the sandbox was created.
+	EgressMode string
 }
 
 // Engine holds one sandbox's policy, approvals, grants, decisions and audit.
@@ -127,6 +132,14 @@ func NewEngine(state string, options EngineOptions) (*Engine, error) {
 	policy, ok := parsed.(map[string]any)
 	if !ok {
 		return fail(errors.New("policy has missing or unknown fields"))
+	}
+	if options.EgressMode != "" {
+		egress, _ := policy["egress"].(map[string]any)
+		if egress == nil {
+			egress = map[string]any{"destinations": []any{}}
+			policy["egress"] = egress
+		}
+		egress["mode"] = options.EgressMode
 	}
 	if err = ValidatePolicy(policy); err != nil {
 		return fail(err)

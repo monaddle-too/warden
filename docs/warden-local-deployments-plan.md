@@ -664,6 +664,7 @@ missing `providers.github` hides the repository UI instead of failing.
 | `sandboxes.warmSpares` | Booted empty sandboxes kept ready so a new chat starts fast. | runner |
 | `sandboxes.stopAfterIdleMinutes` | Minutes without user activity before a running sandbox stops; files are kept. | runner |
 | `sandboxes.keepStopped` | Stopped sandboxes kept on disk before the oldest are deleted. | runner |
+| `sandboxes.egress` | What a sandbox may reach through its gateway besides the brokered providers: `restricted` (the template's destination list; default) or `open` (any public HTTP/HTTPS host). Credentials are injected only for approved requests in both modes; in `open`, a brokered host without a grant is reached anonymously instead of refused. | policy |
 | `chat.listen` | Loopback address of the chat API and UI; the edge sits in front. | chat, edge |
 | `previews.mode` | `loopback`: served on this machine over plain HTTP. `public`: through a real domain with TLS. | chat, runner, edge |
 | `previews.hostSuffix` | Hostname tail each preview gets: `localhost` locally, `preview.monaddle.com` on OVH. | chat, edge |
@@ -887,4 +888,12 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   release.sh and release.yml follow. `warden uninstall` stops a background
   Warden, deletes the namespace's sandboxes, stops its daemon and removes
   `<state>` (`--keep-state`, `--yes`).
+- 2026-09-16: `sandboxes.egress` (`restricted` default, `open`). Open
+  mode sets every sandbox engine's egress policy to `public` at load
+  (`RegistryOptions.EgressMode`, authoritative over the stored policy
+  file), and the gateway reaches brokered hosts without a grant
+  anonymously (guest credentials stripped, nothing injected, audited with
+  `anonymous: true`) instead of refusing them. sbx's own deny-all with the
+  single gateway exception is unchanged, so everything still passes the
+  inspecting gateway.
 

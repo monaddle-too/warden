@@ -21,7 +21,7 @@ func policySettings(t *testing.T, args ...string) (settings, error) {
 		googleConfig: fs.String("google-config", "", ""), claudeAuth: fs.String("claude-auth-file", "", ""), codexAuth: fs.String("codex-auth-file", "", ""),
 		vendorDir: fs.String("vendor-dir", "vendor", ""), template: fs.String("policy-template", "config/policy.template.json", ""),
 		guestDigest: fs.String("guest-image-digest", policy.SBXShellDigest, ""), caMaxAge: fs.Duration("gateway-ca-max-age", policy.DefaultGatewayCAMaxAge, ""),
-		githubAuthFile: fs.String("github-auth-file", "", ""), chatListen: fs.String("chat-listen", "127.0.0.1:18780", ""),
+		githubAuthFile: fs.String("github-auth-file", "", ""), chatListen: fs.String("chat-listen", "127.0.0.1:18780", ""), egress: fs.String("egress", "restricted", ""),
 	}
 	fs.Bool("manage-network", false, "")
 	fs.String("mitmdump", "", "")

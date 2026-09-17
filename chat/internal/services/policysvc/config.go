@@ -30,11 +30,12 @@ type settings struct {
 	githubConfigured bool   // providers.github present
 	githubAuthFile   string // providers.github.authFile (local user token)
 	chatListen       string // chat.listen; its port is the built-in Google redirect
+	egress           string // sandboxes.egress: restricted or open
 }
 
 type policyFlags struct {
-	configPath, state, sbx, googleConfig, claudeAuth, codexAuth, vendorDir, template, guestDigest, githubAuthFile, chatListen *string
-	caMaxAge                                                                                                                  *time.Duration
+	configPath, state, sbx, googleConfig, claudeAuth, codexAuth, vendorDir, template, guestDigest, githubAuthFile, chatListen, egress *string
+	caMaxAge                                                                                                                          *time.Duration
 }
 
 func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
@@ -56,6 +57,7 @@ func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
 	}
 	s.caMaxAge = config.Override(o, "gateway-ca-max-age", *f.caMaxAge, "sbx.inspectionCertMaxAgeDays", time.Duration(cfg.SBX.InspectionCertMaxAgeDays)*24*time.Hour)
 	s.guestDigest = config.Override(o, "guest-image-digest", *f.guestDigest, "sbx.guestImageDigest", cfg.GuestDigest())
+	s.egress = config.Override(o, "egress", *f.egress, "sandboxes.egress", cfg.Sandboxes.Egress)
 	codex := ""
 	if cfg.Providers.Codex != nil {
 		codex = cfg.Providers.Codex.AuthFile

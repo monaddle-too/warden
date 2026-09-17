@@ -94,6 +94,7 @@ type RegistryOptions struct {
 	PolicyTemplate  string
 	GitHubAppConfig string // WARDEN_GITHUB_APP_BROKER path, may be empty
 	GitHubAuthFile  string // --github-auth-file user token path, may be empty; exclusive with GitHubAppConfig
+	EgressMode      string // "" (the template decides), "restricted" or "public"; see EngineOptions.EgressMode
 	Clock           Clock  // monotonic clock for leases/proofs
 	Verifier        Verifier
 	ProviderSource  ProviderSource
@@ -351,7 +352,7 @@ func (r *Registry) load(identity map[string]string) (*Binding, error) {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, err
 	}
-	engineOptions := EngineOptions{Operations: r.options.Operations, PolicyTemplate: r.options.PolicyTemplate}
+	engineOptions := EngineOptions{Operations: r.options.Operations, PolicyTemplate: r.options.PolicyTemplate, EgressMode: r.options.EgressMode}
 	engine, err := NewEngine(directory, engineOptions)
 	if err != nil {
 		return nil, err

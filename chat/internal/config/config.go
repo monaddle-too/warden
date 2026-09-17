@@ -81,7 +81,20 @@ type Sandboxes struct {
 	WarmSpares           int `json:"warmSpares,omitempty"`
 	StopAfterIdleMinutes int `json:"stopAfterIdleMinutes,omitempty"`
 	KeepStopped          int `json:"keepStopped,omitempty"`
+	// Egress is what a sandbox may reach through its gateway besides the
+	// brokered providers: "restricted" (the template's destination list;
+	// the default) or "open" (any public HTTP/HTTPS host). Credentials are
+	// injected only for approved requests in either mode; in open mode a
+	// brokered host without a grant is reached anonymously instead of
+	// being refused.
+	Egress string `json:"egress,omitempty"`
 }
+
+// Egress modes.
+const (
+	EgressRestricted = "restricted"
+	EgressOpen       = "open"
+)
 
 // Chat is the web app listener.
 type Chat struct {
@@ -148,7 +161,7 @@ func Defaults(state string) Config {
 	c.Paths.State = state
 	c.SBX.PrivateHome = filepath.Join(state, "sbx")
 	c.SBX.InspectionCertMaxAgeDays = 365
-	c.Sandboxes = Sandboxes{MemoryMB: 1536, MaxRunning: 2, WarmSpares: 1, StopAfterIdleMinutes: 15, KeepStopped: 32}
+	c.Sandboxes = Sandboxes{MemoryMB: 1536, MaxRunning: 2, WarmSpares: 1, StopAfterIdleMinutes: 15, KeepStopped: 32, Egress: EgressRestricted}
 	c.Chat.Listen = "127.0.0.1:18780"
 	c.Previews = Previews{Mode: PreviewLoopback, HostSuffix: "localhost", EdgeListen: "127.0.0.1:18781"}
 	c.Auth = Auth{Mode: AuthOwner, PublicURL: "http://" + c.Previews.EdgeListen}
@@ -291,6 +304,7 @@ func merge(c *Config, file Config) {
 	setInt(&c.Sandboxes.WarmSpares, file.Sandboxes.WarmSpares)
 	setInt(&c.Sandboxes.StopAfterIdleMinutes, file.Sandboxes.StopAfterIdleMinutes)
 	setInt(&c.Sandboxes.KeepStopped, file.Sandboxes.KeepStopped)
+	setString(&c.Sandboxes.Egress, file.Sandboxes.Egress)
 	setString(&c.Chat.Listen, file.Chat.Listen)
 	setString(&c.Previews.Mode, file.Previews.Mode)
 	setString(&c.Previews.HostSuffix, file.Previews.HostSuffix)
@@ -397,6 +411,9 @@ func (c Config) Validate() error {
 	s := c.Sandboxes
 	if s.MemoryMB < 512 || s.MemoryMB > 16384 || s.MaxRunning < 1 || s.WarmSpares < 0 || s.StopAfterIdleMinutes < 1 || s.KeepStopped < 1 {
 		return errors.New("sandboxes: memoryMB 512–16384, maxRunning ≥ 1, warmSpares ≥ 0, stopAfterIdleMinutes ≥ 1, keepStopped ≥ 1")
+	}
+	if s.Egress != EgressRestricted && s.Egress != EgressOpen {
+		return fmt.Errorf("sandboxes.egress must be %q or %q", EgressRestricted, EgressOpen)
 	}
 	if g := c.Providers.GitHub; g != nil {
 		user, app := g.AuthFile != "", g.AppID != 0 || g.AppSlug != "" || g.InstallationOwner != "" || g.BrokerFile != ""

@@ -758,3 +758,52 @@ func TestGatewayReusesExistingCAAndRejectsBadTunnels(t *testing.T) {
 		t.Fatal("unreachable")
 	}
 }
+
+// Open egress (sandboxes.egress = open): any public host is reachable, and a
+// brokered host with no grant is reached anonymously, guest credentials
+// stripped and nothing injected, instead of being refused. A disconnected
+// network still denies everything.
+func TestGatewayOpenEgressReachesBrokeredHostsAnonymously(t *testing.T) {
+	f := newGatewayFixture(t)
+	engine := f.registry.Bindings["s1"].Engine
+	// Restricted: no selection, so api.github.com is refused before upstream.
+	res, _, err := f.do("GET", "https://api.github.com/repos/owner/repo", map[string]string{"Authorization": "Bearer forged", "Cookie": "forged"}, "")
+	if err != nil || res.StatusCode < 400 || len(f.upstreamRequests()) != 0 {
+		t.Fatalf("restricted github without grant: %v %v", res, err)
+	}
+	policy := engine.PolicyCopy()
+	policy["egress"] = map[string]any{"mode": "public", "destinations": []any{}}
+	if err := engine.SavePolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	f.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"full_name":"owner/repo"}`))
+	})
+	res, body, err := f.do("GET", "https://api.github.com/repos/owner/repo", map[string]string{"Authorization": "Bearer forged", "Cookie": "forged"}, "")
+	if err != nil || res.StatusCode != 200 || !strings.Contains(string(body), "owner/repo") {
+		t.Fatalf("open github without grant: %v %s %v", res, body, err)
+	}
+	reqs := f.upstreamRequests()
+	if len(reqs) != 1 || reqs[0].headers.Get("Authorization") != "" || reqs[0].headers.Get("Cookie") != "" {
+		t.Fatalf("anonymous request carried credentials: %+v", reqs)
+	}
+	if !f.auditContains("http.request.external") || !f.auditContains(`"anonymous":true`) || f.auditContains("forged") {
+		t.Fatal("anonymous audit missing or leaked the guest header")
+	}
+	// An unbrokered host is plain external egress with its own headers.
+	res, _, err = f.do("GET", "https://example.com/page", map[string]string{"Authorization": "Bearer site-login"}, "")
+	if err != nil || res.StatusCode != 200 || f.upstreamRequests()[1].headers.Get("Authorization") != "Bearer site-login" {
+		t.Fatalf("open external: %v %v", res, err)
+	}
+	// Disconnected: open mode grants nothing.
+	if err := engine.SetNetwork(false); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"https://api.github.com/repos/owner/repo", "https://example.com/page"} {
+		res, _, err = f.do("GET", target, nil, "")
+		if (err == nil && res.StatusCode < 400) || len(f.upstreamRequests()) != 2 {
+			t.Fatalf("disconnected %s: %v %v", target, res, err)
+		}
+	}
+}
