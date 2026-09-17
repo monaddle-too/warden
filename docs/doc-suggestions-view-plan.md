@@ -154,11 +154,26 @@ paper inheriting the app's dark surface, tokens splitting on spaces (the
 LCS preferred matching spaces to words), pairing by symmetric ratio
 (short → long rewrites showed as delete + insert).
 
-Known: the owner's own typed text shows as the agent's suggestion (the
-page diffs against the Google base; authorship is not tracked per run);
-accepted-state does not carry into a revision; the fixture used by the
-UI check has an empty table (the projection of real tables carries cell
-text and renders read-only).
+Second pass, same day, after the owner's review of the page:
+
+- **One suggestion per edit.** Proposal hunks now come from the agent's
+  ops, one each (`docchanges.go`: `hunksFromOps`, and `hunksFromRevision`
+  for ops written against a returned draft), never from a diff that
+  merged neighbouring paragraphs. The review splits `diff(base, draft)`
+  along those hunks (`reviewChanges`): a suggestion found verbatim keeps
+  its id and reasons, one the owner edited is attributed to both, and
+  what is left over is the owner's (blue, a "You" card with *Undo*).
+  Verified live: three ops on three neighbouring paragraphs → three cards.
+- **A stable page.** A fresh server view is applied as one transaction
+  over the changed range; the caret is re-anchored by draft paragraph and
+  code-point offset (ProseMirror's own mapping pushed a caret at the edge
+  of the replaced range into the next paragraph); saving no longer toggles
+  the editor's editability (that blur was the "flash"). Verified live:
+  three typing bursts with a save between each, all in place.
+
+Known: accepted-state does not carry into a revision; the fixture used by
+the UI check has an empty table (the projection of real tables carries
+cell text and renders read-only).
 
 ## Out of scope / later
 
