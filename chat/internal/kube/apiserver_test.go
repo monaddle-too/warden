@@ -105,7 +105,7 @@ func (api *fakeAPI) seed(r Resource, namespace string, obj map[string]any) map[s
 }
 
 // expireHistory forgets every event at or below the current version so a
-// resume from an older version is 410 Gone.
+// resume from any version seen so far is 410 Gone until a new list.
 func (api *fakeAPI) expireHistory() {
 	api.mu.Lock()
 	defer api.mu.Unlock()
@@ -493,7 +493,7 @@ func (api *fakeAPI) serveWatch(w http.ResponseWriter, r *http.Request, res apiPa
 			writeStatus(w, http.StatusBadRequest, "BadRequest", "bad resourceVersion")
 			return
 		}
-		if n < api.oldest-1 {
+		if n < api.oldest {
 			api.mu.Unlock()
 			if api.goneAsEvent {
 				w.Header().Set("Content-Type", "application/json")
@@ -527,6 +527,9 @@ func (api *fakeAPI) serveWatch(w http.ResponseWriter, r *http.Request, res apiPa
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush() // the API server sends the headers before the first event
+	}
 	write := func(ev histEvent) bool {
 		if err := json.NewEncoder(w).Encode(map[string]any{"type": ev.typ, "object": ev.object}); err != nil {
 			return false
