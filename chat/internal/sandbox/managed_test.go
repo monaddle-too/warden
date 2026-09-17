@@ -64,6 +64,7 @@ type testRuntime struct {
 	execHook      func([]string) error
 	execOutput    string
 	runs          []RunSpec // every Stream launch, in order
+	requestURI    string    // the last request the fake guest service saw
 }
 
 func (d *testRuntime) record(s string) {
@@ -166,6 +167,7 @@ func (d *testRuntime) serve(l net.Listener, m PortMapping) {
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.mu.Lock()
 		d.headers = r.Header.Clone()
+		d.requestURI = r.URL.RequestURI()
 		d.mu.Unlock()
 		w.Header().Set("Set-Cookie", "bad=secret")
 		_, _ = io.WriteString(w, "counter")
