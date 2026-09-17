@@ -65,11 +65,18 @@ image is then built on the server as before): the frontend, the one
 linked in as the revision, one tarball per target
 (`warden-<tag>-<os>-<arch>.tar.gz` holding `bin/`, `web/`,
 `config/policy.template.json`, `config/warden.server.example.json` and
-`vendor/`), `SHA256SUMS`, a GitHub release, and the server image
+`vendor/`), `SHA256SUMS`, a GitHub release, the server image
 `ghcr.io/monaddle-too/warden:<tag>` for linux/amd64 and linux/arm64
 (from `deploy/chat/Dockerfile`; the run summary lists the index digest to
-pin and the per-platform manifest digests). A manual run builds everything
-under a `v0.0.0-dev.<sha>` version and publishes no GitHub release. The
+pin and the per-platform manifest digests), and the Helm chart for the
+Kubernetes shape at `oci://ghcr.io/monaddle-too/charts/warden` (chart
+version `<tag without v>`, `appVersion` the tag, values pinned to that
+image by digest; `scripts/package-chart.sh`, also attached to the release
+as `warden-<version>.tgz`; `scripts/release.sh --chart` packages it
+locally and `--publish` pushes it with your own `helm registry login
+ghcr.io`; see `docs/warden-kubernetes.md`). A manual run builds everything
+under a `v0.0.0-dev.<sha>` version, packages the chart without pushing it
+and publishes no GitHub release. The
 binary and each service subcommand print `<name> <revision> protocol=<n>`
 with `--version`; the chat service refuses to start beside a runner or
 policy service on another protocol number and logs a warning for a
