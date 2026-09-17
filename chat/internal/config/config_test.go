@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,5 +120,95 @@ func TestSandboxEgressModes(t *testing.T) {
 	}
 	if _, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"sandboxes":{"egress":"everything"}}`)); err == nil || !strings.Contains(err.Error(), "sandboxes.egress") {
 		t.Fatalf("bad egress accepted: %v", err)
+	}
+}
+
+// A file without services or tls resolves to the Unix sockets and the
+// loopback chat the services used before those sections existed, and a
+// written file does not gain them.
+func TestTransportDefaultsAreTodaysSocketsAndLoopbackChat(t *testing.T) {
+	for _, raw := range []string{`{"version":1,"paths":{"state":"/tmp/w"}}`, `{"version":1,"paths":{"state":"/tmp/w"},"chat":{"listen":"127.0.0.1:19000"}}`} {
+		c, err := Parse([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.PolicyListen() != "unix:///tmp/w/policy/sbx-control.sock" || c.PolicyAddress() != c.PolicyListen() || c.RunnerListen() != "unix:///tmp/w/runner/worker.sock" || c.RunnerAddress() != c.RunnerListen() {
+			t.Fatalf("%s: %s %s %s %s", raw, c.PolicyListen(), c.PolicyAddress(), c.RunnerListen(), c.RunnerAddress())
+		}
+		if c.ChatListen() != "http://"+c.Chat.Listen || c.ChatAddress() != c.ChatListen() || c.UsesTLS() || c.TransportTLS() != nil {
+			t.Fatalf("%s: %s %s", raw, c.ChatListen(), c.ChatAddress())
+		}
+		if HostOf(c.ChatAddress()) != c.Chat.Listen {
+			t.Fatal(HostOf(c.ChatAddress()))
+		}
+	}
+	c := Defaults("/tmp/w")
+	if c.PolicyListen() != "unix://"+c.PolicySocket() || c.RunnerAddress() != "unix://"+c.RunnerSocket() || c.ChatListen() != "http://127.0.0.1:18780" {
+		t.Fatalf("%s %s %s", c.PolicyListen(), c.RunnerAddress(), c.ChatListen())
+	}
+	path := filepath.Join(t.TempDir(), "warden.json")
+	if err := Write(path, c); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "services") || strings.Contains(string(b), "\"tls\"") {
+		t.Fatalf("defaults written explicitly:\n%s", b)
+	}
+}
+
+func TestTransportURLsAndTLSValidation(t *testing.T) {
+	k8s := `{"version":1,"paths":{"state":"/var/lib/warden"},
+	 "services":{"policy":{"listen":"tls://0.0.0.0:7443","address":"tls://warden-policy:7443"},
+	             "runner":{"listen":"tls://:7444","address":"tls://warden-runner:7444"},
+	             "chat":{"listen":"tls://0.0.0.0:7445","address":"tls://warden-chat:7445"}},
+	 "tls":{"caFile":"/etc/warden/tls/ca.crt","certFile":"/etc/warden/tls/tls.crt","keyFile":"/etc/warden/tls/tls.key"}}`
+	c, err := Parse([]byte(k8s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.UsesTLS() || c.PolicyListen() != "tls://0.0.0.0:7443" || c.PolicyAddress() != "tls://warden-policy:7443" || c.RunnerListen() != "tls://:7444" || c.ChatAddress() != "tls://warden-chat:7445" {
+		t.Fatalf("%+v", c.Services)
+	}
+	if tl := c.TransportTLS(); tl == nil || tl.CAFile != "/etc/warden/tls/ca.crt" || tl.CertFile != "/etc/warden/tls/tls.crt" || tl.KeyFile != "/etc/warden/tls/tls.key" || tl.ServerName != "" {
+		t.Fatalf("%+v", tl)
+	}
+	// chat.listen keeps its loopback default beside a tls:// chat listener.
+	if c.Chat.Listen != "127.0.0.1:18780" || HostOf(c.ChatAddress()) != "warden-chat:7445" {
+		t.Fatal(c.Chat.Listen, HostOf(c.ChatAddress()))
+	}
+	// Explicit unix:// URLs and a loopback http:// chat listener that sets
+	// chat.listen for the policy service's redirect.
+	c, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"services":{"policy":{"listen":"unix:///run/warden/policy.sock"},"runner":{"listen":"unix:///run/warden/runner.sock","address":"unix:///mnt/runner/runner.sock"},"chat":{"listen":"http://127.0.0.1:19000"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.PolicyAddress() != "unix:///run/warden/policy.sock" || c.RunnerAddress() != "unix:///mnt/runner/runner.sock" || c.Chat.Listen != "127.0.0.1:19000" || c.ChatAddress() != "http://127.0.0.1:19000" || c.UsesTLS() {
+		t.Fatalf("%+v %s", c.Services, c.Chat.Listen)
+	}
+	// A tls section beside Unix sockets is allowed and unused.
+	if _, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"tls":{"caFile":"/a","certFile":"/b","keyFile":"/c"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	bad := map[string]string{
+		"tls without the section":        `{"version":1,"paths":{"state":"/tmp/w"},"services":{"policy":{"listen":"tls://0.0.0.0:7443","address":"tls://p:7443"}}}`,
+		"tls with a relative key":        `{"version":1,"paths":{"state":"/tmp/w"},"services":{"policy":{"listen":"tls://0.0.0.0:7443","address":"tls://p:7443"}},"tls":{"caFile":"/a","certFile":"/b","keyFile":"c"}}`,
+		"tls listener without address":   `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"listen":"tls://0.0.0.0:7444"}},"tls":{"caFile":"/a","certFile":"/b","keyFile":"/c"}}`,
+		"address without a host":         `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"listen":"tls://0.0.0.0:7444","address":"tls://:7444"}},"tls":{"caFile":"/a","certFile":"/b","keyFile":"/c"}}`,
+		"mixed schemes":                  `{"version":1,"paths":{"state":"/tmp/w"},"services":{"policy":{"listen":"unix:///tmp/p.sock","address":"tls://p:7443"}},"tls":{"caFile":"/a","certFile":"/b","keyFile":"/c"}}`,
+		"http for the policy service":    `{"version":1,"paths":{"state":"/tmp/w"},"services":{"policy":{"listen":"http://127.0.0.1:1"}}}`,
+		"unix for the chat":              `{"version":1,"paths":{"state":"/tmp/w"},"services":{"chat":{"listen":"unix:///tmp/c.sock"}}}`,
+		"non-loopback chat":              `{"version":1,"paths":{"state":"/tmp/w"},"services":{"chat":{"listen":"http://10.0.0.1:18780"}}}`,
+		"chat listen and chat.listen":    `{"version":1,"paths":{"state":"/tmp/w"},"chat":{"listen":"127.0.0.1:18780"},"services":{"chat":{"listen":"http://127.0.0.1:19000"}}}`,
+		"relative socket":                `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"listen":"unix://worker.sock"}}}`,
+		"socket path too long":           `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"listen":"unix:///` + strings.Repeat("d/", 60) + `w.sock"}}}`,
+		"port out of range":              `{"version":1,"paths":{"state":"/tmp/w"},"services":{"policy":{"listen":"tls://0.0.0.0:70000","address":"tls://p:70000"}},"tls":{"caFile":"/a","certFile":"/b","keyFile":"/c"}}`,
+		"path in a tls URL":              `{"version":1,"paths":{"state":"/tmp/w"},"services":{"policy":{"listen":"tls://0.0.0.0:7443/x","address":"tls://p:7443"}},"tls":{"caFile":"/a","certFile":"/b","keyFile":"/c"}}`,
+		"unknown service field":          `{"version":1,"paths":{"state":"/tmp/w"},"services":{"policy":{"socket":"/x"}}}`,
+		"unknown tls field (serverName)": `{"version":1,"paths":{"state":"/tmp/w"},"tls":{"caFile":"/a","certFile":"/b","keyFile":"/c","serverName":"x"}}`,
+	}
+	for name, raw := range bad {
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Errorf("%s: accepted %s", name, raw)
+		}
 	}
 }
