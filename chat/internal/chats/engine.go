@@ -495,6 +495,7 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 		}
 		return nil
 	})
+	e.Wake() // the sandbox is free: a chat queued on it re-evaluates now
 	return err
 }
 func (e *Engine) Runtime(ctx context.Context, id, op string) (sandbox.Response, error) {
@@ -867,6 +868,9 @@ func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *
 	a.release = release
 	a.idle.Store(true)
 	e.mu.Unlock()
+	// A chat queued on this sandbox, or waiting for a run slot, was blocked
+	// while the turn ran; the loop only re-evaluates when woken.
+	e.Wake()
 	defer func() {
 		e.mu.Lock()
 		a.idle.Store(false)
