@@ -40,7 +40,38 @@ var contentsRead = stringSet("git/read", "repos/get-content", "repos/list-branch
 var contentsWrite = stringSet("git/push", "git/create-blob", "git/create-tree", "git/create-commit",
 	"git/create-ref", "git/update-ref", "git/delete-ref", "repos/create-or-update-file-contents",
 	"repos/delete-file", "repos/merge")
-var pullRead = stringSet("pulls/get", "pulls/list", "pulls/list-files", "pulls/list-commits", "pulls/list-reviews", "pulls/list-review-comments")
+var pullRead = stringSet("pulls/get", "pulls/list", "pulls/list-files", "pulls/list-commits", "pulls/list-reviews", "pulls/list-review-comments",
+	"reactions/list-for-pull-request-review-comment")
+var issuesRead = stringSet("issues/list-for-repo", "issues/get", "issues/list-comments", "issues/list-comments-for-repo", "issues/get-comment",
+	"issues/list-events", "issues/list-events-for-repo", "issues/get-event", "issues/list-events-for-timeline",
+	"issues/list-labels-on-issue", "issues/list-labels-for-repo", "issues/get-label",
+	"issues/list-milestones", "issues/get-milestone", "issues/list-labels-for-milestone", "issues/list-assignees",
+	"issues/list-sub-issues", "issues/get-parent", "issues/list-dependencies-blocked-by", "issues/list-dependencies-blocking",
+	"reactions/list-for-issue", "reactions/list-for-issue-comment")
+
+// Read categories a shared repository can expose to a conversation, as the
+// selection UI names them: which operations each covers is decided here,
+// so the UI never sees operation ids. Metadata (repos/get) always comes
+// with a selection.
+var RepositoryReadCategories = []string{"contents", "issues", "pull_requests"}
+
+// GitHubReadCategory names the read category a supported read operation
+// belongs to ("metadata", "contents", "issues" or "pull_requests"); ok is
+// false for writes and unsupported operations.
+func GitHubReadCategory(operation string) (category string, ok bool) {
+	switch {
+	case operation == "repos/get":
+		return "metadata", true
+	case contentsRead[operation]:
+		return "contents", true
+	case issuesRead[operation]:
+		return "issues", true
+	case pullRead[operation]:
+		return "pull_requests", true
+	}
+	return "", false
+}
+
 var pullWrite = stringSet("pulls/create", "pulls/update", "pulls/merge", "pulls/create-review", "pulls/create-review-comment")
 
 func stringSet(values ...string) map[string]bool {
@@ -63,6 +94,8 @@ func GitHubPermissions(operation string) (map[string]string, error) {
 		return map[string]string{"contents": "write", "metadata": "read"}, nil
 	case pullRead[operation]:
 		return map[string]string{"pull_requests": "read", "metadata": "read"}, nil
+	case issuesRead[operation]:
+		return map[string]string{"issues": "read", "metadata": "read"}, nil
 	case pullWrite[operation]:
 		return map[string]string{"pull_requests": "write", "metadata": "read"}, nil
 	}

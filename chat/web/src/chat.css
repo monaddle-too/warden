@@ -1054,3 +1054,25 @@ button.danger:hover {
 .admin-choice.selected strong {
   color: var(--accent-text);
 }
+
+.sharing-repo {
+  border-bottom: 1px solid var(--line);
+}
+.sharing-repo:last-of-type {
+  border-bottom: 0;
+}
+.sharing-repo > label {
+  border-bottom: 0;
+}
+.sharing-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 0 0 8px 26px;
+}
+.sharing-categories label {
+  padding: 2px 0;
+  border-bottom: 0;
+  font-size: 13px;
+  color: var(--muted);
+}

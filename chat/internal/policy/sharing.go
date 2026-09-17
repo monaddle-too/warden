@@ -420,7 +420,7 @@ func NewSharing(root string, google GoogleSharing, clock Clock, github GitHubCre
 	// owner's, so the default back-fills them.
 	for table, columns := range map[string][][2]string{
 		"requests":     {{"access", "read"}, {"title", ""}, {"principal", OwnerPrincipal}},
-		"repositories": {{"principal", OwnerPrincipal}},
+		"repositories": {{"principal", OwnerPrincipal}, {"access", "contents,pull_requests"}},
 	} {
 		if err = ensureTextColumns(db, table, columns); err != nil {
 			db.Close()
@@ -1093,6 +1093,13 @@ func (s *Sharing) githubDispatch(op string, data map[string]any) (map[string]any
 		if !ok || len(list) > 100 {
 			return nil, errors.New("select up to 100 repositories")
 		}
+		// Per-repository read categories: data["access"] maps a name to a
+		// non-empty subset of RepositoryReadCategories; a repository absent
+		// from the map gets every read category.
+		access, err := repositoryAccess(list, data["access"])
+		if err != nil {
+			return nil, err
+		}
 		wanted := map[string]bool{}
 		for _, item := range list {
 			name, ok := item.(string)
@@ -1142,7 +1149,7 @@ func (s *Sharing) githubDispatch(op string, data map[string]any) (map[string]any
 		}
 		for _, repo := range found {
 			id, _ := asInt(repo["id"])
-			if _, err = tx.Exec("INSERT INTO repositories (chat,sandbox,owner,app,name,id,grant_id,principal) VALUES (?,?,?,?,?,?,?,?)", chat, sandbox, owner, app, lowerString(repo["full_name"]), id, randomHex(32), principalOf(data)); err != nil {
+			if _, err = tx.Exec("INSERT INTO repositories (chat,sandbox,owner,app,name,id,grant_id,principal,access) VALUES (?,?,?,?,?,?,?,?,?)", chat, sandbox, owner, app, lowerString(repo["full_name"]), id, randomHex(32), principalOf(data), access[lowerString(repo["full_name"])]); err != nil {
 				tx.Rollback()
 				s.mu.Unlock()
 				return nil, err
@@ -1158,7 +1165,7 @@ func (s *Sharing) githubDispatch(op string, data map[string]any) (map[string]any
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.DB.Query("SELECT id,name FROM repositories WHERE sandbox=? AND owner=? AND app=? ORDER BY name", sandbox, owner, app)
+	rows, err := s.DB.Query("SELECT id,name,access FROM repositories WHERE sandbox=? AND owner=? AND app=? ORDER BY name", sandbox, owner, app)
 	if err != nil {
 		return nil, err
 	}
@@ -1166,13 +1173,71 @@ func (s *Sharing) githubDispatch(op string, data map[string]any) (map[string]any
 	repositories := []any{}
 	for rows.Next() {
 		var id int64
-		var name string
-		if err = rows.Scan(&id, &name); err != nil {
+		var name, stored string
+		if err = rows.Scan(&id, &name, &stored); err != nil {
 			return nil, err
 		}
-		repositories = append(repositories, map[string]any{"id": id, "full_name": name, "url": "https://github.com/" + name, "clone_url": "https://github.com/" + name + ".git", "api_url": "https://api.github.com/repos/" + name, "access": "read", "expires_at": nil})
+		categories := []any{}
+		for _, c := range strings.Split(stored, ",") {
+			if c != "" {
+				categories = append(categories, c)
+			}
+		}
+		repositories = append(repositories, map[string]any{"id": id, "full_name": name, "url": "https://github.com/" + name, "clone_url": "https://github.com/" + name + ".git", "api_url": "https://api.github.com/repos/" + name,
+			"access": categories, "access_summary": "read: " + accessSummary(stored), "expires_at": nil})
 	}
 	return map[string]any{"owner": owner, "repositories": repositories}, rows.Err()
+}
+
+// repositoryAccess resolves the categories each selected repository gets:
+// the given map's entry (validated) or every read category.
+func repositoryAccess(list []any, raw any) (map[string]string, error) {
+	valid := stringSet(RepositoryReadCategories...)
+	given, _ := raw.(map[string]any)
+	out := map[string]string{}
+	for _, item := range list {
+		name := lowerString(item)
+		entry, present := given[name]
+		if !present {
+			out[name] = strings.Join(RepositoryReadCategories, ",")
+			continue
+		}
+		items, ok := entry.([]any)
+		if !ok || len(items) == 0 {
+			return nil, errors.New("access must name at least one read category per repository")
+		}
+		chosen := map[string]bool{}
+		for _, c := range items {
+			s, ok := c.(string)
+			if !ok || !valid[s] {
+				return nil, errors.New("access categories are contents, issues and pull_requests")
+			}
+			chosen[s] = true
+		}
+		var sorted []string
+		for _, c := range RepositoryReadCategories {
+			if chosen[c] {
+				sorted = append(sorted, c)
+			}
+		}
+		out[name] = strings.Join(sorted, ",")
+	}
+	return out, nil
+}
+
+// accessSummary words a stored category list for people and agents.
+func accessSummary(stored string) string {
+	names := map[string]string{"contents": "code", "issues": "issues", "pull_requests": "pull requests"}
+	var parts []string
+	for _, c := range strings.Split(stored, ",") {
+		if n, ok := names[c]; ok {
+			parts = append(parts, n)
+		}
+	}
+	if len(parts) == 0 {
+		return "metadata only"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // GitHubGrant returns the persistent read grant covering a GitHub request,
@@ -1221,8 +1286,14 @@ func (s *Sharing) GitHubGrant(chat, sandbox string, engine *Engine, request map[
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var id int64
-	err = s.DB.QueryRow("SELECT id,grant_id FROM repositories WHERE sandbox=? AND name=? AND owner=? AND app=?", sandbox, strings.ToLower(n.Repository), strings.ToLower(owner), app).Scan(&id, &grantID)
+	var stored string
+	err = s.DB.QueryRow("SELECT id,grant_id,access FROM repositories WHERE sandbox=? AND name=? AND owner=? AND app=?", sandbox, strings.ToLower(n.Repository), strings.ToLower(owner), app).Scan(&id, &grantID, &stored)
 	if err != nil {
+		return "", "", false, nil
+	}
+	// The selection covers only the read categories chosen for it;
+	// metadata always. Anything else is refused as unshared.
+	if category, ok := GitHubReadCategory(n.Operation.OperationID); !ok || (category != "metadata" && !stringSet(strings.Split(stored, ",")...)[category]) {
 		return "", "", false, nil
 	}
 	authorization, err = s.GitHub.Authorization(n.Repository, n.Operation.OperationID, &id)

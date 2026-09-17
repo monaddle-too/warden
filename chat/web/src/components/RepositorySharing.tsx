@@ -9,7 +9,24 @@ import {
 import { GitFork } from "lucide-react";
 import { api } from "../api";
 
-type Repo = { id: number; full_name: string; private?: boolean };
+type Repo = {
+  id: number;
+  full_name: string;
+  private?: boolean;
+  access?: string[];
+};
+// Read categories a shared repository can expose; the policy service
+// decides which GitHub operations each covers. Metadata always comes along.
+const CATEGORIES: { id: string; label: string; hint: string }[] = [
+  { id: "contents", label: "Code", hint: "files, branches, commits, clone" },
+  {
+    id: "issues",
+    label: "Issues",
+    hint: "issues, comments, labels, milestones",
+  },
+  { id: "pull_requests", label: "Pull requests", hint: "PRs, files, reviews" },
+];
+const ALL = CATEGORIES.map((c) => c.id);
 type GitHubStatus = { configured?: boolean; appSlug?: string };
 export type RepositorySharingHandle = { open: () => void };
 export function RepositorySharing({
@@ -41,6 +58,8 @@ export function RepositorySharing({
   }, []);
   const [repos, setRepos] = useState<Repo[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
+  // name -> chosen read categories (every category unless changed)
+  const [access, setAccess] = useState<Record<string, string[]>>({});
   const [owner, setOwner] = useState("");
   const [installation, setInstallation] = useState<number>();
   const [page, setPage] = useState<number | null>(null);
@@ -60,6 +79,14 @@ export function RepositorySharing({
           `sharing/github_list?chatID=${encodeURIComponent(chatID)}`,
         );
         setSelected(shared.repositories.map((r) => r.full_name.toLowerCase()));
+        setAccess(
+          Object.fromEntries(
+            shared.repositories.map((r) => [
+              r.full_name.toLowerCase(),
+              r.access?.length ? r.access : ALL,
+            ]),
+          ),
+        );
         setRepos(shared.repositories);
         setOwner(shared.owner);
       }
@@ -90,7 +117,13 @@ export function RepositorySharing({
     setBusy(true);
     setError("");
     try {
-      await api("sharing/github_select", { chatID, repositories: selected });
+      await api("sharing/github_select", {
+        chatID,
+        repositories: selected,
+        access: Object.fromEntries(
+          selected.map((name) => [name, access[name] || ALL]),
+        ),
+      });
       setOpen(false);
     } catch (e) {
       setError(String(e));
@@ -133,8 +166,8 @@ export function RepositorySharing({
           </header>
           <p>
             Selected repositories stay readable by every chat in this workspace
-            until you remove them. Writing and pushing require separate
-            permission.
+            until you remove them, limited to the categories you tick. Writing
+            and pushing always require separate permission.
           </p>
           {owner && (
             <p>
@@ -173,25 +206,54 @@ export function RepositorySharing({
               )
               .map((r) => {
                 const name = r.full_name.toLowerCase();
+                const on = selected.includes(name);
+                const chosen = access[name] || ALL;
                 return (
-                  <label key={r.id}>
-                    <input
-                      type="checkbox"
-                      disabled={busy}
-                      checked={selected.includes(name)}
-                      onChange={(e) =>
-                        setSelected((old) =>
-                          e.target.checked
-                            ? [...old, name]
-                            : old.filter((n) => n !== name),
-                        )
-                      }
-                    />
-                    <span>
-                      {r.full_name}
-                      {r.private ? " · Private" : ""}
-                    </span>
-                  </label>
+                  <div key={r.id} className="sharing-repo">
+                    <label>
+                      <input
+                        type="checkbox"
+                        disabled={busy}
+                        checked={on}
+                        onChange={(e) =>
+                          setSelected((old) =>
+                            e.target.checked
+                              ? [...old, name]
+                              : old.filter((n) => n !== name),
+                          )
+                        }
+                      />
+                      <span>
+                        {r.full_name}
+                        {r.private ? " · Private" : ""}
+                      </span>
+                    </label>
+                    {on && (
+                      <div className="sharing-categories">
+                        {CATEGORIES.map((c) => (
+                          <label key={c.id} title={c.hint}>
+                            <input
+                              type="checkbox"
+                              disabled={busy}
+                              checked={chosen.includes(c.id)}
+                              onChange={(e) =>
+                                setAccess((old) => ({
+                                  ...old,
+                                  [name]: e.target.checked
+                                    ? ALL.filter(
+                                        (id) =>
+                                          id === c.id || chosen.includes(id),
+                                      )
+                                    : chosen.filter((id) => id !== c.id),
+                                }))
+                              }
+                            />
+                            <span>{c.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 );
               })}
             {!busy && !repos.length && !error && (
@@ -207,7 +269,12 @@ export function RepositorySharing({
             <span>{selected.length} selected · Read-only · Until removed</span>
             <button
               className="primary"
-              disabled={busy || selected.length > 100 || !owner}
+              disabled={
+                busy ||
+                selected.length > 100 ||
+                !owner ||
+                selected.some((n) => (access[n] || ALL).length === 0)
+              }
               onClick={() => void save()}
             >
               {busy ? "Loading…" : "Save repository access"}

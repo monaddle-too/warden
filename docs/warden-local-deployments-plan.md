@@ -902,4 +902,12 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   every live engine's policy in place (grants kept, external leases
   dropped), applies to later engines and persists `<policy>/egress.json`,
   which overrides `sandboxes.egress` at the next start.
+- 2026-09-16: per-repository read categories. Sharing a repository now
+  records which read categories it covers (`contents`, `issues`,
+  `pull_requests`; metadata always), chosen per repository in the sharing
+  dialog and defaulting to all three for new selections (rows from before
+  keep code + pull requests). Issue reads (`issues/*` and `reactions/*`
+  GET operations scoped to a repository) joined the operation catalog's
+  known read set; before this, reading issues of a shared repository was
+  refused as unsupported while pull requests worked.
 

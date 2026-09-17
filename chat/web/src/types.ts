@@ -57,7 +57,13 @@ export type Environment = {
   chats: EnvironmentChat[];
   runtime: { state: string; runtimeName: string } | null;
   documents: DocumentGrant[];
-  repositories: { id: number; full_name: string; url: string }[];
+  repositories: {
+    id: number;
+    full_name: string;
+    url: string;
+    access?: string[];
+    access_summary?: string;
+  }[];
   ports: { id: string; port: number; title: string; url: string }[];
   deleted: boolean;
   archived: boolean;

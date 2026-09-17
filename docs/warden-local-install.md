@@ -431,6 +431,11 @@ What the gateway lets through depends on `sandboxes.egress` in
   else is refused with an audit entry, so `curl https://google.com` from
   the sandbox fails. GitHub, Google Docs and Figma hosts need an active
   grant (a shared repository or document); without one they are refused.
+  A shared repository is read-only and limited to the categories ticked
+  when sharing it: code (files, branches, commits, clone), issues (issues,
+  comments, labels, milestones) and pull requests; repository metadata
+  always. Anything outside the ticked categories is refused, and every
+  write needs its own approval.
 - **`open`**: any public HTTP or HTTPS host on port 80 or 443 with a
   canonical DNS name. GitHub, Google Docs and Figma requests that have a
   grant are brokered exactly as before; those without one are forwarded

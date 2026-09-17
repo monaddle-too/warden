@@ -229,7 +229,7 @@ export function WorkspacePanel({
               <a href={r.url} target="_blank" rel="noreferrer">
                 <code>{r.full_name}</code>
               </a>
-              <small>read access</small>
+              <small>{r.access_summary || "read access"}</small>
             </li>
           ))}
         </ul>

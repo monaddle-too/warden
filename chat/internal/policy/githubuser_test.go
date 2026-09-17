@@ -425,3 +425,71 @@ func contains(values []string, needle string) bool {
 	}
 	return false
 }
+
+// A selection carries per-repository read categories. The grant covers an
+// operation only when its category was chosen; metadata always; a
+// category left out falls through to per-request approval.
+func TestUserTokenSelectionReadCategories(t *testing.T) {
+	api := newUserAPI(t, 2)
+	source, _ := newUserSource(t, api)
+	sharing, err := NewSharing(t.TempDir(), nil, nil, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sharing.Close()
+	engine := newTestEngine(t, t.TempDir(), nil)
+	request := func(path string) map[string]any {
+		return map[string]any{"host": "api.github.com", "scheme": "https", "port": 443, "method": "GET", "path": path, "headers": []any{}, "body_base64": ""}
+	}
+	granted := func(path string) bool {
+		t.Helper()
+		_, authorization, ok, err := sharing.GitHubGrant("c1", "s1", engine, request(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok && authorization == "Bearer "+userToken
+	}
+	// Default: every read category.
+	if _, err = sharing.Dispatch("github_select", map[string]any{"chatID": "c1", "sandboxID": "s1", "repositories": []any{"owner/repo1"}}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := sharing.Dispatch("github_list", map[string]any{"chatID": "c1", "sandboxID": "s1"})
+	repo := list["repositories"].([]any)[0].(map[string]any)
+	if !jsonEqual(repo["access"], []any{"contents", "issues", "pull_requests"}) || repo["access_summary"] != "read: code, issues, pull requests" {
+		t.Fatalf("default access: %v", repo)
+	}
+	for _, path := range []string{"/repos/owner/repo1", "/repos/owner/repo1/issues", "/repos/owner/repo1/issues/7/comments", "/repos/owner/repo1/pulls", "/repos/owner/repo1/contents/README.md", "/repos/owner/repo1/labels"} {
+		if !granted(path) {
+			t.Fatalf("%s not granted with every category", path)
+		}
+	}
+	// Issues only: code and pull requests are no longer covered.
+	if _, err = sharing.Dispatch("github_select", map[string]any{"chatID": "c1", "sandboxID": "s1", "repositories": []any{"owner/repo1"}, "access": map[string]any{"owner/repo1": []any{"issues"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !granted("/repos/owner/repo1") || !granted("/repos/owner/repo1/issues") || !granted("/repos/owner/repo1/milestones") {
+		t.Fatal("issues selection does not cover issue reads")
+	}
+	if granted("/repos/owner/repo1/pulls") || granted("/repos/owner/repo1/contents/README.md") || granted("/repos/owner/repo1/commits") {
+		t.Fatal("issues selection covered code or pull requests")
+	}
+	if granted("/repos/owner/repo1/issues/comments/5") == false {
+		t.Fatal("issue comment read not covered")
+	}
+	// Writes are never covered by a selection whatever the categories.
+	if _, _, ok, _ := sharing.GitHubGrant("c1", "s1", engine, map[string]any{"host": "api.github.com", "scheme": "https", "port": 443, "method": "POST", "path": "/repos/owner/repo1/issues", "headers": []any{}, "body_base64": "e30="}); ok {
+		t.Fatal("issue creation granted")
+	}
+	for _, bad := range []any{map[string]any{"owner/repo1": []any{}}, map[string]any{"owner/repo1": []any{"actions"}}, map[string]any{"owner/repo1": "issues"}} {
+		if _, err = sharing.Dispatch("github_select", map[string]any{"chatID": "c1", "sandboxID": "s1", "repositories": []any{"owner/repo1"}, "access": bad}); err == nil {
+			t.Fatalf("bad access accepted: %v", bad)
+		}
+	}
+	// Rows from before the column existed read as code and pull requests.
+	if _, err = sharing.DB.Exec("UPDATE repositories SET access='contents,pull_requests'"); err != nil {
+		t.Fatal(err)
+	}
+	if granted("/repos/owner/repo1/issues") || !granted("/repos/owner/repo1/pulls") {
+		t.Fatal("legacy row categories wrong")
+	}
+}
