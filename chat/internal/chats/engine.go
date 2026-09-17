@@ -39,8 +39,8 @@ type Engine struct {
 	// PolicyAddress is the policy service's control endpoint (a unix:// or
 	// tls:// URL; "" leaves sharing unconfigured), dialed with PolicyTLS on
 	// tls://.
-	PolicyAddress string
-	PolicyTLS     *transport.TLS
+	PolicyAddress       string
+	PolicyTLS           *transport.TLS
 	PublicPreviewSuffix string
 	// PreviewScheme and PreviewPort shape approved binding URLs:
 	// <scheme>://<binding-id>.<suffix>[:port]/path. The scheme defaults to

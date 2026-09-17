@@ -40,6 +40,7 @@ type BrokerConfig struct {
 	ProviderBaseURL   string `json:"providerBaseURL"`
 	ProxyURL          string `json:"proxyURL"`
 }
+
 // PolicyEnforcement is the runner's client of the policy service's control
 // protocol at Address, a unix:// socket (the sbx shapes) or a tls://
 // host:port (Kubernetes, with TLS naming this service's material; the

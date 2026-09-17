@@ -42,12 +42,12 @@ const (
 type Config struct {
 	// Mode is "google" (default) or "owner": one person identified by the
 	// launcher capability, no sign-in client.
-	Mode           string `json:"mode,omitempty"`
-	Origin         string `json:"origin"`
-	PreviewSuffix  string `json:"previewSuffix"`
-	ClientID       string `json:"clientID"`
-	OwnerEmails    string `json:"ownerEmails"`
-	DemoDomains    string `json:"demoDomains"`
+	Mode          string `json:"mode,omitempty"`
+	Origin        string `json:"origin"`
+	PreviewSuffix string `json:"previewSuffix"`
+	ClientID      string `json:"clientID"`
+	OwnerEmails   string `json:"ownerEmails"`
+	DemoDomains   string `json:"demoDomains"`
 	// Upstream is the chat: http://127.0.0.1:<port>, or tls://<host>:<port>
 	// dialed with UpstreamTLS. UpstreamHost is the Host header the chat
 	// expects (its listen host:port, or the host of its tls:// address).
@@ -231,6 +231,7 @@ func (s *Server) token() (string, error) {
 	}
 	return value, nil
 }
+
 // credential is the bearer the chat admits on the loopback shape; over
 // mutual TLS the edge's certificate is the credential and none is sent.
 func (s *Server) credential() (string, error) {

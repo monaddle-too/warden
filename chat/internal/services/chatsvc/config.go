@@ -22,9 +22,9 @@ type settings struct {
 	address       string         // services.chat.address: what the edge dials; its host is this server's name
 	tls           *transport.TLS // tls.*, present when any transport URL is tls://
 	web           string         // paths.webAssets
-	suffix        string // previews.hostSuffix; "" leaves previews unconfigured
-	previewScheme string // from previews.mode
-	previewPort   string // previews.edgeListen port in loopback mode
+	suffix        string         // previews.hostSuffix; "" leaves previews unconfigured
+	previewScheme string         // from previews.mode
+	previewPort   string         // previews.edgeListen port in loopback mode
 }
 
 type chatFlags struct {

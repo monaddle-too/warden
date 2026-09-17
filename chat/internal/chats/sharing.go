@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 	"warden/chat/internal/agent"
-	"warden/chat/internal/transport"
 	cv "warden/chat/internal/conversation"
+	"warden/chat/internal/transport"
 )
 
 func sharingTools() []any {
