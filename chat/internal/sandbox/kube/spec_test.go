@@ -94,8 +94,23 @@ func TestPodSpecHardening(t *testing.T) {
 		t.Fatalf("resources %+v", c.Resources)
 	}
 	sc := c.SecurityContext
-	if sc == nil || sc.AllowPrivilegeEscalation != nil || sc.Privileged != nil || sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" || len(sc.Capabilities.Add) != 0 {
+	if sc == nil || sc.AllowPrivilegeEscalation != nil || sc.Privileged != nil || sc.Capabilities == nil || len(sc.Capabilities.Add) != 0 {
 		t.Fatalf("container security context %+v", sc)
+	}
+	dropped := map[string]bool{}
+	for _, c := range sc.Capabilities.Drop {
+		dropped[c] = true
+	}
+	// sudo and root's file operations need these; nothing is added.
+	for _, kept := range []string{"SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "FOWNER"} {
+		if dropped[kept] || dropped["ALL"] {
+			t.Fatalf("capability %s dropped: sudo in the guest would fail", kept)
+		}
+	}
+	for _, gone := range []string{"NET_RAW", "MKNOD", "SYS_CHROOT", "SETFCAP", "SETPCAP"} {
+		if !dropped[gone] {
+			t.Fatalf("capability %s kept", gone)
+		}
 	}
 	psc := spec.SecurityContext
 	if psc == nil || psc.RunAsUser == nil || *psc.RunAsUser != 1000 || psc.RunAsGroup == nil || *psc.RunAsGroup != 1000 || psc.FSGroup == nil || *psc.FSGroup != 1000 || psc.RunAsNonRoot == nil || !*psc.RunAsNonRoot || psc.SeccompProfile == nil || psc.SeccompProfile.Type != "RuntimeDefault" {

@@ -48,7 +48,13 @@
         "securityContext": {
           "capabilities": {
             "drop": [
-              "ALL"
+              "AUDIT_WRITE",
+              "FSETID",
+              "MKNOD",
+              "NET_RAW",
+              "SETFCAP",
+              "SETPCAP",
+              "SYS_CHROOT"
             ]
           }
         }

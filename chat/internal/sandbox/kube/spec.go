@@ -117,17 +117,27 @@ func (o Options) workspaceSizeGi() int {
 // Image is the pinned guest image reference, repository@digest.
 func (o Options) Image() string { return o.GuestImage + "@" + o.GuestImageDigest }
 
+// DroppedCapabilities are removed from the container's bounding set. The
+// rest of the runtime's default set stays because sudo in the guest is a
+// product feature (decision 11): a setuid binary gains only what the
+// bounding set allows, so dropping ALL leaves sudo "unable to change to
+// root gid" (checked on the dev cluster), and root in the guest needs
+// CHOWN, DAC_OVERRIDE and FOWNER for the worker's chown/chmod/install
+// steps. Nothing is added, which is what Pod Security baseline and the
+// verifier require. NET_RAW goes so a guest cannot craft frames.
+var DroppedCapabilities = []string{"AUDIT_WRITE", "FSETID", "MKNOD", "NET_RAW", "SETFCAP", "SETPCAP", "SYS_CHROOT"}
+
 // PodSpec is the sandbox pod for a runtime, a pure function of the options
 // and the spec: the pinned image under the RuntimeClass, one CPU and the
 // configured memory as both request and limit, no service account token,
 // the workspace claim at the home, the trust ConfigMap read-only, an
-// emptyDir /tmp, the guest account with all capabilities dropped and the
-// runtime's default seccomp profile, and args (not command) so the image's
-// tini + guest-init entrypoint stays. allowPrivilegeEscalation is left
-// unset on purpose: sudo in the guest is a product feature (spike result
-// under decision 2). The labels are the sandbox name, this driver's mark
-// and the spare flag; the annotations record what the worker knows about
-// the sandbox at creation. The pod's name is the runtime name.
+// emptyDir /tmp, the guest account with DroppedCapabilities removed and
+// the runtime's default seccomp profile, and args (not command) so the
+// image's tini + guest-init entrypoint stays. allowPrivilegeEscalation is
+// left unset on purpose: sudo in the guest is a product feature (spike
+// result under decision 2). The labels are the sandbox name, this driver's
+// mark and the spare flag; the annotations record what the worker knows
+// about the sandbox at creation. The pod's name is the runtime name.
 func PodSpec(o Options, name, sandboxID, generation string, spare bool, workspace string) kube.Pod {
 	labels := map[string]string{LabelSandbox: name, LabelManagedBy: ManagedBy}
 	if spare {
@@ -176,7 +186,7 @@ func PodSpec(o Options, name, sandboxID, generation string, spare bool, workspac
 				Args:            []string{"sleep", "infinity"},
 				Resources:       kube.ResourceRequirements{Limits: resources, Requests: copyLabels(resources)},
 				SecurityContext: &kube.SecurityContext{
-					Capabilities: &kube.Capabilities{Drop: []string{"ALL"}},
+					Capabilities: &kube.Capabilities{Drop: append([]string(nil), DroppedCapabilities...)},
 				},
 				VolumeMounts: []kube.VolumeMount{
 					{Name: "home", MountPath: o.home()},
