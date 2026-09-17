@@ -15,7 +15,9 @@ type: application
 # them here.
 version: 0.0.0-dev
 appVersion: v0.0.0-dev
-kubeVersion: ">=1.30.0"
+# The -0 admits vendor-suffixed versions such as v1.35.7-gke.1222000, which
+# semver otherwise treats as pre-releases below 1.30.0.
+kubeVersion: ">=1.30.0-0"
 home: https://github.com/monaddle-too/warden
 sources:
   - https://github.com/monaddle-too/warden
