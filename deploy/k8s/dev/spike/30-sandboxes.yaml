@@ -11,7 +11,7 @@ spec:
   automountServiceAccountToken: false
   containers:
   - name: guest
-    image: docker.io/library/alpine:3.22
+    image: docker.io/library/busybox:1.37
     command: ["sh", "-c", "mkdir -p /www && echo preview-gvisor > /www/index.html && exec httpd -f -p 8080 -h /www"]
 ---
 apiVersion: v1
@@ -25,7 +25,7 @@ spec:
   automountServiceAccountToken: false
   containers:
   - name: guest
-    image: docker.io/library/alpine:3.22
+    image: docker.io/library/busybox:1.37
     command: ["sleep", "infinity"]
 ---
 apiVersion: v1
@@ -39,5 +39,5 @@ spec:
   automountServiceAccountToken: false
   containers:
   - name: guest
-    image: docker.io/library/alpine:3.22
+    image: docker.io/library/busybox:1.37
     command: ["sh", "-c", "mkdir -p /www && echo preview-kata > /www/index.html && exec httpd -f -p 8080 -h /www"]

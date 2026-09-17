@@ -41,7 +41,12 @@ RC
     if ! helm -n kube-system status kata-deploy >/dev/null 2>&1; then
       helm install kata-deploy "$KATA_CHART" -n kube-system --set k8sDistribution=k3s \
         --set 'shims.disableAll=true' --set 'shims.qemu.enabled=true' --set 'defaultShim.arm64=qemu' --set 'defaultShim.amd64=qemu'
+      kubectl -n kube-system rollout status ds/kata-deploy --timeout=600s
     fi
+    # Nested virtualization on Apple Silicon exposes no PMU to the VM's KVM and
+    # QEMU then rejects Kata's default "cpu_features = pmu=off"; a drop-in
+    # clears it (found in plan step 0).
+    limactl shell "$NAME" sudo sh -c 'd=/opt/kata/share/defaults/kata-containers/runtimes/qemu/config.d; mkdir -p "$d"; printf "[hypervisor.qemu]\ncpu_features = \"\"\n" > "$d/90-warden-nested-virt.toml"'
   else
     echo "no /dev/kvm in the VM: Kata tier unavailable here (gVisor only)" >&2
   fi

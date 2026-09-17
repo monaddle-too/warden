@@ -94,7 +94,7 @@ spec:
   volumes: [{name: trust, configMap: {name: spike-trust}}]
   containers:
   - name: guest
-    image: docker.io/library/alpine:3.22
+    image: docker.io/library/busybox:1.37
     command: ["sleep", "infinity"]
     volumeMounts: [{name: trust, mountPath: /opt/warden/trust}]
 POD
@@ -118,7 +118,7 @@ metadata: {name: time-$t, namespace: $SNS}
 spec:
   runtimeClassName: $([ $t = kata ] && echo kata-qemu || echo $t)
   automountServiceAccountToken: false
-  containers: [{name: guest, image: docker.io/library/alpine:3.22, command: ["sleep", "infinity"]}]
+  containers: [{name: guest, image: docker.io/library/busybox:1.37, command: ["sleep", "infinity"]}]
 POD
     k -n $SNS wait --for=condition=Ready pod/time-$t --timeout=300s >/dev/null
     e=$(date +%s.%N); printf '%-10s sample %d: %.1fs\n' "$t" "$i" "$(echo "$e - $s" | bc)"

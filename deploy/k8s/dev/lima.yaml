@@ -57,8 +57,11 @@ provision:
       sha512sum -c gvisor.tar.zstd.sha512
       if [ "$ARCH" = aarch64 ]; then echo "{{.Param.GVISOR_SHA512_AARCH64}}  gvisor.tar.zstd" | sha512sum -c -; fi
       mkdir x && tar --zstd -xf gvisor.tar.zstd -C x
-      install -m 0755 "$(find x -type f -name runsc | head -1)" /usr/local/bin/runsc
-      install -m 0755 "$(find x -type f -name containerd-shim-runsc-v1 | head -1)" /usr/local/bin/containerd-shim-runsc-v1
+      # The tarball holds runsc, the shim and gvisor-bin/ (the sentry and
+      # other sidecars runsc launches); runsc looks for gvisor-bin next to
+      # itself, so the whole layout goes to /usr/local/bin.
+      install -m 0755 x/runsc x/containerd-shim-runsc-v1 /usr/local/bin/
+      rm -rf /usr/local/bin/gvisor-bin && cp -a x/gvisor-bin /usr/local/bin/gvisor-bin
       /usr/local/bin/runsc --version
     fi
     mkdir -p /etc/containerd /var/log/runsc
