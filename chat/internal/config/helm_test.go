@@ -31,7 +31,7 @@ func TestHelmChartRendersKubernetesConfig(t *testing.T) {
 	if c.RuntimeKind() != RuntimeKubernetes || c.GatewayMode() != GatewayShared {
 		t.Fatalf("kind: %+v", c.Runtime)
 	}
-	for name, s := range map[string]Service{"policy": c.Services.Policy, "runner": c.Services.Runner, "chat": c.Services.Chat} {
+	for name, s := range map[string]Service{"policy": c.Services.Policy, "runner": c.Services.Runner.Service, "chat": c.Services.Chat} {
 		if !strings.HasPrefix(s.Listen, "tls://0.0.0.0:") || !strings.HasPrefix(s.Address, "tls://warden-"+name+":") {
 			t.Errorf("services.%s = %+v, want tls:// listener and address", name, s)
 		}
