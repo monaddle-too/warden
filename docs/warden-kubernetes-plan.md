@@ -914,6 +914,20 @@ the repository and in the chart values.
 
 ## Progress
 
+- 2026-09-17 (after the suite): a preview link on the dev cluster opened
+  a signed-out tab. Two causes in the edge's owner mode, both fixed in
+  `edge/owner.go` with regression tests: the owner-session bound (64) was
+  full of sessions minted for cookie-less clients (curl, the TUI, the e2e
+  harness), so the browser was refused its own; and the local Mac Warden
+  on `127.0.0.1:18781` and the cluster edge on `127.0.0.1:28781` shared
+  the `warden-owner` cookie (browsers ignore the port). Sessions are now
+  minted only for requests with fetch metadata, the bound evicts the
+  oldest, and the cookie name carries the port. Verified on the dev
+  cluster end to end (API call → preview host → `/auth/preview` →
+  `/_warden/login` → page from the gVisor pod). The dev-loop trap: the
+  edge Deployment was still on an image from before the last
+  `build-images`; a rebuild without `rollout restart` of every Deployment
+  leaves them skewed.
 - 2026-09-17 (night): step 8's suite passes in full under gVisor after
   the source-pod check landed (e424bd1); the guide's verification markers
   are resolved; the four track worktrees are merged and removed. Steps 9

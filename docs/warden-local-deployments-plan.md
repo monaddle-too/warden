@@ -251,6 +251,17 @@ Progress (Track A, 2026-09-15):
 - Known limit: the owner cookie session lasts eight hours; after it lapses
   a preview tab redirects to the app, which mints a new session on its next
   API call, and the preview must be reopened from the chat page.
+- 2026-09-17: two ways a preview link could land on a signed-out tab
+  fixed in `edge/owner.go`. The session bound (64) filled up with
+  sessions minted for clients that never return cookies (curl loops, the
+  TUI, the Kubernetes e2e harness), after which the web app got none;
+  sessions are now minted only for requests with fetch metadata, and the
+  bound evicts the oldest instead of refusing. And browsers scope host-only
+  cookies by host alone, so two Wardens on `127.0.0.1` (a local install on
+  18781 beside a port-forwarded cluster edge on 28781) overwrote each
+  other's `warden-owner` cookie; the name now carries the port
+  (`warden-owner-18781`). Tests: `TestLoopbackOwnerSessionIsMintedForBrowsersOnlyAndNeverRefused`,
+  `TestLoopbackOwnerCookieNameCarriesThePort`.
 
 ### 3. Installer, doctor, logins and launchers
 

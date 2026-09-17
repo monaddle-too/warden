@@ -202,7 +202,7 @@ func New(c Config) (*Server, error) {
 		if s.mint = upstreamTLS != nil; s.mint && !filepath.IsAbs(c.OwnerTokenFile) {
 			return nil, errors.New("owner mode over a tls:// upstream keeps its capability in an absolute ownerTokenFile")
 		}
-		s.Auth = newOwnerAuth(s.token, false)
+		s.Auth = newOwnerAuth(s.token, false, ownerCookie+"-"+s.previewPort)
 		s.logins, _ = newLedger("")
 	default:
 		return nil, errors.New("https origins use Google sign-in; owner mode is loopback http only")

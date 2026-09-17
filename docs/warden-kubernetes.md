@@ -298,7 +298,10 @@ the launch URL is `<url>/#session=<token>`).
 
 Open the URL. The web app stores the capability, drops it from the address
 bar and sends it as a bearer; the edge identifies you as the owner by it and
-mints the cookie session that preview navigations need. Previews are
+mints the cookie session that preview navigations need (only for browser
+requests, which carry fetch metadata: curl and the TUI get no session, and
+the cookie name carries the forwarded port, so a local `warden start` on the
+same address keeps its own). Previews are
 `http://<binding-id>.localhost:18781/…` through the same forward, with the
 same ticket, per-request binding check and revocation model as the other
 shapes. The capability rotates when the edge restarts (every session made
