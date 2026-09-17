@@ -22,7 +22,16 @@ import (
 	"warden/chat/internal/release"
 )
 
-type RuntimeSpec struct{ Name, Directory, Source string }
+// RuntimeSpec describes the guest to create: its Warden-derived runtime
+// name, the working directory, and for a fork the runtime it is cloned
+// from. SandboxID and Generation are the registry identity the worker
+// creates it for, absent on a spare (Spare), which has no sandbox yet; a
+// driver that labels its guests records them.
+type RuntimeSpec struct {
+	Name, Directory, Source string
+	SandboxID, Generation   string
+	Spare                   bool
+}
 
 // GuestPaths are where a guest keeps the agent runtimes, its trust bundle
 // and the agent home, as the guest manifest's paths object names them
@@ -97,12 +106,14 @@ type PortMapping struct {
 // Warden-derived, never guest-supplied.
 type RuntimeDriver interface {
 	Create(context.Context, RuntimeSpec) error
-	// Prepare readies a guest that just became resident (created, adopted
-	// or resumed) and returns a handle the worker closes when the guest
-	// stops. The SBX handle is the exec session that keeps the VM booted,
-	// since SBX stops a VM after its last exec ends; a driver whose guests
-	// stay up on their own returns a no-op handle.
-	Prepare(context.Context, string) (io.Closer, error)
+	// Prepare makes a created guest resident again after a stop (or
+	// confirms it is) before the worker's first exec, and returns a handle
+	// the worker closes when the guest stops. The SBX handle is the exec
+	// session that keeps the VM booted, since SBX stops a VM after its last
+	// exec ends and boots it on the next; a driver whose guests are
+	// recreated per generation (a pod on the kept workspace) creates one
+	// here from the spec and returns a no-op handle.
+	Prepare(context.Context, RuntimeSpec) (io.Closer, error)
 	Exec(context.Context, string, string, ...string) (string, error)
 	Copy(context.Context, string, string, string) error
 	// Address is where the core reaches the guest's published ports and
@@ -128,6 +139,51 @@ type RuntimeDriver interface {
 type NoResidency struct{}
 
 func (NoResidency) Close() error { return nil }
+
+// Reconciler is implemented by a driver whose guests outlive the worker
+// process (pods do, SBX VMs stop with their keep-alive session). At startup,
+// after the worker has stopped every registered sandbox and removed every
+// registered spare, it is handed the runtime names of the registered
+// sandboxes, whose workspaces must be kept; anything else it finds under its
+// labels is stale.
+type Reconciler interface {
+	Reconcile(ctx context.Context, registered []string) error
+}
+
+// LaunchOptions vary the agent command line per driver.
+type LaunchOptions struct {
+	// CodexSandboxMode overrides Codex's inner sandbox (plan decision 14
+	// after the spike): the gVisor tier passes "danger-full-access" because
+	// bubblewrap's network namespace is not available there; empty keeps
+	// Codex's default.
+	CodexSandboxMode string
+}
+
+// AgentCommand is the agent app-server launch both drivers run in the
+// guest's working directory: `env` clears the variables an agent would
+// otherwise take a credential or endpoint from and sets the brokered
+// session's, then the agent program from the manifest paths with the
+// Warden-managed provider configuration. Every value is data: the drivers
+// pass the list as arguments, never through a shell.
+func AgentCommand(run RunSpec, opts LaunchOptions) []string {
+	broker := run.Broker
+	paths := run.Paths.orDefaults()
+	if broker.Provider == "claude" {
+		args := []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN=" + broker.APIKeyPlaceholder, "ANTHROPIC_BASE_URL=" + broker.ProviderBaseURL, "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "DISABLE_AUTOUPDATER=1", paths.Claude, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode", "default", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{"warden":{"type":"sdk","name":"warden"}}}`, "--setting-sources=", "--append-system-prompt", "You work inside a Warden-managed sandbox. Warden controls external access and tool approvals. Never request or expose host credentials. Keep files in the workspace. For web previews, start a detached server on 0.0.0.0 and use the Warden MCP preview_attach or sandbox_bind_port tool; Warden chooses the URL."}
+		if broker.Model != "" {
+			args = append(args, "--model", broker.Model)
+		}
+		if broker.ThreadID != "" {
+			args = append(args, "--resume", broker.ThreadID)
+		}
+		return args
+	}
+	args := []string{"env", "-u", "OPENAI_API_KEY", "-u", "OPENAI_BASE_URL", "-u", "CODEX_API_KEY", "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "WARDEN_API_KEY=" + broker.APIKeyPlaceholder, "WORKSPACE_DOCUMENT_API_URL=" + broker.DocumentBaseURL, paths.Codex + "/bin/codex", "app-server", "--listen", "stdio://", "-c", `model_provider="warden"`, "-c", `cli_auth_credentials_store="ephemeral"`, "-c", `forced_login_method="api"`, "-c", `model_providers.warden.base_url=` + strconv.Quote(broker.ProviderBaseURL), "-c", `model_providers.warden.name="Warden"`, "-c", `model_providers.warden.wire_api="responses"`, "-c", `model_providers.warden.env_key="WARDEN_API_KEY"`}
+	if opts.CodexSandboxMode != "" {
+		args = append(args, "-c", "sandbox_mode="+strconv.Quote(opts.CodexSandboxMode))
+	}
+	return args
+}
 
 type sbxRuntime struct{ worker *Worker }
 
@@ -330,20 +386,8 @@ func (d *sbxRuntime) Stream(ctx context.Context, name string, run RunSpec) (io.R
 			return nil, err
 		}
 	}
-	paths := run.Paths.orDefaults()
-	dir := run.Directory
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := command(ctx, d.worker.Executable, "exec", "-i", "-w", dir, name, "env", "-u", "OPENAI_API_KEY", "-u", "OPENAI_BASE_URL", "-u", "CODEX_API_KEY", "HTTP_PROXY="+broker.ProxyURL, "HTTPS_PROXY="+broker.ProxyURL, "http_proxy="+broker.ProxyURL, "https_proxy="+broker.ProxyURL, "WARDEN_API_KEY="+broker.APIKeyPlaceholder, "WORKSPACE_DOCUMENT_API_URL="+broker.DocumentBaseURL, paths.Codex+"/bin/codex", "app-server", "--listen", "stdio://", "-c", `model_provider="warden"`, "-c", `cli_auth_credentials_store="ephemeral"`, "-c", `forced_login_method="api"`, "-c", `model_providers.warden.base_url=`+strconv.Quote(broker.ProviderBaseURL), "-c", `model_providers.warden.name="Warden"`, "-c", `model_providers.warden.wire_api="responses"`, "-c", `model_providers.warden.env_key="WARDEN_API_KEY"`)
-	if broker.Provider == "claude" {
-		args := []string{"exec", "-i", "-w", dir, name, "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN=" + broker.APIKeyPlaceholder, "ANTHROPIC_BASE_URL=" + broker.ProviderBaseURL, "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "DISABLE_AUTOUPDATER=1", paths.Claude, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode", "default", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{"warden":{"type":"sdk","name":"warden"}}}`, "--setting-sources=", "--append-system-prompt", "You work inside a Warden-managed sandbox. Warden controls external access and tool approvals. Never request or expose host credentials. Keep files in the workspace. For web previews, start a detached server on 0.0.0.0 and use the Warden MCP preview_attach or sandbox_bind_port tool; Warden chooses the URL."}
-		if broker.Model != "" {
-			args = append(args, "--model", broker.Model)
-		}
-		if broker.ThreadID != "" {
-			args = append(args, "--resume", broker.ThreadID)
-		}
-		cmd = command(ctx, d.worker.Executable, args...)
-	}
+	cmd := command(ctx, d.worker.Executable, append([]string{"exec", "-i", "-w", run.Directory, name}, AgentCommand(run, LaunchOptions{})...)...)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
@@ -370,9 +414,9 @@ func (d *sbxRuntime) Stream(ctx context.Context, name string, run RunSpec) (io.R
 // SBX auto-stops a VM after its last exec/SSH session disconnects, even when
 // detached guest processes and published ports still exist, so the handle
 // lives as long as the guest is resident, not as long as the caller's ctx.
-func (d *sbxRuntime) Prepare(_ context.Context, name string) (io.Closer, error) {
+func (d *sbxRuntime) Prepare(_ context.Context, spec RuntimeSpec) (io.Closer, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := command(ctx, d.worker.Executable, "exec", "-i", name, "sh", "-c", "printf 'ready\\n'; exec cat >/dev/null")
+	cmd := command(ctx, d.worker.Executable, "exec", "-i", spec.Name, "sh", "-c", "printf 'ready\\n'; exec cat >/dev/null")
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()

@@ -1,4 +1,5 @@
-// Package runnersvc is `warden runner`, the sandbox worker that drives sbx.
+// Package runnersvc is `warden runner`, the sandbox worker: it drives sbx
+// on the sbx shapes and sandbox pods on Kubernetes (runtime.kind).
 package runnersvc
 
 import (
@@ -14,8 +15,10 @@ import (
 	"time"
 	"warden/chat/internal/config"
 	"warden/chat/internal/handshake"
+	"warden/chat/internal/kube"
 	"warden/chat/internal/release"
 	"warden/chat/internal/sandbox"
+	sandboxkube "warden/chat/internal/sandbox/kube"
 	"warden/chat/internal/services"
 	"warden/chat/internal/transport"
 )
@@ -44,6 +47,7 @@ func run(args []string) error {
 	tlsCA := fs.String("tls-ca", "", "CA every peer is verified against (tls.caFile)")
 	tlsCert := fs.String("tls-cert", "", "This runner's certificate (tls.certFile)")
 	tlsKey := fs.String("tls-key", "", "This runner's private key (tls.keyFile)")
+	kubeconfig := fs.String("kubeconfig", "", "Kubernetes kind only: reach the API server through this kubeconfig instead of the pod's service account (development and tests)")
 	if err := services.ParseFlags(fs, args); err != nil {
 		return err
 	}
@@ -58,7 +62,7 @@ func run(args []string) error {
 	}
 	root, sbx, template, runtimeDir, claudePath = &s.root, &s.sbx, &s.template, &s.runtimeDir, &s.claudePath
 	idle, memoryMB, residents, spares, retained = &s.idle, &s.memoryMB, &s.residents, &s.spares, &s.retained
-	driver, err := runtimeDriver(s.cfg.RuntimeKind())
+	driver, err := runtimeDriver(s, *kubeconfig)
 	if err != nil {
 		slog.Error("configuration", "error", err)
 		return services.ExitCode(1)
@@ -112,14 +116,58 @@ func run(args []string) error {
 
 // runtimeDriver selects the RuntimeDriver of the configured runtime kind.
 // The sbx shapes get the SBX driver over the worker's executable and
-// template; the Kubernetes driver (docs/warden-kubernetes-plan.md, work
-// item 4) is wired here when it lands.
-func runtimeDriver(kind string) (func(*sandbox.Worker) sandbox.RuntimeDriver, error) {
-	switch kind {
+// template; the Kubernetes kind gets the pod driver over the in-cluster
+// service account (or the kubeconfig named for development), configured
+// from the kubernetes section and the runner's sandbox memory
+// (docs/warden-kubernetes-plan.md, work item 4). The runner's other
+// settings (spares, idle timeout, residents) apply to both.
+func runtimeDriver(s settings, kubeconfig string) (func(*sandbox.Worker) sandbox.RuntimeDriver, error) {
+	switch kind := s.cfg.RuntimeKind(); kind {
 	case config.RuntimeSBX:
 		return sandbox.NewSBXRuntime, nil
 	case config.RuntimeKubernetes:
-		return nil, fmt.Errorf("%w: runtime.kind %q (the Kubernetes runtime driver is not part of this build)", sandbox.ErrRuntimeKindUnsupported, kind)
+		k := s.cfg.Kubernetes
+		if k == nil {
+			return nil, errors.New("runtime.kind \"kubernetes\" requires the kubernetes section")
+		}
+		var kcfg *kube.Config
+		var err error
+		if kubeconfig != "" {
+			kcfg, err = kube.LoadKubeconfig(kubeconfig)
+		} else {
+			kcfg, err = kube.InClusterConfig()
+		}
+		if err != nil {
+			return nil, fmt.Errorf("kubernetes API access: %w", err)
+		}
+		client, err := kube.NewClient(kcfg)
+		if err != nil {
+			return nil, fmt.Errorf("kubernetes API client: %w", err)
+		}
+		driver, err := sandboxkube.New(client, kubernetesOptions(k, s.memoryMB))
+		if err != nil {
+			return nil, err
+		}
+		return func(*sandbox.Worker) sandbox.RuntimeDriver { return driver }, nil
+	default:
+		return nil, errors.New("unknown runtime.kind " + kind)
 	}
-	return nil, errors.New("unknown runtime.kind " + kind)
+}
+
+// kubernetesOptions maps the kubernetes section and the sandbox memory to
+// the driver's options.
+func kubernetesOptions(k *config.Kubernetes, memoryMB int) sandboxkube.Options {
+	return sandboxkube.Options{
+		Namespace:        k.Namespace,
+		Tier:             k.Tier,
+		RuntimeClass:     k.RuntimeClass,
+		GuestImage:       k.GuestImage,
+		GuestImageDigest: k.GuestImageDigest,
+		StorageClass:     k.StorageClass,
+		WorkspaceSizeGi:  k.WorkspaceSizeGi,
+		TrustConfigMap:   k.TrustConfigMap,
+		MemoryMB:         memoryMB,
+		NodeSelector:     k.NodeSelector,
+		Tolerations:      k.Tolerations,
+	}
 }

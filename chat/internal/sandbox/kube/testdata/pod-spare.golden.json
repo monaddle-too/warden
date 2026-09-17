@@ -1,0 +1,97 @@
+{
+  "metadata": {
+    "name": "wc-spare-0123456789abcdef",
+    "namespace": "warden-sandboxes",
+    "labels": {
+      "app.kubernetes.io/managed-by": "warden-runner",
+      "warden.monaddle.com/sandbox": "wc-spare-0123456789abcdef",
+      "warden.monaddle.com/spare": "true"
+    },
+    "annotations": {
+      "warden.monaddle.com/workspace": "fresh"
+    }
+  },
+  "spec": {
+    "containers": [
+      {
+        "name": "guest",
+        "image": "ghcr.io/monaddle-too/warden-guest-base@sha256:abababababababababababababababababababababababababababababababab",
+        "args": [
+          "sleep",
+          "infinity"
+        ],
+        "volumeMounts": [
+          {
+            "name": "home",
+            "mountPath": "/home/agent"
+          },
+          {
+            "name": "trust",
+            "mountPath": "/opt/warden/trust",
+            "readOnly": true
+          },
+          {
+            "name": "tmp",
+            "mountPath": "/tmp"
+          }
+        ],
+        "resources": {
+          "limits": {
+            "cpu": "1",
+            "memory": "1024Mi"
+          },
+          "requests": {
+            "cpu": "1",
+            "memory": "1024Mi"
+          }
+        },
+        "securityContext": {
+          "capabilities": {
+            "drop": [
+              "AUDIT_WRITE",
+              "FSETID",
+              "MKNOD",
+              "NET_RAW",
+              "SETFCAP",
+              "SETPCAP",
+              "SYS_CHROOT"
+            ]
+          }
+        }
+      }
+    ],
+    "volumes": [
+      {
+        "name": "home",
+        "persistentVolumeClaim": {
+          "claimName": "wc-spare-0123456789abcdef"
+        }
+      },
+      {
+        "name": "trust",
+        "configMap": {
+          "name": "warden-guest-trust"
+        }
+      },
+      {
+        "name": "tmp",
+        "emptyDir": {}
+      }
+    ],
+    "runtimeClassName": "gvisor",
+    "securityContext": {
+      "runAsUser": 1000,
+      "runAsGroup": 1000,
+      "runAsNonRoot": true,
+      "fsGroup": 1000,
+      "seccompProfile": {
+        "type": "RuntimeDefault"
+      }
+    },
+    "automountServiceAccountToken": false,
+    "restartPolicy": "Always",
+    "terminationGracePeriodSeconds": 10,
+    "enableServiceLinks": false
+  },
+  "status": {}
+}
