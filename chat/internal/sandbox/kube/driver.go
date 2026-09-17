@@ -423,7 +423,9 @@ func (d *Driver) checkManifest(ctx context.Context, name string) error {
 }
 
 // Prepare returns a no-op handle: a pod stays resident on its own.
-func (d *Driver) Prepare(context.Context, string) (io.Closer, error) { return sandbox.NoResidency{}, nil }
+func (d *Driver) Prepare(context.Context, string) (io.Closer, error) {
+	return sandbox.NoResidency{}, nil
+}
 
 // Address is the pod IP (decision 10).
 func (d *Driver) Address(ctx context.Context, name string) (string, error) {

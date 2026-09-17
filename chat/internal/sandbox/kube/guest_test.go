@@ -103,7 +103,7 @@ func (g *fakeGuest) exec(pod string, command []string, stdin io.Reader, stdout, 
 		g.mu.Unlock()
 		io.WriteString(stdout, "WARDEN-GUEST-BEGIN\n"+manifest+"\n\nWARDEN-GUEST-END\nca-absent\ncodex-present\nclaude-present\n")
 		return 0
-	case len(inner) == 5 && inner[0] == "tar" && inner[1] == "-C" && inner[3] == "-cf" && inner[4] == "-":
+	case len(inner) == 6 && inner[0] == "tar" && inner[1] == "-C" && inner[3] == "-cf" && inner[4] == "-" && inner[5] == ".":
 		g.mu.Lock()
 		home := g.homes[pod]
 		g.mu.Unlock()
@@ -134,7 +134,7 @@ func (g *fakeGuest) exec(pod string, command []string, stdin io.Reader, stdout, 
 		g.workspaces[pod] = true
 		g.mu.Unlock()
 		return 0
-	case len(inner) == 5 && inner[0] == "sudo" && inner[1] == "-n" && inner[2] == "sh" && strings.Contains(inner[3], "tar -xf - -C"):
+	case len(inner) == 6 && inner[0] == "sudo" && inner[1] == "-n" && inner[2] == "sh" && inner[3] == "-c" && strings.Contains(inner[4], "tar -xf - -C"):
 		var entries []tarEntry
 		tr := tar.NewReader(stdin)
 		for {
@@ -143,7 +143,7 @@ func (g *fakeGuest) exec(pod string, command []string, stdin io.Reader, stdout, 
 				break
 			}
 			content, _ := io.ReadAll(tr)
-			entries = append(entries, tarEntry{Name: inner[4] + "/" + h.Name, Mode: h.Mode, UID: h.Uid, Type: h.Typeflag, Content: string(content)})
+			entries = append(entries, tarEntry{Name: inner[5] + "/" + h.Name, Mode: h.Mode, UID: h.Uid, Type: h.Typeflag, Content: string(content)})
 		}
 		g.mu.Lock()
 		g.received[pod] = append(g.received[pod], entries...)

@@ -34,7 +34,10 @@ func (e *exitError) Error() string { return fmt.Sprintf("sandbox exec failed: ex
 
 // run executes command in the guest container with stdin (nil for none),
 // returns its stdout up to limit bytes (execOutputLimit when zero) and an
-// *exitError on a non-zero exit. Stderr is drained and discarded.
+// *exitError on a non-zero exit. Stderr is drained and discarded. A
+// cancelled ctx is the result whatever the command reported, and a
+// command that ends before reading all its input reports its exit status,
+// not the closed socket.
 func (d *Driver) run(ctx context.Context, name string, stdin io.Reader, limit int64, command ...string) ([]byte, error) {
 	if limit <= 0 {
 		limit = execOutputLimit
@@ -46,7 +49,7 @@ func (d *Driver) run(ctx context.Context, name string, stdin io.Reader, limit in
 	defer session.Close()
 	var wg sync.WaitGroup
 	var out bytes.Buffer
-	var outErr error
+	var outErr, inErr error
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -64,21 +67,29 @@ func (d *Driver) run(ctx context.Context, name string, stdin io.Reader, limit in
 		_, _ = io.Copy(io.Discard, session.Stderr())
 	}()
 	if stdin != nil {
-		if _, err = io.Copy(session.Stdin(), stdin); err != nil && ctx.Err() == nil {
-			session.Close()
-			wg.Wait()
-			return nil, fmt.Errorf("sandbox %s: exec input: %w", name, err)
-		}
-		_ = session.Stdin().Close()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := io.Copy(session.Stdin(), stdin); err != nil {
+				inErr = err
+				return
+			}
+			_ = session.Stdin().Close()
+		}()
 	}
 	code, err := session.Wait()
+	if ctx.Err() != nil {
+		session.Close()
+		wg.Wait()
+		return nil, ctx.Err()
+	}
 	wg.Wait()
 	if outErr != nil {
 		return nil, outErr
 	}
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		if inErr != nil {
+			return nil, fmt.Errorf("sandbox %s: exec input: %w", name, inErr)
 		}
 		return nil, fmt.Errorf("sandbox %s: exec: %w", name, err)
 	}
