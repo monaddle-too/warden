@@ -243,6 +243,7 @@ export const EntryView = memo(function EntryView({
           chatID={chatID}
           entryID={entry.id}
           onFile={onFile}
+          agent
         />
         <MessageActions entry={entry} enabled={false} />
       </div>

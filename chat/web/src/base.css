@@ -350,6 +350,24 @@ dialog::backdrop {
   color: var(--text-2);
 }
 
+/* A link an agent wrote (RichText.tsx AgentLink): the external-link glyph
+   marks it as leaving Warden and the real host follows the label when the
+   label would mislead (links.ts). */
+.rich-text .agent-link svg {
+  display: inline-block;
+  vertical-align: -0.1em;
+  margin-left: 0.2em;
+}
+.rich-text .link-host {
+  margin-left: 0.3em;
+  font-size: 0.85em;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.rich-text .link-host::before {
+  content: "→ ";
+}
+
 /* KaTeX output (katex.ts chunk): a wide equation scrolls inside its line
    instead of pushing the bubble out; the stylesheet itself is lazy. */
 .rich-text .katex-display {

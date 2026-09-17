@@ -6,10 +6,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { ExternalLink } from "lucide-react";
 import Markdown, { type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { needsHighlighter, type HastNode } from "../code";
+import { hastText, needsHighlighter, type HastNode } from "../code";
 import { workspaceImagePath } from "../images";
+import { agentLink } from "../links";
 import { hasMath } from "../math";
 import { displayText, holdOpenMath, touchesEnd } from "../streaming";
 import type { MathPlugins } from "../katex";
@@ -79,12 +81,45 @@ function Pre({ node, children }: { node?: HastNode; children?: ReactNode }) {
   );
 }
 
+/* An http(s) link an agent wrote: opens in a new tab, its real host (ASCII,
+   credentials dropped) in the hover title, an external-link glyph after the
+   label, and the host beside the label when the label would mislead (see
+   `links.ts`). Anything else the agent linked stays as text. */
+function AgentLink({
+  href,
+  node,
+  children,
+}: {
+  href?: string;
+  node?: HastNode;
+  children?: ReactNode;
+}) {
+  const link = agentLink(href, hastText(node));
+  if (!link) return <span>{children}</span>;
+  return (
+    <>
+      <a
+        className="agent-link"
+        href={link.href}
+        title={link.title}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        {children}
+        <ExternalLink size={12} aria-hidden="true" />
+      </a>
+      {link.hint && <span className="link-host">{link.host}</span>}
+    </>
+  );
+}
+
 export function RichText({
   text: source,
   streaming,
   chatID,
   entryID,
   onFile,
+  agent,
 }: {
   text: string;
   /* Set while the entry is still being written: tail lines whose reading is
@@ -96,6 +131,9 @@ export function RichText({
   chatID?: string;
   entryID?: string;
   onFile?: (href: string) => void;
+  /* Set for text an agent wrote: its links show where they really go
+     (`AgentLink`); the owner's own links are shown as written. */
+  agent?: boolean;
 }) {
   const text = useMemo(
     () => (streaming ? displayText(source) : source),
@@ -127,8 +165,14 @@ export function RichText({
   );
   const components = useMemo<Components>(
     () => ({
-      a: ({ href, children }) =>
-        href?.startsWith("https://") || href?.startsWith("http://") ? (
+      a: ({ href, node, children }) =>
+        // Any scheme in an agent's link goes through AgentLink; a workspace
+        // path or fragment is handled below as for the owner's own text.
+        agent && /^[a-z][a-z0-9+.-]*:/i.test(href ?? "") ? (
+          <AgentLink href={href} node={node}>
+            {children}
+          </AgentLink>
+        ) : href?.startsWith("https://") || href?.startsWith("http://") ? (
           <a href={href} target="_blank" rel="noopener noreferrer">
             {children}
           </a>
@@ -162,7 +206,7 @@ export function RichText({
       },
       pre: Pre,
     }),
-    [chatID, entryID, onFile],
+    [chatID, entryID, onFile, agent],
   );
   return (
     <div className="rich-text">
