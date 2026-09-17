@@ -3,13 +3,11 @@ import {
   exportMime,
   exportName,
   exportText,
+  plural,
   saveFile,
   type ExportFormat,
 } from "../export";
 import type { Chat } from "../types";
-
-const plural = (n: number, one: string, many = one + "s") =>
-  `${n} ${n === 1 ? one : many}`;
 
 /* "Export…" from the chat menu: the transcript as a markdown or JSON file,
    built here from the state the service already streamed, so nothing is

@@ -57,8 +57,12 @@ export function imageLoader(
     const key = [chatID, scope, path].join("\n");
     let pending = cache.get(key);
     if (!pending) {
-      pending = run(() => load(chatID, path));
-      pending.catch(() => cache.delete(key));
+      const started = (pending = run(() => load(chatID, path)));
+      // Only this entry is forgotten: the key may have been evicted and
+      // re-requested while this fetch was still in flight.
+      started.catch(() => {
+        if (cache.get(key) === started) cache.delete(key);
+      });
       cache.set(key, pending);
       for (const oldest of cache.keys()) {
         if (cache.size <= limit) break;

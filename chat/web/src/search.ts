@@ -170,7 +170,10 @@ export function searchChats(
     const entries = chat.conversation.entries;
     for (let i = entries.length - 1; i >= 0; i--) {
       const entry = entries[i];
-      const [inText] = findMatches(entry.text, query, 1, folded(entry.text));
+      // A message still streaming is a new string every chunk; caching each
+      // would fill the cache with one message's drafts.
+      const hay = entry.isStreaming ? fold(entry.text) : folded(entry.text);
+      const [inText] = findMatches(entry.text, query, 1, hay);
       if (inText) {
         add({ kind: "entry", chat, entry, field: "text", match: inText });
         continue;

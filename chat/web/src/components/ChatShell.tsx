@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import type { Chat, Environment, State } from "../types";
 import { api, signedIn, subscribe } from "../api";
-import { providerName } from "../export";
+import { plural, providerName } from "../export";
 import {
   PullRequestReview,
   type PullRequestReviewHandle,
@@ -50,9 +50,6 @@ import { WorkspacePanel } from "./WorkspacePanel";
 import { ExportDialog } from "./ExportDialog";
 import { SearchPalette } from "./SearchPalette";
 import { modifierKey, type FindRequest } from "./FindBar";
-
-const plural = (n: number, one: string, many = one + "s") =>
-  `${n} ${n === 1 ? one : many}`;
 
 export function ChatShell({
   account,

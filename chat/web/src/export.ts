@@ -17,6 +17,10 @@ export type ExportOptions = {
 export const providerName = (provider?: string) =>
   provider === "claude" ? "Claude" : "Codex";
 
+/* "1 message", "3 messages". */
+export const plural = (n: number, one: string, many = one + "s") =>
+  `${n} ${n === 1 ? one : many}`;
+
 // Who wrote a user entry: their Google name, else their email, else the
 // owner ("You" on a local install, where the owner is the only person).
 export function senderLabel(sender?: Entry["sender"]) {

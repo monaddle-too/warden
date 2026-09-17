@@ -155,7 +155,7 @@ export function newID() {
 export async function downloadFile(chatID: string, path: string) {
   const response = await fetch(
     `/api/chats/${chatID}/file?path=${encodeURIComponent(path)}`,
-    { headers: { Authorization: "Bearer " + token } },
+    { headers: credentials() },
   );
   if (!response.ok) throw new Error(await response.text());
   saveFile(path.split("/").pop() || "download", await response.blob());
@@ -164,7 +164,7 @@ export async function downloadFile(chatID: string, path: string) {
 export async function imageBlob(chatID: string, id: string): Promise<Blob> {
   const response = await fetch(
     `/api/chats/${encodeURIComponent(chatID)}/images/${encodeURIComponent(id)}`,
-    { headers: token ? { Authorization: "Bearer " + token } : {} },
+    { headers: credentials() },
   );
   if (!response.ok || response.headers.get("Content-Type") !== "image/png")
     throw new Error("Image unavailable");
@@ -180,7 +180,7 @@ export async function workspaceImageBlob(
 ): Promise<Blob> {
   const response = await fetch(
     `/api/chats/${encodeURIComponent(chatID)}/image-file?path=${encodeURIComponent(path)}`,
-    { headers: token ? { Authorization: "Bearer " + token } : {} },
+    { headers: credentials() },
   );
   if (!response.ok || response.headers.get("Content-Type") !== "image/png")
     throw new Error("Image unavailable");

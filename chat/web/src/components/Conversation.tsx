@@ -594,8 +594,11 @@ export function Conversation({
   // command line leaves the composer and `rest` of the draft stays.
   function runCommand(item: CommandItem, rest: string) {
     if (item.kind === "model") {
-      setError("");
-      void onModel(item.model.value).catch((e) => setError(String(e)));
+      // The list disables models while the agent runs; "/model x" typed in
+      // full and sent gets the same answer the service would give.
+      setError(running ? "wait until the conversation is idle" : "");
+      if (!running)
+        void onModel(item.model.value).catch((e) => setError(String(e)));
       place({ text: rest, caret: 0 });
       return;
     }
@@ -900,8 +903,9 @@ export function Conversation({
                   setDismissed(triggerKey);
                   return;
                 }
+                // With every row disabled the arrows keep moving the caret.
                 if (
-                  items.length &&
+                  selected >= 0 &&
                   (e.key === "ArrowDown" || e.key === "ArrowUp")
                 ) {
                   e.preventDefault();

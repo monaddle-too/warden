@@ -13,7 +13,7 @@ import { hastText, needsHighlighter, type HastNode } from "../code";
 import { workspaceImagePath } from "../images";
 import { agentLink } from "../links";
 import { hasMath } from "../math";
-import { displayText, holdOpenMath, touchesEnd } from "../streaming";
+import { displayText, holdOpenMath, openFrom, touchesEnd } from "../streaming";
 import type { MathPlugins } from "../katex";
 import { CodeBlock } from "./CodeBlock";
 import { InlineImage } from "./InlineImage";
@@ -160,8 +160,8 @@ export function RichText({
     [mathPlugins, highlight],
   );
   const stream = useMemo(
-    () => ({ streaming: !!streaming, length: text.length }),
-    [streaming, text.length],
+    () => ({ streaming: !!streaming, length: streaming ? openFrom(text) : 0 }),
+    [streaming, text],
   );
   const components = useMemo<Components>(
     () => ({

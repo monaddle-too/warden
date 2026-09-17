@@ -6,6 +6,7 @@ import remarkMath from "remark-math";
 import {
   displayText,
   holdOpenMath,
+  openFrom,
   touchesEnd,
   type MdNode,
 } from "./streaming";
@@ -73,6 +74,25 @@ describe("blocks that reach the end of the text", () => {
     expect(touchesEnd({}, 5)).toBe(true);
     expect(touchesEnd(undefined, 5)).toBe(true);
   });
+  it("counts an open block inside a quote from its last line", () => {
+    // Settled text, or a closed block followed by its newline: the end.
+    expect(openFrom("hello\n")).toBe(6);
+    expect(openFrom("```js\nx\n```\n")).toBe(12);
+    expect(openFrom("> ```js\n> x\n> ```\n")).toBe(18);
+    expect(openFrom("$$\na\n$$\n")).toBe(8);
+    expect(openFrom("so $$a$$ here\n")).toBe(14);
+    // A closed fence without its newline may still reopen.
+    expect(openFrom("```js\nx\n```")).toBe(11);
+    // Unterminated: micromark ends a quoted block before the line ending,
+    // so the block is open from the end of its last line.
+    expect(openFrom("```js\nx\n")).toBe(7);
+    expect(openFrom("> ```js\n> x\n")).toBe(11);
+    expect(openFrom("- ```js\n  x\n")).toBe(11);
+    expect(openFrom("> $$\n> a\n")).toBe(8);
+    expect(openFrom("```\n$$\n```\n$$\nb\n")).toBe(15);
+    // `$$` inside a fence is code, not an opener.
+    expect(openFrom("```sh\necho $$\n```\n")).toBe(18);
+  });
 });
 
 describe("open math while streaming", () => {
@@ -138,6 +158,20 @@ describe("open math while streaming", () => {
     );
     expect(render("closed at the end $c$")).toBe(
       "<p>closed at the end $c$</p>",
+    );
+    // A quoted formula that has not closed is held from its last line.
+    expect(render("> $$\n> b\n")).toBe(
+      "<blockquote>\n<p>$$\nb</p>\n</blockquote>",
+    );
+  });
+  it("shows an open math fence as plain code until it closes", () => {
+    const render = (text: string) =>
+      renderToStaticMarkup(
+        createElement(Markdown, { remarkPlugins: [holdOpenMath] }, text),
+      );
+    expect(render("```math\na+b\n")).toBe("<pre><code>a+b\n</code></pre>");
+    expect(render("```math\na+b\n```\n")).toBe(
+      '<pre><code class="language-math">a+b\n</code></pre>',
     );
   });
   function at(start: number, end: number) {

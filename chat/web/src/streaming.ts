@@ -14,6 +14,7 @@ export type Positioned = { position?: { start: Point; end: Point } };
 export type MdNode = Positioned & {
   type: string;
   value?: string;
+  lang?: string | null;
   children?: MdNode[];
 };
 
@@ -46,26 +47,51 @@ const pipeRow = new RegExp(prefix + "\\|");
 const delimiterRow =
   /^[\s>]*\|?[ \t]*(?::?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*)?\|?[ \t]*$/;
 
-/* Whether a fence is still open after `lines`. */
-function fenceOpen(lines: string[]): boolean {
-  let open: { mark: string; size: number } | undefined;
+const mathFence = new RegExp(prefix + String.raw`\$\$(.*)$`);
+
+/* What is still open after `lines`: a fence, or a `$$` block outside one
+   (a line that is `$$` alone opens it and the next such line closes it;
+   `$$x$$` on one line is inline math). */
+function openBlocks(lines: string[]): { fence: boolean; math: boolean } {
+  let fence: { mark: string; size: number } | undefined;
+  let math = false;
   for (const line of lines) {
     const match = fenceLine.exec(line);
-    if (!match) continue;
-    const [, marks, rest] = match;
-    if (!open) {
-      // A backtick fence cannot have backticks in its info string.
-      if (marks[0] === "`" && rest.includes("`")) continue;
-      open = { mark: marks[0], size: marks.length };
-    } else if (
-      marks[0] === open.mark &&
-      marks.length >= open.size &&
-      !rest.trim()
-    ) {
-      open = undefined;
+    if (match) {
+      const [, marks, rest] = match;
+      if (!fence) {
+        // A backtick fence cannot have backticks in its info string.
+        if (marks[0] !== "`" || !rest.includes("`"))
+          fence = { mark: marks[0], size: marks.length };
+      } else if (
+        marks[0] === fence.mark &&
+        marks.length >= fence.size &&
+        !rest.trim()
+      )
+        fence = undefined;
+      continue;
     }
+    if (fence) continue;
+    const dollars = mathFence.exec(line);
+    if (!dollars) continue;
+    if (math) {
+      if (!dollars[1].trim()) math = false;
+    } else if (!dollars[1].includes("$$")) math = true;
   }
-  return open !== undefined;
+  return { fence: fence !== undefined, math };
+}
+const fenceOpen = (lines: string[]) => openBlocks(lines).fence;
+
+/* The offset a block must reach to count as open (`touchesEnd`): the end
+   of the text, or, when the text ends inside an unterminated fence or
+   `$$` block, the end of its last line without the line ending, because
+   micromark ends a block inside a blockquote before the newline. A closed
+   block followed by a newline still reaches neither. */
+export function openFrom(text: string): number {
+  const open = openBlocks(text.split("\n"));
+  return open.fence || open.math
+    ? text.replace(/\s+$/, "").length
+    : text.length;
 }
 
 /* A pipe line whose meaning depends on the next line: the line before it
@@ -107,23 +133,31 @@ export function displayText(text: string): string {
 /* remark plugin for a streaming message: a formula that reaches the end of
    the text is not finished, so it stays as the text written so far instead
    of rendering as a KaTeX error on every chunk. Runs after remark-math has
-   parsed, so the rest of the message keeps its math. */
+   parsed, so the rest of the message keeps its math. An open ```math fence
+   (display math through rehype-katex) loses its language for the same
+   reason and shows as a plain code block until it closes. */
 export function holdOpenMath() {
   return (tree: MdNode, file: { value?: unknown }) => {
     const text = String(file.value ?? "");
+    const from = openFrom(text);
     const walk = (node: MdNode) => {
       node.children?.forEach((child, i, children) => {
-        if (
+        if (child.type === "code" && child.lang === "math") {
+          if (touchesEnd(child, from)) children[i] = { ...child, lang: null };
+        } else if (
           (child.type === "math" || child.type === "inlineMath") &&
-          touchesEnd(child, text.length)
+          touchesEnd(child, from)
         ) {
+          // Display math is rebuilt from its content (the source tail
+          // would carry a quote's `> ` prefixes); inline math is one line
+          // and shows as written.
           const start = child.position?.start.offset;
           const raw =
-            start === undefined
-              ? child.type === "math"
-                ? `$$\n${child.value ?? ""}`
-                : `$${child.value ?? ""}$`
-              : text.slice(start);
+            child.type === "math"
+              ? `$$\n${child.value ?? ""}`
+              : start === undefined
+                ? `$${child.value ?? ""}$`
+                : text.slice(start);
           children[i] =
             child.type === "math"
               ? { type: "paragraph", children: [{ type: "text", value: raw }] }

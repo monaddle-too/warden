@@ -424,8 +424,10 @@ dialog::backdrop {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* COLLAPSE_LINES lines of the <code> inside (0.9em of the pre's 13px, at
+   its line height) plus the pre's padding. */
 .code-block.collapsed pre {
-  max-height: calc(13px * 1.5 * 40 + 12px);
+  max-height: calc(13px * 0.9 * 1.5 * 40 + 24px);
   overflow-y: hidden;
   mask-image: linear-gradient(#000 85%, transparent);
 }

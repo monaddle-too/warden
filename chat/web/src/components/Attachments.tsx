@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Download, FileText, LoaderCircle, X } from "lucide-react";
 import { attachmentBlob } from "../api";
 import { formatSize } from "../attachments";
+import { saveFile } from "../export";
 import type { Attachment } from "../types";
 import { Lightbox } from "./Lightbox";
 
@@ -199,13 +200,10 @@ function AttachmentFile({
   async function download() {
     setBusy(true);
     try {
-      const blob = await attachmentBlob(chatID, attachment.id, attachment.kind);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = attachment.name;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      saveFile(
+        attachment.name,
+        await attachmentBlob(chatID, attachment.id, attachment.kind),
+      );
     } catch {
       /* the chip stays; the file is still in the workspace */
     } finally {
