@@ -5,8 +5,9 @@
 // is the chat server: on the single-host shapes the loopback chat, reached
 // with the owner capability from endpoint.json as a bearer; on Kubernetes a
 // tls:// address reached with the edge's own certificate, which is its
-// authority to forward the identity headers (no capability, no endpoint
-// file).
+// authority to forward the identity headers (no bearer, and no endpoint
+// file from the chat: in owner mode the edge mints the capability itself,
+// see capability.go).
 package edge
 
 import (
@@ -17,11 +18,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -51,12 +54,15 @@ type Config struct {
 	// Upstream is the chat: http://127.0.0.1:<port>, or tls://<host>:<port>
 	// dialed with UpstreamTLS. UpstreamHost is the Host header the chat
 	// expects (its listen host:port, or the host of its tls:// address).
-	Upstream       string         `json:"upstream"`
-	UpstreamHost   string         `json:"upstreamHost"`
-	UpstreamTLS    *transport.TLS `json:"upstreamTLS,omitempty"`
-	OwnerTokenFile string         `json:"ownerTokenFile"`
-	LoginsFile     string         `json:"loginsFile"`
-	Listen         string         `json:"listen"`
+	Upstream     string         `json:"upstream"`
+	UpstreamHost string         `json:"upstreamHost"`
+	UpstreamTLS  *transport.TLS `json:"upstreamTLS,omitempty"`
+	// OwnerTokenFile is the endpoint file holding the owner capability:
+	// the chat's, over a loopback upstream; the edge's own, which it mints
+	// (RotateOwnerCapability), in owner mode over a tls:// upstream.
+	OwnerTokenFile string `json:"ownerTokenFile"`
+	LoginsFile     string `json:"loginsFile"`
+	Listen         string `json:"listen"`
 }
 type previewSession struct {
 	Parent, Binding string
@@ -98,6 +104,10 @@ type Server struct {
 	secure      bool   // Secure, __Host- cookies (https only)
 	target      *url.URL
 	upstreamTLS *tls.Config // mutual TLS to a tls:// upstream; nil for loopback http
+	mint        bool        // owner mode over tls://: the edge holds the capability (capability.go)
+	// Logf receives the edge's one-line notices, the launch URL among
+	// them; log.Printf unless replaced.
+	Logf        func(format string, args ...any)
 	mu          sync.Mutex
 	sessions    map[string]previewSession
 	tickets     map[string]ticket
@@ -142,7 +152,7 @@ func New(c Config) (*Server, error) {
 	if c.UpstreamHost == "" || strings.ContainsAny(c.PreviewSuffix, "/:@?#*") {
 		return nil, errors.New("upstream host and preview suffix required")
 	}
-	s := &Server{Config: c, host: origin.Host, scheme: origin.Scheme, secure: origin.Scheme == "https", target: target, upstreamTLS: upstreamTLS, sessions: map[string]previewSession{}, tickets: map[string]ticket{}, bindings: map[string]bool{}, Client: &http.Client{Timeout: 5 * time.Second}}
+	s := &Server{Config: c, host: origin.Host, scheme: origin.Scheme, secure: origin.Scheme == "https", target: target, upstreamTLS: upstreamTLS, Logf: log.Printf, sessions: map[string]previewSession{}, tickets: map[string]ticket{}, bindings: map[string]bool{}, Client: &http.Client{Timeout: 5 * time.Second}}
 	if upstreamTLS != nil {
 		s.Client.Transport = &http.Transport{Proxy: nil, TLSClientConfig: upstreamTLS}
 	}
@@ -186,6 +196,11 @@ func New(c Config) (*Server, error) {
 			if _, port, err := net.SplitHostPort(c.Listen); err != nil || port != s.previewPort {
 				return nil, errors.New("loopback mode listens on the origin's port")
 			}
+		}
+		// Over tls:// the chat writes no endpoint file, so the capability
+		// the owner signs in with is the edge's own (capability.go).
+		if s.mint = upstreamTLS != nil; s.mint && !filepath.IsAbs(c.OwnerTokenFile) {
+			return nil, errors.New("owner mode over a tls:// upstream keeps its capability in an absolute ownerTokenFile")
 		}
 		s.Auth = newOwnerAuth(s.token, false)
 		s.logins, _ = newLedger("")

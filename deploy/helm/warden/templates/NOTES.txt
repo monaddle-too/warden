@@ -34,11 +34,14 @@ keep the forward running while you use it:
 
   kubectl -n {{ $ns }} port-forward svc/warden-edge {{ int .Values.edge.port }}:{{ int .Values.edge.port }}
 
-First login: the edge holds the private launch URL (the owner capability)
-for {{ include "warden.publicURL" . }}; read it from its log or its state:
+First login: the edge mints the owner capability at every start and logs
+the private launch URL for {{ include "warden.publicURL" . }}; open the URL this prints:
 
-  kubectl -n {{ $ns }} logs deploy/warden-edge | grep -m1 'http://127.0.0.1'
-  kubectl -n {{ $ns }} exec deploy/warden-edge -- cat /var/lib/warden/edge/endpoint.json
+  kubectl -n {{ $ns }} logs deploy/warden-edge | grep -m1 'launch URL'
+
+The capability is also in the edge's state (/var/lib/warden/edge/endpoint.json,
+{"url","token"}; the launch URL is <url>/#session=<token>). It rotates when
+the edge restarts, so read the log again after an upgrade.
 
 Previews are <name>.localhost:{{ int .Values.edge.port }} through the same forward.
 {{- else }}
