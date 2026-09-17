@@ -292,9 +292,8 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 	if err := ValidateAgent(r.Provider, r.Model); err != nil {
 		return Response{}, err
 	}
-	if r.Provider == "claude" && w.ClaudePath == "" {
-		return Response{}, errors.New("Claude runtime is not configured")
-	}
+	// Without a host copy the guest image must ship Claude; that is checked
+	// against the guest manifest once the sandbox reports.
 	s, c, err := w.bindingLocked(r)
 	if err != nil {
 		return Response{}, err
