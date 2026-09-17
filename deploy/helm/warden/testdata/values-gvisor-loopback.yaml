@@ -1,0 +1,8 @@
+# Golden input: gVisor tier, loopback previews, owner sign-in, TLS from the
+# bootstrap Job. The dev VM's shape.
+guestImage:
+  digest: sha256:cd77d0ff2af115f3cb700414c7c54840c2c1c87c3322ea0a98c17880ef07b63e
+runtime:
+  tier: gvisor
+tls:
+  bootstrap: true

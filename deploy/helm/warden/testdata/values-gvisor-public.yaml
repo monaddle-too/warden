@@ -1,0 +1,41 @@
+# Golden input: gVisor tier, public previews behind an Ingress, Google
+# sign-in, TLS from cert-manager with the chart-created CA.
+image:
+  tag: v1.2.3
+guestImage:
+  digest: sha256:cd77d0ff2af115f3cb700414c7c54840c2c1c87c3322ea0a98c17880ef07b63e
+runtime:
+  tier: gvisor
+sandboxes:
+  tolerations:
+    - key: sandbox.gke.io/runtime
+      operator: Equal
+      value: gvisor
+      effect: NoSchedule
+auth:
+  mode: google
+  publicURL: https://warden.example.com
+  google:
+    signInClientID: 730944705291-example.apps.googleusercontent.com
+    owners: [owner@example.com]
+    demoDomains: [example.com]
+previews:
+  mode: public
+  hostSuffix: preview.example.com
+  ingress:
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-dns
+storage:
+  className: standard-rwo
+tls:
+  certManager:
+    enabled: true
+networkPolicy:
+  apiServer:
+    cidr: 10.0.0.0/8
+    ports: [443]
+  edgeIngressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
