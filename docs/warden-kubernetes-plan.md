@@ -708,9 +708,29 @@ Decisions this changes:
       creates it), and in owner auth mode the edge mints its own sign-in
       capability into `/var/lib/warden/edge/endpoint.json` and logs the
       launch URL, because chat writes no `endpoint.json` over `tls://`.
-- [ ] 7 First milestone on the Mac: chat → gVisor pod → loopback preview
+- [~] 7 First milestone on the Mac: chat → gVisor pod → loopback preview
       through the Lima port forward, Codex and Claude, Google Docs and
-      GitHub through the gateway.
+      GitHub through the gateway. 2026-09-17: the chart installed on the
+      dev cluster runs the four services over mTLS (edge as a k3s
+      LoadBalancer on 28781, forwarded by Lima; 18781 is the owner's own
+      local Warden and must not be reused); the trust bundle publishes;
+      the canary proof passes; warm spares come up in about 5 s; Codex and
+      Claude both answered from gVisor pods (kernel 4.19.0-gvisor, uid
+      1000) through the shared gateway with credentialed proxy URLs;
+      egress is as designed (no DNS without the proxy, 403 for unbrokered
+      hosts, 403 for GitHub until granted); after sharing a repository in
+      the Workspace panel, the API answered 200 and a clone succeeded with
+      the token from the Secret store; the Google sign-in mints its
+      redirect to the edge origin now. Fixed on the way: runtimes shipped
+      by the image no longer need host copies; the runtime is prepared
+      before its runtime-phase check (a stopped pod has no pod); RBAC for
+      `pods/exec` GET, PVC reads and the trust ConfigMap; the state PVCs
+      get owned by an init container; the policy pod probes on the gateway
+      port and the labelled canary retries; `sandboxes.cpuMillis`.
+      Remaining: the preview hop (the runner's per-publication loopback
+      proxy is unreachable from the chat pod; being replaced by one mTLS
+      preview listener on the runner, decision 5) and the Google consent
+      itself, which is the owner's sign-in.
 - [ ] 8 End-to-end suite and the adversarial networking rows on gVisor
       (work item 8); then the same on Kata (dev VM if step 0 says it
       works, otherwise on the OVH server).
