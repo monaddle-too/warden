@@ -34,6 +34,9 @@ type Driver struct {
 	cache   clusterCache
 	// exec retries and waits are shortened by tests.
 	execRetry time.Duration
+	// resizeWait bounds how long a resize waits for the kubelet to apply
+	// it before it counts as infeasible.
+	resizeWait time.Duration
 }
 
 // runtime is the driver's view of one guest.
@@ -75,7 +78,7 @@ func New(client *kube.Client, opts Options) (*Driver, error) {
 	if m := opts.memoryMB(); m < 512 || m > 16384 {
 		return nil, errors.New("sandbox memory must be 512–16384 MiB")
 	}
-	return &Driver{client: client, opts: opts, runtimes: map[string]*runtime{}, execRetry: 500 * time.Millisecond}, nil
+	return &Driver{client: client, opts: opts, runtimes: map[string]*runtime{}, execRetry: 500 * time.Millisecond, resizeWait: resizeWait}, nil
 }
 
 // Runtime reports what the driver knows about a guest.
@@ -660,22 +663,45 @@ func (d *Driver) Resize(ctx context.Context, name string, r sandbox.Resources) (
 	if applied, _ := resized(&pod, r); applied {
 		return false, nil
 	}
+	previous := sandbox.Resources{}
+	for _, c := range pod.Spec.Containers {
+		if c.Name == ContainerName {
+			cpu, _ := kube.Milli(c.Resources.Limits["cpu"])
+			memory, _ := kube.Bytes(c.Resources.Limits["memory"])
+			previous = sandbox.Resources{CPUMilli: int(cpu), MemoryMB: int(memory >> 20)}
+		}
+	}
 	if err = d.client.StrategicPatch(ctx, kube.PodsResize, d.opts.Namespace, name, ResizePatch(r), &pod); err != nil {
 		if isStatus(err) {
 			return false, fmt.Errorf("%w: %v", sandbox.ErrResizeInfeasible, err)
 		}
 		return false, fmt.Errorf("sandbox %s: resize: %w", name, err)
 	}
+	// A resize the kubelet defers (no room on the node now) is not going
+	// to be waited for: a managed cluster does not grow a node for it, and
+	// the worker holds its registry meanwhile. The bound is the driver's,
+	// under the caller's context.
+	waitCtx, cancel := context.WithTimeout(ctx, d.resizeWait)
+	defer cancel()
 	uid := pod.Metadata.UID
-	_, err = d.awaitPod(ctx, name, func(pod *kube.Pod, event kube.EventType) (bool, error) {
+	_, err = d.awaitPod(waitCtx, name, func(pod *kube.Pod, event kube.EventType) (bool, error) {
 		if event == kube.Deleted || pod == nil || pod.Metadata.UID != uid || pod.Metadata.DeletionTimestamp != nil {
 			return true, fmt.Errorf("sandbox %s: pod went away during the resize", name)
 		}
 		return resized(pod, r)
 	})
-	if err != nil && errors.Is(err, ctx.Err()) {
-		// Deferred past the caller's patience: the node has no room now.
-		return false, fmt.Errorf("%w: not applied in time", sandbox.ErrResizeInfeasible)
+	if err != nil && errors.Is(err, waitCtx.Err()) {
+		err = fmt.Errorf("%w: not applied within %s (deferred by the kubelet)", sandbox.ErrResizeInfeasible, d.resizeWait)
+	}
+	if errors.Is(err, sandbox.ErrResizeInfeasible) && previous.CPUMilli > 0 && previous.MemoryMB > 0 {
+		// Put the spec back so a pod that stays (under a run) does not
+		// carry a size it never got; best effort, the caller's answer is
+		// the same either way.
+		revertCtx, done := context.WithTimeout(context.Background(), 10*time.Second)
+		if revertErr := d.client.StrategicPatch(revertCtx, kube.PodsResize, d.opts.Namespace, name, ResizePatch(previous), nil); revertErr != nil {
+			log.Printf("sandbox %s: resize to %s not applied and not reverted to %s: %v", name, r, previous, revertErr)
+		}
+		done()
 	}
 	if err != nil {
 		return false, err
@@ -683,6 +709,11 @@ func (d *Driver) Resize(ctx context.Context, name string, r sandbox.Resources) (
 	log.Printf("sandbox %s: pod %s resized to %s", name, uid, r)
 	return false, nil
 }
+
+// resizeWait is how long a resize may stay deferred or in progress before
+// the driver gives up on the running pod: a kubelet that has the room
+// applies one within seconds.
+const resizeWait = 15 * time.Second
 
 // resized reports whether the kubelet runs the guest container at r: the
 // resize conditions are off and the container status carries the size.

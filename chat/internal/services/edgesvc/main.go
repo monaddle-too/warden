@@ -14,6 +14,7 @@ import (
 	"warden/chat/internal/edge"
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/services"
+	"warden/chat/internal/transport"
 )
 
 // Main runs the edge and returns the exit status.
@@ -50,7 +51,7 @@ func run(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	go handler.Run(ctx)
-	server := &http.Server{Addr: c.Listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	server := &http.Server{Addr: c.Listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10, ErrorLog: transport.ProbeQuietLog()}
 	go func() {
 		<-ctx.Done()
 		c, done := context.WithTimeout(context.Background(), 10*time.Second)

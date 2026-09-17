@@ -55,8 +55,9 @@ type fakeAPI struct {
 	// resizeMode says what pods/resize does: "" applies the patch and, after
 	// startDelay, reports the container running at the new size as a
 	// kubelet does; "infeasible" accepts the patch and reports the
-	// PodResizePending Infeasible condition; "absent" is a server without
-	// the subresource (404).
+	// PodResizePending Infeasible condition; "deferred" accepts it and
+	// reports Deferred for good (no room on the node); "absent" is a
+	// server without the subresource (404).
 	resizeMode string
 	// nodes, nodeMetrics and podMetrics are the cluster view (cluster_test.go):
 	// nodes under /api/v1/nodes, usage under metrics.k8s.io when metrics is
@@ -125,6 +126,7 @@ func newTestDriver(t *testing.T, api *fakeAPI, opts Options) *Driver {
 		t.Fatal(err)
 	}
 	d.execRetry = 10 * time.Millisecond
+	d.resizeWait = 300 * time.Millisecond
 	return d
 }
 
@@ -535,6 +537,8 @@ func (api *fakeAPI) serveResize(w http.ResponseWriter, r *http.Request, name str
 	if status != nil {
 		if mode == "infeasible" {
 			status["conditions"] = []any{map[string]any{"type": "PodResizePending", "status": "True", "reason": "Infeasible", "message": "Node didn't have enough capacity: cpu, requested: 4000, capacity: 2000"}}
+		} else if mode == "deferred" {
+			status["conditions"] = []any{map[string]any{"type": "PodResizePending", "status": "True", "reason": "Deferred", "message": "Node didn't have enough resource: memory"}}
 		} else {
 			status["conditions"] = []any{map[string]any{"type": "PodResizeInProgress", "status": "True"}}
 		}

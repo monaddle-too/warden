@@ -718,11 +718,13 @@ func TestResizePatchesThePodInPlace(t *testing.T) {
 	}
 }
 
-// A resize the node cannot fit, and a server without the subresource, are
-// ErrResizeInfeasible: the worker replaces the pod at the size instead.
-// A pod the runner may not resize (no Role verb) is the same answer.
+// A resize the node cannot fit, one the kubelet keeps deferring, and a
+// server without the subresource are ErrResizeInfeasible: the worker
+// replaces the pod at the size instead. A pod the runner may not resize
+// (no Role verb) is the same answer. A patch that was accepted but not
+// applied is reverted, so the pod's spec still says what it runs at.
 func TestResizeReportsInfeasible(t *testing.T) {
-	for _, mode := range []string{"infeasible", "absent", "forbidden"} {
+	for _, mode := range []string{"infeasible", "deferred", "absent", "forbidden"} {
 		api, d := readyFake(t)
 		ctx := testContext(t)
 		if err := d.Create(ctx, sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace"}); err != nil {
@@ -741,8 +743,12 @@ func TestResizeReportsInfeasible(t *testing.T) {
 		if !errors.Is(err, sandbox.ErrResizeInfeasible) || restarted {
 			t.Fatalf("%s: restarted=%v %v", mode, restarted, err)
 		}
-		if _, ok := api.pod(runtimeName); !ok {
+		pod, ok := api.pod(runtimeName)
+		if !ok {
 			t.Fatalf("%s: the driver removed the pod", mode)
+		}
+		if got := pod.Spec.Containers[0].Resources.Limits; got["cpu"] != "1000m" || got["memory"] != "1024Mi" {
+			t.Fatalf("%s: spec left at %v", mode, got)
 		}
 	}
 }

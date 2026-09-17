@@ -3,6 +3,7 @@ package chats
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -163,8 +164,8 @@ func (e *Engine) StopEnvironment(ctx context.Context, id string) error {
 	if len(chats) == 0 {
 		return errors.New("workspace not found")
 	}
-	if c := busy(chats); c != nil {
-		return errors.New("workspace is running chat “" + c.Title + "”; stop that chat first")
+	if err := e.stopChats(ctx, id); err != nil {
+		return err
 	}
 	ran := ranChat(chats)
 	if ran == nil {
@@ -173,6 +174,36 @@ func (e *Engine) StopEnvironment(ctx context.Context, id string) error {
 	e.releaseSandbox(ctx, id, "")
 	_, err := e.Worker.Call(ctx, request(ran, "stop"))
 	return err
+}
+
+// stopChats ends every running chat on the workspace (the agent's session
+// and any run in flight) and waits for them to settle: the owner asked
+// for the workspace to stop or change, and a chat that is merely resident
+// between turns is not worth a refusal. A chat stopping already is waited
+// for. Stop on the chat refuses while a sibling runs, so the chats are
+// stopped one at a time.
+func (e *Engine) stopChats(ctx context.Context, id string) error {
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		chats := e.Store.Snapshot().environmentChats(id)
+		c := busy(chats)
+		if c == nil {
+			return nil
+		}
+		if c.Status != "stopping" {
+			if err := e.Stop(ctx, c.ID); err != nil && !strings.Contains(err.Error(), "stop already pending") && !strings.Contains(err.Error(), "another chat") {
+				return fmt.Errorf("stopping chat “%s”: %w", c.Title, err)
+			}
+		}
+		if time.Now().After(deadline) {
+			return errors.New("chat “" + c.Title + "” did not stop in time")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // ArchiveEnvironment stops the sandbox and archives every chat on it. Files

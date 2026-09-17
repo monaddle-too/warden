@@ -84,10 +84,13 @@ type Engine struct {
 	// startup: chat id -> where its start is, see startup.go.
 	startupMu sync.Mutex
 	startup   map[string]Startup
-	mu        sync.Mutex
-	active    map[string]*activeRun
-	wake      chan struct{}
-	done      chan struct{}
+	// startupTrace is each starting chat's stages so far with their
+	// durations, for the log line at the end of a slow start.
+	startupTrace map[string][]string
+	mu           sync.Mutex
+	active       map[string]*activeRun
+	wake         chan struct{}
+	done         chan struct{}
 }
 
 const runSlots = 2
@@ -718,6 +721,9 @@ func (e *Engine) run(parent context.Context, id string) {
 	if current.Provider == "claude" {
 		stream = agent.ClaudeStream(ctx, stream)
 	}
+	// The process is launched; its first answer is the app server up (on
+	// a small sandbox, the slow part of a cold start).
+	e.setStartup(id, stageInitializing, "waiting for the agent to answer")
 	frames := make(chan agent.Frame, 256)
 	var client *agent.Client
 	client, err = agent.StartStream(ctx, stream, func(_ *agent.Client, f agent.Frame) {
@@ -788,6 +794,7 @@ func (e *Engine) run(parent context.Context, id string) {
 		err = errors.New("no pending message")
 		return
 	}
+	e.setStartup(id, stageSending, "handing your message to the agent")
 	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": input(*message)})
 	if err != nil {
 		return
@@ -801,7 +808,9 @@ func (e *Engine) run(parent context.Context, id string) {
 	if err = e.confirm(id, message.ID, turnID); err != nil {
 		return
 	}
-	e.clearStartup(id)
+	// The turn is accepted; the model has not said anything yet. The
+	// first item of the turn ends the start (turn below).
+	e.setStartup(id, stageFirstResponse, "waiting for the model's first reply")
 	for {
 		if err = e.turn(ctx, id, &current, client, frames, threadID, turnID, turn); err != nil || !a.resident {
 			return
@@ -813,6 +822,7 @@ func (e *Engine) run(parent context.Context, id string) {
 		if message == nil {
 			return // released, timed out, stopped or ended by the worker: a clean end
 		}
+		e.setStartup(id, stageSending, "handing your message to the agent")
 		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": input(*message)})
 		if err != nil {
 			return
@@ -826,6 +836,7 @@ func (e *Engine) run(parent context.Context, id string) {
 		if err = e.confirm(id, message.ID, turnID); err != nil {
 			return
 		}
+		e.setStartup(id, stageFirstResponse, "waiting for the model's first reply")
 	}
 }
 
@@ -856,6 +867,9 @@ func (e *Engine) turn(ctx context.Context, id string, current *Chat, client *age
 			}
 			if err != nil {
 				return err
+			}
+			if strings.HasPrefix(f.Method, "item/") || f.Method == "turn/completed" {
+				e.clearStartup(id) // the model has answered: the start is over
 			}
 			if f.Method == "turn/completed" && agent.String(agent.Map(f.Params["turn"])["id"]) == turnID {
 				turn = agent.Map(f.Params["turn"])

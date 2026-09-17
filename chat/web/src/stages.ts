@@ -14,7 +14,10 @@ const labels: Record<string, string> = {
   installing: "Installing the agent runtime",
   cloning: "Fetching the repository",
   launching: "Starting the agent",
+  initializing: "Waiting for the agent to answer",
   connecting: "Connecting to the agent",
+  sending: "Sending your message",
+  firstResponse: "Waiting for the first reply",
 };
 
 export const stageLabel = (stage: string) => labels[stage] || "Starting";

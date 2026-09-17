@@ -127,17 +127,25 @@ func TestResizeEnvironmentByTheOwner(t *testing.T) {
 	if got := e.Store.Snapshot().chat(id).Resources; got == nil || *got != (sandbox.Resources{CPUMilli: 2000, MemoryMB: 1536}) {
 		t.Fatalf("size on the chat: %+v", got)
 	}
-	// Run once; a running chat blocks a restarting resize.
+	// Run once; a restarting resize stops the running chat itself (the
+	// owner asked for the change), then resizes.
 	e.Store.update(func(st *State) error { ch := st.chat(id); ch.Status = "running"; ch.RunID = "run"; return nil })
-	if err = e.ResizeEnvironment(ctx, c.SandboxID, &sandbox.Resources{MemoryMB: 4096}); err == nil || !strings.Contains(err.Error(), "stop that chat first") {
-		t.Fatalf("resized under a running chat: %v", err)
+	if err = e.ResizeEnvironment(ctx, c.SandboxID, &sandbox.Resources{MemoryMB: 4096}); err != nil {
+		t.Fatalf("resize under a running chat: %v", err)
 	}
-	e.Store.update(func(st *State) error { st.chat(id).Status = "idle"; return nil })
+	if status := e.Store.Snapshot().chat(id).Status; status == "running" || status == "stopping" {
+		t.Fatalf("chat still %s after the resize", status)
+	}
+	ops, resized = w.snapshot()
+	joined := strings.Join(ops, " ")
+	if len(resized) != 1 || resized[0] != (sandbox.Resources{CPUMilli: 2000, MemoryMB: 4096}) || strings.Index(joined, "stop") > strings.LastIndex(joined, "resize") {
+		t.Fatalf("runner ops %v resized %+v", ops, resized)
+	}
 	if err = e.ResizeEnvironment(ctx, c.SandboxID, &sandbox.Resources{MemoryMB: 1024}); err != nil {
 		t.Fatal(err)
 	}
 	_, resized = w.snapshot()
-	if len(resized) != 1 || resized[0] != (sandbox.Resources{CPUMilli: 2000, MemoryMB: 1024}) {
+	if len(resized) != 2 || resized[1] != (sandbox.Resources{CPUMilli: 2000, MemoryMB: 1024}) {
 		t.Fatalf("runner resize: %+v", resized)
 	}
 	if err = e.ResizeEnvironment(ctx, c.SandboxID, &sandbox.Resources{MemoryMB: 65536}); err == nil || !strings.Contains(err.Error(), "at most") {

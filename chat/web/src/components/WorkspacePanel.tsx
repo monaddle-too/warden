@@ -288,7 +288,12 @@ export function WorkspacePanel({
         {!ws?.deleted && (
           <div className="workspace-actions">
             <button
-              disabled={!!busy || running || !state || state === "stopped"}
+              disabled={!!busy || (!running && (!state || state === "stopped"))}
+              title={
+                running
+                  ? "Stop the running chat and the workspace's sandbox; files are kept"
+                  : "Stop the workspace's sandbox; files are kept"
+              }
               onClick={() =>
                 void act("stop", `environments/${chat.sandboxID}/stop`)
               }
@@ -298,8 +303,8 @@ export function WorkspacePanel({
             </button>
             {!ws?.archived && (
               <button
-                disabled={!!busy || running}
-                title="Stop the workspace and archive its chats; files are kept"
+                disabled={!!busy}
+                title="Stop the workspace (and any running chat) and archive its chats; files are kept"
                 onClick={() =>
                   void act("archive", `environments/${chat.sandboxID}/archive`)
                 }
@@ -311,6 +316,11 @@ export function WorkspacePanel({
             <button
               className="danger"
               disabled={!!busy || running}
+              title={
+                running
+                  ? "Stop the running chat first; deleting removes the workspace's files"
+                  : "Delete the workspace and its files"
+              }
               onClick={remove}
             >
               <Trash2 size={14} />
@@ -343,12 +353,8 @@ export function WorkspacePanel({
             {limits && !sizing && (
               <button
                 className="ghost"
-                disabled={!!busy || (running && limits.restart)}
-                title={
-                  running && limits.restart
-                    ? "Stop the running chat first; resizing restarts the sandbox"
-                    : "Change the CPUs and memory this workspace gets"
-                }
+                disabled={!!busy}
+                title="Change the CPUs and memory this workspace gets"
                 onClick={() => setSizing(current)}
               >
                 Change…
@@ -386,6 +392,10 @@ export function WorkspacePanel({
                 {limits.restart
                   ? "The sandbox is recreated at the new size; files are kept."
                   : "Applied in place where the cluster allows it, otherwise the sandbox restarts at the new size; files are kept."}{" "}
+                {running &&
+                  (limits.restart
+                    ? "The running chat is stopped first. "
+                    : "A restart stops the running chat first. ")}
                 Up to {resourcesLabel(limits.max.cpuMilli, limits.max.memoryMB)}.
               </p>
               <div className="button-row">

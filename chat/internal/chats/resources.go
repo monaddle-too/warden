@@ -34,9 +34,10 @@ func number(v any) int {
 var wardenActor = cv.Actor{PrincipalID: "warden", Name: "Warden"}
 
 // ResizeEnvironment gives the workspace a new size, larger or smaller,
-// within the runner's limits. Where a resize restarts the sandbox (SBX) no
-// chat on it may be running: the owner stops it first, so nothing is
-// interrupted behind their back.
+// within the runner's limits. Where the resize replaces the sandbox (SBX,
+// or a cluster that cannot do it in place) the workspace's running chats
+// are stopped first: the owner asked for the change, and the chat resumes
+// on its next message.
 func (e *Engine) ResizeEnvironment(ctx context.Context, id string, r *sandbox.Resources) error {
 	if r == nil || r.IsZero() {
 		return errors.New("a size is required")
@@ -58,26 +59,26 @@ func (e *Engine) ResizeEnvironment(ctx context.Context, id string, r *sandbox.Re
 	if err != nil {
 		return fmt.Errorf("workspace size: %w", err)
 	}
-	if limits.Restart {
-		if c := busy(chats); c != nil {
-			return errors.New("workspace is running chat “" + c.Title + "”; stop that chat first")
-		}
-	}
 	if ran := ranChat(chats); ran != nil {
 		if limits.Restart {
+			if err := e.stopChats(ctx, id); err != nil {
+				return err
+			}
 			e.releaseSandbox(ctx, id, "")
 		}
-		if err := e.resizeSandbox(ctx, ran, resolved); err != nil {
-			if errors.Is(err, sandbox.ErrResizeRestart) {
-				// A live platform whose cluster could not do it in place
-				// under the run: the owner stops the chat, and the resize
-				// then replaces the sandbox at the new size.
-				title := ""
-				if c := busy(chats); c != nil {
-					title = " “" + c.Title + "”"
-				}
-				return errors.New("this cluster cannot resize the running sandbox in place; stop the running chat" + title + " first and the workspace restarts at the new size")
+		err := e.resizeSandbox(ctx, ran, resolved)
+		if errors.Is(err, sandbox.ErrResizeRestart) {
+			// A live platform whose cluster could not do it in place under
+			// the run: end the chats and the runner replaces the sandbox at
+			// the new size.
+			log.Printf("workspace %s: the cluster cannot resize the sandbox in place; stopping its chats and restarting it at %s", id, resolved)
+			if err = e.stopChats(ctx, id); err != nil {
+				return err
 			}
+			e.releaseSandbox(ctx, id, "")
+			err = e.resizeSandbox(ctx, ran, resolved)
+		}
+		if err != nil {
 			return err
 		}
 	}

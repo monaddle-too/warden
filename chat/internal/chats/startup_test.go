@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 	"time"
+	"warden/chat/internal/agent"
 	cv "warden/chat/internal/conversation"
 	"warden/chat/internal/sandbox"
 )
@@ -46,12 +47,15 @@ func TestStartupStagesFollowTheRunner(t *testing.T) {
 		t.Fatal("chat should be running while it starts")
 	}
 	close(gate)
-	// After prepare the engine launches and connects, then clears the report
-	// once the turn is confirmed.
+	// After prepare the engine launches, initializes, connects and sends;
+	// the turn confirmed, the start waits for the model's first reply.
 	until(t, func() bool {
 		c := e.View().chat(id)
-		return c.Startup == nil && len(c.Conversation.Entries) > 0 && c.Conversation.Entries[0].Delivery == "sent"
+		return c.Startup != nil && c.Startup.Stage == stageFirstResponse && len(c.Conversation.Entries) > 0 && c.Conversation.Entries[0].Delivery == "sent"
 	})
+	// The first item of the turn ends the start.
+	w.send(agent.Frame{Method: "item/started", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "item-1", "type": "agentMessage", "text": "Hi"}}})
+	until(t, func() bool { return e.View().chat(id).Startup == nil })
 	w.mu.Lock()
 	var ops []string
 	for _, r := range w.requests {

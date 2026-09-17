@@ -374,11 +374,14 @@ func TestEnvironmentsListStopAndDelete(t *testing.T) {
 	if err = e.DeleteEnvironment(context.Background(), one.SandboxID); err == nil {
 		t.Fatal("deleted an environment with a running chat")
 	}
-	if err = e.StopEnvironment(context.Background(), one.SandboxID); err == nil {
-		t.Fatal("stopped an environment under a running chat")
+	// Stopping the workspace ends its running chat first (the owner asked
+	// for the workspace to stop), then the sandbox.
+	if err = e.StopEnvironment(context.Background(), one.SandboxID); err != nil {
+		t.Fatalf("stop under a running chat: %v", err)
 	}
-	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
-	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
+	if status := e.Store.Snapshot().chat(id).Status; status == "running" || status == "stopping" {
+		t.Fatalf("chat still %s after the workspace stop", status)
+	}
 	envs, _ = e.Environments(context.Background())
 	if envs[0].Runtime == nil || envs[0].Runtime.ID != one.SandboxID {
 		t.Fatalf("runtime not reported once a chat has run: %+v", envs[0])
@@ -542,17 +545,13 @@ func TestArchiveEnvironmentStopsAndArchivesAllChats(t *testing.T) {
 		t.Fatal(err)
 	}
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "running" })
-	if err := e.ArchiveEnvironment(context.Background(), one.SandboxID); err == nil {
-		t.Fatal("archived a workspace with a running chat")
-	}
-	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
-	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
+	// Archiving stops the running chat itself, as stopping the workspace does.
 	if err := e.ArchiveEnvironment(context.Background(), one.SandboxID); err != nil {
-		t.Fatal(err)
+		t.Fatalf("archive under a running chat: %v", err)
 	}
 	st := e.Store.Snapshot()
-	if !st.chat(id).Archived || !st.chat(two).Archived || st.deleted(one.SandboxID) {
-		t.Fatal("archive must archive every chat without deleting the workspace")
+	if !st.chat(id).Archived || !st.chat(two).Archived || st.deleted(one.SandboxID) || st.chat(id).Status == "running" {
+		t.Fatalf("archive must stop and archive every chat without deleting the workspace: %s", st.chat(id).Status)
 	}
 	stopped := false
 	w.mu.Lock()
