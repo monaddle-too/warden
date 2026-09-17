@@ -259,7 +259,7 @@ file gives it, and its container ports.
 {{- $v := .Values -}}
 {{- list
   (dict "name" "policy" "subcommand" "policy" "state" "policy" "token" true "grace" 30
-        "ports" (list (dict "name" "control" "port" (int $v.services.policy.port)) (dict "name" "gateway" "port" (int $v.gateway.port))))
+        "ports" (list (dict "name" "gateway" "port" (int $v.gateway.port)) (dict "name" "control" "port" (int $v.services.policy.port))))
   (dict "name" "runner" "subcommand" "runner" "state" "runner" "token" true "grace" 45
         "ports" (list (dict "name" "control" "port" (int $v.services.runner.port))))
   (dict "name" "chat" "subcommand" "serve" "state" "app" "token" false "grace" 30

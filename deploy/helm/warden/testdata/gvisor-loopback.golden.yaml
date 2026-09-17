@@ -1179,19 +1179,19 @@ spec:
             - name: HOME
               value: /var/lib/warden/policy
           ports:
-            - name: control
-              containerPort: 7443
-              protocol: TCP
             - name: gateway
               containerPort: 7000
               protocol: TCP
+            - name: control
+              containerPort: 7443
+              protocol: TCP
           readinessProbe:
             tcpSocket:
-              port: control
+              port: gateway
             periodSeconds: 5
           livenessProbe:
             tcpSocket:
-              port: control
+              port: gateway
             initialDelaySeconds: 30
             periodSeconds: 20
           securityContext:

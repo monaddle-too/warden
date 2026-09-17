@@ -61,8 +61,12 @@ var canaryProbes = []string{"gateway", "apiserver", "dns", "external"}
 // canaryScript is the canary's command: one nc -z -w 3 per target, one
 // line per result. The cluster DNS address is the pod's own resolver.
 const canaryScript = `probe() { if nc -z -w 3 "$1" "$2" >/dev/null 2>&1; then echo "warden-canary $3 open"; else echo "warden-canary $3 closed"; fi; }
+# The gateway is the one destination a labelled canary must reach; its
+# Service endpoint can lag a policy restart by a few seconds, so that probe
+# alone is retried. Denials are never retried into a pass.
+gateway_probe() { n=0; while [ $n -lt "${GATEWAY_TRIES:-1}" ]; do if nc -z -w 3 "$GATEWAY_HOST" "$GATEWAY_PORT" >/dev/null 2>&1; then echo "warden-canary gateway open"; return; fi; n=$((n+1)); sleep 2; done; echo "warden-canary gateway closed"; }
 dns=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null)
-probe "$GATEWAY_HOST" "$GATEWAY_PORT" gateway
+gateway_probe
 probe "$API_HOST" "$API_PORT" apiserver
 if [ -n "$dns" ]; then probe "$dns" 53 dns; else echo "warden-canary dns unknown"; fi
 probe "$EXTERNAL_HOST" "$EXTERNAL_PORT" external
@@ -99,7 +103,7 @@ func (i *Inspector) runCanaries(ctx context.Context) error {
 	}
 	runs := []*run{{role: CanaryDeny}, {role: CanaryGateway}}
 	for _, r := range runs {
-		r.pod = i.canarySpec(r.role, suffix, env)
+		r.pod = i.canarySpec(r.role, suffix, append(append([]api.EnvVar{}, env...), api.EnvVar{Name: "GATEWAY_TRIES", Value: gatewayTries(r.role)}))
 	}
 	// Delete whatever was created, on every path.
 	defer func() {
@@ -360,4 +364,14 @@ func randomSuffix() string {
 		return strconv.FormatInt(time.Now().UnixNano()%100000000, 10)
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// gatewayTries is how often a canary retries the gateway: the labelled one
+// (expected to succeed) allows for endpoint propagation after a policy
+// restart; the unlabelled one (expected to fail) probes once.
+func gatewayTries(role string) string {
+	if role == CanaryGateway {
+		return "8"
+	}
+	return "1"
 }
