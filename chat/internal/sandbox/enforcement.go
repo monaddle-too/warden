@@ -85,6 +85,7 @@ func (g *PolicyEnforcement) exchange(ctx context.Context, operation string, c Gr
 		OK      bool   `json:"ok"`
 		Ready   bool   `json:"ready"`
 		Reason  string `json:"reason"`
+		Detail  string `json:"detail"`
 		Error   string `json:"error"`
 		BrokerConfig
 	}
@@ -98,6 +99,11 @@ func (g *PolicyEnforcement) exchange(ctx context.Context, operation string, c Gr
 		}
 		if reason == "" {
 			reason = "no verified enforcement readiness"
+		}
+		if response.Detail != "" {
+			// The verifier's last failure, for the operator; the reason stays
+			// the stable word the UI shows.
+			return broker, fmt.Errorf("Warden denied %s: %s (%s)", operation, reason, response.Detail)
 		}
 		return broker, fmt.Errorf("Warden denied %s: %s", operation, reason)
 	}
