@@ -658,8 +658,16 @@ Decisions this changes:
       `chat/internal/transport`, `warden tls bootstrap`, `services.*` and
       `tls.*` config; the merged binary passes `warden doctor` against the
       owner's existing install.
-- [ ] 2 Runtime, inspector, gateway and credential-store seams plus
-      configuration (work item 2); sbx behaviour unchanged.
+- [x] 2 Runtime, inspector, gateway and credential-store seams plus
+      configuration (work item 2); sbx behaviour unchanged. Done 2026-09-17
+      (track A, merged eb44e63): `RuntimeDriver` reshaped around `Prepare`,
+      `Address` and manifest paths; `SandboxInspector` + `SbxInspector`;
+      `Gateway` with `LoopbackGateways` and the new `SharedGateway`
+      (credentialed dispatch, 407 challenge); `CredentialStore` with the
+      file store; `runtime.kind`, `kubernetes.*`, `providers.*.secret`,
+      validation by kind; gateway mode derived from the kind. Race suite,
+      vet and the read-only `warden doctor` against the owner's install
+      green.
 - [x] 3 Minimal Kubernetes client (work item 3), no dependency on 1 or 2.
       Done 2026-09-17 (track B, merged 625b91b): `chat/internal/kube` with
       in-cluster and kubeconfig config, typed REST, watch/ListWatch, exec
