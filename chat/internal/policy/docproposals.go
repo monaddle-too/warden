@@ -128,19 +128,18 @@ func (d *DocumentProposals) result(r *docRow, preview bool) map[string]any {
 // and the page: a Tiptap document with the changes as suggestions plus one
 // card per change.
 func reviewView(proposal docProposal, draft docDraft) map[string]any {
-	current := currentHunks(proposal, draft)
+	changes := reviewChanges(proposal, draft)
 	// A suggestion counts as taken while the draft still changes the
 	// paragraphs it touched, even if the owner edited it further; only
 	// one whose paragraphs read as the document does is rejected.
 	applied := map[int]bool{}
-	for _, c := range current {
-		for _, h := range proposal.Hunks {
-			if rangesMeet(c.From, c.To, h.From, h.To) {
-				applied[h.ID] = true
-			}
+	for _, c := range changes {
+		if c.Author != authorOwner {
+			applied[c.ID] = true
 		}
 	}
-	document, cards := suggestionDocument(proposal.Base, draft.Paragraphs, current, draft.Accepted)
+	current := currentHunks(proposal, draft)
+	document, cards := suggestionDocument(proposal.Base, draft.Paragraphs, changes, draft.Accepted)
 	rejected := []map[string]any{}
 	for _, h := range proposal.Hunks {
 		if applied[h.ID] {
@@ -162,7 +161,7 @@ func reviewView(proposal docProposal, draft docDraft) map[string]any {
 		}
 		cards = append(cards, suggestionCard{ID: -h.ID, Kind: kind, Summary: summary, Reasons: reasons, Status: "rejected", Acceptable: ok, Hunk: h.ID})
 	}
-	return map[string]any{"hunks": current, "rejected": rejected, "document": document, "suggestions": cards, "comments": draft.Comments}
+	return map[string]any{"hunks": current, "changes": changes, "rejected": rejected, "document": document, "suggestions": cards, "comments": draft.Comments}
 }
 
 // currentHunks diffs base and draft and binds the proposal's reasons.
@@ -365,37 +364,26 @@ func (d *DocumentProposals) Submit(data map[string]any) (map[string]any, error) 
 		return nil, err
 	}
 	proposed := applyDocumentOps(start, ops)
-	hunks := documentHunks(base, proposed)
-	if len(hunks) == 0 {
+	if sameDocument(base, proposed) {
 		return nil, valueErr("The operations leave the document unchanged")
 	}
+	// One hunk per op, so each suggestion stays its own on the page. A
+	// revision's ops were written against the returned draft: its kept
+	// changes stay, new ops map to base positions.
+	var hunks []DocHunk
 	if revises == "" {
-		bindReasons(hunks, ops)
+		hunks = hunksFromOps(base, ops)
 	} else {
-		// The returned proposal's reasons still explain the changes the
-		// owner kept in the draft; the new ops were written against that
-		// draft, so their reasons bind through the draft's own diff.
-		var carried []DocOp
-		kept := documentHunks(base, start)
-		for _, h := range revisedHunks {
-			for _, k := range kept {
-				if k.From == h.From && k.To == h.To && sameDocument(k.Added, h.Added) {
-					for _, reason := range h.Reasons {
-						carried = append(carried, DocOp{Reason: reason, baseFrom: h.From, baseTo: h.To})
-					}
-				}
-			}
+		var kept []DocHunk
+		for _, c := range reviewChanges(docProposal{Base: base, Hunks: revisedHunks}, docDraft{Paragraphs: start}) {
+			kept = append(kept, c.DocHunk)
 		}
-		bindReasons(hunks, carried)
-		draftHunks := documentHunks(start, proposed)
-		bindReasons(draftHunks, ops)
-		for i := range hunks {
-			for _, dh := range draftHunks {
-				if rangesMeet(hunks[i].AfterFrom, hunks[i].AfterTo, dh.AfterFrom, dh.AfterTo) {
-					hunks[i].Reasons = append(hunks[i].Reasons, dh.Reasons...)
-				}
-			}
-		}
+		hunks = hunksFromRevision(base, start, kept, ops)
+	}
+	if !sameDocument(applyHunksToBase(base, hunks), proposed) {
+		// Never wrong, just merged: the diff is the fallback.
+		hunks = documentHunks(base, proposed)
+		bindReasons(hunks, ops)
 	}
 	proposal := docProposal{DocumentID: document, Title: projection.Title, URL: "https://docs.google.com/document/d/" + document + "/edit", BaseRevision: projection.RevisionID,
 		Base: base, Proposed: proposed, Hunks: hunks, Summary: summary, Ops: data["ops"], Revises: revises, Notes: projection.Notes}
@@ -563,9 +551,9 @@ func decodeComments(raw any, paragraphs int) ([]docComment, error) {
 	return out, nil
 }
 
-// revert puts the base paragraphs back behind one current change.
+// revert puts the base paragraphs back behind one change of the review.
 func revert(proposal docProposal, draft *docDraft, changeID int) error {
-	for _, c := range currentHunks(proposal, *draft) {
+	for _, c := range reviewChanges(proposal, *draft) {
 		if c.ID == changeID {
 			replaceDraft(draft, c.AfterFrom, c.AfterTo, proposal.Base[c.From:c.To])
 			return nil
@@ -574,12 +562,12 @@ func revert(proposal docProposal, draft *docDraft, changeID int) error {
 	return errors.New("unknown change")
 }
 
-// acknowledge marks one current change accepted: it stays in the draft
-// and the page shows it as plain text.
+// acknowledge marks one change accepted: it stays in the draft and the
+// page shows it as plain text.
 func acknowledge(proposal docProposal, draft *docDraft, changeID int) error {
-	for _, c := range currentHunks(proposal, *draft) {
+	for _, c := range reviewChanges(proposal, *draft) {
 		if c.ID == changeID {
-			signature := hunkSignature(c)
+			signature := hunkSignature(c.DocHunk)
 			for _, s := range draft.Accepted {
 				if s == signature {
 					return nil

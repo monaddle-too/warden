@@ -11,9 +11,13 @@ import { readOnlySuggestions } from "./plugin";
 
 export type SuggestionKind =
   "replace" | "insert" | "delete" | "restyle" | "accepted";
+/* Who made a change: the agent, the reviewer, or the agent with the
+   reviewer's edits on top. */
+export type SuggestionAuthor = "agent" | "owner" | "both";
 export type SuggestionAttr = {
   id: number;
   kind: SuggestionKind;
+  author?: SuggestionAuthor;
   from?: string;
 };
 export type SuggestionCard = {
@@ -22,6 +26,7 @@ export type SuggestionCard = {
   summary: string;
   reasons: string[];
   status: "pending" | "accepted" | "rejected";
+  author?: SuggestionAuthor;
   acceptable?: boolean;
   hunk?: number;
 };
@@ -40,6 +45,14 @@ const idAttribute = {
       Number(element.getAttribute("data-suggestion-id") || 0),
     renderHTML: (attributes: { id: number }) => ({
       "data-suggestion-id": String(attributes.id),
+    }),
+  },
+  author: {
+    default: "agent",
+    parseHTML: (element: HTMLElement) =>
+      element.getAttribute("data-author") || "agent",
+    renderHTML: (attributes: { author: string }) => ({
+      "data-author": attributes.author,
     }),
   },
 };
@@ -94,6 +107,7 @@ export const SuggestionAttributes = Extension.create({
                 ? {
                     id: Number(id),
                     kind: element.getAttribute("data-suggestion-kind"),
+                    author: element.getAttribute("data-author") || "agent",
                     from:
                       element.getAttribute("data-suggestion-from") || undefined,
                   }
@@ -105,6 +119,7 @@ export const SuggestionAttributes = Extension.create({
               return {
                 "data-suggestion-id": String(s.id),
                 "data-suggestion-kind": s.kind,
+                "data-author": s.author || "agent",
                 ...(s.from ? { "data-suggestion-from": s.from } : {}),
                 class: `suggest-block suggest-block-${s.kind}`,
               };

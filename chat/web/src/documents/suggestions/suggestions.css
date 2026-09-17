@@ -6,6 +6,9 @@
   --suggest-soft: rgb(24 128 56 / 0.1);
   --suggest-del: #b3261e;
   --suggest-del-soft: rgb(179 38 30 / 0.08);
+  /* The reviewer's own edits, in a second colour like a second author. */
+  --owner: #1a56c4;
+  --owner-soft: rgb(26 86 196 / 0.1);
   --comment: #d4b453;
   --comment-soft: #f6db863d;
   /* The page is paper: white with dark text whatever the app's theme, as
@@ -99,6 +102,28 @@
 }
 .suggest-block-delete {
   border-left-color: var(--suggest-del);
+}
+.suggest-insert[data-author="owner"],
+.suggest-insert[data-author="both"] {
+  color: var(--owner);
+  text-decoration-color: var(--owner);
+}
+.suggest-delete[data-author="owner"],
+.suggest-delete[data-author="both"] {
+  color: var(--owner);
+  text-decoration-color: var(--owner);
+}
+.suggest-block[data-author="owner"],
+.suggest-block[data-author="both"] {
+  border-left-color: var(--owner);
+}
+.suggestion-card-owner,
+.suggestion-card-both {
+  border-left-color: var(--owner);
+}
+.suggestion-card-owner.active,
+.suggestion-card-both.active {
+  border-color: var(--owner);
 }
 .suggest-block-restyle::before,
 .suggest-block-accepted {

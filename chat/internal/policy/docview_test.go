@@ -70,28 +70,40 @@ func TestTiptapDocumentRoundTripsTheCanonicalModel(t *testing.T) {
 
 func TestSuggestionDocumentShowsChangesInPlaceAndStripsBackToTheDraft(t *testing.T) {
 	base := []DocParagraph{P("h1", "Plan"), P("text", "Say **hello** to the world"), L("bullet", 0, "one"), L("bullet", 0, "two"), P("text", "gone"), P("text", "end")}
-	draft := []DocParagraph{P("h2", "Plan"), P("text", "Say **hi** to the *whole* world"), L("bullet", 0, "one"), L("bullet", 0, "two"), L("bullet", 0, "three"), P("text", "end"), P("text", "Something completely different from what stood here")}
 	for i := range base {
 		base[i].N = i + 1
 	}
-	for i := range draft {
-		draft[i].N = i + 1
+	// Five ops, some on neighbouring paragraphs: five suggestions.
+	ops, err := decodeDocOps([]any{
+		map[string]any{"type": "replace", "start": 1, "end": 1, "paragraphs": []any{map[string]any{"style": "h2", "text": "Plan"}}, "reason": "smaller heading"},
+		map[string]any{"type": "replace", "start": 2, "end": 2, "paragraphs": []any{map[string]any{"style": "text", "text": "Say **hi** to the *whole* world"}}, "reason": "warmer"},
+		map[string]any{"type": "insert", "after": 4, "paragraphs": []any{map[string]any{"style": "bullet", "text": "three"}}},
+		map[string]any{"type": "delete", "start": 5, "end": 5, "reason": "stale"},
+		map[string]any{"type": "insert", "after": 6, "paragraphs": []any{map[string]any{"style": "text", "text": "Something completely different from what stood here"}}},
+	}, base)
+	if err != nil {
+		t.Fatal(err)
 	}
-	current := documentHunks(base, draft)
-	doc, cards := suggestionDocument(base, draft, current, nil)
+	hunks := hunksFromOps(base, ops)
+	draft := applyDocumentOps(base, ops)
+	if !sameDocument(applyHunksToBase(base, hunks), draft) {
+		t.Fatal("hunks from ops must reproduce the proposed document")
+	}
+	changes := reviewChanges(docProposal{Base: base, Hunks: hunks}, docDraft{Paragraphs: draft})
+	if len(changes) != 5 {
+		t.Fatalf("expected one change per op, got %d: %+v", len(changes), changes)
+	}
+	doc, cards := suggestionDocument(base, draft, changes, nil)
 	raw, _ := json.Marshal(doc)
 	text := string(raw)
-	// Adjacent changed paragraphs form one hunk, so one card: the heading
-	// restyle and the intro edit share id 1; "gone" → "three" is too
-	// different to pair and shows as a deleted and an inserted paragraph.
 	for _, want := range []string{
-		`"attrs":{"level":2,"suggestion":{"from":"h1","id":1,"kind":"restyle"}}`,
-		`"marks":[{"type":"bold"},{"attrs":{"id":1},"type":"suggestDelete"}],"text":"hello"`,
-		`"marks":[{"type":"bold"},{"attrs":{"id":1},"type":"suggestInsert"}],"text":"hi"`,
-		`"marks":[{"type":"italic"},{"attrs":{"id":1},"type":"suggestInsert"}],"text":"whole"`,
-		`"attrs":{"suggestion":{"id":2,"kind":"delete"}},"content":[{"marks":[{"attrs":{"id":2},"type":"suggestDelete"}],"text":"gone"`,
-		`"attrs":{"suggestion":{"id":2,"kind":"insert"}},"content":[{"marks":[{"attrs":{"id":2},"type":"suggestInsert"}],"text":"three"`,
-		`"attrs":{"suggestion":{"id":3,"kind":"insert"}}`,
+		`"attrs":{"level":2,"suggestion":{"author":"agent","from":"h1","id":1,"kind":"restyle"}}`,
+		`"marks":[{"type":"bold"},{"attrs":{"author":"agent","id":2},"type":"suggestDelete"}],"text":"hello"`,
+		`"marks":[{"type":"bold"},{"attrs":{"author":"agent","id":2},"type":"suggestInsert"}],"text":"hi"`,
+		`"marks":[{"type":"italic"},{"attrs":{"author":"agent","id":2},"type":"suggestInsert"}],"text":"whole"`,
+		`"attrs":{"suggestion":{"author":"agent","id":3,"kind":"insert"}},"content":[{"marks":[{"attrs":{"author":"agent","id":3},"type":"suggestInsert"}],"text":"three"`,
+		`"attrs":{"suggestion":{"author":"agent","id":4,"kind":"delete"}},"content":[{"marks":[{"attrs":{"author":"agent","id":4},"type":"suggestDelete"}],"text":"gone"`,
+		`"attrs":{"suggestion":{"author":"agent","id":5,"kind":"insert"}}`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("view lacks %s:\n%s", want, text)
@@ -99,9 +111,9 @@ func TestSuggestionDocumentShowsChangesInPlaceAndStripsBackToTheDraft(t *testing
 	}
 	var summaries []string
 	for _, c := range cards {
-		summaries = append(summaries, c.Kind+": "+c.Summary)
+		summaries = append(summaries, c.Kind+": "+c.Summary+" ["+strings.Join(c.Reasons, ";")+"]")
 	}
-	if got := strings.Join(summaries, " | "); got != "replace: Replace “hello” with “hi whole” · h1 → h2 | replace: Replace “gone” with “three” | insert: Add “Something completely different from what stood here”" {
+	if got := strings.Join(summaries, " | "); got != "restyle: Format: h1 → h2 [smaller heading] | replace: Replace “hello” with “hi whole” [warmer] | insert: Add “three” [] | delete: Delete “gone” [stale] | insert: Add “Something completely different from what stood here” []" {
 		t.Fatalf("cards: %s", got)
 	}
 	// Saving the page as it is returns exactly the draft.

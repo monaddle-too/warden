@@ -44,6 +44,7 @@ type viewRun struct {
 	docRun
 	change string // "", "insert", "delete"
 	id     int
+	author string
 }
 
 // viewParagraph is one block of the page.
@@ -179,9 +180,9 @@ func blockNode(block viewParagraph) tipNode {
 			}
 			switch run.change {
 			case "insert":
-				marks = append(marks, tipNode{"type": markInsert, "attrs": map[string]any{"id": run.id}})
+				marks = append(marks, tipNode{"type": markInsert, "attrs": map[string]any{"id": run.id, "author": run.author}})
 			case "delete":
-				marks = append(marks, tipNode{"type": markDelete, "attrs": map[string]any{"id": run.id}})
+				marks = append(marks, tipNode{"type": markDelete, "attrs": map[string]any{"id": run.id, "author": run.author}})
 			}
 			if len(marks) > 0 {
 				text["marks"] = marks
@@ -516,13 +517,15 @@ type suggestionCard struct {
 	Summary    string   `json:"summary"`
 	Reasons    []string `json:"reasons"`
 	Status     string   `json:"status"` // pending, accepted, rejected
+	Author     string   `json:"author"` // agent, owner, both
 	Acceptable bool     `json:"acceptable,omitempty"`
 	Hunk       int      `json:"hunk,omitempty"` // the proposal's hunk, for rejected cards
 }
 
-// suggestionDocument renders base → draft as a page with suggestions;
-// changes whose signature the owner accepted read as plain draft text.
-func suggestionDocument(base, draft []DocParagraph, current []DocHunk, accepted []string) (tipNode, []suggestionCard) {
+// suggestionDocument renders base → draft as a page with one suggestion
+// per change; changes whose signature the owner accepted read as plain
+// draft text.
+func suggestionDocument(base, draft []DocParagraph, changes []DocChange, accepted []string) (tipNode, []suggestionCard) {
 	var blocks []viewParagraph
 	cards := []suggestionCard{}
 	acknowledged := map[string]bool{}
@@ -530,11 +533,12 @@ func suggestionDocument(base, draft []DocParagraph, current []DocHunk, accepted 
 		acknowledged[s] = true
 	}
 	pos := 0
-	for _, h := range current {
+	for _, change := range changes {
+		h := change.DocHunk
 		for ; pos < h.From; pos++ {
 			blocks = append(blocks, viewParagraph{DocParagraph: base[pos], runs: plainRuns(base[pos])})
 		}
-		card := suggestionCard{ID: h.ID, Reasons: h.Reasons, Status: "pending"}
+		card := suggestionCard{ID: h.ID, Reasons: h.Reasons, Status: "pending", Author: change.Author}
 		if card.Reasons == nil {
 			card.Reasons = []string{}
 		}
@@ -546,7 +550,7 @@ func suggestionDocument(base, draft []DocParagraph, current []DocHunk, accepted 
 			}
 			for _, p := range added {
 				inserted = append(inserted, plainInline(p.Text))
-				blocks = append(blocks, viewParagraph{DocParagraph: p, runs: plainRuns(p), suggestion: map[string]any{"id": h.ID, "kind": "accepted"}})
+				blocks = append(blocks, viewParagraph{DocParagraph: p, runs: plainRuns(p), suggestion: map[string]any{"id": h.ID, "kind": "accepted", "author": change.Author}})
 			}
 			card.Kind, card.Summary = summarize(deleted, inserted, "")
 			card.Status = "accepted"
@@ -565,8 +569,11 @@ func suggestionDocument(base, draft []DocParagraph, current []DocHunk, accepted 
 			if ratio < docSimilarity && before.Text != "" && after.Text != "" {
 				break
 			}
+			for i := range runs {
+				runs[i].author = change.Author
+			}
 			block := viewParagraph{DocParagraph: after, runs: runs}
-			block.suggestion = map[string]any{"id": h.ID, "kind": "replace"}
+			block.suggestion = map[string]any{"id": h.ID, "kind": "replace", "author": change.Author}
 			if before.Style != after.Style || before.Depth != after.Depth {
 				block.suggestion["kind"] = "restyle"
 				block.suggestion["from"] = styleName(before)
@@ -586,17 +593,17 @@ func suggestionDocument(base, draft []DocParagraph, current []DocHunk, accepted 
 		for _, p := range removed[paired:] {
 			runs := plainRuns(p)
 			for i := range runs {
-				runs[i].change, runs[i].id = "delete", h.ID
+				runs[i].change, runs[i].id, runs[i].author = "delete", h.ID, change.Author
 			}
-			blocks = append(blocks, viewParagraph{DocParagraph: p, runs: runs, suggestion: map[string]any{"id": h.ID, "kind": "delete"}})
+			blocks = append(blocks, viewParagraph{DocParagraph: p, runs: runs, suggestion: map[string]any{"id": h.ID, "kind": "delete", "author": change.Author}})
 			deleted = append(deleted, plainInline(p.Text))
 		}
 		for _, p := range added[paired:] {
 			runs := plainRuns(p)
 			for i := range runs {
-				runs[i].change, runs[i].id = "insert", h.ID
+				runs[i].change, runs[i].id, runs[i].author = "insert", h.ID, change.Author
 			}
-			blocks = append(blocks, viewParagraph{DocParagraph: p, runs: runs, suggestion: map[string]any{"id": h.ID, "kind": "insert"}})
+			blocks = append(blocks, viewParagraph{DocParagraph: p, runs: runs, suggestion: map[string]any{"id": h.ID, "kind": "insert", "author": change.Author}})
 			inserted = append(inserted, plainInline(p.Text))
 		}
 		card.Kind, card.Summary = summarize(deleted, inserted, restyled)

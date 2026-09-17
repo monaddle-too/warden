@@ -36,6 +36,7 @@ export interface SuggestionEditorProps {
   editable: boolean;
   /** Who made the suggestions, for the cards ("Claude", "Codex"). */
   author: string;
+  /** A decision is in flight: the cards wait, the page stays editable. */
   busy?: boolean;
   /** The edited page, debounced; deleted text and marks are the server's to strip. */
   onSave: (document: JSONContent) => void;
@@ -123,26 +124,45 @@ export function SuggestionEditor({
       pending.current.timer = setTimeout(flush, SAVE_DELAY);
     },
   });
-  // A fresh server view replaces the page; keep the caret where it was.
-  // (React may run this against an editor a remount has already destroyed.)
+  // A fresh server view changes only what differs from the page: one
+  // transaction over the changed range, so the caret maps through it and
+  // the rest of the page is not rebuilt. (React may run this against an
+  // editor a remount has already destroyed.)
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
-    const from = editor.state.selection.from;
-    editor
-      .chain()
-      .setMeta("suggestions", "server")
-      .setContent(doc, { emitUpdate: false })
-      .run();
-    const size = editor.state.doc.content.size;
-    editor.commands.setTextSelection(Math.max(0, Math.min(from, size)));
+    try {
+      const next = editor.schema.nodeFromJSON(doc);
+      next.check();
+      const current = editor.state.doc;
+      const start = current.content.findDiffStart(next.content);
+      if (start !== null) {
+        const end = current.content.findDiffEnd(next.content)!;
+        const overlap = start - Math.min(end.a, end.b);
+        const oldEnd = overlap > 0 ? end.a + overlap : end.a;
+        const newEnd = overlap > 0 ? end.b + overlap : end.b;
+        editor.view.dispatch(
+          editor.state.tr
+            .replace(start, oldEnd, next.slice(start, newEnd))
+            .setMeta("suggestions", "server")
+            .setMeta("addToHistory", false),
+        );
+      }
+    } catch {
+      editor
+        .chain()
+        .setMeta("suggestions", "server")
+        .setContent(doc, { emitUpdate: false })
+        .run();
+    }
     pending.current = {};
     setComposer(undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revision, editor]);
+  // Saving must not take the page away from under the caret: only the
+  // review's state decides whether the page is editable.
   useEffect(() => {
-    if (editor && !editor.isDestroyed)
-      editor.setEditable(editable && !busy, false); // not an edit, no save
-  }, [editor, editable, busy]);
+    if (editor && !editor.isDestroyed) editor.setEditable(editable, false);
+  }, [editor, editable]);
   useEffect(() => () => flush(), [flush]);
   // Comment highlights live outside the document; poke the view.
   useEffect(() => {
@@ -295,7 +315,6 @@ export function SuggestionEditor({
             <select
               aria-label="Paragraph style"
               value={style}
-              disabled={busy}
               onChange={(e) => {
                 const value = e.target.value;
                 const chain = editor.chain().focus();
@@ -324,7 +343,6 @@ export function SuggestionEditor({
               type="button"
               aria-pressed={editor.isActive("bold")}
               onClick={() => editor.chain().focus().toggleBold().run()}
-              disabled={busy}
             >
               <b>B</b>
             </button>
@@ -332,14 +350,12 @@ export function SuggestionEditor({
               type="button"
               aria-pressed={editor.isActive("italic")}
               onClick={() => editor.chain().focus().toggleItalic().run()}
-              disabled={busy}
             >
               <i>I</i>
             </button>
             <button
               type="button"
               aria-pressed={editor.isActive("link")}
-              disabled={busy}
               onClick={() => {
                 const current = editor.getAttributes("link").href as
                   string | undefined;
@@ -361,7 +377,6 @@ export function SuggestionEditor({
               type="button"
               aria-pressed={editor.isActive("bulletList")}
               onClick={() => editor.chain().focus().toggleBulletList().run()}
-              disabled={busy}
             >
               • List
             </button>
@@ -369,7 +384,6 @@ export function SuggestionEditor({
               type="button"
               aria-pressed={editor.isActive("orderedList")}
               onClick={() => editor.chain().focus().toggleOrderedList().run()}
-              disabled={busy}
             >
               1. List
             </button>
@@ -378,7 +392,7 @@ export function SuggestionEditor({
               onClick={() =>
                 editor.chain().focus().sinkListItem("listItem").run()
               }
-              disabled={busy || !editor.can().sinkListItem("listItem")}
+              disabled={!editor.can().sinkListItem("listItem")}
               title="Indent"
             >
               →
@@ -388,7 +402,7 @@ export function SuggestionEditor({
               onClick={() =>
                 editor.chain().focus().liftListItem("listItem").run()
               }
-              disabled={busy || !editor.can().liftListItem("listItem")}
+              disabled={!editor.can().liftListItem("listItem")}
               title="Outdent"
             >
               ←
@@ -396,7 +410,7 @@ export function SuggestionEditor({
             <button
               type="button"
               onClick={() => editor.chain().focus().undo().run()}
-              disabled={busy || !editor.can().undo()}
+              disabled={!editor.can().undo()}
               title="Undo"
             >
               ↶
@@ -404,7 +418,7 @@ export function SuggestionEditor({
             <button
               type="button"
               onClick={() => editor.chain().focus().redo().run()}
-              disabled={busy || !editor.can().redo()}
+              disabled={!editor.can().redo()}
               title="Redo"
             >
               ↷

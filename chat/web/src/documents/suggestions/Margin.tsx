@@ -131,16 +131,22 @@ export function Margin({
             </div>
           );
         const { card } = item;
+        const who =
+          card.author === "owner"
+            ? "You"
+            : card.author === "both"
+              ? `${author} · edited by you`
+              : author;
         return (
           <div
             key={item.key}
             data-margin-key={item.key}
-            className={`suggestion-card suggestion-card-${card.status} ${active ? "active" : ""}`}
+            className={`suggestion-card suggestion-card-${card.status} suggestion-card-${card.author || "agent"} ${active ? "active" : ""}`}
             style={style}
             onClick={() => onSelect(item.key)}
           >
             <header>
-              <strong>{author}</strong>
+              <strong>{who}</strong>
               <span className="muted">
                 {card.status === "pending"
                   ? (KIND_LABEL[card.kind] ?? card.kind)
@@ -155,7 +161,20 @@ export function Margin({
             ))}
             {!disabled && (
               <footer>
-                {card.status === "pending" && (
+                {card.status === "pending" && card.author === "owner" && (
+                  <button
+                    type="button"
+                    aria-label="Undo edit"
+                    title="Put the document's text back"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onReject(card.id);
+                    }}
+                  >
+                    Undo
+                  </button>
+                )}
+                {card.status === "pending" && card.author !== "owner" && (
                   <>
                     <button
                       type="button"
