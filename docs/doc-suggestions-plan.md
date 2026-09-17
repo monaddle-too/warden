@@ -120,20 +120,35 @@ they do for pull requests.
 ## Steps
 
 - [x] Worktree and plan.
-- [ ] `docmodel.go` + tests: projection, marks, validation, ops.
-- [ ] `docdiff.go` + tests: hunks, pairing, reasons, three-way merge.
-- [ ] `doccompile.go` + tests: request order, ranges, styles, bullets, end
-      of document, frozen neighbours.
-- [ ] `docproposals.go` + tests: submit/preview/draft/resolve/return/rebase,
-      apply against a fake Google, stale base, revoked grant, delivery.
-- [ ] Chat service: tools, dispatch, notification wording, HTTP allowlist.
-- [ ] Web: `DocumentReview.tsx`, CSS, ChatShell/WorkspacePanel wiring, build.
-- [ ] Docs: feature map rows, `warden-document-sharing.md`, this plan.
-- [ ] Go suite, web build and tests.
+- [x] `docmodel.go` + tests: projection, marks, validation, ops.
+- [x] `docdiff.go` + tests: hunks, frozen anchors, reasons, three-way merge.
+- [x] `doccompile.go` + tests: every compile case is replayed through a
+      Docs-API simulator (UTF‑16 indexes, newline-carried paragraph
+      properties, tab-encoded nesting) and must reproduce the draft.
+- [x] `docproposals.go` + tests: submit/preview/decide/draft/resolve/return/
+      rebase, apply against the fake Google, clean and conflicting rebases,
+      revision refusal, restart during a write, delivery and ack.
+- [x] Chat service: tools, dispatch, notification wording, HTTP allowlist.
+- [x] Web: `DocumentReview.tsx` (+ `docmarks.ts`), CSS, ChatShell card and
+      workspace panel section; checked in the browser against a stub API.
+- [x] Docs: feature map row and glossary, `warden-document-sharing.md`.
+- [x] Go suite, web build and tests green.
+- [ ] Live verification against a real Google Doc (see below).
 
 ## Progress
 
-2026-09-17: plan written; implementation starting from the policy model.
+2026-09-17: implemented end to end on the branch; all unit and simulated
+tests pass. The compiler's end-of-document rule: a deletion that reaches the
+last paragraph removes the preceding paragraph's newline instead (the final
+newline cannot be deleted) and that paragraph is then asserted in full,
+since Docs may give a merged paragraph the last paragraph's properties.
+Direct write grants were kept (decision 8); tool descriptions steer agents
+to the proposal flow.
+
+Known limits to confirm live: numbered lists created across separate hunks
+may restart numbering (one `createParagraphBullets` per run within a hunk,
+none across hunks); inserting between two frozen blocks is refused; a
+document whose first element is a table cannot take insertions at the top.
 
 ## Remaining work / follow-ups
 

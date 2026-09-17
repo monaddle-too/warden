@@ -30,6 +30,48 @@ Owners can use **Shared documents → Share documents with this chat** before th
 
 Google creation/editing requires the `documents` OAuth scope in addition to `drive.metadata.readonly`; Google describes the former as access to see, edit, create and delete all Docs. Warden holds that credential privately and enforces the narrower operation/ID grants for agents. Existing read-only connections continue to work; write requests require reconnecting with Google's expanded consent. Existing grants are revoked on reconnect. Deployment remains local until the live workflow and production configuration are separately verified.
 
+## Suggestions: reviewed edits without a write grant
+
+The recommended way for an agent to change a shared document is to propose
+suggestions, which only needs `read` access:
+
+- `read_google_document({document_id})` returns the document as numbered
+  paragraphs `{n, style, depth, text, frozen?}`. Styles are `title`,
+  `subtitle`, `h1`–`h6`, `text`, `bullet` and `numbered` (with `depth` for
+  list nesting); text carries `**bold**`, `*italic*` and `[text](url)` marks
+  with backslash escapes. Tables, images, footnotes, breaks and smart chips
+  appear as frozen placeholders that cannot be changed or deleted, and only
+  the first tab is shown.
+- `propose_google_document_edit({document_id, summary, ops})` submits
+  `replace`/`insert`/`delete` operations against those paragraph numbers,
+  each with an optional `reason`, and waits for the owner. Warden reads the
+  document itself, materialises the proposal and computes the diff; the
+  agent's operations are never applied to Google directly.
+
+The owner reviews the proposal in the chat's **Review suggestions…** card
+(also listed under *Document suggestions* in the workspace panel): each
+change is shown inline in the document with the agent's reason, and can be
+rejected (or accepted again); the whole draft can be edited paragraph by
+paragraph, and comments can be attached to paragraphs. **Approve** re-reads
+the document, rebases the draft onto its current revision (non-overlapping
+collaborator edits merge; overlapping ones mark the proposal *stale* and
+show the conflict for another look), compiles `diff(current, draft)` into a
+single `batchUpdate` with `requiredRevisionId`, and writes it with the
+owner's Google credential. Unchanged paragraphs are never inside a request
+range; edited paragraphs keep their paragraph object so alignment, spacing
+and indentation survive. **Reject** returns feedback to the agent. **Send
+back to agent** returns the edited draft and comments: the agent reads them
+with `read_google_document({document_id, proposal_id})` and submits a new
+proposal with `revises` set to the returned request ID, its operations then
+addressing the returned draft's numbering.
+
+Outcomes reach the agent as tool results, or as a durable notification after
+an interruption, like document grants and pull request reviews. Google Docs
+cannot receive native suggestions through its API, so the suggestion layer
+exists only in Warden; the approved write appears in Google as one edit by
+the owner. Direct `write`/`structure` grants keep working for the flows that
+need them (created documents, tables, images).
+
 ## Large PR proposals
 
 After implementing a document-derived change, agents can write the full `{repository, base, title, body, files, images?}` proposal to a JSON file under their workspace and call `request_pull_request({proposal_path: ".warden/proposal.json"})`. Warden reads that file once and creates the same immutable review snapshot as an inline proposal. The path cannot be combined with inline fields; symlinks, traversal, nonregular files and JSON over 2 MiB are rejected. The existing 20-file / 256 KiB content limit and editable owner-reviewed body still apply. Later changes to the workspace file do not change the pending review.

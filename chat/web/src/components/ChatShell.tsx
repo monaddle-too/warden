@@ -38,6 +38,11 @@ import {
   type DocumentSharingHandle,
   type DocumentSharingState,
 } from "./DocumentSharing";
+import {
+  DocumentReview,
+  type DocumentReviewHandle,
+  type DocumentReviewState,
+} from "./DocumentReview";
 import { Previews } from "./Previews";
 import { Conversation, type RequestCard } from "./Conversation";
 import { ModelSelect } from "./ModelSelect";
@@ -93,9 +98,13 @@ export function ChatShell({
   const [pullRequests, setPullRequests] = useState<PullRequestState>({
     local: [],
   });
+  const [documentReviews, setDocumentReviews] = useState<DocumentReviewState>({
+    local: [],
+  });
   const documentsRef = useRef<DocumentSharingHandle>(null);
   const repositoriesRef = useRef<RepositorySharingHandle>(null);
   const pullRequestsRef = useRef<PullRequestReviewHandle>(null);
+  const documentReviewsRef = useRef<DocumentReviewHandle>(null);
   useEffect(() => {
     if (!signedIn()) return;
     const controller = new AbortController();
@@ -219,6 +228,10 @@ export function ChatShell({
     (s: PullRequestState) => setPullRequests(s),
     [],
   );
+  const onDocumentReviews = useCallback(
+    (s: DocumentReviewState) => setDocumentReviews(s),
+    [],
+  );
   if (!signedIn())
     return (
       <div className="signin">
@@ -320,6 +333,25 @@ export function ChatShell({
           label: "Review proposal…",
           primary: true,
           onClick: () => pullRequestsRef.current?.open(r.request_id),
+        },
+      ],
+    });
+  }
+  if (chat && documentReviews.pending) {
+    const r = documentReviews.pending;
+    requests.push({
+      id: "doc:" + r.request_id,
+      icon: <FileText size={18} />,
+      title:
+        r.status === "applying"
+          ? `Writing suggested edits to “${r.title}”…`
+          : `${providerName(chat.provider)} suggested ${plural(r.changes, "change")} to “${r.title}”`,
+      detail: r.summary,
+      actions: [
+        {
+          label: "Review suggestions…",
+          primary: true,
+          onClick: () => documentReviewsRef.current?.open(r.request_id),
         },
       ],
     });
@@ -615,10 +647,14 @@ export function ChatShell({
                   workspace={workspace}
                   siblings={siblings}
                   pullRequests={pullRequests.local}
+                  documentReviews={documentReviews.local}
                   onSelectChat={showChat}
                   onShareDocuments={() => documentsRef.current?.open()}
                   onShareRepositories={() => repositoriesRef.current?.open()}
                   onOpenPullRequest={(id) => pullRequestsRef.current?.open(id)}
+                  onOpenDocumentReview={(id) =>
+                    documentReviewsRef.current?.open(id)
+                  }
                   onChanged={refresh}
                 />
               )}
@@ -647,6 +683,14 @@ export function ChatShell({
               autoOpen={false}
               trigger={null}
               onState={onPullRequests}
+            />
+            <DocumentReview
+              ref={documentReviewsRef}
+              key={chat.id + "document-reviews"}
+              chatID={chat.id}
+              autoOpen={false}
+              trigger={null}
+              onState={onDocumentReviews}
             />
           </>
         ) : (

@@ -3,6 +3,7 @@ import { Archive, ExternalLink, History, Square, Trash2 } from "lucide-react";
 import type { AccessEvent, Chat, Environment } from "../types";
 import { api } from "../api";
 import type { PullRequestProposal } from "./PullRequestReview";
+import type { DocumentProposal } from "./DocumentReview";
 
 const remaining = (value: number | null) => {
   if (!value) return "";
@@ -65,20 +66,24 @@ export function WorkspacePanel({
   workspace,
   siblings,
   pullRequests,
+  documentReviews = [],
   onSelectChat,
   onShareDocuments,
   onShareRepositories,
   onOpenPullRequest,
+  onOpenDocumentReview,
   onChanged,
 }: {
   chat: Chat;
   workspace?: Environment;
   siblings: Chat[];
   pullRequests: PullRequestProposal[];
+  documentReviews?: DocumentProposal[];
   onSelectChat: (id: string) => void;
   onShareDocuments: () => void;
   onShareRepositories: () => void;
   onOpenPullRequest: (id: string) => void;
+  onOpenDocumentReview?: (id: string) => void;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState("");
@@ -342,6 +347,27 @@ export function WorkspacePanel({
               </button>
             )}
           </details>
+        </section>
+      )}
+      {documentReviews.length > 0 && (
+        <section className="workspace-section">
+          <h2>Document suggestions</h2>
+          <ul>
+            {documentReviews.map((r) => (
+              <li key={r.request_id}>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onOpenDocumentReview?.(r.request_id);
+                  }}
+                >
+                  {r.title}: {r.summary}
+                </a>
+                <small>{r.status}</small>
+              </li>
+            ))}
+          </ul>
         </section>
       )}
       {pullRequests.length > 0 && (

@@ -1143,3 +1143,239 @@ button.danger:hover {
   white-space: pre-wrap;
   font-size: 13px;
 }
+
+/* Google Docs suggestions review */
+.doc-review .pr-header h2 {
+  font-size: 18px;
+}
+.doc-page {
+  padding: 24px 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.doc-p {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.doc-title {
+  font-size: 24px;
+  font-weight: 600;
+}
+.doc-subtitle {
+  font-size: 16px;
+  color: var(--text-2);
+}
+.doc-h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin-top: 16px;
+}
+.doc-h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin-top: 12px;
+}
+.doc-h3,
+.doc-h4,
+.doc-h5,
+.doc-h6 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+.doc-bullet,
+.doc-numbered {
+  position: relative;
+}
+.doc-bullet::before,
+.doc-numbered::before {
+  content: attr(data-marker);
+  position: absolute;
+  left: -16px;
+  color: var(--muted);
+}
+.doc-frozen {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+.doc-removed {
+  background: var(--del-soft);
+  color: var(--del-text);
+  text-decoration: line-through;
+  text-decoration-color: rgb(161 45 34 / 0.45);
+}
+.doc-added {
+  background: var(--add-soft);
+  color: var(--add-text);
+}
+.doc-muted {
+  opacity: 0.75;
+}
+.doc-word-del {
+  background: rgb(161 45 34 / 0.22);
+  border-radius: 2px;
+}
+.doc-word-add {
+  background: rgb(31 107 58 / 0.22);
+  border-radius: 2px;
+}
+.doc-restyled {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.doc-hunk {
+  margin: 12px -12px;
+  padding: 0 12px 4px;
+  border-left: 3px solid var(--accent);
+}
+.doc-hunk-rejected {
+  border-left-color: var(--line-strong);
+}
+.doc-hunk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.doc-hunk-bar > span {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.doc-hunk-bar em {
+  color: var(--text-2);
+}
+.doc-hunk-bar button {
+  margin-left: auto;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.doc-fold {
+  display: block;
+  width: 100%;
+  margin: 4px 0 12px;
+  height: 30px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface-2);
+  border-style: dashed;
+}
+.doc-draft {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+}
+.doc-draft > p {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+.doc-save {
+  margin-left: auto;
+  height: 30px;
+  font-size: 12px;
+}
+.doc-row {
+  display: grid;
+  grid-template-columns: 28px 112px auto 1fr auto;
+  gap: 6px 8px;
+  align-items: start;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.doc-row-frozen {
+  grid-template-columns: 28px 1fr auto;
+}
+.doc-row-n {
+  font-size: 11px;
+  color: var(--muted);
+  padding-top: 8px;
+  text-align: right;
+}
+.doc-row select,
+.doc-row input[type="number"] {
+  height: 34px;
+  font-size: 12px;
+}
+.doc-row input[type="number"] {
+  width: 56px;
+}
+.doc-row textarea {
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 14px;
+  line-height: 1.4;
+  resize: vertical;
+}
+.doc-row textarea.doc-title,
+.doc-row textarea.doc-h1 {
+  font-weight: 600;
+  font-size: 16px;
+}
+.doc-row textarea.doc-h2,
+.doc-row textarea.doc-h3 {
+  font-weight: 600;
+}
+.doc-row-actions {
+  display: flex;
+  gap: 4px;
+}
+.doc-row-actions button {
+  height: 30px;
+  min-width: 30px;
+  padding: 0 6px;
+  font-size: 13px;
+}
+.doc-comments {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0 2px;
+}
+.doc-comment {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.doc-comment textarea {
+  min-height: 34px;
+  font-size: 13px;
+  background: var(--info-soft);
+}
+.doc-comment button,
+.doc-comments > button {
+  height: 30px;
+  font-size: 12px;
+  align-self: flex-start;
+}
+.doc-conflict {
+  margin: 8px 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.pr-badge.applied {
+  background: var(--add-soft);
+  color: var(--add-text);
+}
+.pr-badge.stale,
+.pr-badge.returned {
+  background: var(--info-soft);
+  color: var(--info-text);
+}
