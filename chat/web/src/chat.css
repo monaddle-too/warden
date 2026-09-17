@@ -1278,6 +1278,8 @@ button.danger:hover {
   display: block;
   padding: 4px 12px;
   margin: 0;
+}
+
 .workspace-section li.expired > a,
 .sharing-dialog .expired {
   opacity: 0.6;
