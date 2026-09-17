@@ -55,10 +55,10 @@ export function lineCount(text: string): number {
 }
 
 /* Only a fence with an info string needs the highlighter, so plain prose,
-   bare ``` blocks and the fences with their own renderer (Mermaid, diff)
-   never pay for the lazy chunk. */
+   bare ``` blocks and the fences with their own renderer (Mermaid, diff,
+   math) never pay for the lazy chunk. */
 export function needsHighlighter(markdown: string): boolean {
-  return /^ {0,3}(`{3,}|~{3,}) *(?!(?:mermaid|mmd|diff|patch)\b)[A-Za-z]/im.test(
+  return /^ {0,3}(`{3,}|~{3,}) *(?!(?:mermaid|mmd|diff|patch|math)\b)[A-Za-z]/im.test(
     markdown,
   );
 }

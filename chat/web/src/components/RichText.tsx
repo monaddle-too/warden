@@ -1,22 +1,55 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Markdown, { type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { needsHighlighter } from "../code";
 import { workspaceImagePath } from "../images";
+import { hasMath } from "../math";
+import type { MathPlugins } from "../katex";
 import { CodeBlock } from "./CodeBlock";
 import { InlineImage } from "./InlineImage";
 
 type RehypePlugins = NonNullable<Options["rehypePlugins"]>;
 
-// The highlighter (rehype-highlight + the common highlight.js grammars) is a
-// lazy chunk loaded once, the first time a fence with a language shows up;
-// the transcript's first paint never pays for it.
+// The highlighter (rehype-highlight + the common highlight.js grammars) and
+// the math stack (remark-math + rehype-katex + KaTeX and its CSS) are lazy
+// chunks loaded once, the first time a message needs them; the transcript's
+// first paint never pays for either.
 let highlighter: RehypePlugins | undefined;
-let loading: Promise<RehypePlugins> | undefined;
+let loadingHighlighter: Promise<RehypePlugins> | undefined;
 function loadHighlighter() {
-  return (loading ??= import("rehype-highlight").then(
+  return (loadingHighlighter ??= import("rehype-highlight").then(
     (m) => (highlighter = [[m.default, { detect: false }]]),
   ));
+}
+
+let math: MathPlugins | undefined;
+let loadingMath: Promise<MathPlugins> | undefined;
+function loadMath() {
+  return (loadingMath ??= import("../katex").then((m) => (math = m.plugins)));
+}
+
+/* The chunk's value once it has loaded, if `wanted`; a failed load leaves
+   the message rendered without it. */
+function useChunk<T>(
+  cached: T | undefined,
+  wanted: boolean,
+  load: () => Promise<T>,
+): T | undefined {
+  const [value, setValue] = useState(cached);
+  useEffect(() => {
+    if (!wanted || value) return;
+    let stopped = false;
+    void load().then(
+      (loaded) => {
+        if (!stopped) setValue(loaded);
+      },
+      () => {},
+    );
+    return () => {
+      stopped = true;
+    };
+  }, [wanted, value, load]);
+  return value;
 }
 
 export function RichText({
@@ -36,25 +69,26 @@ export function RichText({
   entryID?: string;
   onFile?: (href: string) => void;
 }) {
-  const [rehypePlugins, setRehypePlugins] = useState(highlighter);
-  const wanted = !rehypePlugins && needsHighlighter(text);
-  useEffect(() => {
-    if (!wanted) return;
-    let stopped = false;
-    void loadHighlighter().then(
-      (plugins) => {
-        if (!stopped) setRehypePlugins(plugins);
-      },
-      () => {},
-    );
-    return () => {
-      stopped = true;
-    };
-  }, [wanted]);
+  const highlight = useChunk(
+    highlighter,
+    needsHighlighter(text),
+    loadHighlighter,
+  );
+  const mathPlugins = useChunk(math, hasMath(text), loadMath);
+  const remarkPlugins = useMemo(
+    () => [remarkGfm, ...(mathPlugins?.remark ?? [])],
+    [mathPlugins],
+  );
+  // KaTeX first, so a ```math fence becomes display math before the
+  // highlighter could see a `language-math` block it has no grammar for.
+  const rehypePlugins = useMemo(
+    () => [...(mathPlugins?.rehype ?? []), ...(highlight ?? [])],
+    [mathPlugins, highlight],
+  );
   return (
     <div className="rich-text">
       <Markdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
         components={{
           a: ({ href, children }) =>

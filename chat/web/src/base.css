@@ -349,6 +349,18 @@ dialog::backdrop {
   color: var(--text-2);
 }
 
+/* KaTeX output (katex.ts chunk): a wide equation scrolls inside its line
+   instead of pushing the bubble out; the stylesheet itself is lazy. */
+.rich-text .katex-display {
+  margin: 0.75em 0;
+  padding: 2px 0;
+  overflow: auto hidden;
+}
+.rich-text .katex-error {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
 /* Fenced code (CodeBlock.tsx): header with the language, wrap and copy;
    blocks over COLLAPSE_LINES start folded behind a fade. */
 .code-block {

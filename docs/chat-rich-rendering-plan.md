@@ -45,7 +45,7 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
 | 2 | Mermaid fences rendered client-side | done | `securityLevel: "strict"`, `startOnLoad: false`, lazy import; render only once the fence is closed (not while `isStreaming`); parse error → keep the code block with a small error line. Strict alone was not enough (see decisions): HTML labels off and config locked via `secure`, image nodes refused before render, SVG re-filtered after |
 | 3 | Inline images in markdown | done | `![alt](relative/path)` → new `GET chats/{id}/image-file?path=` (worker `image-file` op + the same imageguard subprocess as `attach_image`, shared as `Engine.workspaceImage`; nothing stored, PNG served with the images route's headers); `InlineImage.tsx` shows a thumbnail that opens `Lightbox.tsx` (also used by `ImageAttachment`); `images.ts` accepts only plain relative paths (no scheme, host, absolute or `..`), so `http(s)`, `data:` and the rest stay as alt text; fetches are shared per (chat, entry, path) and capped at 3 in flight |
 | 4 | Diff rendering | done | `diff.ts` finds unified diffs in any text (git `diff` lines, `---`/`+++` pairs that lead to a hunk, bare `@@` hunks) and keeps the prose around them; `DiffView.tsx` shows a header per file (path, new/deleted/renamed/binary, +/− counts), a fold button per hunk (long hunks start folded), +/- rows on the `--add-*`/`--del-*` tokens, numbers and marks as CSS content so a selection copies only the code. Activity `detail` switches to it when a real hunk is found (Codex `fileChange`, a `git diff` an agent ran); ```` ```diff ````/```` ```patch ```` fences always, falling back to prefix colouring for hand-written diffs without hunk headers. Text nodes only, no fetch surface |
-| 5 | Math | pending | `remark-math` + `rehype-katex`, KaTeX CSS lazy-loaded, `trust: false`, `throwOnError: false` |
+| 5 | Math | done | `remark-math` + `rehype-katex` with KaTeX and its CSS in one lazy chunk (`katex.ts`), loaded only when `math.ts` `hasMath` finds display math, a ```` ```math ```` fence or Pandoc-style inline math, so "$5 and $10" in a message without math is left alone; `KATEX_OPTIONS`: `trust: false` (no `\href`/`\url`/`\includegraphics`/`\html*`, they render as errors), `throwOnError: false`, `strict: "ignore"`, `maxSize` 10 em, `maxExpand` 1000, error colour on the danger token; KaTeX output reaches React as hast, never `innerHTML`; wide display math scrolls in its line |
 | 6 | Streaming-safe rendering | pending | while `entry.isStreaming`: close an unterminated fence for display, defer Mermaid/KaTeX; no flicker of half-parsed tables |
 | 7 | Composer attachments: paste / drag-drop / picker for images and files | pending | backend: `POST chats/{id}/attachments` (multipart, ≤ 8 MiB) writes the file into the sandbox workspace under `.warden/attachments/<id>.<ext>` via a new worker op; images also go through imageguard and become an `image` entry; the turn input carries the path (and a `localImage` / image content block for image-capable providers); front-end chips in the composer with remove buttons |
 | 8 | Edit-and-resend / retry last message | pending | user entry hover actions; retry re-sends the same text with a new ID; edit prefills the composer |
@@ -103,6 +103,20 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
   line a tool stripped, a `---` that is a deleted `--`) and the prefix
   decides the rest; a `---`/`+++` pair without a hunk stays prose because
   `---` is also a markdown rule.
+- Math is gated, not just lazy. remark-math reads any `$…$` pair as math,
+  which turns "costs $5 and $10" into italic nonsense, so `hasMath` applies
+  Pandoc's stricter rule (opening `$` before a non-space, closing `$` after
+  one and not before a digit, on one line) and a message that fails it never
+  gets the plugin. A message with both real math and prices still loses the
+  prices; that is remark-math's behaviour and was judged rarer than a price
+  in prose. KaTeX itself needs no output filter: with `trust: false` every
+  command that could carry a URL, class or style renders as an error, colour
+  arguments are validated to hex or a name, and rehype-katex hands the
+  result to react-markdown as hast, so the transcript still never injects
+  HTML. Verified in a browser: `\href`, `\url`, `\includegraphics`,
+  `\htmlStyle{background:url(…)}` and `\textcolor{url(…)}` produced no
+  `<a>`, no `<img>` and no request, `\rule{10000em}` was capped, a macro
+  bomb hit `maxExpand` and rendered as its source.
 - Attachments live in the sandbox (the agent reads them like any file)
   rather than in a host-side store, so nothing new needs sharing policy.
 
@@ -114,3 +128,4 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
 - 2026-09-17: step 2 fix after review — "Refuse mermaid math labels and lock its label sanitiser": the KaTeX label path fetched before the output filter (confirmed in a browser: 4 beacon requests without the fix, 0 with it); `$$` fences refused, `dompurifyConfig` set, CSS image functions filtered, blank fences skip the chunk, the SVG walk (`scrub`) is pure and unit-tested on a fake tree. Main chunk 463.6 → 463.8 kB.
 - 2026-09-17: step 3 done — "Show workspace images inline in the transcript" (`InlineImage.tsx`, `Lightbox.tsx`, `images.ts`, `chats/{id}/image-file`; main chunk 463.8 → 466.4 kB; verified in a browser that remote, `data:` and `..` sources stay as alt text and no request leaves for them).
 - 2026-09-17: step 4 done — "Render unified diffs in activity detail and diff fences" (`DiffView.tsx`, `diff.ts`; no lazy chunk needed, main chunk 466.4 → 471.1 kB; verified in a browser in light and dark that an `<img>` in a diff line stays text and nothing is fetched).
+- 2026-09-17: step 5 done — "Render math with remark-math and KaTeX" (`math.ts`, `katex.ts`; KaTeX and its stylesheet are lazy chunks of 259 + 11 kB JS and 29 kB CSS, main chunk 471.1 → 471.6 kB; verified in a browser in light and dark that trusted-only commands render as errors and nothing is fetched).

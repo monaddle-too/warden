@@ -52,6 +52,7 @@ describe("fenced code helpers", () => {
     // Fences with their own renderer do not need it either.
     expect(needsHighlighter("```diff\n-a\n+b\n```")).toBe(false);
     expect(needsHighlighter("```Mermaid\ngraph TD\n```")).toBe(false);
+    expect(needsHighlighter("```math\nx^2\n```")).toBe(false);
     expect(needsHighlighter("```diff\n```\n```go\n```")).toBe(true);
   });
 });
