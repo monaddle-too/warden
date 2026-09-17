@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { groupEntries, newSince, readSeen, unreadStart } from "./transcript";
+import {
+  groupEntries,
+  newSince,
+  readSeen,
+  unreadEntry,
+  unreadIndex,
+  unreadStart,
+} from "./transcript";
 
 const entry = (id: string, role: string, createdAt: number) => ({
   id,
@@ -34,6 +41,31 @@ describe("unread divider", () => {
   it("does not put the divider above every entry", () => {
     expect(unreadStart(entries, { id: "gone", at: 0 })).toBe(-1);
     expect(unreadStart([], { id: "u1", at: 10 })).toBe(-1);
+  });
+  it("stays where it was fixed when entries arrive after a fully-seen open", () => {
+    // A return visit to a chat read to its end: nothing is unread, and
+    // the reader's next message (or the reply) must not grow a divider.
+    const later = [...entries, entry("u3", "user", 30), entry("m3", "assistant", 31)];
+    for (const seen of [
+      { id: "m2", at: 22 },
+      { id: "gone", at: 22 },
+    ]) {
+      const id = unreadEntry(entries, seen);
+      expect(id).toBe("");
+      expect(unreadIndex(later, id)).toBe(-1);
+      // What the live recomputation would have done, and why it is not used.
+      expect(unreadStart(later, seen)).toBe(7);
+    }
+  });
+  it("keeps a fixed divider in place as the transcript grows or loses it", () => {
+    const id = unreadEntry(entries, { id: "m1", at: 13 });
+    expect(id).toBe("u2");
+    expect(unreadIndex(entries, id)).toBe(4);
+    expect(unreadIndex([...entries, entry("u3", "user", 30)], id)).toBe(4);
+    expect(unreadIndex([entry("x", "user", 1), ...entries], id)).toBe(5);
+    expect(unreadIndex(entries.slice(0, 4), id)).toBe(-1);
+    expect(unreadIndex(entries, "")).toBe(-1);
+    expect(unreadEntry(entries, undefined)).toBe("");
   });
   it("reads a remembered entry and tolerates corrupt or unavailable storage", () => {
     const seen = { id: "m1", at: 13 };

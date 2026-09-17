@@ -38,6 +38,25 @@ export function unreadStart<T extends Item>(
   return start > 0 && start < entries.length ? start : -1;
 }
 
+/* The divider is a place, not a rule: the ID of the entry it goes before,
+   fixed when the chat opens. `unreadStart` recomputed against a growing
+   transcript would put a divider above whatever arrives next once the
+   seen mark reaches the last entry (the reader's own message included),
+   so the view keeps this ID and looks it up with `unreadIndex`. */
+export function unreadEntry<T extends Item>(
+  entries: T[],
+  seen: Seen | undefined,
+): string {
+  const start = unreadStart(entries, seen);
+  return start >= 0 ? entries[start].id : "";
+}
+
+/* Where the fixed divider sits now: -1 when there is none, or when its
+   entry is gone (a transcript the service replaced). */
+export function unreadIndex<T extends Item>(entries: T[], id: string): number {
+  return id ? entries.findIndex((e) => e.id === id) : -1;
+}
+
 /* How many messages (not tool steps) follow `lastID`, the last entry the
    reader had in view when they left the bottom of the transcript. An empty
    ID is an empty transcript, so everything counts; an ID that is gone

@@ -25,7 +25,13 @@ import {
   pastedName,
   transferFiles,
 } from "../attachments";
-import { groupEntries, newSince, readSeen, unreadStart } from "../transcript";
+import {
+  groupEntries,
+  newSince,
+  readSeen,
+  unreadEntry,
+  unreadIndex,
+} from "../transcript";
 import type { Chat, Entry } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
 import { ActivityGroup, EntryView } from "./EntryView";
@@ -59,6 +65,16 @@ function readSeenLocal(key: string) {
 }
 const reducedMotion = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+/* Keys that scroll a scroll box when it, or the page, has the focus. */
+const SCROLL_KEYS = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "PageUp",
+  "PageDown",
+  "Home",
+  "End",
+  " ",
+]);
 export function Conversation({
   chat,
   live,
@@ -180,9 +196,27 @@ export function Conversation({
     setAway(value ? null : lastID);
   }, []);
   // A smooth jump passes through positions that are not near the end;
-  // those scroll events must not count as leaving again.
+  // those scroll events must not count as leaving again. The reader taking
+  // over does: a wheel, a touch, a scrolling key or a press on the
+  // scrollbar clears the guard before the scroll it causes, and `scrollend`
+  // (where the browser has it) settles whatever else interrupted the jump.
   const jumping = useRef(false);
   const lastID = () => entries[entries.length - 1]?.id ?? "";
+  function track() {
+    const el = scroll.current!;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    if (near) jumping.current = false;
+    else if (jumping.current) return;
+    if (near !== follow.current) setFollow(near, lastID());
+  }
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (jumping.current && SCROLL_KEYS.has(event.key))
+        jumping.current = false;
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   function jump() {
     const el = scroll.current;
     if (!el) return;
@@ -195,12 +229,15 @@ export function Conversation({
   }
   // The unread divider sits before the first entry the reader has not
   // seen: what they saw is the last entry that was in view while they
-  // followed the transcript with the tab visible, remembered per chat and
-  // read once when the chat opens, so the divider stays put while reading.
+  // followed the transcript with the tab visible, remembered per chat.
+  // The entry the divider goes before is fixed once, when the chat opens
+  // (the component is keyed by chat), so it stays put while reading and
+  // never appears above what arrives during the visit.
   const seenKey = "warden-seen:" + location.origin + ":" + chat.id;
-  const [seen] = useState(() => readSeenLocal(seenKey));
-  const unread = unreadStart(entries, seen);
-  const unreadID = unread >= 0 ? entries[unread].id : "";
+  const [unreadID] = useState(() =>
+    unreadEntry(entries, readSeenLocal(seenKey)),
+  );
+  const unread = unreadIndex(entries, unreadID);
   // `wake` only re-runs the effect when the tab comes back (the state it
   // reads is the document's, taken live: a page that loads hidden may
   // become visible before any listener is attached).
@@ -435,18 +472,20 @@ export function Conversation({
         <div
           className="conversation-scroll"
           ref={scroll}
-          onScroll={() => {
-            const el = scroll.current!;
-            const near = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-            if (near) jumping.current = false;
-            else if (jumping.current) return;
-            if (near !== follow.current) setFollow(near, lastID());
+          onScroll={track}
+          onScrollEnd={() => {
+            jumping.current = false;
+            track();
           }}
           onWheel={() => {
             jumping.current = false;
           }}
           onTouchMove={() => {
             jumping.current = false;
+          }}
+          onPointerDown={(event) => {
+            // The scrollbar is the box itself; content has its own target.
+            if (event.target === event.currentTarget) jumping.current = false;
           }}
         >
           {!entries.length && (
