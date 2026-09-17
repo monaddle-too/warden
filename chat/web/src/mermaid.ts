@@ -115,32 +115,80 @@ export const DROP_TAGS = new Set([
   "select",
 ]);
 
-/* A `url()` that is not a same-document fragment (`url(#marker)`), or an
-   `@import`; both would fetch. */
-const remoteCSS = /@import|url\((?!\s*['"]?\s*#)/i;
+/* Attributes that reference something outside the document. */
+export const REF_ATTRS = new Set([
+  "href",
+  "xlink:href",
+  "src",
+  "srcset",
+  "ping",
+  "formaction",
+  "action",
+  "data",
+]);
+
+/* Mermaid runs DOMPurify over label text before it draws, and this is the
+   profile it uses. Its default keeps `<img src>`, and a `$$…$$` label is
+   drawn through KaTeX as HTML in the live document even with `htmlLabels`
+   off, so the fetching tags and referencing attributes are forbidden there
+   too; the fence cannot change this because `dompurifyConfig` is secure. */
+export const LABEL_PURIFY = {
+  FORBID_TAGS: [...DROP_TAGS, "style"],
+  FORBID_ATTR: [...REF_ATTRS, "style"],
+};
+
+/* A label with `$$` goes through Mermaid's KaTeX path (see LABEL_PURIFY),
+   which ignores `htmlLabels` and renders HTML into the live document while
+   it measures; a fence carrying one is refused before Mermaid loads. */
+export function hasMathLabels(text: string): boolean {
+  return text.includes("$$");
+}
+
+/* A `url()` that is not a same-document fragment (`url(#marker)`), an
+   `@import`, or one of the CSS image functions that take a bare string
+   (`image-set("https://…" 1x)`, `image("…")`, `src("…")`); all would fetch. */
+const remoteCSS =
+  /@import|\burl\((?!\s*['"]?\s*#)|\bimage-set\(|\bimage\(|\bsrc\(|\bcross-fade\(/i;
 
 /* Event handlers, references outside the document (`href`, `src`, ...) and
    attribute values with a remote `url()` are all stripped. */
 export function unsafeAttribute(name: string, value: string): boolean {
   const key = name.toLowerCase();
   if (key.startsWith("on")) return true;
-  if (
-    key === "href" ||
-    key === "xlink:href" ||
-    key === "src" ||
-    key === "srcset" ||
-    key === "ping" ||
-    key === "formaction" ||
-    key === "action" ||
-    key === "data"
-  )
-    return !value.trim().startsWith("#");
+  if (REF_ATTRS.has(key)) return !value.trim().startsWith("#");
   return remoteCSS.test(value);
 }
 
 /* A `<style>` the diagram carries must not reach out either. */
 export function unsafeCSS(text: string): boolean {
   return remoteCSS.test(text);
+}
+
+/* The slice of an element the second pass touches, so the walk can be
+   exercised on a hand-built tree where no DOM is available. */
+export type Scrubbable = {
+  localName: string;
+  textContent: string | null;
+  attributes: ArrayLike<{ name: string; value: string }>;
+  remove(): void;
+  removeAttribute(name: string): void;
+};
+
+/* The second pass itself: drops the elements in DROP_TAGS and any `<style>`
+   that fetches, and strips the unsafe attributes from what remains. */
+export function scrub(elements: Iterable<Scrubbable>): void {
+  for (const el of elements) {
+    const tag = el.localName.toLowerCase();
+    if (
+      DROP_TAGS.has(tag) ||
+      (tag === "style" && unsafeCSS(el.textContent ?? ""))
+    ) {
+      el.remove();
+      continue;
+    }
+    for (const attr of Array.from(el.attributes))
+      if (unsafeAttribute(attr.name, attr.value)) el.removeAttribute(attr.name);
+  }
 }
 
 /* Mermaid's errors span several lines ("Parse error on line 3:\n...^\nExpecting

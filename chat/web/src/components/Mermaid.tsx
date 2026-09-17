@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import {
-  DROP_TAGS,
+  LABEL_PURIFY,
   THEME_TOKENS,
   errorLine,
   hasImageNodes,
+  hasMathLabels,
+  scrub,
   themeVariables,
-  unsafeAttribute,
-  unsafeCSS,
   type DiagramDB,
   type ThemeTokens,
 } from "../mermaid";
@@ -33,6 +33,10 @@ function readTokens(): ThemeTokens {
 
 function render(text: string, dark: boolean): Promise<string> {
   const job = queue.then(async () => {
+    // Mermaid's KaTeX path draws HTML into the live document before any
+    // output filter runs, so a fence that would take it is refused here.
+    if (hasMathLabels(text))
+      throw new Error("Diagrams with math labels are not rendered");
     const mermaid = await loadMermaid();
     const tokens = readTokens();
     mermaid.initialize({
@@ -59,6 +63,7 @@ function render(text: string, dark: boolean): Promise<string> {
         "altFontFamily",
         "dompurifyConfig",
       ],
+      dompurifyConfig: LABEL_PURIFY,
       theme: "base",
       themeVariables: themeVariables(tokens, dark),
       fontFamily: tokens["--font"]?.trim() || undefined,
@@ -73,24 +78,13 @@ function render(text: string, dark: boolean): Promise<string> {
   return job;
 }
 
-/* Second pass over Mermaid's output (see DROP_TAGS): parsed in an inert
+/* Second pass over Mermaid's output (see `scrub`): parsed in an inert
    document, so nothing here loads or runs while it is inspected. */
 function sanitize(svg: string): string {
   const doc = new DOMParser().parseFromString(`<div>${svg}</div>`, "text/html");
   const root = doc.body.firstElementChild;
   if (!root) return "";
-  for (const el of Array.from(root.querySelectorAll("*"))) {
-    const tag = el.localName.toLowerCase();
-    if (
-      DROP_TAGS.has(tag) ||
-      (tag === "style" && unsafeCSS(el.textContent ?? ""))
-    ) {
-      el.remove();
-      continue;
-    }
-    for (const attr of Array.from(el.attributes))
-      if (unsafeAttribute(attr.name, attr.value)) el.removeAttribute(attr.name);
-  }
+  scrub(Array.from(root.querySelectorAll("*")));
   return root.innerHTML;
 }
 
@@ -117,7 +111,8 @@ export function useMermaid(
   enabled: boolean,
 ): Diagram | undefined {
   const dark = useDarkScheme();
-  const key = enabled ? `${dark}\n${text}` : "";
+  // A blank fence has nothing to draw; skipping it also spares the chunk.
+  const key = enabled && text.trim() ? `${dark}\n${text}` : "";
   const [state, setState] = useState<{ key: string; diagram: Diagram }>();
   useEffect(() => {
     if (!key) return;

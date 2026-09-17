@@ -1,13 +1,43 @@
 import { describe, it, expect } from "vitest";
 import {
   DROP_TAGS,
+  LABEL_PURIFY,
   errorLine,
   hasImageNodes,
+  hasMathLabels,
   isMermaidFence,
+  scrub,
   themeVariables,
   unsafeAttribute,
   unsafeCSS,
+  type Scrubbable,
 } from "./mermaid";
+
+/* A stand-in for a DOM element: vitest runs here without a DOM, and the
+   second pass only needs these members of one. */
+function fake(
+  localName: string,
+  attrs: Record<string, string> = {},
+  textContent: string | null = null,
+) {
+  const el = {
+    localName,
+    textContent,
+    attributes: [] as { name: string; value: string }[],
+    removed: false,
+    remove() {
+      this.removed = true;
+    },
+    removeAttribute(name: string) {
+      this.attributes = this.attributes.filter((a) => a.name !== name);
+    },
+  };
+  el.attributes = Object.entries(attrs).map(([name, value]) => ({
+    name,
+    value,
+  }));
+  return el satisfies Scrubbable;
+}
 
 describe("mermaid fence helpers", () => {
   it("recognises the mermaid info strings", () => {
@@ -52,6 +82,50 @@ describe("mermaid fence helpers", () => {
     );
     expect(unsafeCSS("@import url(https://x/a.css);")).toBe(true);
     expect(unsafeCSS(".n { background: url(https://x/a.png) }")).toBe(true);
+    // The image functions that take a bare string fetch just like url().
+    expect(unsafeCSS('.n { cursor: image-set("https://x/a.png" 1x) }')).toBe(
+      true,
+    );
+    expect(
+      unsafeAttribute("style", "mask-image:-webkit-image-set('//x')"),
+    ).toBe(true);
+    expect(unsafeAttribute("style", 'background:image("https://x/a")')).toBe(
+      true,
+    );
+    expect(unsafeAttribute("style", "content:src('https://x/a')")).toBe(true);
+    expect(unsafeAttribute("style", "font-family:'Curl(ish)'")).toBe(false);
+  });
+  it("walks a tree dropping fetchers and stripping unsafe attributes", () => {
+    const g = fake("g", { class: "node", onclick: "x()" });
+    const img = fake("img", { src: "https://x/a.png" });
+    const path = fake("path", {
+      "marker-end": "url(#m)",
+      style: "fill:url(https://x/a.svg)",
+    });
+    const okStyle = fake("style", {}, "#m .edge { marker-end: url(#a); }");
+    const badStyle = fake("style", {}, "@import url(https://x/a.css);");
+    const a = fake("a", { "xlink:href": "https://x", href: "#here" });
+    scrub([g, img, path, okStyle, badStyle, a]);
+    expect(g.removed).toBe(false);
+    expect(g.attributes.map((x) => x.name)).toEqual(["class"]);
+    expect(img.removed).toBe(true);
+    expect(path.attributes.map((x) => x.name)).toEqual(["marker-end"]);
+    expect(okStyle.removed).toBe(false);
+    expect(badStyle.removed).toBe(true);
+    expect(a.attributes.map((x) => x.name)).toEqual(["href"]);
+  });
+  it("forbids the same fetchers in Mermaid's own label sanitiser", () => {
+    for (const tag of ["img", "image", "iframe", "link", "style"])
+      expect(LABEL_PURIFY.FORBID_TAGS).toContain(tag);
+    for (const attr of ["src", "href", "xlink:href", "style"])
+      expect(LABEL_PURIFY.FORBID_ATTR).toContain(attr);
+  });
+  it("refuses a fence that would take Mermaid's KaTeX path", () => {
+    expect(hasMathLabels("sequenceDiagram\n  A->>B: $$x$$ <img src=x>")).toBe(
+      true,
+    );
+    expect(hasMathLabels('classDiagram\n  class A["$$x$$"]')).toBe(true);
+    expect(hasMathLabels("graph TD; A[cost $5]-->B")).toBe(false);
   });
   it("refuses a diagram whose database names an image", () => {
     expect(hasImageNodes({})).toBe(false);

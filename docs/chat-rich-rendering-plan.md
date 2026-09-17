@@ -73,8 +73,18 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
   cannot flip them, parses first and refuses diagrams whose database has
   image nodes, and finally strips fetching/navigating elements and
   attributes from the SVG (`mermaid.ts` `DROP_TAGS`, `unsafeAttribute`)
-  before it is injected. A CSP on the served page would be a further
-  backstop and is out of this plan's scope.
+  before it is injected. Review then found a fourth pre-render vector:
+  a `$$…$$` label in a sequence or class diagram takes Mermaid's KaTeX
+  path, which ignores `htmlLabels` and writes HTML into a `foreignObject`
+  in the live document after only DOMPurify's default profile, which keeps
+  `<img src>`; in a browser `A->>B: $$x$$ <img src="…">` fetched during
+  render. So a fence containing `$$` is refused before Mermaid loads
+  (`hasMathLabels`), and as a backstop Mermaid's label sanitiser is given
+  `dompurifyConfig` (`LABEL_PURIFY`: the fetching tags and referencing
+  attributes forbidden; the key is `secure`), verified to stop the fetch
+  on its own. The CSS filter also rejects `image-set()`, `image()`,
+  `src()` and `cross-fade()`, which fetch like `url()`. A CSP on the
+  served page would be a further backstop and is out of this plan's scope.
 - Attachments live in the sandbox (the agent reads them like any file)
   rather than in a host-side store, so nothing new needs sharing policy.
 
@@ -83,3 +93,4 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
 - 2026-09-17: step 0 done.
 - 2026-09-17: step 1 done — "Render fenced code with highlighting, copy, wrap and collapse" (`CodeBlock.tsx`, `code.ts`; highlighter is a 167 kB lazy chunk, main chunk 454.6 → 458.8 kB).
 - 2026-09-17: step 2 done — "Render closed mermaid fences as diagrams" (`Mermaid.tsx`, `mermaid.ts`; Mermaid is lazy chunks, main chunk 458.8 → 463.6 kB; verified in a browser that no agent-controlled URL is fetched).
+- 2026-09-17: step 2 fix after review — "Refuse mermaid math labels and lock its label sanitiser": the KaTeX label path fetched before the output filter (confirmed in a browser: 4 beacon requests without the fix, 0 with it); `$$` fences refused, `dompurifyConfig` set, CSS image functions filtered, blank fences skip the chunk, the SVG walk (`scrub`) is pure and unit-tested on a fake tree. Main chunk 463.6 → 463.8 kB.
