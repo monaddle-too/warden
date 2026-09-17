@@ -180,6 +180,7 @@ Compose file uses.
       "stopAfterIdleMinutes" (int .Values.sandboxes.stopAfterIdleMinutes)
       "keepStopped" (int .Values.sandboxes.keepStopped)
       "egress" .Values.egress) -}}
+{{- $_ = set $cfg "chat" (dict "listen" "127.0.0.1:18780") -}}
 {{- if eq .Values.previews.mode "public" -}}
 {{- $_ = set $cfg "previews" (dict "mode" "public" "hostSuffix" .Values.previews.hostSuffix "edgeListen" $edgeListen) -}}
 {{- else -}}
@@ -240,4 +241,24 @@ Compose file uses.
 {{/* Identities and their TLS Secret names. */}}
 {{- define "warden.identities" -}}
 {{ list "warden-policy" "warden-runner" "warden-chat" "warden-edge" | toJson }}
+{{- end -}}
+
+{{/*
+The four workloads (plan decision 5): component, warden subcommand, the
+state directory under /var/lib/warden (its PVC is warden-<state>-state),
+whether the pod needs an API token, the stop grace period the Compose
+file gives it, and its container ports.
+*/}}
+{{- define "warden.components" -}}
+{{- $v := .Values -}}
+{{- list
+  (dict "name" "policy" "subcommand" "policy" "state" "policy" "token" true "grace" 30
+        "ports" (list (dict "name" "control" "port" (int $v.services.policy.port)) (dict "name" "gateway" "port" (int $v.gateway.port))))
+  (dict "name" "runner" "subcommand" "runner" "state" "runner" "token" true "grace" 45
+        "ports" (list (dict "name" "control" "port" (int $v.services.runner.port))))
+  (dict "name" "chat" "subcommand" "serve" "state" "app" "token" false "grace" 30
+        "ports" (list (dict "name" "control" "port" (int $v.services.chat.port))))
+  (dict "name" "edge" "subcommand" "edge" "state" "edge" "token" false "grace" 30
+        "ports" (list (dict "name" "http" "port" (int $v.edge.port))))
+  | toJson }}
 {{- end -}}
