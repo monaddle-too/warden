@@ -983,7 +983,11 @@ the file is git-ignored):
    (`brew install --cask google-cloud-sdk`, `gcloud auth login`,
    `gcloud components install gke-gcloud-auth-plugin`).
 2. A hostname under a domain you control, `WARDEN_GKE_DOMAIN`; after `up`
-   you add the NS records `dns` prints at the parent domain's DNS host.
+   you add the NS records `dns` prints at the parent domain's DNS host
+   (one NS record per name server, host = the delegated label, for
+   example `cloud.warden` for `cloud.warden.monaddle.com`; Squarespace
+   asks for a fresh Google sign-in before it lets you edit DNS, and the
+   delegation was visible at Google's resolver within a minute).
 3. A Google sign-in web client: in the project's APIs & Services →
    Credentials, an OAuth client ID of type Web application with
    `https://<domain>` as an authorized JavaScript origin (the built-in
