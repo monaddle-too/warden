@@ -788,6 +788,15 @@ the repository and in the chart values.
 ## Progress
 
 - 2026-09-16: plan drafted from the a45aeaf inventory; no code yet.
+- 2026-09-17: steps 0, 1, 3 and 5 done and merged (see the step list and
+  "Spike results"). The dev VM `warden-k8s` runs k3s with both tiers;
+  `warden-guest-base:dev` and `warden:dev` (server image, built from the
+  cross-compiled linux/arm64 binary and the pnpm web build) are in the
+  node's containerd; `scripts/k8s-dev.sh build-images` reproduces both.
+  In progress on track branches: step 2 (seams, `k8s/track-a`) and the
+  chart's static parts (`k8s/track-c`). Kata boot-time stall under nested
+  virtualization left unexplained after a console-capture attempt; the
+  Kata tier's timing verification is deferred to real KVM.
 - 2026-09-16 (execution): the owner started an agent loop to run the plan
   to completion. Decisions 5 and 6 proceed with their recommendations;
   step 9's real cluster stays the owner's call, so that step is exercised
