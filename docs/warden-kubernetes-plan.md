@@ -632,7 +632,10 @@ Decisions this changes:
   `Proxy-Authenticate: Basic`, or libcurl clients never send it.
 - **Decision 2 / work item 4.** The pod spec must leave
   `allowPrivilegeEscalation` unset (PSA baseline allows it) or `sudo`
-  cannot work; `capabilities.drop: [ALL]` is fine.
+  cannot work. `capabilities.drop: [ALL]` is NOT fine (found in step 4: it
+  empties the bounding set and setuid `sudo` fails to change to the root
+  gid); the driver drops AUDIT_WRITE, FSETID, MKNOD, NET_RAW, SETFCAP,
+  SETPCAP and SYS_CHROOT and adds nothing.
 - **Runtime facts.** `imageID` for a locally built image is the manifest
   digest `build-base.sh` prints, so the pin works without a registry.
 
@@ -672,15 +675,26 @@ Decisions this changes:
       Done 2026-09-17 (track B, merged 625b91b): `chat/internal/kube` with
       in-cluster and kubeconfig config, typed REST, watch/ListWatch, exec
       over WebSocket, logs; fake API server tests.
-- [ ] 4 Kubernetes driver, inspector, shared gateway, trust publisher and
-      Secret store (work items 4 and 5), after 1, 2 and 3.
+- [x] 4 Kubernetes driver, inspector, shared gateway, trust publisher and
+      Secret store (work items 4 and 5), after 1, 2 and 3. Done 2026-09-17
+      in three tracks: the runner driver `chat/internal/sandbox/kube`
+      (merged 268c42b; live create 5–6.5 s, stop, resume with the workspace
+      kept, fork by copy, reconcile on the dev cluster), the policy side
+      `chat/internal/policy/kube` (merged 9e5ab10; cluster facts, canary
+      proof passing live in 6 s under gVisor, trust publisher, Secret store,
+      `policysvc` wiring with `--kubeconfig`), and the edge minting its own
+      owner capability over a `tls://` upstream (merged 7297883).
 - [x] 5 Guest base image (work item 6), from day one. Done 2026-09-17
       (track C, merged 2414686): `Dockerfile.base` built for real in the dev
       VM (`warden-guest-base:dev`, manifest digest
       `sha256:cd77d0ff2af115f3cb700414c7c54840c2c1c87c3322ea0a98c17880ef07b63e`
       for linux/arm64) and exercised under both tiers.
-- [~] 6 Chart (work item 7); the static hardening objects, RBAC and
+- [x] 6 Chart (work item 7); the static hardening objects, RBAC and
       NetworkPolicies after step 0, the Deployments after step 4. Chart
+      landed 2026-09-17; the rendered `warden.json` now loads through
+      `config.Load` for kind `kubernetes` (`helm_test.go`), the runner Role
+      reads the trust ConfigMap, the Secret keys are named like the sbx
+      files, and the edge behaviour the chart assumed is implemented. Chart
       landed 2026-09-17 (track C, merged 6f7d88e): all objects render, lint
       is clean, four goldens under `deploy/helm/warden/testdata`, 46/46
       objects accepted by the dev API server, a real install into a scratch

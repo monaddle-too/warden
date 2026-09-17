@@ -40,6 +40,12 @@ rules:
   - apiGroups: [""]
     resources: [pods/log]
     verbs: [get]
+  # The trust-bundle readiness gate (decision 9): the runner creates no
+  # sandbox until the guest trust ConfigMap holds a bundle.
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [warden-guest-trust]
+    verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

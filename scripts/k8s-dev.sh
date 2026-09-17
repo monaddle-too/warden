@@ -79,6 +79,9 @@ cmd_build_images() {
   limactl shell "$NAME" sudo nerdctl image inspect "warden-guest-base:${rev}" --format '{{index .RepoDigests 0}}' \
     | sed 's/.*@//' > "$ROOT/dist/guest-image-digest"
   echo "guest image digest: $(cat "$ROOT/dist/guest-image-digest")"
+  # The kubelet resolves <repo>@<digest> only if containerd holds that name.
+  limactl shell "$NAME" sudo ctr -n k8s.io images tag --force "docker.io/library/warden-guest-base:${rev}" \
+    "docker.io/library/warden-guest-base@$(cat "$ROOT/dist/guest-image-digest")" >/dev/null
 }
 
 cmd_deploy() {
