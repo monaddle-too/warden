@@ -12,15 +12,30 @@ concurrency:
   group: guest-image-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/warden-guest
-
 jobs:
   build:
+    name: ${{ matrix.image }}
     runs-on: ubuntu-24.04
-    # The arm64 half runs under QEMU on the amd64 runner; the Dockerfile only
-    # downloads, verifies and unpacks, so emulation costs minutes, not hours.
+    # The arm64 half runs under QEMU on the amd64 runner; the Dockerfiles
+    # only download, verify, unpack and (for the base image) apt-get
+    # install, so emulation costs minutes, not hours.
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The SBX variant: the Docker Sandboxes template plus the runtimes
+          # at the /tmp paths the runner expects; installed with install.sh.
+          - variant: sbx
+            dockerfile: Dockerfile
+            image: warden-guest
+          # The plain base image Kubernetes sandboxes run; pinned by digest
+          # in the chart values (kubernetes.guestImage / guestImageDigest).
+          - variant: base
+            dockerfile: Dockerfile.base
+            image: warden-guest-base
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -37,10 +52,12 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: deploy/guest
+          file: deploy/guest/${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
           # No attestation manifests: the index then holds exactly one image
-          # manifest per platform, which is what install.sh resolves.
+          # manifest per platform, which is what install.sh and the
+          # Kubernetes driver resolve.
           provenance: false
           sbom: false
           tags: |
@@ -49,31 +66,51 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=${{ matrix.image }}
+            io.warden.guest.variant=${{ matrix.variant }}
       - name: Record the index and per-platform digests
         env:
+          VARIANT: ${{ matrix.variant }}
           REF: ${{ env.IMAGE }}:sha-${{ github.sha }}
           INDEX_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -eu
           # The build output digest is the multi-platform index. Each host
           # installs and pins its own platform's image manifest digest (the
-          # digest sbx inspect reports for the loaded copy), so list them.
+          # digest sbx inspect reports for the loaded copy, or the imageID
+          # the kubelet reports for the pulled one), so list them.
           docker buildx imagetools inspect "$REF" \
             --format '{{range .Manifest.Manifests}}{{if .Platform}}{{if ne .Platform.Architecture "unknown"}}{{.Platform.OS}}/{{.Platform.Architecture}} {{.Digest}}{{"\n"}}{{end}}{{end}}{{end}}' \
             > platforms.txt
           cat platforms.txt
           {
-            echo "## Warden guest image"
+            case "$VARIANT" in
+              base) echo "## Warden guest base image (Kubernetes)";;
+              *) echo "## Warden guest image (SBX variant)";;
+            esac
             echo
             echo "\`$REF\`"
             echo
             echo "index digest: \`$INDEX_DIGEST\` (do not pin this; pin a platform digest below)"
             echo
-            echo "| platform | image manifest digest | install |"
-            echo "|---|---|---|"
-            while read -r platform digest; do
-              echo "| $platform | \`$digest\` | \`sudo deploy/guest/install.sh $REF $digest\` |"
-            done < platforms.txt
-            echo
-            echo "Record each platform digest in chat/internal/release/release.go (GuestImages)."
+            case "$VARIANT" in
+              base)
+                echo "| platform | image manifest digest |"
+                echo "|---|---|"
+                while read -r platform digest; do
+                  echo "| $platform | \`$digest\` |"
+                done < platforms.txt
+                echo
+                echo "Pin the cluster's platform digest as kubernetes.guestImageDigest (chart values guestImage.digest) with kubernetes.guestImage \`${REF%%:*}\`."
+                ;;
+              *)
+                echo "| platform | image manifest digest | install |"
+                echo "|---|---|---|"
+                while read -r platform digest; do
+                  echo "| $platform | \`$digest\` | \`sudo deploy/guest/install.sh $REF $digest\` |"
+                done < platforms.txt
+                echo
+                echo "Record each platform digest in chat/internal/release/release.go (GuestImages)."
+                ;;
+            esac
           } >> "$GITHUB_STEP_SUMMARY"
