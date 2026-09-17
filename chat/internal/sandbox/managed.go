@@ -215,30 +215,8 @@ func (w *Worker) bindLocked(r Request) (Response, error) {
 		hash := sha256.Sum256([]byte(r.SandboxID))
 		s = &managedSandbox{SandboxInfo: SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID, RuntimeName: "wc-" + hex.EncodeToString(hash[:12]), Directory: "/home/agent/workspace", State: "stopped"}, PrincipalID: r.PrincipalID, LastActivity: w.now()}
 		if r.SessionID != "" {
-			if !validIdentity(r.SessionID) {
-				return Response{}, errors.New("invalid legacy session")
-			}
-			b, err := os.ReadFile(filepath.Join(w.Root, "sessions", r.SessionID+".json"))
-			if err != nil {
-				return Response{}, errors.New("legacy execution association is unavailable")
-			}
-			var old session
-			if json.Unmarshal(b, &old) != nil || old.ProjectID != r.ProjectID {
-				return Response{}, errors.New("legacy sandbox belongs to another project")
-			}
-			for _, other := range w.managed.Sandboxes {
-				if other.RuntimeName == "ws-"+strings.ToLower(r.SessionID) {
-					return Response{}, errors.New("legacy runtime is already registered")
-				}
-			}
-			s.RuntimeName = "ws-" + strings.ToLower(r.SessionID)
-			s.Directory = old.Directory
-			s.Base = old.Base
-			s.Created = true
-			s.Installed = false
-			s.ProxyCA = ""
-			c.RolloutPath = old.RolloutPath
-			c.ThreadID = r.ThreadID
+			// The protocol 1 worker whose ws-* sandboxes this adopted is gone.
+			return Response{}, errors.New("legacy sandbox adoption is no longer supported")
 		}
 	}
 	if err := w.bindRepositoryLocked(s, r.Repository); err != nil {

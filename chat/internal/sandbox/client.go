@@ -23,6 +23,18 @@ const ProtocolVersion = release.Protocol
 
 var ErrBusy = errors.New("sandbox worker is busy")
 
+// WorkerStatus is one runner's reported state.
+type WorkerStatus struct {
+	ID         string            `json:"id"`
+	Name       string            `json:"name"`
+	Online     bool              `json:"online"`
+	Compatible bool              `json:"compatible"`
+	Active     int               `json:"active"`
+	Capacity   int               `json:"capacity"`
+	Revision   string            `json:"revision,omitempty"`
+	Stats      *hoststats.Sample `json:"stats,omitempty"`
+}
+
 type Request struct {
 	Provider        string   `json:"provider,omitempty"`
 	Model           string   `json:"model,omitempty"`
@@ -104,8 +116,6 @@ type PreviewAttachment struct {
 type Client struct {
 	Address string
 	TLS     *transport.TLS
-	Pool    bool
-	Legacy  bool // Explicit compatibility with existing protocol 1 task workers.
 }
 
 func (c *Client) dial(ctx context.Context) (net.Conn, error) {
@@ -124,12 +134,6 @@ type connection struct {
 func (c *connection) Read(p []byte) (int, error) { return c.reader.Read(p) }
 func (c *Client) Open(ctx context.Context, r Request) (io.ReadWriteCloser, Response, error) {
 	r.Version = ProtocolVersion
-	if c.Legacy || c.Pool {
-		if r.ChatID != "" || r.SandboxID != "" || r.PrincipalID != "" {
-			return nil, Response{}, fmt.Errorf("managed chat requests require a Warden protocol 2 worker")
-		}
-		r.Version = 1
-	}
 	conn, err := c.dial(ctx)
 	if err != nil {
 		return nil, Response{}, fmt.Errorf("execution worker unavailable: %w", err)
@@ -153,7 +157,7 @@ func (c *Client) Open(ctx context.Context, r Request) (io.ReadWriteCloser, Respo
 	} else {
 		err = json.Unmarshal(line, &response)
 	}
-	if err == nil && (r.Version == ProtocolVersion && response.Version != ProtocolVersion || r.Version == 1 && response.Version != 0 && response.Version != 1) {
+	if err == nil && response.Version != ProtocolVersion {
 		err = fmt.Errorf("execution worker protocol mismatch")
 	}
 	if err == nil && response.Error != "" {

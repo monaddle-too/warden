@@ -259,8 +259,8 @@ use `/var/lib/warden/github/...`.
 | edge `clientID`, `ownerEmails`, `demoDomains`, `loginsFile` | `auth.google.signInClientID`, `owners`, `demoDomains`, `signInLedger` (`auth.mode` `google`) |
 | edge `upstream`, `upstreamHost`, `ownerTokenFile` | `chat.listen`, `paths.state` + `/app/endpoint.json` |
 
-Left as flags: the runner's `--legacy`, `--parallel` and `--tls-*` options and
-the policy service's `--document-api-*` pair.
+Left as flags: the runner's `--parallel` and `--tls-*` options and the
+policy service's `--document-api-*` pair.
 
 ## Cutover to warden.json (OVH release procedure)
 

@@ -26,7 +26,6 @@ func run(args []string) error {
 	configPath := fs.String("config", "", "optional warden.json (default $WARDEN_CONFIG); flags override its computed defaults and must agree with its values")
 	claudePath := fs.String("claude-path", "", "Pinned Linux Claude executable (runtimes.claude)")
 	version := fs.Bool("version", false, "Print worker revision and protocol version")
-	legacy := fs.Bool("legacy", false, "Use the separate protocol 1 task worker (does not provide Warden chat execution)")
 	root := fs.String("root", "", "Private persistent worker directory (paths.state/runner)")
 	socket := fs.String("socket", "", "Private Unix socket (services.runner.listen, default paths.state/runner/worker.sock)")
 	sbx := fs.String("sbx", "", "Pinned SBX executable (sbx.executable)")
@@ -47,11 +46,7 @@ func run(args []string) error {
 		return err
 	}
 	if *version {
-		self := handshake.Self("warden-runner")
-		if *legacy {
-			self.Protocol = 1
-		}
-		fmt.Println(self)
+		fmt.Println(handshake.Self("warden-runner"))
 		return nil
 	}
 	s, err := resolveSettings(fs, runnerFlags{configPath: configPath, root: root, socket: socket, wardenSocket: wardenSocket, tlsListen: tlsListen, tlsCA: tlsCA, tlsCert: tlsCert, tlsKey: tlsKey, sbx: sbx, template: template, runtimeDir: runtimeDir, claudePath: claudePath, idle: idle, memoryMB: memoryMB, residents: residents, spares: spares, retained: retained})
@@ -69,10 +64,6 @@ func run(args []string) error {
 	defer unlock()
 	if *memoryMB < 512 || *memoryMB > 16384 || *parallel < 1 || *parallel > 8 || *retained < *parallel || *retained > 32 {
 		slog.Error("invalid worker limits")
-		return services.ExitCode(1)
-	}
-	if *legacy && (s.policy != "" || *runtimeDir != "") {
-		slog.Error("legacy workers cannot accept Warden chat runtime configuration")
 		return services.ExitCode(1)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -96,7 +87,6 @@ func run(args []string) error {
 		return services.ExitCode(1)
 	}
 	w := sandbox.NewWorker(*root, *sbx, *template)
-	w.Legacy = *legacy
 	w.RuntimeDir = *runtimeDir
 	w.ClaudePath = *claudePath
 	w.Spares = *spares
