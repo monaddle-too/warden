@@ -547,6 +547,9 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	if r.Operation == "cancel" {
 		return Response{}, w.cancelManaged(r)
 	}
+	if r.Operation == "usage" {
+		return w.usage(ctx, r)
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.defaultsLocked()
@@ -638,7 +641,7 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	}
 	_ = c.SetReadDeadline(time.Time{})
 	slots := w.ordinarySlots
-	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" {
+	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" {
 		slots = w.controlSlots
 	}
 	select {

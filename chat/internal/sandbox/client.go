@@ -72,6 +72,7 @@ type Response struct {
 	Revision          string                 `json:"revision,omitempty"`
 	Workers           []WorkerStatus         `json:"workers,omitempty"`
 	Stats             *hoststats.Sample      `json:"stats,omitempty"`
+	Usage             *SandboxUsage          `json:"usage,omitempty"`
 	ActiveSessions    int                    `json:"activeSessions"`
 	SessionLimit      int                    `json:"sessionLimit"`
 	ErrorCode         string                 `json:"errorCode,omitempty"`

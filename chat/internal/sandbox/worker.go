@@ -49,6 +49,7 @@ type Worker struct {
 	ClaudePath                    string
 	mu                            sync.Mutex
 	managed                       *managedState
+	usages                        map[string]*usageState // guest resource samples by sandbox ID (guarded by mu)
 	controls                      *controlState
 	Gate                          Enforcement
 	Runtime                       RuntimeDriver

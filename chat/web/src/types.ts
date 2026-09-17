@@ -51,12 +51,26 @@ export type DocumentGrant = {
   expires_at: number | null;
   documents: { id: string; title: string; url: string }[];
 };
+/* What the sandbox was given and what it is using, as the guest reports it.
+   The used figures only mean something while running; cpuPercent needs two
+   samples and is null until then. Totals of 0 are unknown (stopped disk). */
+export type SandboxUsage = {
+  at: string;
+  running: boolean;
+  cpus: number;
+  memoryTotal: number;
+  diskTotal: number;
+  cpuPercent: number | null;
+  memoryUsed: number;
+  diskUsed: number;
+};
 export type Environment = {
   id: string;
   name: string;
   repository: string;
   chats: EnvironmentChat[];
   runtime: { state: string; runtimeName: string } | null;
+  usage: SandboxUsage | null;
   documents: DocumentGrant[];
   repositories: {
     id: number;

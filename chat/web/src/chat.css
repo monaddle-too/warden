@@ -980,6 +980,52 @@ button.danger:hover {
   color: var(--muted);
   font-size: 13px;
 }
+.workspace-resources li {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  min-height: 0;
+  padding: 4px 0;
+}
+.workspace-resources li > span {
+  font-weight: 500;
+}
+.workspace-resources li > small {
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.workspace-resources meter {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 4px;
+  border: 0;
+  border-radius: 2px;
+  background: var(--line);
+}
+.workspace-resources meter::-webkit-meter-bar {
+  background: var(--line);
+  border: 0;
+  border-radius: 2px;
+}
+.workspace-resources meter::-webkit-meter-optimum-value,
+.workspace-resources meter::-webkit-meter-suboptimum-value,
+.workspace-resources meter::-webkit-meter-even-less-good-value {
+  background: var(--accent);
+  border-radius: 2px;
+}
+.workspace-resources meter::-moz-meter-bar {
+  background: var(--accent);
+  border-radius: 2px;
+}
+.workspace-resources meter.idle {
+  opacity: 0.4;
+}
 .workspace-section li button.ghost {
   height: 26px;
   padding: 0 6px;

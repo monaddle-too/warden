@@ -84,6 +84,7 @@ Legacy macOS-VM stack (pre-SBX, still in tree): `warden` (Python launcher),
 | Sandbox lifecycle (create from template, clone, keep-alive, idle stop, remove) | `sandbox/managed.go`, `sandbox/runtime.go` (`RuntimeDriver` = the only sbx adapter), `sandbox/lock.go` | runner protocol `sandbox/client.go` | | `sandbox/managed_test.go`, `worker_test.go` | [sbx-integration-plan](sbx-integration-plan.md), [stop-status-plan](stop-status-plan.md) |
 | Spare (warm) sandboxes | `sandbox/pool.go` | | | `sandbox/pool_test.go` | [warden-spare-sandbox-plan](warden-spare-sandbox-plan.md) |
 | Sandbox memory / CPU sizing | `sandbox/runtime.go` `Create` (`--cpus 1 --memory`), config `sandboxes.memoryMB`; on Kubernetes also `sandboxes.cpuMillis` (`runnersvc/main.go` `kubernetesOptions`) | | | | |
+| Workspace resources: provisioned and used CPU / memory / disk (guest-reported, 3 s cache) | `sandbox/usage.go` (`usage` op, `SandboxUsage`), `chats/environments.go` (`Environment.Usage`) | `GET environments` → `usage` | `WorkspacePanel.tsx` `Resources` | `sandbox/usage_test.go` | [warden-environments-plan](warden-environments-plan.md) § Workspace resources |
 | Host resource stats (runner's own host) | `hoststats/`, surfaced in `sandbox.Response.Stats` / `pool.go` | `chats/{id}/runtime` (status) | | | |
 | Previews: bind a port, loopback `*.localhost` or public hostnames, unpublish; on Kubernetes the runner's shared mTLS preview server (config `services.runner.previews.{listen,address}`, chart `services.runner.previewPort`) | `sandbox/preview.go`, `sandbox/ports.go`, `chats/ports.go`, `chats/preview.go`, `runnersvc/main.go`, `deploy/helm/warden/templates/{services,networkpolicies}.yaml` | `GET ports`, `ports/{id}/revoke`, `ports/{id}/proxy/*`; edge `/auth/preview`; runner `https://warden-runner:7446/{publicationID}/*` | `Previews.tsx`, `WorkspacePanel.tsx` | `sandbox/preview_shared_test.go`, `chats/ports_test.go` | [warden-public-previews-plan](warden-public-previews-plan.md), [warden-kubernetes-plan](warden-kubernetes-plan.md) § decisions 5, 10 |
 | Agent tools: `preview_attach`, `sandbox_bind_port`, `attach_image` | `chats/preview.go`, `chats/images.go` | MCP server `warden` in `sandbox/runtime.go` / `agent/claude.go` | | | |
@@ -126,7 +127,8 @@ github_repositories, github_select, github_write, network_allow, egress,
 egress_set, pr_preview, pr_get`).
 
 Runner protocol (`chat/internal/sandbox/client.go`): versioned request/response
-over a private socket; responses may carry `Stats` (`hoststats.Sample`).
+over a private socket; responses may carry `Stats` (`hoststats.Sample`, the
+runner's host) or `Usage` (`SandboxUsage`, one guest).
 
 Policy service internal endpoints (`chat/internal/policy/registry.go`):
 `register, check, begin, end, gateway, configureProvider, bindGateway, proxy,

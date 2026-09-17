@@ -13,16 +13,17 @@ import (
 // and published ports belong to it, not to the chat that asked for them: every
 // chat on the environment shares its disk and its network lease.
 type Environment struct {
-	ID           string               `json:"id"`
-	Name         string               `json:"name"`
-	Repository   string               `json:"repository"`
-	Chats        []EnvironmentChat    `json:"chats"`
-	Runtime      *sandbox.SandboxInfo `json:"runtime"`
-	Documents    []map[string]any     `json:"documents"`
-	Repositories []any                `json:"repositories"`
-	Ports        []PortBinding        `json:"ports"`
-	Deleted      bool                 `json:"deleted"`
-	Archived     bool                 `json:"archived"`
+	ID           string                `json:"id"`
+	Name         string                `json:"name"`
+	Repository   string                `json:"repository"`
+	Chats        []EnvironmentChat     `json:"chats"`
+	Runtime      *sandbox.SandboxInfo  `json:"runtime"`
+	Usage        *sandbox.SandboxUsage `json:"usage"`
+	Documents    []map[string]any      `json:"documents"`
+	Repositories []any                 `json:"repositories"`
+	Ports        []PortBinding         `json:"ports"`
+	Deleted      bool                  `json:"deleted"`
+	Archived     bool                  `json:"archived"`
 }
 type EnvironmentChat struct {
 	ID       string `json:"id"`
@@ -107,6 +108,11 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		if ran := ranChat(chats); ran != nil && !env.Deleted {
 			if res, err := e.Runtime(ctx, ran.ID, "status"); err == nil && res.Sandbox != nil {
 				env.Runtime = res.Sandbox
+				// Provisioned and used CPU, memory and disk, as the guest
+				// reports them; the panel refreshes this every few seconds.
+				if res, err := e.Runtime(ctx, ran.ID, "usage"); err == nil {
+					env.Usage = res.Usage
+				}
 			}
 			if e.PolicyAddress != "" {
 				if result, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": ran.ID, "sandboxID": c.SandboxID}); err == nil {
