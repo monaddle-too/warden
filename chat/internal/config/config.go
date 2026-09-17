@@ -38,17 +38,44 @@ const (
 	AuthGoogle = "google"
 )
 
+// Runtime kinds (runtime.kind): the sandbox runtime a deployment uses.
+const (
+	RuntimeSBX        = "sbx"
+	RuntimeKubernetes = "kubernetes"
+)
+
+// Gateway modes, derived from the runtime kind (GatewayMode): per-binding
+// loopback listeners on the sbx shapes, one credentialed listener on
+// Kubernetes.
+const (
+	GatewayLoopback = "loopback"
+	GatewayShared   = "shared"
+)
+
+// Isolation tiers of the kubernetes kind (kubernetes.tier).
+const (
+	TierKata   = "kata"
+	TierGVisor = "gvisor"
+)
+
 // Config is the parsed file. Zero values mean "compute the default".
 type Config struct {
-	Version   int       `json:"version"`
-	Paths     Paths     `json:"paths"`
-	SBX       SBX       `json:"sbx"`
-	Runtimes  Runtimes  `json:"runtimes"`
-	Sandboxes Sandboxes `json:"sandboxes"`
-	Chat      Chat      `json:"chat"`
-	Previews  Previews  `json:"previews"`
-	Auth      Auth      `json:"auth"`
-	Providers Providers `json:"providers"`
+	Version int   `json:"version"`
+	Paths   Paths `json:"paths"`
+	// Runtime selects the sandbox runtime; its zero value is the sbx kind,
+	// so files written before the field existed read unchanged and a file
+	// written for the sbx shapes does not mention it.
+	Runtime Runtime `json:"runtime,omitzero"`
+	SBX     SBX     `json:"sbx"`
+	// Kubernetes is the kubernetes kind's section (docs/warden-kubernetes-plan.md,
+	// appendix A); required with that kind and refused with any other.
+	Kubernetes *Kubernetes `json:"kubernetes,omitempty"`
+	Runtimes   Runtimes    `json:"runtimes"`
+	Sandboxes  Sandboxes   `json:"sandboxes"`
+	Chat       Chat        `json:"chat"`
+	Previews   Previews    `json:"previews"`
+	Auth       Auth        `json:"auth"`
+	Providers  Providers   `json:"providers"`
 	// Services and TLS are the transport between the four services; both
 	// are omitted from a written file when they hold nothing, and an
 	// existing file without them keeps today's Unix sockets and loopback
@@ -67,6 +94,41 @@ type Paths struct {
 	GitHubCatalog string `json:"githubCatalog,omitempty"`
 	// SandboxPolicyTemplate is the starting policy for new sandboxes.
 	SandboxPolicyTemplate string `json:"sandboxPolicyTemplate,omitempty"`
+}
+
+// Runtime names the sandbox runtime kind.
+type Runtime struct {
+	Kind string `json:"kind,omitempty"`
+}
+
+// Kubernetes configures the kubernetes runtime kind: where sandboxes run,
+// how they are isolated, what they run, and what the policy service
+// publishes for them.
+type Kubernetes struct {
+	// Namespace holds the sandbox pods and their workspace volumes.
+	Namespace string `json:"namespace"`
+	// Tier is the isolation boundary, kata or gvisor; the verifier checks
+	// the RuntimeClass handler against the tier's allow-list.
+	Tier string `json:"tier"`
+	// RuntimeClass is the runtimeClassName every sandbox pod is created
+	// with and the verifier pins.
+	RuntimeClass string `json:"runtimeClass"`
+	// GuestImage and GuestImageDigest are the guest base image and the
+	// digest the pod's imageID must report; they replace sbx.guestImage*
+	// for this kind.
+	GuestImage       string `json:"guestImage"`
+	GuestImageDigest string `json:"guestImageDigest"`
+	// StorageClass is the workspace volumes' class; empty means the
+	// cluster default.
+	StorageClass string `json:"storageClass,omitempty"`
+	// WorkspaceSizeGi sizes each sandbox's workspace volume; 20 when unset.
+	WorkspaceSizeGi int `json:"workspaceSizeGi,omitempty"`
+	// GatewayService is the Service the shared gateway is advertised
+	// through; warden-gateway when unset.
+	GatewayService string `json:"gatewayService,omitempty"`
+	// TrustConfigMap is the guest trust bundle the policy service publishes
+	// and the runner mounts; warden-guest-trust when unset.
+	TrustConfigMap string `json:"trustConfigMap,omitempty"`
 }
 
 // SBX describes the sandbox runtime on this host.
@@ -178,9 +240,11 @@ type Providers struct {
 	GitHub *GitHub   `json:"github,omitempty"`
 }
 
-// AuthFile points at one owner-only credential file.
+// AuthFile points at one owner-only credential file (the sbx shapes) or
+// names the Secret holding the login (the kubernetes kind, appendix A).
 type AuthFile struct {
-	AuthFile string `json:"authFile"`
+	AuthFile string `json:"authFile,omitempty"`
+	Secret   string `json:"secret,omitempty"`
 }
 
 // Google selects the Docs OAuth client: "builtin" or a path to an operator
@@ -189,9 +253,11 @@ type Google struct {
 	DocsClient string `json:"docsClient,omitempty"`
 }
 
-// GitHub is either a local user token (AuthFile) or a server GitHub App.
+// GitHub is either a local user token (AuthFile, or Secret on Kubernetes)
+// or a server GitHub App.
 type GitHub struct {
 	AuthFile          string `json:"authFile,omitempty"`
+	Secret            string `json:"secret,omitempty"`
 	AppID             int64  `json:"appID,omitempty"`
 	AppSlug           string `json:"appSlug,omitempty"`
 	InstallationOwner string `json:"installationOwner,omitempty"`
@@ -220,6 +286,26 @@ func Defaults(state string) Config {
 		GitHub: &GitHub{AuthFile: filepath.Join(provider, "github.json")},
 	}
 	return c
+}
+
+// RuntimeKind is the effective runtime kind: runtime.kind, or sbx when the
+// file does not say.
+func (c Config) RuntimeKind() string {
+	if c.Runtime.Kind == "" {
+		return RuntimeSBX
+	}
+	return c.Runtime.Kind
+}
+
+// GatewayMode is how bindings' gateways are listened for, derived from the
+// kind rather than configured: the sbx shapes keep their per-binding
+// loopback listeners (the shared gateway is not switched on there in this
+// plan), and Kubernetes has no per-binding ports, so it is always shared.
+func (c Config) GatewayMode() string {
+	if c.RuntimeKind() == RuntimeKubernetes {
+		return GatewayShared
+	}
+	return GatewayLoopback
 }
 
 // SBXSocketPath is the longest Unix socket sbx binds inside its namespace
@@ -323,7 +409,7 @@ func (c Config) GitHubMode() string {
 	switch {
 	case c.Providers.GitHub == nil:
 		return ""
-	case c.Providers.GitHub.AuthFile != "":
+	case c.Providers.GitHub.AuthFile != "" || c.Providers.GitHub.Secret != "":
 		return "user"
 	case c.Providers.GitHub.AppID != 0:
 		return "app"
@@ -380,6 +466,22 @@ func Parse(raw []byte) (Config, error) {
 	}
 	c := Defaults(file.Paths.State)
 	merge(&c, file)
+	if c.RuntimeKind() == RuntimeKubernetes {
+		if file.SBX != (SBX{}) {
+			return c, errors.New("sbx.* is only used with runtime.kind \"sbx\"")
+		}
+		// The file-backed provider defaults are the sbx shapes'; here a
+		// provider is configured only by naming its Secret.
+		if file.Providers.Codex == nil {
+			c.Providers.Codex = nil
+		}
+		if file.Providers.Claude == nil {
+			c.Providers.Claude = nil
+		}
+		if file.Providers.GitHub == nil {
+			c.Providers.GitHub = nil
+		}
+	}
 	// A provider set to JSON null is removed: the pointer stays nil in file,
 	// so explicit nulls are read separately and hide that integration.
 	var nulls struct {
@@ -406,6 +508,20 @@ func Parse(raw []byte) (Config, error) {
 
 // merge copies every set field of file over c.
 func merge(c *Config, file Config) {
+	setString(&c.Runtime.Kind, file.Runtime.Kind)
+	if file.Kubernetes != nil {
+		k := *file.Kubernetes
+		if k.WorkspaceSizeGi == 0 {
+			k.WorkspaceSizeGi = 20
+		}
+		if k.GatewayService == "" {
+			k.GatewayService = "warden-gateway"
+		}
+		if k.TrustConfigMap == "" {
+			k.TrustConfigMap = "warden-guest-trust"
+		}
+		c.Kubernetes = &k
+	}
 	setString(&c.Paths.WebAssets, file.Paths.WebAssets)
 	setString(&c.Paths.GitHubCatalog, file.Paths.GitHubCatalog)
 	setString(&c.Paths.SandboxPolicyTemplate, file.Paths.SandboxPolicyTemplate)
@@ -491,10 +607,17 @@ func (c Config) Validate() error {
 	if c.Paths.State == "" || !filepath.IsAbs(c.Paths.State) {
 		return errors.New("paths.state must be an absolute path")
 	}
-	if len(c.PolicySocket()) > 100 {
+	if err := c.validateKind(); err != nil {
+		return err
+	}
+	sbx := c.RuntimeKind() == RuntimeSBX
+	// The Unix socket and loopback rules belong to the one-host shapes: on
+	// Kubernetes the services dial each other over tls:// and the edge port
+	// reaches the operator through a port-forward.
+	if sbx && len(c.PolicySocket()) > 100 {
 		return errors.New("paths.state is too long for the private Unix sockets")
 	}
-	if len(SBXSocketPath(c.SBX.PrivateHome)) > 103 {
+	if sbx && len(SBXSocketPath(c.SBX.PrivateHome)) > 103 {
 		return errors.New("sbx.privateHome is too long: sbx binds Unix sockets under it (keep the state directory short, e.g. ~/.warden)")
 	}
 	if err := loopback(c.Chat.Listen); err != nil {
@@ -508,7 +631,11 @@ func (c Config) Validate() error {
 		if c.Previews.HostSuffix != "localhost" {
 			return errors.New("previews.hostSuffix must be \"localhost\" in loopback mode")
 		}
-		if err := loopback(c.Previews.EdgeListen); err != nil {
+		if sbx {
+			if err := loopback(c.Previews.EdgeListen); err != nil {
+				return fmt.Errorf("previews.edgeListen: %w", err)
+			}
+		} else if _, _, err := net.SplitHostPort(c.Previews.EdgeListen); err != nil {
 			return fmt.Errorf("previews.edgeListen: %w", err)
 		}
 	case PreviewPublic:
@@ -553,9 +680,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("sandboxes.egress must be %q or %q", EgressRestricted, EgressOpen)
 	}
 	if g := c.Providers.GitHub; g != nil {
-		user, app := g.AuthFile != "", g.AppID != 0 || g.AppSlug != "" || g.InstallationOwner != "" || g.BrokerFile != ""
+		user, app := g.AuthFile != "" || g.Secret != "", g.AppID != 0 || g.AppSlug != "" || g.InstallationOwner != "" || g.BrokerFile != ""
 		if user == app {
-			return errors.New("providers.github must be either a user authFile or a GitHub App (appID, appSlug, installationOwner, brokerFile), not both or neither")
+			return errors.New("providers.github must be either a user authFile (or secret) or a GitHub App (appID, appSlug, installationOwner, brokerFile), not both or neither")
+		}
+		if g.AuthFile != "" && g.Secret != "" {
+			return errors.New("providers.github: authFile and secret are exclusive")
 		}
 		if app && (g.AppID == 0 || g.AppSlug == "" || g.InstallationOwner == "" || g.BrokerFile == "") {
 			return errors.New("providers.github App mode requires appID, appSlug, installationOwner and brokerFile")
@@ -565,6 +695,89 @@ func (c Config) Validate() error {
 		return errors.New("providers.google.docsClient must be \"builtin\" or a file path")
 	}
 	return nil
+}
+
+// validateKind applies the rules that depend on runtime.kind: the sbx
+// section and file-backed provider logins belong to the sbx kind, the
+// kubernetes section and Secret-backed logins to the kubernetes kind.
+func (c Config) validateKind() error {
+	switch c.RuntimeKind() {
+	case RuntimeSBX:
+		if c.Kubernetes != nil {
+			return errors.New("kubernetes.* is only used with runtime.kind \"kubernetes\"")
+		}
+		for name, p := range map[string]*AuthFile{"codex": c.Providers.Codex, "claude": c.Providers.Claude} {
+			if p != nil && p.Secret != "" {
+				return fmt.Errorf("providers.%s.secret is only used with runtime.kind \"kubernetes\"; the sbx shapes use authFile", name)
+			}
+		}
+		if c.Providers.GitHub != nil && c.Providers.GitHub.Secret != "" {
+			return errors.New("providers.github.secret is only used with runtime.kind \"kubernetes\"; the sbx shapes use authFile")
+		}
+	case RuntimeKubernetes:
+		k := c.Kubernetes
+		if k == nil {
+			return errors.New("runtime.kind \"kubernetes\" requires the kubernetes section (namespace, tier, runtimeClass, guestImage, guestImageDigest)")
+		}
+		if !dnsLabel(k.Namespace) {
+			return errors.New("kubernetes.namespace must be a DNS label")
+		}
+		if k.Tier != TierKata && k.Tier != TierGVisor {
+			return fmt.Errorf("kubernetes.tier must be %q or %q", TierKata, TierGVisor)
+		}
+		if !dnsLabel(k.RuntimeClass) {
+			return errors.New("kubernetes.runtimeClass must be a DNS label")
+		}
+		if k.GuestImage == "" || strings.ContainsAny(k.GuestImage, " @\t\n") {
+			return errors.New("kubernetes.guestImage must be an image reference without a digest")
+		}
+		if !digestShape(k.GuestImageDigest) {
+			return errors.New("kubernetes.guestImageDigest must be sha256:<64 hex>")
+		}
+		if k.WorkspaceSizeGi < 1 {
+			return errors.New("kubernetes.workspaceSizeGi must be at least 1")
+		}
+		if !dnsLabel(k.GatewayService) || !dnsLabel(k.TrustConfigMap) || (k.StorageClass != "" && !dnsLabel(k.StorageClass)) {
+			return errors.New("kubernetes.gatewayService, trustConfigMap and storageClass must be DNS labels")
+		}
+		for name, p := range map[string]*AuthFile{"codex": c.Providers.Codex, "claude": c.Providers.Claude} {
+			if p == nil {
+				continue
+			}
+			if p.AuthFile != "" {
+				return fmt.Errorf("providers.%s.authFile is only used with runtime.kind \"sbx\"; the kubernetes kind names a secret", name)
+			}
+			if !dnsLabel(p.Secret) {
+				return fmt.Errorf("providers.%s.secret must name a Secret", name)
+			}
+		}
+		if g := c.Providers.GitHub; g != nil {
+			if g.AuthFile != "" {
+				return errors.New("providers.github.authFile is only used with runtime.kind \"sbx\"; the kubernetes kind names a secret")
+			}
+			if g.Secret != "" && !dnsLabel(g.Secret) {
+				return errors.New("providers.github.secret must name a Secret")
+			}
+		}
+	default:
+		return fmt.Errorf("runtime.kind must be %q or %q", RuntimeSBX, RuntimeKubernetes)
+	}
+	return nil
+}
+
+// dnsLabel reports whether s is a Kubernetes object name: lower-case
+// alphanumerics and dashes, 1–63 bytes, starting and ending alphanumeric.
+func dnsLabel(s string) bool {
+	if len(s) < 1 || len(s) > 63 || s[0] == '-' || s[len(s)-1] == '-' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // validateTransport applies the URL rules: unix:// or tls:// for the policy

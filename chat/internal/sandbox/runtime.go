@@ -131,6 +131,14 @@ func (NoResidency) Close() error { return nil }
 
 type sbxRuntime struct{ worker *Worker }
 
+// NewSBXRuntime is the RuntimeDriver of the sbx shapes: it drives the
+// worker's pinned sbx executable and template.
+func NewSBXRuntime(w *Worker) RuntimeDriver { return &sbxRuntime{worker: w} }
+
+// ErrRuntimeKindUnsupported is returned for a runtime kind this build has
+// no driver for.
+var ErrRuntimeKindUnsupported = errors.New("runtime kind is not implemented in this build")
+
 func (d *sbxRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 	inventory, err := command(ctx, d.worker.Executable, "ls", "--quiet").Output()
 	if err != nil {

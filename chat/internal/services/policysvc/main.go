@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -153,6 +154,9 @@ func run(args []string) error {
 	default:
 		return errors.New("--egress must be restricted or open")
 	}
+	if err := supportedKind(s.cfg.RuntimeKind()); err != nil {
+		return err
+	}
 	// A mode chosen from the Admin console persists in the policy state and
 	// wins over warden.json until it is cleared.
 	if saved, err := policy.LoadEgressMode(*state); err != nil {
@@ -190,17 +194,9 @@ func run(args []string) error {
 		if exe, err := os.Executable(); err == nil {
 			policy.LimitedGitLauncher = []string{exe, "policy", "git-limited"}
 		}
-		registry.Gateways = policy.NewLoopbackGateways(registry, networks)
-		verifier, err := policy.NewSbxCliVerifier(registry, *sbx, true, nil)
-		if err != nil {
-			return errors.New("verifier: " + err.Error())
+		if err := enforcement(s, registry, networks); err != nil {
+			return err
 		}
-		if !policy.ValidImageDigest(*guestDigest) {
-			return errors.New("--guest-image-digest must be sha256:<64 hex>")
-		}
-		verifier.Inspector.(*policy.SbxInspector).ShellDigest = *guestDigest
-		registry.Verifier = verifier
-		verifier.StartRefresher()
 	}
 	server, err := policy.ListenControl(s.listen, s.tls, registry)
 	if err != nil {
@@ -219,6 +215,40 @@ func run(args []string) error {
 		_ = os.Remove(listen.Path)
 	}
 	registry.Close()
+	return nil
+}
+
+// supportedKind refuses a runtime kind this build has no inspector, gateway
+// or credential store for; the sbx shapes are the only kind wired today.
+func supportedKind(kind string) error {
+	switch kind {
+	case config.RuntimeSBX:
+		return nil
+	case config.RuntimeKubernetes:
+		return errors.New("runtime.kind \"kubernetes\" is not implemented in this build: the Kubernetes inspector, shared gateway wiring and Secret credential store land with docs/warden-kubernetes-plan.md, work item 5")
+	}
+	return errors.New("unknown runtime.kind " + kind)
+}
+
+// enforcement wires the runtime kind's gateway and verifier into the
+// registry: per-binding loopback gateways and the SBX inspector over the
+// pinned sbx executable for the sbx shapes (the only kind supportedKind
+// admits). The Kubernetes kind's SharedGateway and inspector attach here.
+func enforcement(s settings, registry *policy.Registry, networks []*net.IPNet) error {
+	if s.cfg.GatewayMode() != config.GatewayLoopback {
+		return errors.New("gateway mode " + s.cfg.GatewayMode() + " is not wired for runtime.kind " + s.cfg.RuntimeKind())
+	}
+	registry.Gateways = policy.NewLoopbackGateways(registry, networks)
+	verifier, err := policy.NewSbxCliVerifier(registry, s.sbx, true, nil)
+	if err != nil {
+		return errors.New("verifier: " + err.Error())
+	}
+	if !policy.ValidImageDigest(s.guestDigest) {
+		return errors.New("--guest-image-digest must be sha256:<64 hex>")
+	}
+	verifier.Inspector.(*policy.SbxInspector).ShellDigest = s.guestDigest
+	registry.Verifier = verifier
+	verifier.StartRefresher()
 	return nil
 }
 

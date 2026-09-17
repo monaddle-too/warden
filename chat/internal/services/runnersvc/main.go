@@ -3,6 +3,7 @@ package runnersvc
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	"warden/chat/internal/config"
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/release"
 	"warden/chat/internal/sandbox"
@@ -56,6 +58,11 @@ func run(args []string) error {
 	}
 	root, sbx, template, runtimeDir, claudePath = &s.root, &s.sbx, &s.template, &s.runtimeDir, &s.claudePath
 	idle, memoryMB, residents, spares, retained = &s.idle, &s.memoryMB, &s.residents, &s.spares, &s.retained
+	driver, err := runtimeDriver(s.cfg.RuntimeKind())
+	if err != nil {
+		slog.Error("configuration", "error", err)
+		return services.ExitCode(1)
+	}
 	unlock, lockErr := sandbox.LockRoot(*root)
 	if lockErr != nil {
 		slog.Error("worker root lock", "error", lockErr)
@@ -87,6 +94,7 @@ func run(args []string) error {
 		return services.ExitCode(1)
 	}
 	w := sandbox.NewWorker(*root, *sbx, *template)
+	w.Runtime = driver(w)
 	w.RuntimeDir = *runtimeDir
 	w.ClaudePath = *claudePath
 	w.Spares = *spares
@@ -100,4 +108,18 @@ func run(args []string) error {
 		return services.ExitCode(1)
 	}
 	return nil
+}
+
+// runtimeDriver selects the RuntimeDriver of the configured runtime kind.
+// The sbx shapes get the SBX driver over the worker's executable and
+// template; the Kubernetes driver (docs/warden-kubernetes-plan.md, work
+// item 4) is wired here when it lands.
+func runtimeDriver(kind string) (func(*sandbox.Worker) sandbox.RuntimeDriver, error) {
+	switch kind {
+	case config.RuntimeSBX:
+		return sandbox.NewSBXRuntime, nil
+	case config.RuntimeKubernetes:
+		return nil, fmt.Errorf("%w: runtime.kind %q (the Kubernetes runtime driver is not part of this build)", sandbox.ErrRuntimeKindUnsupported, kind)
+	}
+	return nil, errors.New("unknown runtime.kind " + kind)
 }

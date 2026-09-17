@@ -212,3 +212,122 @@ func TestTransportURLsAndTLSValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeKindDefaultsToSBXAndIsNotWritten(t *testing.T) {
+	c := Defaults("/tmp/w")
+	if c.RuntimeKind() != RuntimeSBX || c.GatewayMode() != GatewayLoopback || c.Kubernetes != nil {
+		t.Fatalf("defaults: kind=%q gateway=%q", c.RuntimeKind(), c.GatewayMode())
+	}
+	path := filepath.Join(t.TempDir(), "warden.json")
+	if err := Write(path, c); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), `"runtime"`) || strings.Contains(string(raw), `"kubernetes"`) || strings.Contains(string(raw), `"secret"`) {
+		t.Fatalf("sbx file mentions the other kind: %s", raw)
+	}
+	parsed, err := Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"runtime":{"kind":"sbx"}}`))
+	if err != nil || parsed.RuntimeKind() != RuntimeSBX {
+		t.Fatalf("explicit sbx: %v", err)
+	}
+	if _, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"runtime":{"kind":"docker"}}`)); err == nil || !strings.Contains(err.Error(), "runtime.kind") {
+		t.Fatalf("unknown kind accepted: %v", err)
+	}
+}
+
+const kubernetesExample = `{
+  "version": 1,
+  "runtime": { "kind": "kubernetes" },
+  "paths": { "state": "/var/lib/warden" },
+  "services": {
+    "policy": { "listen": "tls://0.0.0.0:7443", "address": "tls://warden-policy:7443" },
+    "runner": { "listen": "tls://0.0.0.0:7444", "address": "tls://warden-runner:7444" },
+    "chat":   { "listen": "tls://0.0.0.0:7445", "address": "tls://warden-chat:7445" }
+  },
+  "tls": { "caFile": "/etc/warden/tls/ca.crt", "certFile": "/etc/warden/tls/tls.crt", "keyFile": "/etc/warden/tls/tls.key" },
+  "kubernetes": {
+    "namespace": "warden-sandboxes",
+    "tier": "gvisor",
+    "runtimeClass": "gvisor",
+    "guestImage": "ghcr.io/monaddle-too/warden-guest-base",
+    "guestImageDigest": "sha256:` + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" + `"
+  },
+  "previews": { "edgeListen": "0.0.0.0:19081" },
+  "providers": {
+    "codex":  { "secret": "warden-codex-login" },
+    "claude": { "secret": "warden-claude-login" },
+    "github": { "secret": "warden-github-login" }
+  }
+}`
+
+func TestKubernetesKindParsesWithDefaults(t *testing.T) {
+	c, err := Parse([]byte(kubernetesExample))
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := c.Kubernetes
+	if c.RuntimeKind() != RuntimeKubernetes || c.GatewayMode() != GatewayShared || k == nil {
+		t.Fatalf("kind: %+v", c)
+	}
+	if k.WorkspaceSizeGi != 20 || k.GatewayService != "warden-gateway" || k.TrustConfigMap != "warden-guest-trust" || k.StorageClass != "" || k.Tier != TierGVisor {
+		t.Fatalf("kubernetes defaults: %+v", k)
+	}
+	if c.Providers.Codex.Secret != "warden-codex-login" || c.Providers.Codex.AuthFile != "" || c.GitHubMode() != "user" || c.Providers.GitHub.Secret != "warden-github-login" {
+		t.Fatalf("providers: %+v %+v", c.Providers.Codex, c.Providers.GitHub)
+	}
+	if !c.UsesTLS() || c.PolicyAddress() != "tls://warden-policy:7443" {
+		t.Fatalf("transport: %s", c.PolicyAddress())
+	}
+	// Providers the file does not name are absent, not the sbx file defaults.
+	minimal := strings.Replace(kubernetesExample, `"providers": {
+    "codex":  { "secret": "warden-codex-login" },
+    "claude": { "secret": "warden-claude-login" },
+    "github": { "secret": "warden-github-login" }
+  }`, `"providers": {}`, 1)
+	c, err = Parse([]byte(minimal))
+	if err != nil || c.Providers.Codex != nil || c.Providers.Claude != nil || c.Providers.GitHub != nil || c.Providers.Google == nil {
+		t.Fatalf("minimal kubernetes providers: %+v %v", c.Providers, err)
+	}
+}
+
+func TestValidationByRuntimeKind(t *testing.T) {
+	sbx := `{"version":1,"paths":{"state":"/tmp/w"}`
+	bad := map[string]string{
+		"kubernetes section with kind sbx":   sbx + `,"kubernetes":{"namespace":"n","tier":"kata","runtimeClass":"kata","guestImage":"i","guestImageDigest":"sha256:` + strings.Repeat("a", 64) + `"}}`,
+		"secret with kind sbx":               sbx + `,"providers":{"codex":{"secret":"warden-codex-login"}}}`,
+		"github secret with kind sbx":        sbx + `,"providers":{"github":{"secret":"warden-github-login"}}}`,
+		"kubernetes without its section":     strings.Replace(kubernetesExample, `"kubernetes": {`, `"kubernetesX": {`, 1),
+		"sbx section with kind kubernetes":   strings.Replace(kubernetesExample, `"previews"`, `"sbx": {"executable": "/usr/local/bin/sbx"}, "previews"`, 1),
+		"authFile with kind kubernetes":      strings.Replace(kubernetesExample, `{ "secret": "warden-codex-login" }`, `{ "authFile": "/var/lib/warden/provider/auth.json" }`, 1),
+		"unknown tier":                       strings.Replace(kubernetesExample, `"tier": "gvisor"`, `"tier": "runc"`, 1),
+		"bad namespace":                      strings.Replace(kubernetesExample, `"warden-sandboxes"`, `"Warden Sandboxes"`, 1),
+		"digest in guestImage":               strings.Replace(kubernetesExample, `"ghcr.io/monaddle-too/warden-guest-base"`, `"ghcr.io/monaddle-too/warden-guest-base@sha256:x"`, 1),
+		"bad digest":                         strings.Replace(kubernetesExample, `"guestImageDigest": "sha256:`, `"guestImageDigest": "sha512:`, 1),
+		"zero workspace":                     strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "workspaceSizeGi": -1,`, 1),
+		"github secret and authFile":         strings.Replace(kubernetesExample, `{ "secret": "warden-github-login" }`, `{ "secret": "warden-github-login", "authFile": "/x" }`, 1),
+		"loopback edge listen with kind sbx": sbx + `,"previews":{"edgeListen":"0.0.0.0:19081"}}`,
+	}
+	for name, raw := range bad {
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// The kubernetes section's own unknown fields are refused like any other.
+	if _, err := Parse([]byte(strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "nodeSelector": "x",`, 1))); err == nil || !strings.Contains(err.Error(), "nodeSelector") {
+		t.Fatalf("unknown kubernetes field accepted: %v", err)
+	}
+	// Loopback-only rules apply to the sbx kind only: a long state path is
+	// fine when no Unix socket is bound there, and the edge may bind every
+	// interface behind a port-forward.
+	long := "/var/lib/" + strings.Repeat("warden-state-directory/", 5) + "warden"
+	c, err := Parse([]byte(strings.Replace(kubernetesExample, `"/var/lib/warden"`, `"`+long+`"`, 1)))
+	if err != nil || c.Paths.State != long {
+		t.Fatalf("long state on kubernetes: %v", err)
+	}
+	if _, err = Parse([]byte(sbx + `}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Parse([]byte(`{"version":1,"paths":{"state":"` + long + `"}}`)); err == nil {
+		t.Fatal("long state accepted for the sbx kind")
+	}
+}
