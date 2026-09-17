@@ -92,9 +92,17 @@ system-wide except the Homebrew formulae.
   artifact, and `ghcr.io/monaddle-too/warden:v0.0.0-dev.8b3eba0…` with
   linux/amd64 and linux/arm64 manifests.
 
+- 2026-09-17: `guest-image.yml` (run 35255654528, ~4 min, both
+  platforms) and the `ocsf-deploy.yml` build job (run 35255858212, ~1.5
+  min, integration test including the sudo-free queue restore) passed on
+  the Mac; merged to `main` as 77832e6.
+
 ## Remaining work / known gaps
 
-- First runs of `guest-image.yml` (retags `warden-guest:latest`) and
-  `ocsf-deploy.yml` on the Mac.
-- Repository setting: fork-PR approval policy was `first_time_contributors`;
-  raise it to all outside collaborators before merging this branch.
+- The `ocsf-deploy.yml` deploy job fails on `main` because the
+  `ovh-production` environment has no `OVH_HOST`/`SITE_HOST` variables and
+  no `OVH_DEPLOY_KEY`/`OVH_KNOWN_HOSTS` secrets in this repository. It
+  failed the same way before the runner move (run 35157891235); configure
+  the environment or drop the job.
+- Repository setting: fork-PR approval policy is `first_time_contributors`;
+  raise it to all outside collaborators (Settings → Actions → General).
