@@ -256,3 +256,53 @@ func TestUnsupportedVerifierStaysClosed(t *testing.T) {
 		}
 	}
 }
+
+// fakeGateway is a Gateway that identifies bindings by credential at one
+// address, as the shared gateway does, without listening.
+type fakeGateway struct {
+	mu    sync.Mutex
+	bound []string
+}
+
+func (g *fakeGateway) Bind(b *Binding) (GatewayEndpoint, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.bound = append(g.bound, b.Identity["sandboxID"])
+	b.GatewayPort = 8443
+	b.Endpoint = GatewayEndpoint{Host: "10.0.0.5", Port: 8443, BindingID: b.Identity["sandboxID"], Capability: b.Capability}
+	return b.Endpoint, nil
+}
+func (g *fakeGateway) Healthy(b *Binding) bool { return b.GatewayPort == 8443 }
+func (g *fakeGateway) Close()                  {}
+
+// The verifier binds the gateway it is given, grants egress to the
+// endpoint it returns, and Begin advertises that endpoint with its
+// credential.
+func TestVerifierUsesTheRegistryGatewayForEndpointsAndHealth(t *testing.T) {
+	f := newInspectorFixture(t)
+	gateway := &fakeGateway{}
+	f.registry.Gateways = gateway
+	GatewayHealthy = func(*Binding) bool { t.Fatal("loopback probe used with a Gateway present"); return false }
+	if _, err := f.registry.ConfigureProvider(f.value, "synthetic-secret-for-tests-only"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.registry.Begin(f.value, false)
+	if err != nil || !ready(result) {
+		t.Fatalf("begin: %v %v", result, err)
+	}
+	f.verifier.WaitIdle()
+	capability := f.registry.Bindings["s1"].Capability
+	// Granted on the chat path and confirmed by the background verification.
+	if f.count("grant:sbx-one:http://s1:"+capability+"@10.0.0.5:8443") != 2 || f.count("grant:") != 2 {
+		t.Fatalf("egress not granted to the bound endpoint: %v", f.inspector.list())
+	}
+	if result["proxyURL"] != "http://s1:"+capability+"@10.0.0.5:8443" || result["apiKeyPlaceholder"] != "s1."+capability || result["providerBaseURL"] != "http://10.0.0.5:8443/openai/v1" {
+		t.Fatalf("begin advertised: %v", result)
+	}
+	gateway.mu.Lock()
+	bound := len(gateway.bound)
+	gateway.mu.Unlock()
+	if bound == 0 {
+		t.Fatal("gateway never bound")
+	}
+}
