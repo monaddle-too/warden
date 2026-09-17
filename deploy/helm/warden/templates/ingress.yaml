@@ -1,0 +1,48 @@
+{{- /*
+Public previews (plan decision 10): one Ingress fronting the edge with the
+app host and the wildcard preview host. TLS is a Secret named in values,
+typically written by cert-manager from the annotations (a DNS-01
+wildcard certificate). Loopback mode has no Ingress: NOTES.txt
+port-forwards the warden-edge Service.
+*/ -}}
+{{- if and (eq .Values.previews.mode "public") .Values.previews.ingress.enabled }}
+{{- $ing := .Values.previews.ingress }}
+{{- $host := include "warden.publicHost" . }}
+{{- $wildcard := printf "*.%s" .Values.previews.hostSuffix }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: warden-edge
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: edge
+  {{- with $ing.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $ing.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if $ing.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+        - {{ $wildcard | quote }}
+      secretName: {{ $ing.tls.secretName }}
+  {{- end }}
+  rules:
+    {{- range $h := list $host $wildcard }}
+    - host: {{ $h | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: warden-edge
+                port:
+                  name: http
+    {{- end }}
+{{- end }}

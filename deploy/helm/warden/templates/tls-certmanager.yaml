@@ -1,0 +1,86 @@
+{{- /*
+Mutual-TLS material from cert-manager (plan decision 5): one deployment CA
+(a self-signed Issuer, a CA Certificate and a CA Issuer, unless
+tls.certManager.issuerRef names an existing CA issuer) and one leaf per
+service identity, the identity as the CN (what transport.IdentityOf
+reads) and the Service names as DNS SANs (what the dialers verify).
+Each leaf lands in the Secret <identity>-tls with ca.crt, tls.crt and
+tls.key, the layout the Deployments project under /etc/warden/tls. An
+external issuer must be a CA-type issuer so ca.crt is populated.
+*/ -}}
+{{- if .Values.tls.certManager.enabled }}
+{{- $cm := .Values.tls.certManager }}
+{{- $issuer := $cm.issuerRef }}
+{{- if not $issuer }}
+{{- $issuer = dict "name" "warden-ca" "kind" "Issuer" "group" "cert-manager.io" }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: warden-selfsigned
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: warden-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+spec:
+  isCA: true
+  commonName: warden
+  secretName: warden-ca
+  duration: {{ $cm.caDuration }}
+  renewBefore: {{ $cm.caRenewBefore }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: warden-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: warden-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: warden-ca
+{{- end }}
+{{- range $c := include "warden.components" . | fromJsonArray }}
+{{- $identity := printf "warden-%s" $c.name }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $identity }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "warden.labels" $ | nindent 4 }}
+    warden.monaddle.com/component: {{ $c.name }}
+spec:
+  commonName: {{ $identity }}
+  dnsNames:
+    - {{ $identity }}
+    - {{ $identity }}.{{ $.Release.Namespace }}.svc
+    - {{ $identity }}.{{ $.Release.Namespace }}.svc.cluster.local
+  secretName: {{ $identity }}-tls
+  duration: {{ $cm.duration }}
+  renewBefore: {{ $cm.renewBefore }}
+  usages: [digital signature, server auth, client auth]
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  issuerRef:
+    {{- toYaml $issuer | nindent 4 }}
+{{- end }}
+{{- end }}

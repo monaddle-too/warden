@@ -230,8 +230,13 @@ tls:
     #  name: my-ca
     #  kind: ClusterIssuer
     #  group: cert-manager.io
+    # Leaf certificate lifetime and renewal lead time.
     duration: 8760h
     renewBefore: 720h
+    # The chart-created CA's lifetime and renewal lead time (unused with
+    # issuerRef).
+    caDuration: 87600h
+    caRenewBefore: 8760h
   # Without cert-manager: a pre-install Job runs `warden tls bootstrap` from
   # the server image and stores the four Secrets. It does nothing when all
   # four already exist and fails when only some do (they must share a CA:

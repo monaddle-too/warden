@@ -121,6 +121,12 @@ gvisor
 {{- if and .Values.tls.bootstrap .Values.tls.certManager.enabled -}}
 {{ fail "tls.bootstrap and tls.certManager.enabled are exclusive" }}
 {{- end -}}
+{{- if and (eq .Values.auth.mode "google") (not (hasPrefix "https://" (include "warden.publicURL" .))) -}}
+{{ fail "auth.publicURL must be an https:// URL in google mode" }}
+{{- end -}}
+{{- if and (eq .Values.auth.mode "owner") (not (hasPrefix "http://" (include "warden.publicURL" .))) -}}
+{{ fail "auth.publicURL must be an http://127.0.0.1:<edge.port> URL in owner mode" }}
+{{- end -}}
 {{- if not (has .Values.egress (list "restricted" "open")) -}}
 {{ fail (printf "egress must be \"restricted\" or \"open\", not %q" .Values.egress) }}
 {{- end -}}

@@ -1,0 +1,57 @@
+{{- $ns := .Release.Namespace -}}
+{{- $sandboxNS := include "warden.sandboxNamespace" . -}}
+Warden {{ include "warden.imageTag" . }} on the {{ .Values.runtime.tier }} tier
+(RuntimeClass {{ include "warden.runtimeClassName" . }}), sandboxes in the {{ $sandboxNS }} namespace.
+
+Pods:
+
+  kubectl -n {{ $ns }} get pods
+  kubectl -n {{ $sandboxNS }} get pods,pvc
+
+TLS between the services:
+{{- if .Values.tls.certManager.enabled }}
+  cert-manager issues warden-{policy,runner,chat,edge}-tls; the pods start once
+  the four Secrets exist:  kubectl -n {{ $ns }} get certificate
+{{- else if .Values.tls.bootstrap }}
+  the pre-install Job issued warden-{policy,runner,chat,edge}-tls, valid
+  {{ int .Values.tls.bootstrapJob.days }} days. To re-issue, delete all four and run helm upgrade.
+{{- else }}
+  neither tls.certManager.enabled nor tls.bootstrap is set, so the Secrets
+  warden-{policy,runner,chat,edge}-tls (ca.crt, tls.crt, tls.key from one CA,
+  CN = the identity) must exist in {{ $ns }} before the pods can start.
+{{- end }}
+
+Provider logins are the existing Secrets {{ include "warden.providerSecretNames" . | fromJsonArray | join ", " }}
+in {{ $ns }}, each with the key auth.json; only the policy service reads
+them. Create a missing one from a sign-in on your machine, for example:
+
+  kubectl -n {{ $ns }} create secret generic {{ .Values.secrets.codex }} --from-file=auth.json=<path>
+
+{{- if eq .Values.previews.mode "loopback" }}
+
+Open Warden (loopback previews): forward the edge port to 127.0.0.1 and
+keep the forward running while you use it:
+
+  kubectl -n {{ $ns }} port-forward svc/warden-edge {{ int .Values.edge.port }}:{{ int .Values.edge.port }}
+
+First login: the edge holds the private launch URL (the owner capability)
+for {{ include "warden.publicURL" . }}; read it from its log or its state:
+
+  kubectl -n {{ $ns }} logs deploy/warden-edge | grep -m1 'http://127.0.0.1'
+  kubectl -n {{ $ns }} exec deploy/warden-edge -- cat /var/lib/warden/edge/endpoint.json
+
+Previews are <name>.localhost:{{ int .Values.edge.port }} through the same forward.
+{{- else }}
+
+Open Warden (public previews): {{ include "warden.publicURL" . }}
+Sign in with a Google account listed in auth.google.owners. Previews are
+https://<name>.{{ .Values.previews.hostSuffix }} through the Ingress:
+
+  kubectl -n {{ $ns }} get ingress warden-edge
+{{- end }}
+
+Sandboxes: {{ .Values.sandboxes.maxRunning }} running at most, {{ .Values.sandboxes.warmSpares }} warm, {{ int .Values.sandboxes.memoryMB }}Mi and {{ int .Values.sandboxes.cpuMillis }}m each,
+{{ int .Values.storage.workspaceGi }}Gi of workspace; egress {{ .Values.egress }} through the gateway. The
+sandbox namespace enforces the RuntimeClass, the Warden label and the
+volume allowlist by admission, and the policy service refuses a cluster
+whose NetworkPolicies are not enforced.
