@@ -199,10 +199,11 @@ func TestPortProxyReachesTheRunnerOverMutualTLSWithThePublicationPrefix(t *testi
 		t.Fatal(out.Code, out.Body.String())
 	}
 	seen.Lock()
-	if seen.uri != "/pub1/assets/?x=1" || seen.host != host || seen.origin != "https://"+host || seen.peer != transport.Chat {
-		t.Fatalf("runner saw %+v", seen)
-	}
+	uri, seenHost, origin, peer := seen.uri, seen.host, seen.origin, seen.peer
 	seen.Unlock()
+	if uri != "/pub1/assets/?x=1" || seenHost != host || origin != "https://"+host || peer != transport.Chat {
+		t.Fatalf("runner saw %q %q %q %q", uri, seenHost, origin, peer)
+	}
 	// A redirect to the runner origin loses the origin and the prefix.
 	if out = serve("/login", ""); out.Code != 302 || out.Header().Get("Location") != "/app/" {
 		t.Fatal(out.Code, out.Header().Get("Location"))
