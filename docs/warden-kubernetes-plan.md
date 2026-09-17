@@ -708,7 +708,7 @@ Decisions this changes:
       creates it), and in owner auth mode the edge mints its own sign-in
       capability into `/var/lib/warden/edge/endpoint.json` and logs the
       launch URL, because chat writes no `endpoint.json` over `tls://`.
-- [~] 7 First milestone on the Mac: chat → gVisor pod → loopback preview
+- [x] 7 First milestone on the Mac: chat → gVisor pod → loopback preview
       through the Lima port forward, Codex and Claude, Google Docs and
       GitHub through the gateway. 2026-09-17: the chart installed on the
       dev cluster runs the four services over mTLS (edge as a k3s
@@ -727,10 +727,12 @@ Decisions this changes:
       `pods/exec` GET, PVC reads and the trust ConfigMap; the state PVCs
       get owned by an init container; the policy pod probes on the gateway
       port and the labelled canary retries; `sandboxes.cpuMillis`.
-      Remaining: the preview hop (the runner's per-publication loopback
-      proxy is unreachable from the chat pod; being replaced by one mTLS
-      preview listener on the runner, decision 5) and the Google consent
-      itself, which is the owner's sign-in.
+      The preview hop then moved to one mutual-TLS preview listener on the
+      runner (`services.runner.previews`, merged 0a8345b), and the page
+      served from the gVisor pod reached the browser at
+      `<binding>.localhost:28781` after a pod restart with the workspace
+      intact. Only the Google consent itself remains, which is the owner's
+      sign-in in the cluster's Admin console.
 - [ ] 8 End-to-end suite and the adversarial networking rows on gVisor
       (work item 8); then the same on Kata (dev VM if step 0 says it
       works, otherwise on the OVH server).
