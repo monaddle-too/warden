@@ -1,7 +1,7 @@
 # Provenance
 
 `suggestions/` and `rich-documents.css` are copied from Panta
-(`project-management-software`, `web/src/documents/`, commit 6a010aa on
+(`project-management-software`, `web/src/documents/`, commit 9840e71 on
 branch `feat/doc-suggestions-layer`): the Google Docs–style suggestion layer
 on the Tiptap editor and the paper styling it uses. Warden's policy service
 produces and consumes the documents it renders (`chat/internal/policy/docview.go`).

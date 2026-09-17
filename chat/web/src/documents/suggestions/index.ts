@@ -14,3 +14,4 @@ export {
   suggestionPositions,
 } from "./positions";
 export { touchesProtected } from "./plugin";
+export { activeHighlight, type ActiveKey } from "./active";
