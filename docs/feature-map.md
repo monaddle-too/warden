@@ -28,6 +28,7 @@ identifiers were kept stable). Grep for the right-hand column.
 | **edge** | `warden edge` (`edgesvc`), `chat/internal/edge` — sign-in, preview hosts, ingress |
 | **guest image** | `deploy/guest/`, `release.GuestImage*`, config `sbx.guestImage` |
 | **egress mode** restricted / open | `policy/egress.go`, `sharing/egress_set`, `<state>/policy/egress.json` overrides `warden.json` |
+| **size** (a workspace's CPUs and memory) | `sandbox.Resources` (`cpuMilli`, `memoryMB`), `sandbox.ResourceLimits` (default, max, `cpuStepMilli`, `restart`), runner op `resize` |
 
 ## Processes and layout
 
@@ -67,7 +68,7 @@ Legacy macOS-VM stack (pre-SBX, still in tree): `warden` (Python launcher),
 | Workspace panel: status, Stop / Archive / Delete, sibling chats, documents, repositories, PRs, previews, access history | `chats/environments.go` | `GET environments`, `environments/{id}/stop|archive|delete`, `sharing/history` | `WorkspacePanel.tsx` | `chats/engine_test.go`, `chats/sharing_test.go` | [warden-environments-plan](warden-environments-plan.md) § Workspace panel |
 | Sandbox lifecycle (create from template, clone, keep-alive, idle stop, remove) | `sandbox/managed.go`, `sandbox/runtime.go` (`RuntimeDriver` = the only sbx adapter), `sandbox/lock.go` | runner protocol `sandbox/client.go` | | `sandbox/managed_test.go`, `worker_test.go` | [sbx-integration-plan](sbx-integration-plan.md), [stop-status-plan](stop-status-plan.md) |
 | Spare (warm) sandboxes | `sandbox/pool.go` | | | `sandbox/pool_test.go` | [warden-spare-sandbox-plan](warden-spare-sandbox-plan.md) |
-| Sandbox memory / CPU sizing | `sandbox/runtime.go` `Create` (`--cpus 1 --memory`), config `sandboxes.memoryMB` | | | | |
+| Workspace size: chosen at creation, changed by the owner, requested by the agent (`request_resources`) | `sandbox/resources.go`, `sandbox/runtime.go` `createArgs`/`Resize`, `sandbox/managed.go` `resizeLocked`, `chats/resources.go`, `runnersvc/config.go` `resourceLimits`; config `sandboxes.memoryMB|cpus|maxMemoryMB|maxCPUs` | `POST chats` `resources`, `environments/{id}/resize`, `GET state` `sandboxes`; runner `resize`, `health` `limits` | `SizeSelect.tsx` in `ChatShell.tsx` (form) and `WorkspacePanel.tsx` (Size); `warden chat new --cpus --memory` | `sandbox/resources_test.go`, `sandbox/live_sbx_test.go`, `chats/resources_test.go` | [warden-workspace-resources-plan](warden-workspace-resources-plan.md) |
 | Host resource stats (runner's own host) | `hoststats/`, surfaced in `sandbox.Response.Stats` / `pool.go` | `chats/{id}/runtime` (status) | | | |
 | Previews: bind a port, loopback `*.localhost` or public hostnames, unpublish | `sandbox/preview.go`, `sandbox/ports.go`, `chats/ports.go`, `chats/preview.go` | `GET ports`, `ports/{id}/revoke`, `ports/{id}/proxy/*`; edge `/auth/preview` | `Previews.tsx`, `WorkspacePanel.tsx` | | [warden-public-previews-plan](warden-public-previews-plan.md) |
 | Agent tools: `preview_attach`, `sandbox_bind_port`, `attach_image` | `chats/preview.go`, `chats/images.go` | MCP server `warden` in `sandbox/runtime.go` / `agent/claude.go` | | | |
@@ -92,7 +93,7 @@ Legacy macOS-VM stack (pre-SBX, still in tree): `warden` (Python launcher),
 
 Chat service (`chat/internal/chats/http.go`, all under `/api/`, bearer token
 from the edge): `state`, `events`, `environments`, `environments/{id}/{stop,
-archive,delete}`, `chats`, `chats/{id}/{agent,message,typing,edit,stop,
+archive,delete,resize}`, `chats`, `chats/{id}/{agent,message,typing,edit,stop,
 activity,runtime,file}`, `chats/{id}/approvals/{rid}`, `chats/{id}/images/*`,
 `ports`, `ports/{id}/{revoke,proxy/*}`, `sharing/*` (forwarded to the policy
 service: `status, files, select, request, get, resolve, revoke, history,

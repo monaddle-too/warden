@@ -14,16 +14,20 @@ import (
 // and published ports belong to it, not to the chat that asked for them: every
 // chat on the environment shares its disk and its network lease.
 type Environment struct {
-	ID           string               `json:"id"`
-	Name         string               `json:"name"`
-	Repository   string               `json:"repository"`
-	Chats        []EnvironmentChat    `json:"chats"`
-	Runtime      *sandbox.SandboxInfo `json:"runtime"`
-	Documents    []map[string]any     `json:"documents"`
-	Repositories []any                `json:"repositories"`
-	Ports        []PortBinding        `json:"ports"`
-	Deleted      bool                 `json:"deleted"`
-	Archived     bool                 `json:"archived"`
+	ID         string               `json:"id"`
+	Name       string               `json:"name"`
+	Repository string               `json:"repository"`
+	Chats      []EnvironmentChat    `json:"chats"`
+	Runtime    *sandbox.SandboxInfo `json:"runtime"`
+	// Resources is the workspace's size: the runner's record once the
+	// sandbox exists, else what its first chat asked for, else nil (the
+	// runner's default).
+	Resources    *sandbox.Resources `json:"resources,omitempty"`
+	Documents    []map[string]any   `json:"documents"`
+	Repositories []any              `json:"repositories"`
+	Ports        []PortBinding      `json:"ports"`
+	Deleted      bool               `json:"deleted"`
+	Archived     bool               `json:"archived"`
 }
 type EnvironmentChat struct {
 	ID       string `json:"id"`
@@ -86,7 +90,7 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		}
 		seen[c.SandboxID] = true
 		chats := st.environmentChats(c.SandboxID)
-		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Deleted: st.deleted(c.SandboxID)}
+		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Resources: chats[0].Resources, Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Deleted: st.deleted(c.SandboxID)}
 		env.Archived = true
 		for _, chat := range chats {
 			env.Chats = append(env.Chats, EnvironmentChat{ID: chat.ID, Title: chat.Title, Status: chat.Status, Archived: chat.Archived})
@@ -112,6 +116,10 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		if ran := ranChat(chats); ran != nil && !env.Deleted {
 			if res, err := e.Runtime(ctx, ran.ID, "status"); err == nil && res.Sandbox != nil {
 				env.Runtime = res.Sandbox
+				if !res.Sandbox.Resources.IsZero() {
+					size := res.Sandbox.Resources
+					env.Resources = &size
+				}
 			}
 			if e.WardenSocket != "" {
 				if result, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": ran.ID, "sandboxID": c.SandboxID}); err == nil {

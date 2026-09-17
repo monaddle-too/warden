@@ -60,8 +60,32 @@ function describeGrant(approval: Approval) {
         reason: "",
         button: "Copy changes back",
       };
+    case "warden/sandbox/resources": {
+      const wanted = resourcesLabel(Number(p.cpu_milli), Number(p.memory_mb));
+      const current = resourcesLabel(
+        Number(p.current_cpu_milli),
+        Number(p.current_memory_mb),
+      );
+      return {
+        title: `Give this workspace ${wanted}`,
+        text: p.restart
+          ? `Up from ${current}. The sandbox restarts to take the new size: the agent's process ends, files and this conversation are kept, and Warden resumes the chat afterwards. You can shrink it again from the workspace panel.`
+          : `Up from ${current}, applied at once without a restart. You can shrink it again from the workspace panel.`,
+        reason,
+        button: "Resize to " + wanted,
+      };
+    }
   }
   return undefined;
+}
+
+// resourcesLabel renders a size as the Go side does: "2 CPUs · 4 GiB".
+export function resourcesLabel(cpuMilli: number, memoryMB: number): string {
+  const cpus = cpuMilli / 1000;
+  const cpu = cpus === 1 ? "1 CPU" : `${cpus} CPUs`;
+  const memory =
+    memoryMB % 1024 === 0 ? `${memoryMB / 1024} GiB` : `${memoryMB} MiB`;
+  return `${cpu} · ${memory}`;
 }
 
 function summarize(value: unknown): string {

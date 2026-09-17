@@ -8,6 +8,7 @@ import (
 
 	"warden/chat/internal/config"
 	"warden/chat/internal/hostinfo"
+	"warden/chat/internal/sandbox"
 )
 
 // settings are the effective runner values after reconciling the legacy
@@ -69,3 +70,40 @@ func resolveSettings(fs *flag.FlagSet, f runnerFlags) (settings, error) {
 }
 
 var findSBX = hostinfo.FindSBX
+
+// resourceLimits is the size offer for SBX: the configured default, a
+// ceiling from the configuration or else from the host (75 % of its memory
+// and all its cores, what SBX itself allows a sandbox), whole CPUs only
+// (SBX takes no fraction, so a fractional setting rounds up), and a resize
+// that restarts the sandbox.
+func resourceLimits(s config.Sandboxes, defaultMemoryMB, hostMemoryMB, cores int) sandbox.ResourceLimits {
+	wholeCPUs := func(cpus float64) int {
+		milli := sandbox.CPUMilli(cpus)
+		return sandbox.CPUsFromSpec(milli) * 1000
+	}
+	l := sandbox.ResourceLimits{CPUStepMilli: 1000, Restart: true}
+	l.Default = sandbox.Resources{CPUMilli: wholeCPUs(s.CPUs), MemoryMB: defaultMemoryMB}
+	if l.Default.CPUMilli == 0 {
+		l.Default.CPUMilli = 1000
+	}
+	l.Max = sandbox.Resources{CPUMilli: wholeCPUs(s.MaxCPUs), MemoryMB: s.MaxMemoryMB}
+	if l.Max.MemoryMB == 0 {
+		l.Max.MemoryMB = hostMemoryMB * 3 / 4 / sandbox.MinMemoryMB * sandbox.MinMemoryMB
+	}
+	if l.Max.CPUMilli == 0 && cores > 0 {
+		l.Max.CPUMilli = cores * 1000
+	}
+	if l.Max.MemoryMB < l.Default.MemoryMB {
+		l.Max.MemoryMB = l.Default.MemoryMB
+	}
+	if l.Max.CPUMilli < l.Default.CPUMilli {
+		l.Max.CPUMilli = l.Default.CPUMilli
+	}
+	if l.Max.MemoryMB > sandbox.MaxMemoryMB {
+		l.Max.MemoryMB = sandbox.MaxMemoryMB
+	}
+	if l.Max.CPUMilli > sandbox.MaxCPUMilli {
+		l.Max.CPUMilli = sandbox.MaxCPUMilli
+	}
+	return l
+}

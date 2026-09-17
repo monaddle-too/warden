@@ -20,6 +20,17 @@ export type Approval = {
   state: string;
   params: Record<string, unknown> & { questions?: Question[] };
 };
+// A workspace's size: CPU in millicores (1000 = one CPU), memory in MiB.
+export type Resources = { cpuMilli: number; memoryMB: number };
+// The runner's size offer: the default a fresh workspace gets, the most
+// any workspace may have, the CPU step the platform takes (1000 on SBX,
+// 250 on Kubernetes) and whether a resize restarts the sandbox.
+export type ResourceLimits = {
+  default: Resources;
+  max: Resources;
+  cpuStepMilli: number;
+  restart: boolean;
+};
 export type Chat = {
   provider?: string;
   model?: string;
@@ -27,6 +38,7 @@ export type Chat = {
   title: string;
   sandboxID: string;
   repository: string;
+  resources?: Resources;
   status: string;
   archived: boolean;
   error?: string;
@@ -34,7 +46,11 @@ export type Chat = {
   approvals: Approval[];
   typing?: { principalID: string; name: string; until: number }[];
 };
-export type State = { version: number; chats: Chat[] };
+export type State = {
+  version: number;
+  chats: Chat[];
+  sandboxes?: ResourceLimits;
+};
 export type EnvironmentChat = {
   id: string;
   title: string;
@@ -72,6 +88,7 @@ export type Environment = {
   repository: string;
   chats: EnvironmentChat[];
   runtime: { state: string; runtimeName: string } | null;
+  resources?: Resources;
   documents: DocumentGrant[];
   repositories: {
     id: number;

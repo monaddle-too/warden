@@ -51,6 +51,9 @@ type Request struct {
 	Directory       string   `json:"directory,omitempty"`
 	Args            []string `json:"args,omitempty"`
 	Expected        string   `json:"expected,omitempty"`
+	// Resources is the size a fresh workspace is created with (bind-chat,
+	// prepare) or resized to (resize); nil leaves the sandbox's own.
+	Resources *Resources `json:"resources,omitempty"`
 }
 type Response struct {
 	PublishPlan       *RepositoryPublishPlan `json:"publishPlan,omitempty"`
@@ -65,6 +68,7 @@ type Response struct {
 	ErrorCode         string                 `json:"errorCode,omitempty"`
 	Version           int                    `json:"version,omitempty"`
 	Sandbox           *SandboxInfo           `json:"sandbox,omitempty"`
+	Limits            *ResourceLimits        `json:"limits,omitempty"`
 	Attachment        *PreviewAttachment     `json:"attachment,omitempty"`
 	Attachments       []PreviewAttachment    `json:"attachments,omitempty"`
 	APIKeyPlaceholder string                 `json:"apiKeyPlaceholder,omitempty"`
@@ -85,6 +89,10 @@ type SandboxInfo struct {
 	Directory   string `json:"directory"`
 	State       string `json:"state"`
 	Generation  string `json:"generation"`
+	// Resources is the sandbox's size as the runner holds it; zero for a
+	// sandbox registered before sizes existed, which the runner reads as
+	// its default.
+	Resources Resources `json:"resources"`
 }
 
 type PreviewAttachment struct {

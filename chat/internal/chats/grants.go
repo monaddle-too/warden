@@ -22,6 +22,7 @@ import (
 //   github_write              warden/github/write     one comment, issue or label set, posted by Warden
 //   request_host_directory    warden/host/import      copy a host directory into the sandbox (local mode)
 //   sync_host_directory       warden/host/export      copy it back over the host directory (local mode)
+//   request_resources         warden/sandbox/resources more CPU or memory for the workspace (resources.go)
 
 const (
 	methodNetworkAllow     = "warden/network/allow"
@@ -29,6 +30,7 @@ const (
 	methodGitHubWrite      = "warden/github/write"
 	methodHostImport       = "warden/host/import"
 	methodHostExport       = "warden/host/export"
+	methodResources        = "warden/sandbox/resources"
 )
 
 var grantMethods = map[string]string{
@@ -37,6 +39,7 @@ var grantMethods = map[string]string{
 	"github_write":              methodGitHubWrite,
 	"request_host_directory":    methodHostImport,
 	"sync_host_directory":       methodHostExport,
+	"request_resources":         methodResources,
 }
 
 func isGrantMethod(method string) bool {
@@ -61,6 +64,8 @@ func grantTools(local bool) []any {
 			"repository": str("owner/name", 200), "categories": map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"contents", "issues", "pull_requests"}}, "minItems": 1, "maxItems": 3}, "reason": str("why you need it", 500)}, "required": []string{"repository", "categories", "reason"}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "github_write", "description": "Perform one small GitHub write on a repository shared with this workspace, after the owner approves the exact payload: comment_issue or comment_pull_request (number, body), create_issue (title, body), add_labels (number, labels). Warden posts it with the owner's credential; you never hold a token. Waits for the decision and returns the created URL. Larger changes go through request_pull_request.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"repository": str("owner/name", 200), "action": map[string]any{"type": "string", "enum": []string{"comment_issue", "comment_pull_request", "create_issue", "add_labels"}}, "number": map[string]any{"type": "integer", "minimum": 1, "description": "issue or pull request number"}, "title": str("issue title (create_issue)", 256), "body": str("Markdown body", 65536), "labels": map[string]any{"type": "array", "items": map[string]any{"type": "string", "maxLength": 50}, "maxItems": 20}}, "required": []string{"repository", "action"}, "additionalProperties": false}},
+		map[string]any{"type": "function", "name": "request_resources", "description": "Ask the owner for more CPU or memory for this workspace when a task needs it (a build that is killed for memory, a test suite that needs cores). Give the total you want (not the increase), at least one of cpus and memory_mb, and why; only more can be asked for. Waits for the decision. Where Warden runs on SBX the resize restarts the sandbox: your process ends, files and the conversation are kept, and Warden resumes the chat afterwards with a note; elsewhere the new limit applies at once.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+			"cpus": map[string]any{"type": "number", "minimum": 0.25, "maximum": 64, "description": "CPUs in total, e.g. 2 (whole numbers on SBX)"}, "memory_mb": map[string]any{"type": "integer", "minimum": 512, "maximum": 65536, "description": "memory in MiB in total, a multiple of 512, e.g. 4096"}, "reason": str("why you need it", 500)}, "required": []string{"reason"}, "additionalProperties": false}},
 	}
 	if local {
 		tools = append(tools,
@@ -104,6 +109,8 @@ func (e *Engine) requestGrant(c *Chat, client *agent.Client, f agent.Frame) erro
 		Body       string   `json:"body"`
 		Labels     []string `json:"labels"`
 		Path       string   `json:"path"`
+		CPUs       float64  `json:"cpus"`
+		MemoryMB   int      `json:"memory_mb"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
@@ -191,6 +198,18 @@ func (e *Engine) requestGrant(c *Chat, client *agent.Client, f agent.Frame) erro
 		if method == methodHostImport {
 			params["reason"] = in.Reason
 		}
+	case methodResources:
+		p, immediate, err := e.resourceRequest(c, in.CPUs, in.MemoryMB, in.Reason)
+		if err != nil {
+			return fail(err.Error())
+		}
+		if immediate != nil {
+			if client == nil {
+				return nil
+			}
+			return client.Reply(f.ID, toolResult(immediate, nil))
+		}
+		params = p
 	default:
 		return fail("unsupported tool")
 	}
@@ -298,6 +317,8 @@ func (e *Engine) resolveGrant(c *Chat, a Approval, allow bool, actor cv.Actor) a
 			return toolResult(nil, err)
 		}
 		return toolResult(map[string]any{"sandbox_path": res.Directory, "host_path": res.Output, "note": map[string]string{"host.import": "the directory is a copy; use sync_host_directory to write changes back", "host.export": "the host directory now has the sandbox's files; nothing was deleted"}[op]}, nil)
+	case methodResources:
+		return e.resolveResources(c, a)
 	}
 	return toolResult(nil, errors.New("unknown grant"))
 }

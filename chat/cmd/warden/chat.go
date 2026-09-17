@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"warden/chat/internal/sandbox"
 	"warden/chat/internal/tui"
 )
 
@@ -24,7 +25,9 @@ const chatUsage = `usage: warden chat [flags] [CHAT]           interactive termi
                                               answer the first pending approval
 
 CHAT is a chat id, an id prefix, a title, or a number from 'warden chat list'.
-Flags: --config PATH, --state DIR, --provider codex|claude, --model NAME.
+Flags: --config PATH, --state DIR, --provider codex|claude, --model NAME,
+       --cpus N and --memory SIZE (new: the fresh workspace's size, e.g.
+       --cpus 2 --memory 4g; default: the runner's, whole CPUs on SBX).
 `
 
 // endpoint reads the running chat service's URL and capability.
@@ -59,11 +62,13 @@ func (c *cli) chat(args []string) error {
 	state := fs.String("state", "", "state directory when no warden.json exists yet")
 	provider := fs.String("provider", "", "provider for a new chat: codex or claude (default: codex)")
 	model := fs.String("model", "", "model for a new chat (default: the provider's default)")
+	cpus := fs.Float64("cpus", 0, "new: CPUs for the fresh workspace (default: the runner's)")
+	memory := fs.String("memory", "", "new: memory for the fresh workspace, e.g. 4g or 2048m (default: the runner's)")
 	wait := fs.Bool("wait", false, "send: stream the transcript until the agent is idle")
 	decline := fs.Bool("decline", false, "approve: decline instead of allowing")
 	answer := fs.String("answer", "", "approve: the answer to the agent's question")
 	all := fs.Bool("all", false, "list: include archived chats")
-	if err := fs.Parse(interleaved(args, map[string]bool{"config": true, "state": true, "provider": true, "model": true, "answer": true})); err != nil {
+	if err := fs.Parse(interleaved(args, map[string]bool{"config": true, "state": true, "provider": true, "model": true, "answer": true, "cpus": true, "memory": true})); err != nil {
 		return errUsage
 	}
 	cfg, _, err := loadConfig(*configPath, *state)
@@ -104,7 +109,19 @@ func (c *cli) chat(args []string) error {
 		if p == "" {
 			p = "codex"
 		}
-		id, err := client.Create(ctx, title, p, *model, "")
+		var resources *sandbox.Resources
+		if *cpus != 0 || *memory != "" {
+			resources = &sandbox.Resources{CPUMilli: sandbox.CPUMilli(*cpus)}
+			if *cpus != 0 && resources.CPUMilli == 0 {
+				return errors.New("--cpus must be a positive number")
+			}
+			if *memory != "" {
+				if resources.MemoryMB, err = sandbox.ParseMemoryMB(*memory); err != nil {
+					return err
+				}
+			}
+		}
+		id, err := client.Create(ctx, title, p, *model, "", resources)
 		if err != nil {
 			return err
 		}

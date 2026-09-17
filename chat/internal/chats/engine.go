@@ -56,6 +56,11 @@ type Engine struct {
 	LocalMode bool
 	// Now is the clock (tests replace it); nil means time.Now.
 	Now func() time.Time
+	// limits is the runner's size offer, asked for on demand and kept for
+	// limitsTTL: the form and validation need it before any chat exists.
+	limitsMu sync.Mutex
+	limits   *sandbox.ResourceLimits
+	limitsAt time.Time
 	// typing: chat id -> principal -> indicator, see Typing.
 	typingMu sync.Mutex
 	typing   map[string]map[string]Typist
@@ -196,7 +201,32 @@ func (e *Engine) Serve(ctx context.Context) {
 	}
 }
 
-func (e *Engine) Create(title, shared, repository string, selection ...string) (string, error) {
+// limitsTTL bounds how long a runner's size offer is reused; the offer
+// changes only with the runner's configuration, so a short cache just
+// spares the form a worker round-trip per poll.
+const limitsTTL = 30 * time.Second
+
+// Limits is the runner's size offer (default, ceiling, CPU step, whether
+// a resize restarts), or nil when the runner cannot be reached.
+func (e *Engine) Limits(ctx context.Context) *sandbox.ResourceLimits {
+	e.limitsMu.Lock()
+	defer e.limitsMu.Unlock()
+	if e.Worker == nil || (e.limits != nil && e.now().Before(e.limitsAt.Add(limitsTTL))) {
+		return e.limits
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	res, err := e.Worker.Call(ctx, sandbox.Request{Operation: "health"})
+	if err != nil || res.Limits == nil {
+		return e.limits
+	}
+	e.limits, e.limitsAt = res.Limits, e.now()
+	return e.limits
+}
+
+// Create starts a chat: on a fresh workspace of the given size (nil is the
+// runner's default), or sharing an existing one, whose size is settled.
+func (e *Engine) Create(title, shared, repository string, resources *sandbox.Resources, selection ...string) (string, error) {
 	provider, model := "codex", ""
 	if len(selection) > 0 {
 		provider = selection[0]
@@ -209,6 +239,23 @@ func (e *Engine) Create(title, shared, repository string, selection ...string) (
 	}
 	if provider == "" {
 		provider = "codex"
+	}
+	if resources != nil && resources.IsZero() {
+		resources = nil
+	}
+	if resources != nil {
+		if shared != "" {
+			return "", errors.New("a shared workspace already has its size")
+		}
+		limits := e.Limits(context.Background())
+		if limits == nil {
+			return "", errors.New("the runner's size limits are unavailable; try again or leave the size at its default")
+		}
+		resolved, err := limits.Resolve(*resources)
+		if err != nil {
+			return "", fmt.Errorf("workspace size: %w", err)
+		}
+		resources = &resolved
 	}
 	id := cv.ID()
 	err := e.Store.update(func(st *State) error {
@@ -229,6 +276,7 @@ func (e *Engine) Create(title, shared, repository string, selection ...string) (
 				if c.SandboxID == shared {
 					sbxID = shared
 					repository = c.Repository
+					resources = c.Resources
 					found = true
 					break
 				}
@@ -237,7 +285,7 @@ func (e *Engine) Create(title, shared, repository string, selection ...string) (
 				return errors.New("unknown workspace")
 			}
 		}
-		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, SandboxID: sbxID, Repository: repository, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
+		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, SandboxID: sbxID, Repository: repository, Resources: resources, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
 		return nil
 	})
 	return id, err
@@ -345,7 +393,21 @@ func (e *Engine) now() time.Time {
 
 // View is the state clients see: the stored snapshot plus who is typing
 // in each chat, expired indicators dropped.
-func (e *Engine) View() State {
+// View is the state as clients see it: the chats with their live typing
+// indicators, plus what the form needs and the store does not hold.
+type View struct {
+	State
+	// Sandboxes is the runner's size offer; nil while the runner is
+	// unreachable, when clients offer no size choice.
+	Sandboxes *sandbox.ResourceLimits `json:"sandboxes,omitempty"`
+}
+
+func (e *Engine) View() View {
+	return View{State: e.state(), Sandboxes: e.Limits(context.Background())}
+}
+
+// state is the store with typing indicators filled in.
+func (e *Engine) state() State {
 	st := e.Store.Snapshot()
 	now := float64(e.now().UnixNano()) / 1e9
 	e.typingMu.Lock()
@@ -573,6 +635,7 @@ func (e *Engine) run(parent context.Context, id string) {
 	}()
 	r := request(&current, "bind-chat")
 	r.Repository = current.Repository
+	r.Resources = current.Resources
 	if _, err = e.Worker.Call(ctx, r); err != nil {
 		return
 	}
@@ -1006,7 +1069,7 @@ func (e *Engine) ResolveAs(chatID, approvalID string, allow bool, answers map[st
 	case "warden/ports/bind":
 		state := e.Store.Snapshot()
 		result = e.resolvePort(state.chat(chatID), approval, allow)
-	case methodNetworkAllow, methodRepositoryAccess, methodGitHubWrite, methodHostImport, methodHostExport:
+	case methodNetworkAllow, methodRepositoryAccess, methodGitHubWrite, methodHostImport, methodHostExport, methodResources:
 		state := e.Store.Snapshot()
 		result = e.resolveGrant(state.chat(chatID), approval, allow, actor)
 	case "item/permissions/requestApproval":

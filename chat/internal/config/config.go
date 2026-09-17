@@ -74,13 +74,22 @@ type Runtimes struct {
 	Claude string `json:"claude,omitempty"`
 }
 
-// Sandboxes sets capacity and lifecycle.
+// Sandboxes sets capacity and lifecycle. MemoryMB and CPUs are the size a
+// fresh workspace gets unless its creator chose one; MaxMemoryMB and MaxCPUs
+// are the most any one workspace may be given, whether at creation, by the
+// owner or through an agent's approved request. A zero ceiling means the
+// runner derives it from the host (75 % of its memory, all its cores, the
+// most SBX itself allows). CPUs may be fractional only where the runtime
+// takes fractions (Kubernetes); SBX rounds up to whole CPUs.
 type Sandboxes struct {
-	MemoryMB             int `json:"memoryMB,omitempty"`
-	MaxRunning           int `json:"maxRunning,omitempty"`
-	WarmSpares           int `json:"warmSpares,omitempty"`
-	StopAfterIdleMinutes int `json:"stopAfterIdleMinutes,omitempty"`
-	KeepStopped          int `json:"keepStopped,omitempty"`
+	MemoryMB             int     `json:"memoryMB,omitempty"`
+	CPUs                 float64 `json:"cpus,omitempty"`
+	MaxMemoryMB          int     `json:"maxMemoryMB,omitempty"`
+	MaxCPUs              float64 `json:"maxCPUs,omitempty"`
+	MaxRunning           int     `json:"maxRunning,omitempty"`
+	WarmSpares           int     `json:"warmSpares,omitempty"`
+	StopAfterIdleMinutes int     `json:"stopAfterIdleMinutes,omitempty"`
+	KeepStopped          int     `json:"keepStopped,omitempty"`
 	// Egress is what a sandbox may reach through its gateway besides the
 	// brokered providers: "restricted" (the template's destination list;
 	// the default) or "open" (any public HTTP/HTTPS host). Credentials are
@@ -161,7 +170,7 @@ func Defaults(state string) Config {
 	c.Paths.State = state
 	c.SBX.PrivateHome = filepath.Join(state, "sbx")
 	c.SBX.InspectionCertMaxAgeDays = 365
-	c.Sandboxes = Sandboxes{MemoryMB: 1536, MaxRunning: 2, WarmSpares: 1, StopAfterIdleMinutes: 15, KeepStopped: 32, Egress: EgressRestricted}
+	c.Sandboxes = Sandboxes{MemoryMB: 1536, CPUs: 1, MaxRunning: 2, WarmSpares: 1, StopAfterIdleMinutes: 15, KeepStopped: 32, Egress: EgressRestricted}
 	c.Chat.Listen = "127.0.0.1:18780"
 	c.Previews = Previews{Mode: PreviewLoopback, HostSuffix: "localhost", EdgeListen: "127.0.0.1:18781"}
 	c.Auth = Auth{Mode: AuthOwner, PublicURL: "http://" + c.Previews.EdgeListen}
@@ -300,6 +309,9 @@ func merge(c *Config, file Config) {
 	setString(&c.Runtimes.Codex, file.Runtimes.Codex)
 	setString(&c.Runtimes.Claude, file.Runtimes.Claude)
 	setInt(&c.Sandboxes.MemoryMB, file.Sandboxes.MemoryMB)
+	setFloat(&c.Sandboxes.CPUs, file.Sandboxes.CPUs)
+	setInt(&c.Sandboxes.MaxMemoryMB, file.Sandboxes.MaxMemoryMB)
+	setFloat(&c.Sandboxes.MaxCPUs, file.Sandboxes.MaxCPUs)
 	setInt(&c.Sandboxes.MaxRunning, file.Sandboxes.MaxRunning)
 	setInt(&c.Sandboxes.WarmSpares, file.Sandboxes.WarmSpares)
 	setInt(&c.Sandboxes.StopAfterIdleMinutes, file.Sandboxes.StopAfterIdleMinutes)
@@ -344,6 +356,11 @@ func setString(dst *string, v string) {
 	}
 }
 func setInt(dst *int, v int) {
+	if v != 0 {
+		*dst = v
+	}
+}
+func setFloat(dst *float64, v float64) {
 	if v != 0 {
 		*dst = v
 	}
@@ -409,8 +426,14 @@ func (c Config) Validate() error {
 		return errors.New("sbx.guestImageDigest must be sha256:<64 hex>")
 	}
 	s := c.Sandboxes
-	if s.MemoryMB < 512 || s.MemoryMB > 16384 || s.MaxRunning < 1 || s.WarmSpares < 0 || s.StopAfterIdleMinutes < 1 || s.KeepStopped < 1 {
-		return errors.New("sandboxes: memoryMB 512–16384, maxRunning ≥ 1, warmSpares ≥ 0, stopAfterIdleMinutes ≥ 1, keepStopped ≥ 1")
+	if s.MemoryMB < 512 || s.MemoryMB > 65536 || s.MaxRunning < 1 || s.WarmSpares < 0 || s.StopAfterIdleMinutes < 1 || s.KeepStopped < 1 {
+		return errors.New("sandboxes: memoryMB 512–65536, maxRunning ≥ 1, warmSpares ≥ 0, stopAfterIdleMinutes ≥ 1, keepStopped ≥ 1")
+	}
+	if s.CPUs < 0.25 || s.CPUs > 64 || s.MaxCPUs < 0 || s.MaxCPUs > 64 || s.MaxMemoryMB < 0 || s.MaxMemoryMB > 65536 {
+		return errors.New("sandboxes: cpus 0.25–64, maxCPUs ≤ 64, maxMemoryMB ≤ 65536")
+	}
+	if (s.MaxCPUs != 0 && s.MaxCPUs < s.CPUs) || (s.MaxMemoryMB != 0 && s.MaxMemoryMB < s.MemoryMB) {
+		return errors.New("sandboxes: the maximum size is below the default")
 	}
 	if s.Egress != EgressRestricted && s.Egress != EgressOpen {
 		return fmt.Errorf("sandboxes.egress must be %q or %q", EgressRestricted, EgressOpen)

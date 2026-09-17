@@ -22,11 +22,23 @@ import (
 	"warden/chat/internal/release"
 )
 
-type RuntimeSpec struct{ Name, Directory, Source string }
+// RuntimeSpec describes the sandbox a driver creates; Resources is its
+// size, already resolved against the runner's limits (zero means the
+// worker's default, which only the spare pool still relies on).
+type RuntimeSpec struct {
+	Name, Directory, Source string
+	Resources               Resources
+}
 
 // RuntimeDriver is the narrow trusted SBX adapter. Tests never need a daemon.
 type RuntimeDriver interface {
 	Create(context.Context, RuntimeSpec) error
+	// Resize gives a created sandbox, running or stopped, a new size. It
+	// reports whether the instance was replaced to do it: SBX cannot change
+	// a sandbox's limits, so its driver stops the sandbox, snapshots it,
+	// recreates it under the same name with the new limits, and the caller
+	// treats the sandbox as stopped. A live resize reports false.
+	Resize(ctx context.Context, name string, r Resources) (restarted bool, err error)
 	KeepAlive(string) (io.Closer, error)
 	Exec(context.Context, string, string, ...string) (string, error)
 	Copy(context.Context, string, string, string) error
@@ -53,22 +65,41 @@ func (d *sbxRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 			return nil
 		}
 	}
-	memoryMB := d.worker.MemoryMB
-	if memoryMB == 0 {
-		memoryMB = 1536
+	args, err := d.createArgs(s.Name, s.Resources, d.worker.Template)
+	if err != nil {
+		return err
 	}
-	if memoryMB < 512 || memoryMB > 16384 {
-		return errors.New("sandbox memory must be 512–16384 MiB")
-	}
-	args := []string{"create", "--name", s.Name, "--cpus", "1", "--memory", fmt.Sprintf("%dm", memoryMB), "--template", d.worker.Template, "--deny-network", "**", "--no-share-skills"}
 	if s.Source != "" {
 		args = append(args, "--clone", "shell", s.Source)
 	} else {
 		args = append(args, "shell")
 	}
+	return runCreate(ctx, d.worker.Executable, args)
+}
+
+// createArgs is the `sbx create` invocation for a sandbox of the given size
+// from a template: one deny-all network rule (the gateway is reached through
+// the policy service's allowances), no host skills, whole CPUs since SBX
+// takes no fraction.
+func (d *sbxRuntime) createArgs(name string, r Resources, template string) ([]string, error) {
+	r = r.Fill(d.worker.Limits.Default)
+	if r.MemoryMB == 0 {
+		r.MemoryMB = d.worker.MemoryMB
+	}
+	if r.MemoryMB == 0 {
+		r.MemoryMB = 1536
+	}
+	if r.MemoryMB < MinMemoryMB || r.MemoryMB > MaxMemoryMB {
+		return nil, fmt.Errorf("sandbox memory must be %d–%d MiB", MinMemoryMB, MaxMemoryMB)
+	}
+	return []string{"create", "--name", name, "--cpus", strconv.Itoa(CPUsFromSpec(r.CPUMilli)), "--memory", fmt.Sprintf("%dm", r.MemoryMB), "--template", template, "--deny-network", "**", "--no-share-skills"}, nil
+}
+
+// runCreate runs an `sbx create`, keeping the daemon's stderr for the error.
+func runCreate(ctx context.Context, executable string, args []string) error {
 	// The daemon's own output (not agent-controlled) is worth the log line
 	// when creation fails: it names the image or resource that was refused.
-	cmd := command(ctx, d.worker.Executable, args...)
+	cmd := command(ctx, executable, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &limitedWriter{W: &stderr, N: 4096}
 	if err := cmd.Run(); err != nil {
@@ -79,6 +110,48 @@ func (d *sbxRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 		return fmt.Errorf("SBX creation failed: %w", err)
 	}
 	return nil
+}
+
+// Resize regenerates the sandbox at the new size: SBX fixes a sandbox's
+// limits at creation, so the stopped sandbox is saved as a template, removed,
+// and created again under the same name from that template (the whole
+// filesystem carries over, the deny-all rule is set again), and the
+// template is dropped. Nothing is removed before the template exists, so a
+// failure up to that point leaves the old sandbox in place; a failure after
+// it leaves the template, which the next Resize or Create finds by name.
+func (d *sbxRuntime) Resize(ctx context.Context, name string, r Resources) (bool, error) {
+	tag := "warden-resize-" + strings.ToLower(name)
+	args, err := d.createArgs(name, r, tag)
+	if err != nil {
+		return false, err
+	}
+	sbx := func(a ...string) error {
+		cmd := command(ctx, d.worker.Executable, a...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &limitedWriter{W: &stderr, N: 4096}
+		if err := cmd.Run(); err != nil {
+			if detail := strings.TrimSpace(stderr.String()); detail != "" {
+				return fmt.Errorf("sbx %s: %w: %s", a[0], err, detail)
+			}
+			return fmt.Errorf("sbx %s: %w", a[0], err)
+		}
+		return nil
+	}
+	if err := sbx("stop", name); err != nil {
+		return false, fmt.Errorf("SBX resize failed: %w", err)
+	}
+	if err := sbx("template", "save", name, tag); err != nil {
+		return false, fmt.Errorf("SBX resize failed: %w", err)
+	}
+	if err := sbx("rm", "--force", name); err != nil {
+		return false, fmt.Errorf("SBX resize failed: %w", err)
+	}
+	if err := runCreate(ctx, d.worker.Executable, append(args, "shell")); err != nil {
+		return true, fmt.Errorf("SBX resize failed after removing the old sandbox (template %s keeps its files): %w", tag, err)
+	}
+	// A leftover template is only disk; the resize succeeded regardless.
+	_ = sbx("template", "rm", tag)
+	return true, nil
 }
 func (d *sbxRuntime) Exec(ctx context.Context, name, dir string, args ...string) (string, error) {
 	a := append([]string{"exec", "-i", "-w", dir, name}, args...)

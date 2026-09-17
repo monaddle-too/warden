@@ -179,6 +179,16 @@ func (Host) SBX() (string, error) {
 	return path, nil
 }
 
+// Capacity is this host's memory in MiB and its cores; memory is 0 when
+// the platform cannot report it.
+func Capacity() (memoryMB, cores int) {
+	memory, err := totalMemory()
+	if err != nil {
+		return 0, runtime.NumCPU()
+	}
+	return int(memory >> 20), runtime.NumCPU()
+}
+
 // Sizing derives capacity from this host's memory and cores.
 func (Host) Sizing() (Sizing, error) {
 	memory, err := totalMemory()

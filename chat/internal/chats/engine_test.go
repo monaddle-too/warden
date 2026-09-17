@@ -137,7 +137,7 @@ func until(t *testing.T, predicate func() bool) {
 }
 func TestRunStreamingSteeringResume(t *testing.T) {
 	e, w, _ := setup(t)
-	id, err := e.Create("Test", "", "")
+	id, err := e.Create("Test", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestFailClosedAndRecovery(t *testing.T) {
 	}
 	w := &fakeWorker{fail: true}
 	e := NewEngine(s, w)
-	id, _ := e.Create("Failure", "", "")
+	id, _ := e.Create("Failure", "", "", nil)
 	_ = e.Message(id, "Run", cv.ID())
 	e.run(context.Background(), id)
 	c := s.Snapshot().chat(id)
@@ -241,7 +241,7 @@ func TestFailClosedAndRecovery(t *testing.T) {
 func TestUnconfirmedSteeringNeverReplayed(t *testing.T) {
 	e, w, _ := setup(t)
 	w.rejectSteer = true
-	id, _ := e.Create("Steering", "", "")
+	id, _ := e.Create("Steering", "", "", nil)
 	_ = e.Message(id, "Hello", cv.ID())
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Conversation.Entries[0].Delivery == "sent" })
 	mid := cv.ID()
@@ -270,7 +270,7 @@ func TestUnconfirmedSteeringNeverReplayed(t *testing.T) {
 }
 func TestApprovalsBoundToActiveRun(t *testing.T) {
 	e, w, _ := setup(t)
-	id, _ := e.Create("Approval", "", "")
+	id, _ := e.Create("Approval", "", "", nil)
 	_ = e.Message(id, "Hello", cv.ID())
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Conversation.Entries[0].Delivery == "sent" })
 	w.send(agent.Frame{ID: json.RawMessage(`42`), Method: "item/commandExecution/requestApproval", Params: map[string]any{"command": "ls"}})
@@ -309,7 +309,7 @@ func TestHTTPAuthenticationAndBindings(t *testing.T) {
 	if out.Code != http.StatusBadRequest {
 		t.Fatal("untrusted principal accepted")
 	}
-	id, _ := e.Create("status", "", "")
+	id, _ := e.Create("status", "", "", nil)
 	w.steal = true
 	if _, err := e.Runtime(context.Background(), id, "status"); err == nil {
 		t.Fatal("wrong environment returned")
@@ -317,9 +317,9 @@ func TestHTTPAuthenticationAndBindings(t *testing.T) {
 }
 func TestEnvironmentSharingAndArchive(t *testing.T) {
 	e, _, _ := setup(t)
-	id, _ := e.Create("One", "", "github://owner/repo")
+	id, _ := e.Create("One", "", "github://owner/repo", nil)
 	one := e.Store.Snapshot().chat(id)
-	shared, err := e.Create("Two", one.SandboxID, "")
+	shared, err := e.Create("Two", one.SandboxID, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestEnvironmentSharingAndArchive(t *testing.T) {
 	if two.SandboxID != one.SandboxID || two.Repository != one.Repository {
 		t.Fatal("sharing lost binding")
 	}
-	if _, err = e.Create("Other", "unknown", ""); err == nil {
+	if _, err = e.Create("Other", "unknown", "", nil); err == nil {
 		t.Fatal("unknown sandbox accepted")
 	}
 	if err = e.Edit(id, "Renamed", true); err != nil {
@@ -340,10 +340,10 @@ func TestEnvironmentSharingAndArchive(t *testing.T) {
 
 func TestEnvironmentsListStopAndDelete(t *testing.T) {
 	e, w, _ := setup(t)
-	id, _ := e.Create("One", "", "github://owner/repo")
+	id, _ := e.Create("One", "", "github://owner/repo", nil)
 	one := e.Store.Snapshot().chat(id)
-	shared, _ := e.Create("Two", one.SandboxID, "")
-	other, _ := e.Create("Alone", "", "")
+	shared, _ := e.Create("Two", one.SandboxID, "", nil)
+	other, _ := e.Create("Alone", "", "", nil)
 	envs, err := e.Environments(context.Background())
 	if err != nil || len(envs) != 2 {
 		t.Fatal(envs, err)
@@ -394,7 +394,7 @@ func TestEnvironmentsListStopAndDelete(t *testing.T) {
 	if err = e.Edit(id, "One", false); err == nil {
 		t.Fatal("chat on a deleted environment was restored")
 	}
-	if _, err = e.Create("Three", one.SandboxID, ""); err == nil {
+	if _, err = e.Create("Three", one.SandboxID, "", nil); err == nil {
 		t.Fatal("new chat joined a deleted environment")
 	}
 	envs, _ = e.Environments(context.Background())
@@ -451,7 +451,7 @@ func TestStopCancelsBeforeStoppingAndWaitsForCleanup(t *testing.T) {
 	defer s.Close()
 	w := &orderedWorker{}
 	e := NewEngine(s, w)
-	id, _ := e.Create("Stop", "", "")
+	id, _ := e.Create("Stop", "", "", nil)
 	_ = s.update(func(st *State) error { c := st.chat(id); c.Status = "running"; c.RunID = cv.ID(); return nil })
 	if err = e.Stop(context.Background(), id); err != nil {
 		t.Fatal(err)
@@ -468,7 +468,7 @@ func TestConversationAgentSelectionPersistsAndLocksProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := NewEngine(s, &fakeWorker{})
-	id, err := e.Create("Claude", "", "", "claude", "sonnet")
+	id, err := e.Create("Claude", "", "", nil, "claude", "sonnet")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,16 +499,16 @@ func TestConversationAgentSelectionPersistsAndLocksProvider(t *testing.T) {
 	if c.Provider != "claude" || c.Model != "opus" {
 		t.Fatal(c)
 	}
-	if _, err = e.Create("bad", "", "", "unknown", ""); err == nil {
+	if _, err = e.Create("bad", "", "", nil, "unknown", ""); err == nil {
 		t.Fatal("accepted unknown provider")
 	}
 }
 
 func TestArchiveEnvironmentStopsAndArchivesAllChats(t *testing.T) {
 	e, w, _ := setup(t)
-	id, _ := e.Create("One", "", "")
+	id, _ := e.Create("One", "", "", nil)
 	one := e.Store.Snapshot().chat(id)
-	two, _ := e.Create("Two", one.SandboxID, "")
+	two, _ := e.Create("Two", one.SandboxID, "", nil)
 	if err := e.Message(id, "Hello", cv.ID()); err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +562,7 @@ func TestAttributionAndTypingIndicators(t *testing.T) {
 	now := time.Unix(1000, 0)
 	e.Now = func() time.Time { return now }
 	h := &HTTP{Engine: e, Token: "private", Host: "127.0.0.1:18780", Origin: "http://127.0.0.1:18780", WebDir: t.TempDir()}
-	id, _ := e.Create("shared", "", "")
+	id, _ := e.Create("shared", "", "", nil)
 	call := func(path, body string, identity map[string]string) int {
 		t.Helper()
 		r := httptest.NewRequest("POST", h.Origin+"/api/"+path, strings.NewReader(body))

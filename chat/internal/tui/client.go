@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"warden/chat/internal/sandbox"
 )
 
 // Types mirror the JSON the chat service serves (chat/internal/chats).
@@ -183,11 +185,16 @@ func (c *Client) State(ctx context.Context) (*State, error) {
 	return &s, nil
 }
 
-func (c *Client) Create(ctx context.Context, title, provider, model, sandboxID string) (string, error) {
+// Create starts a chat; resources sizes a fresh workspace (nil is the
+// runner's default) and must be nil when sandboxID shares an existing one.
+func (c *Client) Create(ctx context.Context, title, provider, model, sandboxID string, resources *sandbox.Resources) (string, error) {
 	var res struct {
 		ID string `json:"id"`
 	}
 	body := map[string]any{"title": title, "provider": provider, "model": model, "sandboxID": sandboxID}
+	if resources != nil {
+		body["resources"] = resources
+	}
 	if err := c.do(ctx, "POST", "chats", body, &res); err != nil {
 		return "", err
 	}

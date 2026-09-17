@@ -355,7 +355,7 @@ func (a *App) command(ctx context.Context, line string) {
 		if provider == "" {
 			provider = "codex"
 		}
-		id, err := a.Client.Create(ctx, title, provider, "", "")
+		id, err := a.Client.Create(ctx, title, provider, "", "", nil)
 		if err != nil {
 			a.setNotice(err.Error())
 			return

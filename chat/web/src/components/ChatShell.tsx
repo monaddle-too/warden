@@ -22,7 +22,7 @@ import {
   ShieldCheck,
   Timer,
 } from "lucide-react";
-import type { Environment, State } from "../types";
+import type { Environment, Resources, State } from "../types";
 import { api, signedIn, subscribe } from "../api";
 import {
   PullRequestReview,
@@ -41,6 +41,7 @@ import {
 import { Previews } from "./Previews";
 import { Conversation, type RequestCard } from "./Conversation";
 import { ModelSelect } from "./ModelSelect";
+import { SizeSelect, sameSize } from "./SizeSelect";
 import { AdminConsole } from "./AdminConsole";
 import { WorkspacePanel } from "./WorkspacePanel";
 
@@ -76,6 +77,8 @@ export function ChatShell({
   const [provider, setProvider] = useState("codex");
   const [model, setModel] = useState("");
   const [repository, setRepository] = useState("");
+  // The fresh workspace's size; null means the runner's default.
+  const [size, setSize] = useState<Resources | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [workspaceState, setWorkspaceState] = useState("");
@@ -138,12 +141,18 @@ export function ChatShell({
     setBusy(true);
     setError("");
     try {
+      const limits = state.sandboxes;
+      const resources =
+        !shared && size && limits && !sameSize(size, limits.default)
+          ? size
+          : undefined;
       const result = await api<{ id: string }>("chats", {
         title,
         sandboxID: shared,
         repository,
         provider,
         model,
+        ...(resources ? { resources } : {}),
       });
       setSelected(result.id);
       setArchived(false);
@@ -151,6 +160,7 @@ export function ChatShell({
       setTitle("");
       setShared("");
       setRepository("");
+      setSize(null);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -620,6 +630,7 @@ export function ChatShell({
                   onShareRepositories={() => repositoriesRef.current?.open()}
                   onOpenPullRequest={(id) => pullRequestsRef.current?.open(id)}
                   onChanged={refresh}
+                  limits={state.sandboxes}
                 />
               )}
             </div>
@@ -734,6 +745,23 @@ export function ChatShell({
                     onChange={(e) => setRepository(e.target.value)}
                   />
                 </label>
+              )}
+              {!shared && state.sandboxes && (
+                <fieldset className="size-fieldset">
+                  <legend>Size</legend>
+                  <SizeSelect
+                    limits={state.sandboxes}
+                    value={size ?? state.sandboxes.default}
+                    onChange={setSize}
+                  />
+                  <p className="muted">
+                    {size && !sameSize(size, state.sandboxes.default)
+                      ? state.sandboxes.restart
+                        ? "A workspace of a non-default size is created from scratch, so the first message takes a little longer than usual."
+                        : "The agent can ask for more later; you can change it any time from the workspace panel."
+                      : "The default. The agent can ask for more later; you can change it any time from the workspace panel."}
+                  </p>
+                </fieldset>
               )}
               <p className="muted">
                 {shared

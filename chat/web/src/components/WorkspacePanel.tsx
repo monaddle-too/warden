@@ -1,8 +1,16 @@
 import { useState } from "react";
 import { Archive, ExternalLink, History, Square, Trash2 } from "lucide-react";
-import type { AccessEvent, Chat, Environment } from "../types";
+import type {
+  AccessEvent,
+  Chat,
+  Environment,
+  ResourceLimits,
+  Resources,
+} from "../types";
 import { api } from "../api";
 import type { PullRequestProposal } from "./PullRequestReview";
+import { resourcesLabel } from "./Approvals";
+import { SizeSelect, sameSize } from "./SizeSelect";
 
 const remaining = (value: number | null) => {
   if (!value) return "";
@@ -70,11 +78,14 @@ export function WorkspacePanel({
   onShareRepositories,
   onOpenPullRequest,
   onChanged,
+  limits,
 }: {
   chat: Chat;
   workspace?: Environment;
   siblings: Chat[];
   pullRequests: PullRequestProposal[];
+  // The runner's size offer; absent while the runner is unreachable.
+  limits?: ResourceLimits;
   onSelectChat: (id: string) => void;
   onShareDocuments: () => void;
   onShareRepositories: () => void;
@@ -85,6 +96,8 @@ export function WorkspacePanel({
   const [error, setError] = useState("");
   const [history, setHistory] = useState<AccessEvent[]>();
   const [historyError, setHistoryError] = useState("");
+  // The size being edited, or null when the row shows the current size.
+  const [sizing, setSizing] = useState<Resources | null>(null);
   const ws = workspace;
   async function loadHistory() {
     if (!ws) return;
@@ -111,6 +124,11 @@ export function WorkspacePanel({
     ["running", "queued", "stopping"].includes(c.status),
   );
   const state = ws?.deleted ? "deleted" : ws?.runtime?.state || "";
+  // The size in force: the runner's record, else what the first chat asked
+  // for, else the runner's default.
+  const current: Resources = ws?.resources ??
+    chat.resources ??
+    limits?.default ?? { cpuMilli: 1000, memoryMB: 1536 };
   const documents = ws?.documents ?? [];
   const repositories = ws?.repositories ?? [];
   const ports = ws?.ports ?? [];
@@ -205,6 +223,77 @@ export function WorkspacePanel({
           This workspace was deleted. Its chats are archived and cannot be
           resumed.
         </p>
+      )}
+      {limits && (
+        <section className="workspace-section">
+          <h2>
+            Size
+            {!ws?.deleted && !sizing && (
+              <button
+                className="ghost"
+                disabled={!!busy || (running && limits.restart)}
+                title={
+                  running && limits.restart
+                    ? "Stop the running chat first; resizing restarts the sandbox"
+                    : "Change the CPUs and memory this workspace gets"
+                }
+                onClick={() => setSizing(current)}
+              >
+                Change…
+              </button>
+            )}
+          </h2>
+          {!sizing && (
+            <p>
+              {resourcesLabel(current.cpuMilli, current.memoryMB)}
+              {sameSize(current, limits.default) && (
+                <span className="muted"> · default</span>
+              )}
+            </p>
+          )}
+          {sizing && (
+            <form
+              className="size-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void act(
+                  "resize",
+                  `environments/${chat.sandboxID}/resize`,
+                  { resources: sizing },
+                ).then(() => setSizing(null));
+              }}
+            >
+              <SizeSelect
+                limits={limits}
+                value={sizing}
+                onChange={setSizing}
+                disabled={busy === "resize"}
+              />
+              <p className="muted">
+                {limits.restart
+                  ? "The sandbox is recreated at the new size; files are kept."
+                  : "Applied without a restart; files are kept."}{" "}
+                Up to {resourcesLabel(limits.max.cpuMilli, limits.max.memoryMB)}.
+              </p>
+              <div className="button-row">
+                <button
+                  type="button"
+                  onClick={() => setSizing(null)}
+                  disabled={busy === "resize"}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="primary"
+                  disabled={busy === "resize" || sameSize(sizing, current)}
+                >
+                  {busy === "resize" ? "Resizing…" : "Resize"}
+                </button>
+              </div>
+            </form>
+          )}
+        </section>
       )}
       <section className="workspace-section">
         <h2>Chats in this workspace</h2>

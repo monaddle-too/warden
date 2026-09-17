@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 	"warden/chat/internal/conversation"
+	"warden/chat/internal/sandbox"
 )
 
 type HTTP struct {
@@ -136,6 +137,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Archived   bool                `json:"archived"`
 		Allow      bool                `json:"allow"`
 		Answers    map[string][]string `json:"answers"`
+		Resources  *sandbox.Resources  `json:"resources"`
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
 	dec.DisallowUnknownFields()
@@ -158,9 +160,11 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = h.Engine.ArchiveEnvironment(r.Context(), parts[1])
 	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "delete":
 		err = h.Engine.DeleteEnvironment(r.Context(), parts[1])
+	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "resize":
+		err = h.Engine.ResizeEnvironment(r.Context(), parts[1], body.Resources)
 	case path == "chats":
 		var id string
-		id, err = h.Engine.Create(body.Title, body.SandboxID, body.Repository, body.Provider, body.Model)
+		id, err = h.Engine.Create(body.Title, body.SandboxID, body.Repository, body.Resources, body.Provider, body.Model)
 		result = map[string]string{"id": id}
 	case len(parts) == 3 && parts[0] == "chats":
 		switch parts[2] {

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 	"warden/chat/internal/handshake"
+	"warden/chat/internal/hostinfo"
 	"warden/chat/internal/release"
 	"warden/chat/internal/sandbox"
 	"warden/chat/internal/services"
@@ -121,6 +122,12 @@ func run(args []string) error {
 	w.IdleTimeout = *idle
 	w.MaxResident = *residents
 	w.MemoryMB = *memoryMB
+	hostMemoryMB, cores := hostinfo.Capacity()
+	w.Limits = resourceLimits(s.cfg.Sandboxes, *memoryMB, hostMemoryMB, cores)
+	if err = w.Limits.Validate(); err != nil {
+		slog.Error("invalid sandbox size limits", "error", err)
+		return services.ExitCode(1)
+	}
 	w.Revision, w.Parallel, w.Retained = release.Revision, *parallel, *retained
 	if err = w.Serve(ctx, l); err != nil {
 		slog.Error("worker stopped", "error", err)

@@ -626,7 +626,8 @@ missing `providers.github` hides the repository UI instead of failing.
   },
   "runtimes": { "codex": "…", "claude": "…" },
   "sandboxes": {
-    "memoryMB": 1536, "maxRunning": 2, "warmSpares": 1,
+    "memoryMB": 1536, "cpus": 1, "maxMemoryMB": 0, "maxCPUs": 0,
+    "maxRunning": 2, "warmSpares": 1,
     "stopAfterIdleMinutes": 15, "keepStopped": 32
   },
   "chat": { "listen": "127.0.0.1:18780" },
@@ -659,7 +660,9 @@ missing `providers.github` hides the repository UI instead of failing.
 | `sbx.inspectionCertMaxAgeDays` | How old the certificate Warden uses to inspect sandbox HTTPS traffic may get before it is regenerated at startup (today the gateway CA max age). | policy |
 | `runtimes.codex` | The pinned Codex CLI bundle for the guest architecture. | runner |
 | `runtimes.claude` | The pinned Claude Code executable for the guest. | runner |
-| `sandboxes.memoryMB` | RAM per new sandbox. | runner |
+| `sandboxes.memoryMB` | RAM a new workspace gets unless its creator chose a size. | runner |
+| `sandboxes.cpus` | CPUs a new workspace gets unless its creator chose a size (whole on SBX). | runner |
+| `sandboxes.maxMemoryMB`, `sandboxes.maxCPUs` | The most any one workspace may be given (at creation, by the owner, or through an agent's approved request); 0 derives it from the host. See [warden-workspace-resources-plan](warden-workspace-resources-plan.md). | runner |
 | `sandboxes.maxRunning` | How many sandboxes may run at once. | runner |
 | `sandboxes.warmSpares` | Booted empty sandboxes kept ready so a new chat starts fast. | runner |
 | `sandboxes.stopAfterIdleMinutes` | Minutes without user activity before a running sandbox stops; files are kept. | runner |

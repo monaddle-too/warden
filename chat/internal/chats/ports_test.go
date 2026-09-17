@@ -41,7 +41,7 @@ func portEngine(t *testing.T, target string) (*Engine, *portWorker, *Chat) {
 	w := &portWorker{}
 	e := NewEngine(s, w)
 	e.PublicPreviewSuffix = "preview.example.com"
-	id, err := e.Create("Ports", "", "")
+	id, err := e.Create("Ports", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

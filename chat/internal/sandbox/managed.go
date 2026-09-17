@@ -101,6 +101,28 @@ func (w *Worker) defaultsLocked() {
 	if w.Gate == nil {
 		w.Gate = &UnixEnforcement{}
 	}
+	if w.Limits.Default.IsZero() {
+		memory := w.MemoryMB
+		if memory == 0 {
+			memory = 1536
+		}
+		w.Limits.Default = Resources{CPUMilli: 1000, MemoryMB: memory}
+	}
+	if w.Limits.Max.IsZero() {
+		w.Limits.Max = w.Limits.Default
+	}
+	if w.Limits.CPUStepMilli == 0 {
+		w.Limits.CPUStepMilli = 1000
+	}
+	if _, isSBX := w.Runtime.(*sbxRuntime); isSBX {
+		w.Limits.Restart = true
+	}
+}
+
+// resourcesOf is the sandbox's size, the default for entries registered
+// before sizes were recorded.
+func (w *Worker) resourcesOf(s *managedSandbox) Resources {
+	return s.Resources.Fill(w.Limits.Default)
 }
 func (w *Worker) saveManagedLocked() error {
 	return atomicJSON(filepath.Join(w.Root, "managed-v2.json"), w.managed)
@@ -213,7 +235,16 @@ func (w *Worker) bindLocked(r Request) (Response, error) {
 			return Response{}, errors.New("worker has 32 retained sandboxes")
 		}
 		hash := sha256.Sum256([]byte(r.SandboxID))
-		s = &managedSandbox{SandboxInfo: SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID, RuntimeName: "wc-" + hex.EncodeToString(hash[:12]), Directory: "/home/agent/workspace", State: "stopped"}, PrincipalID: r.PrincipalID, LastActivity: w.now()}
+		s = &managedSandbox{SandboxInfo: SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID, RuntimeName: "wc-" + hex.EncodeToString(hash[:12]), Directory: "/home/agent/workspace", State: "stopped", Resources: w.Limits.Default}, PrincipalID: r.PrincipalID, LastActivity: w.now()}
+		if r.Resources != nil {
+			// The size a fresh workspace was created with; a size on a
+			// later request is ignored, the sandbox has its own by then.
+			resolved, err := w.Limits.Resolve(*r.Resources)
+			if err != nil {
+				return Response{}, fmt.Errorf("workspace size: %w", err)
+			}
+			s.Resources = resolved
+		}
 		if r.SessionID != "" {
 			if !validIdentity(r.SessionID) {
 				return Response{}, errors.New("invalid legacy session")
@@ -255,7 +286,9 @@ func (w *Worker) bindLocked(r Request) (Response, error) {
 func (w *Worker) statusLocked(r Request) Response {
 	s := w.managed.Sandboxes[r.SandboxID]
 	info := s.SandboxInfo
-	result := Response{Version: ProtocolVersion, Sandbox: &info, Directory: s.Directory, Base: s.Base, Attachments: []PreviewAttachment{}}
+	info.Resources = w.resourcesOf(s)
+	limits := w.Limits
+	result := Response{Version: ProtocolVersion, Sandbox: &info, Limits: &limits, Directory: s.Directory, Base: s.Base, Attachments: []PreviewAttachment{}}
 	if c := w.managed.Chats[r.ChatID]; c != nil {
 		result.RolloutPath = c.RolloutPath
 	}
@@ -345,9 +378,12 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		return Response{}, err
 	}
 	defer releaseControl()
-	if !s.Created && !s.Creating && s.Source == "" {
+	if !s.Created && !s.Creating && s.Source == "" && w.resourcesOf(s) == w.Limits.Default {
 		// A booted spare becomes this sandbox's runtime before its identity is
 		// registered, so the policy service only ever sees the final name.
+		// Spares are booted at the default size; a workspace of another
+		// size is created directly, since resizing a spare would cost a
+		// regeneration on SBX.
 		if spare := w.takeSpareLocked(); spare != nil {
 			s.RuntimeName = spare.Name
 			s.Created = true
@@ -396,7 +432,7 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		if err = w.saveManagedLocked(); err != nil {
 			return fail(err)
 		}
-		if err = w.Runtime.Create(ctx, RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source}); err != nil {
+		if err = w.Runtime.Create(ctx, RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source, Resources: w.resourcesOf(s)}); err != nil {
 			return fail(err)
 		}
 		s.Created = true
@@ -548,6 +584,12 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 			return Response{}, errors.New("sandbox has an active run")
 		}
 		return w.removeSandboxLocked(ctx, s)
+	case "resize":
+		if s.Active != nil {
+			return Response{}, errors.New("sandbox has an active run")
+		}
+		err = w.resizeLocked(ctx, s, r)
+		return w.statusLocked(r), err
 	case "file", "stat", "image-file", "proposal-file":
 		if s.State != "running" {
 			return Response{}, errors.New("sandbox is stopped; resume the chat before reading files")
@@ -804,6 +846,54 @@ func (w *Worker) stopLocked(ctx context.Context, s *managedSandbox) error {
 		}
 	}
 	s.State = "stopped"
+	return w.saveManagedLocked()
+}
+
+// resizeLocked records a new size and applies it to a created sandbox.
+// A driver that replaces the instance leaves the sandbox stopped (its
+// residency released, its previews published again by the next start);
+// a live resize leaves it as it was. A sandbox not created yet only takes
+// the size, its creation uses it.
+func (w *Worker) resizeLocked(ctx context.Context, s *managedSandbox, r Request) error {
+	if r.Resources == nil {
+		return errors.New("resize requires a size")
+	}
+	resolved, err := w.Limits.Resolve(*r.Resources)
+	if err != nil {
+		return fmt.Errorf("workspace size: %w", err)
+	}
+	if resolved == w.resourcesOf(s) {
+		s.Resources = resolved
+		return w.saveManagedLocked()
+	}
+	if s.Creating {
+		return errors.New("sandbox is being created")
+	}
+	if !s.Created {
+		s.Resources = resolved
+		return w.saveManagedLocked()
+	}
+	if w.Limits.Restart && s.State != "stopped" {
+		if err := w.stopLocked(ctx, s); err != nil {
+			return err
+		}
+	}
+	restarted, err := w.Runtime.Resize(ctx, s.RuntimeName, resolved)
+	if restarted {
+		// The instance is gone whatever else happened; the next prepare
+		// starts a new generation, which re-publishes its previews.
+		w.releaseResidencyLocked(s)
+		w.invalidateLocked(s.ID)
+		s.State = "stopped"
+	}
+	if err != nil {
+		if restarted {
+			s.State = "error"
+		}
+		_ = w.saveManagedLocked()
+		return err
+	}
+	s.Resources = resolved
 	return w.saveManagedLocked()
 }
 

@@ -512,7 +512,9 @@ deleted.
   installer never floats versions and refuses another release's state
   directory without `--upgrade`.
 - Idle sandboxes stop after 15 minutes; the sizing in `warden.json`
-  (`sandboxes.*`, validated on load: memoryMB 512–16384, maxRunning ≥ 1)
+  (`sandboxes.*`, validated on load: memoryMB 512–65536,
+  cpus 0.25–64, maxRunning ≥ 1; `maxMemoryMB`/`maxCPUs` cap what any one
+  workspace may be given, 0 derives them from the host)
   can be edited by hand.
 - The SBX sign-in cannot be verified non-interactively; install records it
   and `doctor` reports 401 answers as "sign in from your own terminal".

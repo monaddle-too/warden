@@ -1143,3 +1143,37 @@ button.danger:hover {
   white-space: pre-wrap;
   font-size: 13px;
 }
+
+/* Workspace size: two selects side by side, in the new-chat form and the
+   workspace panel's Size section. */
+.size-select {
+  display: flex;
+  gap: 12px;
+}
+.size-select label {
+  flex: 1;
+  margin: 0;
+}
+.size-fieldset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 12px 4px;
+  margin: 14px 0;
+}
+.size-fieldset legend {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  padding: 0 4px;
+}
+.size-fieldset p {
+  margin: 8px 0 6px;
+  font-size: 12px;
+}
+.size-form p {
+  margin: 8px 0;
+  font-size: 12px;
+}
+.size-form .button-row {
+  margin: 8px 0 6px;
+}

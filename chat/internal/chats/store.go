@@ -22,12 +22,17 @@ type Approval struct {
 	State  string          `json:"state"`
 }
 type Chat struct {
-	Provider     string                    `json:"provider"`
-	Model        string                    `json:"model"`
-	ID           string                    `json:"id"`
-	Title        string                    `json:"title"`
-	SandboxID    string                    `json:"sandboxID"`
-	Repository   string                    `json:"repository"`
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	SandboxID  string `json:"sandboxID"`
+	Repository string `json:"repository"`
+	// Resources is the size the workspace was created with, chosen by
+	// whoever started its first chat; nil is the runner's default. The
+	// runner's record is the current size (a grant or the owner may have
+	// changed it since), which Environment.Resources reports.
+	Resources    *sandbox.Resources        `json:"resources,omitempty"`
 	Status       string                    `json:"status"`
 	RunID        string                    `json:"runID"`
 	Error        string                    `json:"error,omitempty"`

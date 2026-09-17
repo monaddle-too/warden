@@ -62,6 +62,7 @@ type testRuntime struct {
 	stopHook      func(context.Context, string) error
 	execHook      func([]string) error
 	execOutput    string
+	resizeRestart bool // Resize reports the instance replaced, as SBX does
 }
 
 func (d *testRuntime) record(s string) {
@@ -71,6 +72,9 @@ func (d *testRuntime) record(s string) {
 }
 func (d *testRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 	d.record("create:" + s.Name)
+	if !s.Resources.IsZero() {
+		d.record("size:" + s.Name + ":" + s.Resources.String())
+	}
 	if d.createStarted != nil {
 		close(d.createStarted)
 	}
@@ -108,6 +112,10 @@ func (d *testRuntime) Stream(ctx context.Context, _, _ string, _ BrokerConfig) (
 	a, b := net.Pipe()
 	go func() { <-ctx.Done(); b.Close() }()
 	return a, nil
+}
+func (d *testRuntime) Resize(ctx context.Context, name string, r Resources) (bool, error) {
+	d.record("resize:" + name + ":" + r.String())
+	return d.resizeRestart, nil
 }
 func (d *testRuntime) Stop(ctx context.Context, name string) error {
 	d.record("stop:" + name)
@@ -1353,5 +1361,108 @@ func TestAdoptedSpareNeedsNoGuestRoundTrips(t *testing.T) {
 	}
 	if s.pendingReport != "" || s.fresh || !s.Installed {
 		t.Fatalf("report not consumed: pending=%q fresh=%v installed=%v", s.pendingReport, s.fresh, s.Installed)
+	}
+}
+
+// A workspace created with a size keeps it in the registry, is created at
+// it, and does not take a spare booted at the default size; a size on a
+// later request is ignored. The health answer carries the limits.
+func TestWorkspaceSizeIsRecordedAtCreationAndSkipsSpares(t *testing.T) {
+	d := &testRuntime{servers: map[int]*http.Server{}}
+	w := NewWorker(t.TempDir(), "/never-host-exec", "template")
+	w.Runtime, w.Gate, w.RuntimeDir = d, &testGate{}, "/fake-pinned-linux-bundle"
+	w.Limits = ResourceLimits{Default: Resources{CPUMilli: 1000, MemoryMB: 1536}, Max: Resources{CPUMilli: 4000, MemoryMB: 8192}, CPUStepMilli: 1000}
+	w.Spares = 1
+	w.mu.Lock()
+	w.defaultsLocked()
+	w.mu.Unlock()
+	w.maintainSpares(context.Background())
+	waitFor(t, "spare not created", func() bool { w.mu.Lock(); defer w.mu.Unlock(); return len(w.managed.Spares) == 1 })
+	r := Request{Version: 2, Operation: "bind-chat", ProjectID: "project-one", ChatID: "chat-one", SandboxID: "sandbox-one", RunID: "run-one", PrincipalID: "owner", Resources: &Resources{MemoryMB: 4096}}
+	if _, err := w.dispatch(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	r.Resources = &Resources{MemoryMB: 65536}
+	res, err := w.dispatch(context.Background(), r)
+	if err != nil || res.Sandbox.Resources != (Resources{CPUMilli: 1000, MemoryMB: 4096}) || res.Limits == nil || res.Limits.Max.MemoryMB != 8192 {
+		t.Fatalf("size after a second bind: %+v %v", res.Sandbox, err)
+	}
+	r.Resources = nil
+	prepareFixture(t, w, r)
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	spares := len(w.managed.Spares)
+	w.mu.Unlock()
+	if strings.HasPrefix(s.RuntimeName, "wc-spare-") || spares != 1 {
+		t.Fatal("a sized workspace adopted the default-size spare")
+	}
+	d.mu.Lock()
+	calls := strings.Join(d.calls, "\n")
+	d.mu.Unlock()
+	if !strings.Contains(calls, "size:"+s.RuntimeName+":1 CPU · 4 GiB") {
+		t.Fatalf("runtime created without the size:\n%s", calls)
+	}
+	over := Request{Version: 2, Operation: "bind-chat", ProjectID: "project-one", ChatID: "chat-two", SandboxID: "sandbox-two", RunID: "run-two", PrincipalID: "owner", Resources: &Resources{CPUMilli: 500}}
+	if _, err := w.dispatch(context.Background(), over); err == nil || !strings.Contains(err.Error(), "multiple of 1 CPU") {
+		t.Fatalf("fractional CPU accepted on SBX: %v", err)
+	}
+}
+
+// Resize: refused while a run is active; a sandbox not created yet only
+// records the size; a created one goes through the driver, and when the
+// driver replaced the instance the sandbox is stopped and its residency
+// released. The same size again is a no-op.
+func TestResizeRecordsAppliesAndStopsWhenTheInstanceIsReplaced(t *testing.T) {
+	w, d, _, r := managedFixture(t)
+	w.Limits = ResourceLimits{Default: Resources{CPUMilli: 1000, MemoryMB: 1536}, Max: Resources{CPUMilli: 4000, MemoryMB: 8192}, CPUStepMilli: 1000, Restart: true}
+	r.Operation = "resize"
+	r.Resources = &Resources{CPUMilli: 2000, MemoryMB: 4096}
+	res, err := w.dispatch(context.Background(), r)
+	if err != nil || res.Sandbox.Resources != *r.Resources {
+		t.Fatalf("size not recorded before creation: %+v %v", res.Sandbox, err)
+	}
+	if d.calls != nil && strings.Contains(strings.Join(d.calls, " "), "resize:") {
+		t.Fatal("driver resized a sandbox that does not exist")
+	}
+	prepareFixture(t, w, r)
+	r.Operation = "resize"
+	r.Resources = &Resources{CPUMilli: 4000, MemoryMB: 8192}
+	if _, err = w.dispatch(context.Background(), r); err == nil || !strings.Contains(err.Error(), "active run") {
+		t.Fatalf("resized under an active run: %v", err)
+	}
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	s.Active = nil
+	w.mu.Unlock()
+	d.resizeRestart = true
+	res, err = w.dispatch(context.Background(), r)
+	if err != nil || res.Sandbox.Resources != *r.Resources || res.Sandbox.State != "stopped" {
+		t.Fatalf("resize with restart: %+v %v", res.Sandbox, err)
+	}
+	w.mu.Lock()
+	held := s.residency != nil
+	w.mu.Unlock()
+	if held {
+		t.Fatal("residency kept across a replaced instance")
+	}
+	d.mu.Lock()
+	calls := strings.Join(d.calls, "\n")
+	d.mu.Unlock()
+	if !strings.Contains(calls, "stop:"+s.RuntimeName+"\n") || !strings.Contains(calls, "resize:"+s.RuntimeName+":4 CPUs · 8 GiB") {
+		t.Fatalf("driver calls:\n%s", calls)
+	}
+	n := strings.Count(calls, "resize:")
+	if _, err = w.dispatch(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	again := strings.Count(strings.Join(d.calls, "\n"), "resize:")
+	d.mu.Unlock()
+	if again != n {
+		t.Fatal("the same size resized again")
+	}
+	r.Resources = &Resources{MemoryMB: 16384}
+	if _, err = w.dispatch(context.Background(), r); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("over the ceiling: %v", err)
 	}
 }

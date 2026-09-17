@@ -60,7 +60,7 @@ func sendAndDeliver(t *testing.T, e *Engine, id, text string) {
 
 func TestResidentSessionReusedAcrossTurns(t *testing.T) {
 	e, w := residentSetup(t)
-	id, _ := e.Create("Resident", "", "")
+	id, _ := e.Create("Resident", "", "", nil)
 	sendAndDeliver(t, e, id, "first")
 	completeTurn(t, e, w, id)
 	until(t, func() bool { return e.sessionIdle(id) })
@@ -87,7 +87,7 @@ func TestResidentSessionReusedAcrossTurns(t *testing.T) {
 func TestResidentSessionEndsAfterIdleTimeoutAndNextMessageStartsFresh(t *testing.T) {
 	e, w := residentSetup(t)
 	e.ResidentIdle = 50 * time.Millisecond
-	id, _ := e.Create("Idle", "", "")
+	id, _ := e.Create("Idle", "", "", nil)
 	sendAndDeliver(t, e, id, "first")
 	completeTurn(t, e, w, id)
 	until(t, func() bool { return !e.sessionAlive(id) })
@@ -100,7 +100,7 @@ func TestResidentSessionEndsAfterIdleTimeoutAndNextMessageStartsFresh(t *testing
 
 func TestStopEndsIdleResidentSession(t *testing.T) {
 	e, w := residentSetup(t)
-	id, _ := e.Create("Stop", "", "")
+	id, _ := e.Create("Stop", "", "", nil)
 	sendAndDeliver(t, e, id, "first")
 	completeTurn(t, e, w, id)
 	until(t, func() bool { return e.sessionIdle(id) })
@@ -118,12 +118,12 @@ func TestStopEndsIdleResidentSession(t *testing.T) {
 
 func TestIdleResidentSessionYieldsSandboxToAnotherChat(t *testing.T) {
 	e, w := residentSetup(t)
-	first, _ := e.Create("First", "", "")
+	first, _ := e.Create("First", "", "", nil)
 	sendAndDeliver(t, e, first, "hello")
 	completeTurn(t, e, w, first)
 	until(t, func() bool { return e.sessionIdle(first) })
 	sandbox := e.Store.Snapshot().chat(first).SandboxID
-	second, err := e.Create("Second", sandbox, "")
+	second, err := e.Create("Second", sandbox, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,13 +140,13 @@ func TestIdleResidentSessionYieldsRunSlot(t *testing.T) {
 	e, w := residentSetup(t)
 	var ids []string
 	for _, title := range []string{"A", "B"} {
-		id, _ := e.Create(title, "", "")
+		id, _ := e.Create(title, "", "", nil)
 		sendAndDeliver(t, e, id, "hello "+title)
 		completeTurn(t, e, w, id)
 		until(t, func() bool { return e.sessionIdle(id) })
 		ids = append(ids, id)
 	}
-	third, _ := e.Create("C", "", "")
+	third, _ := e.Create("C", "", "", nil)
 	sendAndDeliver(t, e, third, "needs a slot")
 	if e.sessionAlive(ids[0]) && e.sessionAlive(ids[1]) {
 		t.Fatal("no idle session yielded its slot")
@@ -156,7 +156,7 @@ func TestIdleResidentSessionYieldsRunSlot(t *testing.T) {
 func TestMessageDuringResidentTurnRunsNextOnSameSession(t *testing.T) {
 	e, w := residentSetup(t)
 	e.SteeringProviders = []string{} // like Claude: a message during a turn waits for the next turn
-	id, _ := e.Create("Queued", "", "")
+	id, _ := e.Create("Queued", "", "", nil)
 	sendAndDeliver(t, e, id, "first")
 	if err := e.Message(id, "during", cv.ID()); err != nil {
 		t.Fatal(err)
@@ -175,7 +175,7 @@ func TestMessageDuringResidentTurnRunsNextOnSameSession(t *testing.T) {
 
 func TestChangingModelEndsResidentSession(t *testing.T) {
 	e, w := residentSetup(t)
-	id, _ := e.Create("Model", "", "")
+	id, _ := e.Create("Model", "", "", nil)
 	sendAndDeliver(t, e, id, "first")
 	completeTurn(t, e, w, id)
 	until(t, func() bool { return e.sessionIdle(id) })

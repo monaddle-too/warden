@@ -69,7 +69,10 @@ type Worker struct {
 	IdleTimeout                   time.Duration
 	MaxResident                   int
 	MemoryMB                      int
-	Now                           func() time.Time
+	// Limits is the size offer: default, ceiling, CPU step and whether a
+	// resize restarts. A zero value derives from MemoryMB and one CPU.
+	Limits ResourceLimits
+	Now    func() time.Time
 }
 
 func (w *Worker) parallelLimit() int {
@@ -195,7 +198,11 @@ func (w *Worker) handleLegacy(parent context.Context, c net.Conn) {
 		return
 	}
 	if r.Operation == "health" {
-		send(Response{Output: "sbx", Revision: w.Revision})
+		w.mu.Lock()
+		w.defaultsLocked()
+		limits := w.Limits
+		w.mu.Unlock()
+		send(Response{Output: "sbx", Revision: w.Revision, Limits: &limits})
 		return
 	}
 	if !identifier.MatchString(r.ProjectID) {
