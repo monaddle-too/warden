@@ -19,6 +19,9 @@ type Environment struct {
 	Chats        []EnvironmentChat     `json:"chats"`
 	Runtime      *sandbox.SandboxInfo  `json:"runtime"`
 	Usage        *sandbox.SandboxUsage `json:"usage"`
+	// Pod is the sandbox pod on the Kubernetes shape (nil elsewhere, and
+	// while the sandbox is stopped).
+	Pod *sandbox.PodInfo `json:"pod"`
 	Documents    []map[string]any      `json:"documents"`
 	Repositories []any                 `json:"repositories"`
 	Ports        []PortBinding         `json:"ports"`
@@ -30,6 +33,8 @@ type EnvironmentChat struct {
 	Title    string `json:"title"`
 	Status   string `json:"status"`
 	Archived bool   `json:"archived"`
+	// Stage is the chat's startup stage while it is starting (startup.go).
+	Stage string `json:"stage,omitempty"`
 }
 
 func (s State) deleted(sandboxID string) bool {
@@ -89,7 +94,11 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Deleted: st.deleted(c.SandboxID)}
 		env.Archived = true
 		for _, chat := range chats {
-			env.Chats = append(env.Chats, EnvironmentChat{ID: chat.ID, Title: chat.Title, Status: chat.Status, Archived: chat.Archived})
+			ec := EnvironmentChat{ID: chat.ID, Title: chat.Title, Status: chat.Status, Archived: chat.Archived}
+			if s := e.startupOf(chat.ID); s != nil {
+				ec.Stage = s.Stage
+			}
+			env.Chats = append(env.Chats, ec)
 			if !chat.Archived {
 				env.Archived = false
 			}
@@ -112,6 +121,9 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 				// reports them; the panel refreshes this every few seconds.
 				if res, err := e.Runtime(ctx, ran.ID, "usage"); err == nil {
 					env.Usage = res.Usage
+				}
+				if res, err := e.Runtime(ctx, ran.ID, "pod"); err == nil {
+					env.Pod = res.Pod
 				}
 			}
 			if e.PolicyAddress != "" {

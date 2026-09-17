@@ -346,6 +346,14 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		return Response{}, err
 	}
 	defer releaseControl()
+	// The startup stage the chat shows while this runs (progress.go); the
+	// drivers add their own detail through the context.
+	report := func(stage, detail string) context.Context {
+		w.setProgress(s.ID, stage, detail)
+		return WithProgress(ctx, func(detail string) { w.setProgress(s.ID, stage, detail) })
+	}
+	defer w.clearProgress(s.ID)
+	adopted := false
 	if !s.Created && !s.Creating && s.Source == "" {
 		// A booted spare becomes this sandbox's runtime before its identity is
 		// registered, so the policy service only ever sees the final name.
@@ -355,8 +363,10 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 			s.residency = spare.residency
 			s.pendingReport = spare.report
 			s.fresh = true
+			adopted = true
 		}
 	}
+	w.setProgress(s.ID, StageWaiting, "registering with the policy service")
 	grant := GrantContext{Provider: r.Provider, ProjectID: s.ProjectID, SandboxID: s.ID, RuntimeName: s.RuntimeName, Generation: s.Generation, ChatID: c.ID, RunID: r.RunID, PrincipalID: s.PrincipalID}
 	if err = w.Gate.Register(ctx, grant); err != nil {
 		w.failEnforcementLocked(s)
@@ -365,12 +375,20 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 	phase := "runtime"
 	if !s.Created {
 		phase = "create"
-	} else if err = w.ensureResidencyLocked(ctx, s); err != nil {
+	} else {
+		stage, detail := StageResuming, ""
+		if adopted {
+			stage, detail = StageCreating, "adopting a warm spare sandbox"
+		}
+		err = w.ensureResidencyLocked(report(stage, detail), s)
+	}
+	if err != nil {
 		// A stopped pod-based sandbox has no runtime to attest until its pod
 		// is back (under the namespace's default deny); see the same call
 		// after creation below.
 		return Response{}, err
 	}
+	w.setProgress(s.ID, StageAttesting, "")
 	if err = w.Gate.Check(ctx, grant, phase); err != nil {
 		w.failEnforcementLocked(s)
 		return Response{}, err
@@ -402,7 +420,7 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		if err = w.saveManagedLocked(); err != nil {
 			return fail(err)
 		}
-		if err = w.Runtime.Create(ctx, RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source, SandboxID: s.ID, Generation: s.Generation}); err != nil {
+		if err = w.Runtime.Create(report(StageCreating, ""), RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source, SandboxID: s.ID, Generation: s.Generation}); err != nil {
 			return fail(err)
 		}
 		s.Created = true
@@ -415,18 +433,20 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 	// The runtime must exist before its networking can be attested: a
 	// pod-based driver recreates a stopped sandbox's pod here (under the
 	// namespace's default deny), the SBX driver opens its residency session.
-	if err = w.ensureResidencyLocked(ctx, s); err != nil {
+	if err = w.ensureResidencyLocked(report(StageCreating, ""), s); err != nil {
 		return fail(err)
 	}
 	// Creation authorization is distinct from attested runtime networking.
+	w.setProgress(s.ID, StageAttesting, "")
 	if err = w.Gate.Check(ctx, grant, "runtime"); err != nil {
 		return fail(err)
 	}
-	report, err := w.probeGuestLocked(ctx, s)
+	w.setProgress(s.ID, StageProbing, "")
+	guestReport, err := w.probeGuestLocked(ctx, s)
 	if err != nil {
 		return fail(err)
 	}
-	guest := parseGuestReport(report)
+	guest := parseGuestReport(guestReport)
 	s.paths = guest.paths()
 	if !guest.ca {
 		s.ProxyCA = ""
@@ -471,6 +491,7 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		present := s.ClaudeInstalled == fingerprint && guest.claude
 		if !present {
 			s.ClaudeInstalled = ""
+			w.setProgress(s.ID, StageInstalling, "copying the Claude executable into the sandbox")
 			if err = w.Runtime.Copy(ctx, s.RuntimeName, w.ClaudePath, s.paths.Claude); err != nil {
 				return fail(err)
 			}
@@ -485,6 +506,7 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		// once its executables are verified; both paths are the manifest's
 		// (or the template's), validated by guestPath and passed as data.
 		stage := s.paths.Codex + "-stage"
+		w.setProgress(s.ID, StageInstalling, "copying the Codex runtime bundle into the sandbox")
 		if _, err = w.Runtime.Exec(ctx, s.RuntimeName, s.Directory, "sudo", "rm", "-rf", "--", stage); err != nil {
 			return fail(err)
 		}
@@ -497,9 +519,13 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		s.Installed = true
 	}
 
+	if s.Repository != "" && !s.RepositoryReady {
+		w.setProgress(s.ID, StageCloning, "fetching "+s.Repository)
+	}
 	if err = w.prepareRepositoryLocked(ctx, s); err != nil {
 		return fail(err)
 	}
+	w.setProgress(s.ID, StageAttesting, "")
 	if err = w.Gate.Check(ctx, grant, "runtime"); err != nil {
 		return fail(err)
 	}
@@ -549,6 +575,14 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	}
 	if r.Operation == "usage" {
 		return w.usage(ctx, r)
+	}
+	switch r.Operation {
+	case "progress":
+		return w.progressOp(r)
+	case "pod":
+		return w.podOp(ctx, r)
+	case "cluster.status", "cluster.logs":
+		return w.clusterOp(ctx, r)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()

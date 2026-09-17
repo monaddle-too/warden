@@ -10,6 +10,7 @@ import (
 
 	"warden/chat/internal/config"
 	"warden/chat/internal/release"
+	"warden/chat/internal/sandbox"
 	sandboxkube "warden/chat/internal/sandbox/kube"
 )
 
@@ -173,8 +174,13 @@ func TestRunnerSelectsDriverByRuntimeKind(t *testing.T) {
 	if err != nil || driver == nil {
 		t.Fatal(err)
 	}
-	if _, ok := driver(nil).(*sandboxkube.Driver); !ok {
-		t.Fatalf("%T", driver(nil))
+	w := &sandbox.Worker{}
+	if _, ok := driver(w).(*sandboxkube.Driver); !ok {
+		t.Fatalf("%T", driver(w))
+	}
+	// The driver doubles as the cluster view, and creation may wait for a node.
+	if w.Cluster == nil || w.PrepareTimeout != kubernetesPrepareTimeout {
+		t.Fatalf("worker not configured for Kubernetes: %+v", w)
 	}
 	opts := kubernetesOptions(s.cfg.Kubernetes, s.memoryMB, s.cfg.Sandboxes.CPUMillis)
 	if opts.Namespace != "warden-sandboxes" || opts.Tier != config.TierGVisor || opts.RuntimeClass != "gvisor" || opts.Image() != "warden-guest-base@sha256:"+strings.Repeat("ab", 32) || opts.StorageClass != "local-path" || opts.WorkspaceSizeGi != 4 || opts.TrustConfigMap != "warden-guest-trust" || opts.MemoryMB != 1024 || opts.NodeSelector["pool"] != "sandboxes" {

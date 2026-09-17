@@ -51,6 +51,17 @@ type Worker struct {
 	managed                       *managedState
 	usages                        map[string]*usageState // guest resource samples by sandbox ID (guarded by mu)
 	controls                      *controlState
+	progress                      *progressState // startup stage by sandbox ID (its own lock; progress.go)
+	progressOnce                  sync.Once
+	// PrepareTimeout bounds one prepare operation: sandbox creation, the
+	// boot and the guest provisioning. Two minutes when unset (the sbx
+	// shapes); the Kubernetes runner allows ten, since a node may have to
+	// join first.
+	PrepareTimeout time.Duration
+	// Cluster is the driver's view of the cluster the sandboxes run in
+	// (Kubernetes); nil on the sbx shapes, where the cluster operations
+	// report unavailable.
+	Cluster                       ClusterInspector
 	Gate                          Enforcement
 	Runtime                       RuntimeDriver
 	RepositorySource              RepositorySource

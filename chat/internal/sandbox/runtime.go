@@ -221,6 +221,11 @@ func (d *sbxRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 	} else {
 		args = append(args, "shell")
 	}
+	if s.Source != "" {
+		Report(ctx, "cloning the sandbox VM from "+s.Source)
+	} else {
+		Report(ctx, "creating the sandbox VM from the guest template")
+	}
 	// The daemon's own output (not agent-controlled) is worth the log line
 	// when creation fails: it names the image or resource that was refused.
 	cmd := command(ctx, d.worker.Executable, args...)
@@ -417,7 +422,8 @@ func (d *sbxRuntime) Stream(ctx context.Context, name string, run RunSpec) (io.R
 // SBX auto-stops a VM after its last exec/SSH session disconnects, even when
 // detached guest processes and published ports still exist, so the handle
 // lives as long as the guest is resident, not as long as the caller's ctx.
-func (d *sbxRuntime) Prepare(_ context.Context, spec RuntimeSpec) (io.Closer, error) {
+func (d *sbxRuntime) Prepare(parent context.Context, spec RuntimeSpec) (io.Closer, error) {
+	Report(parent, "booting the sandbox VM")
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := command(ctx, d.worker.Executable, "exec", "-i", spec.Name, "sh", "-c", "printf 'ready\\n'; exec cat >/dev/null")
 	in, err := cmd.StdinPipe()

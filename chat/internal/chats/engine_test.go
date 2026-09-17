@@ -30,6 +30,10 @@ type fakeWorker struct {
 	steal       bool
 	rejectSteer bool
 	turns       int
+	// prepareGate, when set, holds prepare until it is closed; progress is
+	// what the progress operation answers meanwhile (startup_test.go).
+	prepareGate chan struct{}
+	progress    *sandbox.Progress
 }
 
 func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
@@ -38,6 +42,18 @@ func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 	f.requests = append(f.requests, r)
 	if f.fail {
 		return sandbox.Response{}, errors.New("unverified sandbox")
+	}
+	if r.Operation == "progress" {
+		return sandbox.Response{Version: 2, Progress: f.progress}, nil
+	}
+	if r.Operation == "prepare" && f.prepareGate != nil {
+		gate := f.prepareGate
+		f.mu.Unlock()
+		select {
+		case <-gate:
+		case <-ctx.Done():
+		}
+		f.mu.Lock()
 	}
 	if r.Operation == "stop" && f.conn != nil {
 		f.conn.Close()

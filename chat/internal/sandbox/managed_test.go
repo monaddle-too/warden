@@ -74,6 +74,7 @@ func (d *testRuntime) record(s string) {
 }
 func (d *testRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 	d.record("create:" + s.Name)
+	Report(ctx, "creating the VM")
 	if d.createStarted != nil {
 		close(d.createStarted)
 	}
