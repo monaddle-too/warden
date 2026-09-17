@@ -27,12 +27,14 @@ every value back from the installed files:
  "claude":{"version":"2.1.272","sha256":"<sha256 of the executable>"},
  "ca":{"sha256":"<sha256 of warden-proxy.crt>"},
  "paths":{"codex":"/opt/warden/runtime","claude":"/opt/warden/claude/claude",
-          "trust":"/opt/warden/trust/ca-certificates.crt","home":"/home/agent"}}
+          "trust":"/opt/warden/trust/ca-certificates.crt","home":"/home/agent"},
+ "user":{"name":"agent","uid":1000,"gid":1000}}
 ```
 
 `platform`, `codex`, `claude` and `ca` are what the runner reads today;
-`variant` and `paths` are new and let a driver stop assuming the `/tmp`
-paths. The runner ignores a manifest over 4096 bytes.
+`variant`, `paths` and `user` (the owner of the home, the account exec
+sessions run as) are new and let a driver stop assuming the `/tmp` paths
+and uid 1000. The runner ignores a manifest over 4096 bytes.
 
 ## Trust mount contract (base image)
 

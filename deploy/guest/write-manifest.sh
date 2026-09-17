@@ -23,7 +23,11 @@
 #   {"platform":"linux/<arch>","variant":"base|sbx",
 #    "codex":{"version":..,"target":..},"claude":{"version":..,"sha256":..},
 #    "ca":{"sha256":..},
-#    "paths":{"codex":CODEX_DIR,"claude":CLAUDE_FILE,"trust":TRUST_FILE,"home":HOME_DIR}}
+#    "paths":{"codex":CODEX_DIR,"claude":CLAUDE_FILE,"trust":TRUST_FILE,"home":HOME_DIR},
+#    "user":{"name":<owner of HOME_DIR>,"uid":<its uid>,"gid":<its gid>}}
+# "user" is the account exec sessions run as (the home's owner), so a driver
+# can set runAsUser and the volume's fsGroup from the image instead of
+# assuming 1000.
 set -eu
 [ $# -eq 7 ] || { echo "usage: write-manifest.sh VARIANT CODEX_DIR CLAUDE_FILE TRUST_FILE HOME_DIR CA_FILE OUTPUT" >&2; exit 2; }
 VARIANT="$1"; CODEX_DIR="$2"; CLAUDE_FILE="$3"; TRUST_FILE="$4"; HOME_DIR="$5"; CA_FILE="$6"; OUTPUT="$7"
@@ -49,11 +53,15 @@ CODEX_FOUND="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$CODEX_DIR/codex-pac
 case "$TARGETARCH:$CODEX_TARGET" in amd64:x86_64-*|arm64:aarch64-*) ;; *) echo "write-manifest.sh: Codex target $CODEX_TARGET is not for $TARGETARCH" >&2; exit 1;; esac
 CLAUDE_SHA="$(sha256sum "$CLAUDE_FILE" | cut -d' ' -f1)"
 CA_SHA="$(sha256sum "$CA_FILE" | cut -d' ' -f1)"
+USER_NAME="$(stat -c %U "$HOME_DIR")"; USER_UID="$(stat -c %u "$HOME_DIR")"; USER_GID="$(stat -c %g "$HOME_DIR")"
+case "$USER_NAME" in ''|UNKNOWN|*[!A-Za-z0-9._-]*) echo "write-manifest.sh: $HOME_DIR is owned by uid $USER_UID, which has no account name" >&2; exit 1;; esac
+case "$USER_UID$USER_GID" in *[!0-9]*) echo "write-manifest.sh: cannot read the owner of $HOME_DIR" >&2; exit 1;; esac
+[ "$USER_UID" != 0 ] || { echo "write-manifest.sh: $HOME_DIR is owned by root; the agent home must belong to the agent user" >&2; exit 1; }
 
 mkdir -p "$(dirname "$OUTPUT")"
-printf '{"platform":"linux/%s","variant":"%s","codex":{"version":"%s","target":"%s"},"claude":{"version":"%s","sha256":"%s"},"ca":{"sha256":"%s"},"paths":{"codex":"%s","claude":"%s","trust":"%s","home":"%s"}}\n' \
+printf '{"platform":"linux/%s","variant":"%s","codex":{"version":"%s","target":"%s"},"claude":{"version":"%s","sha256":"%s"},"ca":{"sha256":"%s"},"paths":{"codex":"%s","claude":"%s","trust":"%s","home":"%s"},"user":{"name":"%s","uid":%s,"gid":%s}}\n' \
   "$TARGETARCH" "$VARIANT" "$CODEX_FOUND" "$CODEX_TARGET" "$CLAUDE_VERSION" "$CLAUDE_SHA" "$CA_SHA" \
-  "$CODEX_DIR" "$CLAUDE_FILE" "$TRUST_FILE" "$HOME_DIR" > "$OUTPUT"
+  "$CODEX_DIR" "$CLAUDE_FILE" "$TRUST_FILE" "$HOME_DIR" "$USER_NAME" "$USER_UID" "$USER_GID" > "$OUTPUT"
 chmod 644 "$OUTPUT"
 [ "$(wc -c < "$OUTPUT")" -le 4096 ] || { echo "write-manifest.sh: manifest exceeds 4096 bytes" >&2; exit 1; }
 cat "$OUTPUT"

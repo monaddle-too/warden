@@ -96,8 +96,9 @@ RUN set -eu; export DEBIAN_FRONTEND=noninteractive; \
 # boundary). Ubuntu 24.04 ships an `ubuntu` user at uid 1000, which is
 # removed first so the ids are free.
 RUN set -eu; \
-    if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi; \
+    if id ubuntu >/dev/null 2>&1; then userdel ubuntu; fi; \
     if getent group ubuntu >/dev/null; then groupdel ubuntu; fi; \
+    rm -rf /home/ubuntu; \
     groupadd -g 1000 agent; \
     useradd -m -u 1000 -g agent -s /bin/bash agent; \
     printf 'agent ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/agent; \
