@@ -18,6 +18,10 @@ import (
 
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/release"
+	"warden/chat/internal/services/chatsvc"
+	"warden/chat/internal/services/edgesvc"
+	"warden/chat/internal/services/policysvc"
+	"warden/chat/internal/services/runnersvc"
 )
 
 // revision is the build revision shared by every Warden binary
@@ -42,12 +46,16 @@ const usageText = `usage: warden COMMAND [flags]
   install   create the private state, SBX namespace and runtimes; write warden.json
   doctor    check every host and runtime invariant and print the remediation
   login     codex | claude | github: store one provider sign-in, owner-only
-  start     run warden-policy, warden-runner, warden-chat and warden-edge
+  start     run the policy, runner, chat and edge services
   open      open the running Warden in the browser
   chat      terminal client: warden chat [CHAT] | list | new | send | approve
   stop      stop a detached Warden (see start --detach)
   status    show whether Warden is running and its versions
+  uninstall stop Warden, delete its sandboxes, stop its private sbx daemon and remove the state
   version   print the build revision and protocol number
+
+The services themselves (started by warden start; also usable directly):
+  policy | runner | serve | edge   [--config warden.json] [flags]
 
 Run "warden COMMAND -h" for the flags of one command.
 `
@@ -75,6 +83,16 @@ func (c *cli) run(args []string) int {
 		err = c.stopService(args[1:])
 	case "status":
 		err = c.status(args[1:])
+	case "uninstall":
+		err = c.uninstall(args[1:])
+	case "policy":
+		return policysvc.Main(args[1:])
+	case "runner":
+		return runnersvc.Main(args[1:])
+	case "serve":
+		return chatsvc.Main(args[1:])
+	case "edge":
+		return edgesvc.Main(args[1:])
 	case "version", "--version":
 		fmt.Fprintln(c.stdout, handshake.Self("warden"))
 		return 0

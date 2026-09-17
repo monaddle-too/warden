@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +42,9 @@ case "$*" in
   "daemon inspect") if [ -f "$D/daemon.version" ]; then echo "{\"daemon_version\":\"$(cat "$D/daemon.version")\"}"; else echo "{\"daemon_version\":\"v0.42.1\"}"; fi ;;
   "daemon start --policy deny-all --detach") touch "$D/daemon"; echo "daemon started" ;;
   "daemon restart") rm -f "$D/daemon.prompt" "$D/daemon.version"; touch "$D/daemon"; echo restarted ;;
+  "daemon stop") if [ -f "$D/daemon" ]; then rm -f "$D/daemon"; echo "daemon stopped"; else echo "daemon is not running" >&2; exit 1; fi ;;
+  "ls --quiet") if [ -f "$D/daemon" ] && [ -f "$D/sandboxes" ]; then cat "$D/sandboxes"; fi ;;
+  "rm --force "*) echo "$3" >> "$D/removed"; grep -v "^$3$" "$D/sandboxes" > "$D/sandboxes.new" 2>/dev/null; mv "$D/sandboxes.new" "$D/sandboxes"; echo "removed $3" ;;
   "settings get --json ssh.agentForwardingEnabled") echo "{\"key\":\"ssh.agentForwardingEnabled\",\"value\":$(setting ssh.agentForwardingEnabled)}" ;;
   "settings get --json proxy.sandbox") echo "{\"key\":\"proxy.sandbox\",\"value\":\"$(setting proxy.sandbox)\"}" ;;
   "settings set ssh.agentForwardingEnabled "*) echo "$4" > "$D/setting.ssh.agentForwardingEnabled"; echo "updated; restart the daemon to apply" ;;
@@ -722,5 +726,45 @@ func TestEnsureDaemonRunningRestartsADaemonOlderThanTheCLI(t *testing.T) {
 	code, out := f.run("", "doctor", "--config", filepath.Join(f.state, "warden.json"))
 	if code == 0 || !strings.Contains(out, "FAIL sbx daemon version: daemon v0.41.0, CLI v0.42.1") {
 		t.Fatalf("doctor (%d):\n%s", code, out)
+	}
+}
+
+// uninstall deletes every sandbox in the namespace, stops the daemon and
+// removes the state; --keep-state stops after the sbx cleanup. Without a
+// terminal it needs --yes.
+func TestUninstallRemovesSandboxesDaemonAndState(t *testing.T) {
+	f := newFixture(t)
+	if code, out := f.install(); code != 0 {
+		t.Fatalf("install (%d):\n%s", code, out)
+	}
+	f.set("sandboxes", "wc-spare-1\nwc-2\n")
+	configPath := filepath.Join(f.state, "warden.json")
+	if code, out := f.run("", "uninstall", "--config", configPath); code == 0 || !strings.Contains(out, "pass --yes") {
+		t.Fatalf("uninstall without a terminal or --yes (%d):\n%s", code, out)
+	}
+	before := len(f.commands())
+	code, out := f.run("", "uninstall", "--config", configPath, "--yes", "--keep-state")
+	if code != 0 || !strings.Contains(out, "sandboxes:   2 removed") || !strings.Contains(out, "sbx daemon:  stopped") || !strings.Contains(out, "kept "+f.state) {
+		t.Fatalf("uninstall --keep-state (%d):\n%s", code, out)
+	}
+	if got := strings.Join(f.commands()[before:], "\n"); got != "ls --quiet\nrm --force wc-spare-1\nrm --force wc-2\ndaemon stop" {
+		t.Fatalf("commands:\n%s", got)
+	}
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatal("state removed despite --keep-state")
+	}
+	if _, err := os.Stat(filepath.Join(f.dir, "daemon")); err == nil {
+		t.Fatal("daemon still running")
+	}
+	// Second run: nothing to list (daemon stopped), then the state goes.
+	code, out = f.run("", "uninstall", "--state", f.state, "--yes")
+	if code != 0 || !strings.Contains(out, "sandboxes:   0 removed") || !strings.Contains(out, "removed "+f.state) || !strings.Contains(out, "github.com/settings/applications") {
+		t.Fatalf("uninstall (%d):\n%s", code, out)
+	}
+	if _, err := os.Stat(f.state); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("state still present: %v", err)
+	}
+	if code, out := f.run("", "uninstall", "--state", f.state, "--yes"); code == 0 || !strings.Contains(out, "nothing to uninstall") {
+		t.Fatalf("uninstall of nothing (%d):\n%s", code, out)
 	}
 }

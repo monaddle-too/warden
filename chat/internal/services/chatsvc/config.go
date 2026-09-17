@@ -1,4 +1,4 @@
-package main
+package chatsvc
 
 import (
 	"flag"

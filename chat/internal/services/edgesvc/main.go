@@ -1,7 +1,9 @@
-package main
+// Package edgesvc is `warden edge`, the authenticating ingress and preview host.
+package edgesvc
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -13,27 +15,34 @@ import (
 	"time"
 	"warden/chat/internal/edge"
 	"warden/chat/internal/handshake"
+	"warden/chat/internal/services"
 )
 
-func main() {
-	file := flag.String("config", "", "warden.json (default $WARDEN_CONFIG) or the original private edge JSON config")
-	version := flag.Bool("version", false, "print the build revision and protocol number")
-	flag.Parse()
+// Main runs the edge and returns the exit status.
+func Main(args []string) int { return services.Run(run, args) }
+
+func run(args []string) error {
+	fs := flag.NewFlagSet("warden edge", flag.ContinueOnError)
+	file := fs.String("config", "", "warden.json (default $WARDEN_CONFIG) or the original private edge JSON config")
+	version := fs.Bool("version", false, "print the build revision and protocol number")
+	if err := services.ParseFlags(fs, args); err != nil {
+		return err
+	}
 	if *version {
 		fmt.Println(handshake.Self("warden-edge"))
-		return
+		return nil
 	}
 	c, err := loadEdgeConfig(*file)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	host, _, err := net.SplitHostPort(c.Listen)
 	if err != nil || net.ParseIP(host) == nil || (!net.ParseIP(host).IsLoopback() && !net.ParseIP(host).IsPrivate()) {
-		log.Fatal("edge listener must be a private or loopback IP")
+		return errors.New("edge listener must be a private or loopback IP")
 	}
 	handler, err := edge.New(c)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -47,6 +56,7 @@ func main() {
 	}()
 	log.Printf("Warden ingress listening on %s", c.Listen)
 	if err = server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+		return err
 	}
+	return nil
 }

@@ -55,7 +55,7 @@ func (e *Engine) attachImage(ctx context.Context, c *Chat, path, caption string)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, "--normalize-image")
+	cmd := exec.CommandContext(ctx, exe, "serve", "--normalize-image")
 	cmd.Env = []string{"GOMEMLIMIT=96MiB", "GOMAXPROCS=1"}
 	cmd.Dir = "/tmp"
 	cmd.Stdin = bytes.NewReader(result.Bytes)

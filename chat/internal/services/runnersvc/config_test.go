@@ -1,4 +1,4 @@
-package main
+package runnersvc
 
 import (
 	"flag"
@@ -74,7 +74,7 @@ func TestRunnerRootAloneDerivesEverything(t *testing.T) {
 // TestOVHRunnerFlagsReproduceCurrentBehaviour under those paths.
 func TestOVHExampleFileMatchesTheComposeDeployment(t *testing.T) {
 	t.Setenv(config.Env, "")
-	s, err := runnerSettings(t, "--config", filepath.Join("..", "..", "..", "deploy", "chat", "warden.example.json"))
+	s, err := runnerSettings(t, "--config", filepath.Join("..", "..", "..", "..", "deploy", "chat", "warden.example.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,9 +14,7 @@ import (
 	"time"
 
 	"errors"
-	"fmt"
 	"warden/chat/internal/config"
-	"warden/chat/internal/handshake"
 )
 
 // loginFixture is a state root with a written warden.json and no SBX.
@@ -194,8 +192,8 @@ func TestLoginRejectsUnknownProviderAndMissingConfigDirectory(t *testing.T) {
 	}
 }
 
-func TestLaunchURLAndLegacyArgs(t *testing.T) {
-	state, configPath := loginFixture(t)
+func TestLaunchURLAndServiceArgs(t *testing.T) {
+	_, configPath := loginFixture(t)
 	cfg, err := config.Load(configPath, "")
 	if err != nil {
 		t.Fatal(err)
@@ -222,52 +220,17 @@ func TestLaunchURLAndLegacyArgs(t *testing.T) {
 		t.Fatalf("open --print --without-edge (%d): %s", code, out)
 	}
 
-	cfg.Runtimes.Codex = filepath.Join(state, "runtimes", "codex")
-	cfg.Runtimes.Claude = filepath.Join(state, "runtimes", "claude", "claude")
-	cfg.SBX.GuestImage, cfg.SBX.GuestImageDigest = "docker/sandbox-templates:shell-docker", "sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919"
 	l := &launcher{cfg: cfg, configPath: configPath, assets: assets{web: "/w", vendor: "/v", template: "/t.json"}}
-	wrapper := wrapperPath(state)
-	policy := strings.Join(l.policyArgs(true, wrapper), " ")
-	for _, want := range []string{"--state " + cfg.PolicyState(), "--sbx " + wrapper, "--manage-network", "--vendor-dir /v", "--policy-template /t.json", "--codex-auth-file " + cfg.Providers.Codex.AuthFile, "--claude-auth-file " + cfg.Providers.Claude.AuthFile, "--guest-image-digest sha256:5fc81", "--gateway-ca-max-age 8760h0m0s"} {
-		if !strings.Contains(policy, want) {
-			t.Errorf("policy args lack %q: %s", want, policy)
-		}
-	}
-	runner := strings.Join(l.runnerArgs(true, wrapper), " ")
-	for _, want := range []string{"--root " + cfg.RunnerState(), "--socket " + cfg.RunnerSocket(), "--warden-socket " + cfg.PolicySocket(), "--runtime-dir " + cfg.Runtimes.Codex, "--sbx " + wrapper, "--template docker/sandbox-templates:shell-docker@sha256:5fc81", "--sandbox-memory-mb 1536", "--max-resident 2", "--spare-sandboxes 1", "--idle-timeout 15m0s", "--retained 32"} {
-		if !strings.Contains(runner, want) {
-			t.Errorf("runner args lack %q: %s", want, runner)
-		}
-	}
-	if strings.Contains(runner, "--claude-path") {
-		t.Errorf("claude path passed although the executable is absent: %s", runner)
-	}
-	chat := strings.Join(l.chatArgs(true), " ")
-	for _, want := range []string{"--state " + cfg.AppState(), "--listen 127.0.0.1:18780", "--web-dir /w", "--preview-suffix "} {
-		if !strings.Contains(chat, want) {
-			t.Errorf("chat args lack %q: %s", want, chat)
-		}
-	}
-	// Config mode passes the file plus the resolved asset paths the file
+	// Every service gets the file plus the resolved asset paths the file
 	// leaves empty (a flag may fill an empty field, never disagree with one).
-	if got := strings.Join(l.policyArgs(false, wrapper), " "); got != "--config "+configPath+" --vendor-dir /v --policy-template /t.json" {
-		t.Errorf("policy config-mode args: %s", got)
+	if got := strings.Join(l.policyArgs(), " "); got != "--config "+configPath+" --vendor-dir /v --policy-template /t.json" {
+		t.Errorf("policy args: %s", got)
 	}
-	if got := strings.Join(l.runnerArgs(false, wrapper), " "); got != "--config "+configPath {
-		t.Errorf("runner config-mode args: %s", got)
+	if got := strings.Join(l.runnerArgs(), " "); got != "--config "+configPath {
+		t.Errorf("runner args: %s", got)
 	}
-	if got := strings.Join(l.chatArgs(false), " "); got != "--config "+configPath+" --web-dir /w" {
-		t.Errorf("chat config-mode args: %s", got)
-	}
-}
-
-func TestUsageHasConfigFlag(t *testing.T) {
-	legacy := "Usage of warden-policy:\n  -claude-auth-file string\n    \tprivate host Claude credential file\n  -google-config string\n    \tprivate Google OAuth client configuration\n  -state string\n    \tprivate state directory (required)\n"
-	if usageHasConfigFlag(legacy) {
-		t.Fatal("-google-config mistaken for -config")
-	}
-	if !usageHasConfigFlag(legacy+"  -config string\n    \twarden.json (default $WARDEN_CONFIG)\n") || !usageHasConfigFlag("  -config\tstring\n") {
-		t.Fatal("-config not detected")
+	if got := strings.Join(l.chatArgs(), " "); got != "--config "+configPath+" --web-dir /w" {
+		t.Errorf("chat args: %s", got)
 	}
 }
 
@@ -337,52 +300,6 @@ func TestNamespaceEnvSelectsThePrivateNamespace(t *testing.T) {
 // `warden start` reads every service binary's --version line and refuses a
 // set whose protocol numbers differ from its own; revisions may differ and
 // a binary that prints no protocol (an older build) is only reported.
-func TestStartRefusesMismatchedProtocols(t *testing.T) {
-	state, configPath := loginFixture(t)
-	cfg, err := config.Load(configPath, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	previous := versionOutput
-	defer func() { versionOutput = previous }()
-	outputs := map[string]string{}
-	versionOutput = func(binary string) (string, error) {
-		out, ok := outputs[filepath.Base(binary)]
-		if !ok {
-			return "", errors.New("exit status 2")
-		}
-		return out, nil
-	}
-	self := handshake.Self("warden")
-	line := func(name, revision string, protocol int) string {
-		return handshake.Peer{Name: name, Revision: revision, Protocol: protocol}.String() + "\n"
-	}
-	set := map[string]string{"warden-policy": "/b/warden-policy", "warden-runner": "/b/warden-runner", "warden-chat": "/b/warden-chat", "warden-edge": "/b/warden-edge"}
-	check := func() (string, error) {
-		var out bytes.Buffer
-		l := &launcher{c: &cli{stdout: &out, stderr: &out}, cfg: cfg, configPath: configPath, binDir: "/b"}
-		err := l.checkVersions(set)
-		return out.String(), err
-	}
-	outputs = map[string]string{"warden-policy": line("warden-policy", "other", self.Protocol), "warden-runner": line("warden-runner", self.Revision, self.Protocol), "warden-chat": line("warden-chat", self.Revision, self.Protocol), "warden-edge": line("warden-edge", self.Revision, self.Protocol)}
-	out, err := check()
-	if err != nil || !strings.Contains(out, "warden-policy other protocol=") || !strings.Contains(out, self.String()) {
-		t.Fatalf("mixed revisions refused: %v\n%s", err, out)
-	}
-	outputs["warden-runner"] = line("warden-runner", "old", self.Protocol+1)
-	out, err = check()
-	if err == nil || !strings.Contains(err.Error(), "warden-runner old protocol=") || !strings.Contains(err.Error(), fmt.Sprintf("requires protocol %d", self.Protocol)) {
-		t.Fatalf("mismatched protocol accepted: %v\n%s", err, out)
-	}
-	outputs["warden-runner"] = "warden-runner ancient\n"
-	delete(outputs, "warden-chat")
-	out, err = check()
-	if err != nil || !strings.Contains(out, "warden-runner reports no protocol number") || !strings.Contains(out, "warden-chat: no version information") {
-		t.Fatalf("older builds not tolerated: %v\n%s", err, out)
-	}
-	_ = state
-}
-
 // An unpacked release tarball is warden-<version>-<os>-<arch>/{bin,web,
 // vendor,config}; the launcher next to the binaries in bin/ must find the
 // assets one level up without any configuration.

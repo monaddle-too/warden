@@ -77,19 +77,16 @@ jobs:
             os="${target%/*}"; arch="${target#*/}"
             out="../dist/${os}-${arch}"
             mkdir -p "$out"
-            for cmd in warden warden-policy warden-runner warden-chat warden-edge; do
-              GOOS="$os" GOARCH="$arch" go build -trimpath \
-                -ldflags "-s -w -X warden/chat/internal/release.Revision=${VERSION}" \
-                -o "$out/$cmd" "./cmd/$cmd"
-            done
+            GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X warden/chat/internal/release.Revision=${VERSION}" \
+              -o "$out/warden" ./cmd/warden
           done
-          # The Linux binaries run on this runner: every one must report the
-          # release version and the same protocol number.
-          ../dist/linux-amd64/warden --version
-          for cmd in warden warden-policy warden-runner warden-chat warden-edge; do
-            ../dist/linux-amd64/$cmd --version | grep -q "^$cmd ${VERSION} protocol=" || { echo "$cmd does not report ${VERSION}"; exit 1; }
+          # The Linux binary runs on this runner: it and every service
+          # subcommand must report the release version.
+          ../dist/linux-amd64/warden --version | grep -q "^warden ${VERSION} protocol=" || { echo "warden does not report ${VERSION}"; exit 1; }
+          for svc in policy runner serve edge; do
+            ../dist/linux-amd64/warden $svc --version | grep -q " ${VERSION} protocol=" || { echo "warden $svc does not report ${VERSION}"; exit 1; }
           done
-          test "$(for cmd in warden warden-policy warden-runner warden-chat warden-edge; do ../dist/linux-amd64/$cmd --version | sed 's/.*protocol=//'; done | sort -u | wc -l)" -eq 1
 
       - name: Package the tarballs
         env:
@@ -102,7 +99,7 @@ jobs:
             stage="dist/stage/$name"
             rm -rf "$stage"
             mkdir -p "$stage/bin" "$stage/config" "$stage/vendor"
-            cp dist/$target/warden dist/$target/warden-policy dist/$target/warden-runner dist/$target/warden-chat dist/$target/warden-edge "$stage/bin/"
+            cp dist/$target/warden "$stage/bin/"
             cp -R chat/web/dist "$stage/web"
             cp config/policy.template.json "$stage/config/"
             cp vendor/github-operations.json vendor/github-meta.json "$stage/vendor/"
@@ -114,7 +111,7 @@ jobs:
           # An unpacked tarball must work from bin/ without configuration:
           # the launcher finds web/, vendor/ and config/ beside it.
           tar -C dist/stage -xzf "dist/release/warden-${VERSION}-linux-amd64.tar.gz"
-          "dist/stage/warden-${VERSION}-linux-amd64/bin/warden-policy" selfcheck
+          "dist/stage/warden-${VERSION}-linux-amd64/bin/warden" policy selfcheck
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: github.ref_type != 'tag'
         with:

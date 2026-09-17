@@ -1,4 +1,4 @@
-package main
+package chatsvc
 
 import (
 	"flag"
@@ -68,7 +68,7 @@ func TestChatStateAloneMeansLoopbackPreviews(t *testing.T) {
 // TestOVHChatFlagsReproduceCurrentBehaviour under those paths.
 func TestOVHExampleFileMatchesTheComposeDeployment(t *testing.T) {
 	t.Setenv(config.Env, "")
-	s, err := chatSettings(t, "--config", filepath.Join("..", "..", "..", "deploy", "chat", "warden.example.json"))
+	s, err := chatSettings(t, "--config", filepath.Join("..", "..", "..", "..", "deploy", "chat", "warden.example.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

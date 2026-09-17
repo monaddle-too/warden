@@ -38,7 +38,7 @@ services:
       # container; /run/github stays mounted so a command written against the
       # previous layout (`--store /run/github/...`) keeps working.
       WARDEN_GITHUB_APP_BROKER: /var/lib/warden/github/broker.json
-    command: [warden-policy, --config, /etc/warden/warden.json]
+    command: [warden, policy, --config, /etc/warden/warden.json]
     volumes:
       - *config
       - /var/lib/warden/policy:/var/lib/warden/policy
@@ -51,7 +51,7 @@ services:
   runner:
     <<: *service
     environment: *environment
-    command: [warden-runner, --config, /etc/warden/warden.json]
+    command: [warden, runner, --config, /etc/warden/warden.json]
     volumes:
       - *config
       - /var/lib/warden/runner:/var/lib/warden/runner
@@ -64,7 +64,7 @@ services:
     stop_grace_period: 45s
   chat:
     <<: *service
-    command: [warden-chat, --config, /etc/warden/warden.json]
+    command: [warden, serve, --config, /etc/warden/warden.json]
     volumes:
       - *config
       - /var/lib/warden/app:/var/lib/warden/app

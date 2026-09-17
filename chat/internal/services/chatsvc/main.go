@@ -1,8 +1,10 @@
-package main
+// Package chatsvc is `warden serve`, the chat HTTP API and web UI.
+package chatsvc
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -19,43 +21,50 @@ import (
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/imageguard"
 	"warden/chat/internal/sandbox"
+	"warden/chat/internal/services"
 )
 
-func main() {
-	if len(os.Args) == 2 && os.Args[1] == "--normalize-image" {
+// Main runs the chat service and returns the exit status.
+func Main(args []string) int { return services.Run(run, args) }
+
+func run(args []string) error {
+	if len(args) == 1 && args[0] == "--normalize-image" {
 		imageguard.Main()
-		return
+		return nil
 	}
-	configPath := flag.String("config", "", "optional warden.json (default $WARDEN_CONFIG); flags override its computed defaults and must agree with its values")
-	wardenSocket := flag.String("warden-socket", "", "Private Warden sharing/broker socket (paths.state/policy/sbx-control.sock)")
-	root := flag.String("state", "", "Private persistent Warden chat state directory (paths.state/app)")
-	socket := flag.String("runner-socket", "", "Warden runner Unix socket (paths.state/runner/worker.sock)")
-	listen := flag.String("listen", "127.0.0.1:18780", "Loopback chat address (chat.listen)")
-	web := flag.String("web-dir", "chat/web/dist", "Built Warden chat assets (paths.webAssets)")
-	suffix := flag.String("preview-suffix", "", "Authenticated preview hostname suffix (previews.hostSuffix); empty leaves external previews unconfigured")
-	version := flag.Bool("version", false, "print the build revision and protocol number")
-	flag.Parse()
+	fs := flag.NewFlagSet("warden serve", flag.ContinueOnError)
+	configPath := fs.String("config", "", "optional warden.json (default $WARDEN_CONFIG); flags override its computed defaults and must agree with its values")
+	wardenSocket := fs.String("warden-socket", "", "Private Warden sharing/broker socket (paths.state/policy/sbx-control.sock)")
+	root := fs.String("state", "", "Private persistent Warden chat state directory (paths.state/app)")
+	socket := fs.String("runner-socket", "", "Warden runner Unix socket (paths.state/runner/worker.sock)")
+	listen := fs.String("listen", "127.0.0.1:18780", "Loopback chat address (chat.listen)")
+	web := fs.String("web-dir", "chat/web/dist", "Built Warden chat assets (paths.webAssets)")
+	suffix := fs.String("preview-suffix", "", "Authenticated preview hostname suffix (previews.hostSuffix); empty leaves external previews unconfigured")
+	version := fs.Bool("version", false, "print the build revision and protocol number")
+	if err := services.ParseFlags(fs, args); err != nil {
+		return err
+	}
 	if *version {
 		fmt.Println(handshake.Self("warden-chat"))
-		return
+		return nil
 	}
-	s, err := resolveSettings(flag.CommandLine, chatFlags{configPath: configPath, state: root, wardenSocket: wardenSocket, runnerSocket: socket, listen: listen, web: web, suffix: suffix})
+	s, err := resolveSettings(fs, chatFlags{configPath: configPath, state: root, wardenSocket: wardenSocket, runnerSocket: socket, listen: listen, web: web, suffix: suffix})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	root, socket, wardenSocket, listen, web, suffix = &s.state, &s.runnerSocket, &s.wardenSocket, &s.listen, &s.web, &s.suffix
 	if *root == "" || *socket == "" {
-		log.Fatal("--state and --runner-socket are required")
+		return errors.New("--state and --runner-socket are required")
 	}
 	if err := chats.ValidatePreviewSuffix(*suffix); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	host, port, err := net.SplitHostPort(*listen)
 	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
-		log.Fatal("listen must be an IP loopback address")
+		return errors.New("listen must be an IP loopback address")
 	}
 	if strings.HasPrefix(host, "::") {
-		log.Fatal("use IPv4 loopback")
+		return errors.New("use IPv4 loopback")
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -66,12 +75,12 @@ func main() {
 	self := handshake.Self("warden-chat")
 	peers, err := handshake.Verify(ctx, self, *socket, *wardenSocket, handshake.Options{Wait: handshakeWait, Warn: func(s string) { log.Print("warning: ", s) }})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	log.Print(self, peerSummary(peers))
 	store, err := chats.Open(*root)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer store.Close()
 	// Rotate the private owner capability on each start. It is never given to SBX.
@@ -81,10 +90,10 @@ func main() {
 	b, _ := json.Marshal(endpoint)
 	endpointPath := filepath.Join(*root, "endpoint.json")
 	if err = os.WriteFile(endpointPath, b, 0600); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err = os.Chmod(endpointPath, 0600); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	engine := chats.NewEngine(store, &sandbox.Client{Socket: *socket})
 	engine.PublicPreviewSuffix = *suffix
@@ -101,8 +110,9 @@ func main() {
 	}()
 	fmt.Printf("Warden chat listening at %s; private launcher: %s\n", origin, endpointPath)
 	if err = server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+		return err
 	}
+	return nil
 }
 
 // handshakeWait is how long the runner and policy sockets are retried at

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,25 +18,22 @@ import (
 
 	"warden/chat/internal/config"
 	"warden/chat/internal/handshake"
-	"warden/chat/internal/release"
 )
 
-// start replaces `scripts/warden-chat start`: it runs warden-policy,
-// warden-runner, warden-chat and warden-edge as owner processes from the
-// binaries next to this executable (or --bin-dir), with the private state,
-// no Docker, the same readiness waits and single-writer locks as the Python
-// launcher, and stops them all on Ctrl+C.
+// start runs the policy, runner, chat and edge services as owner processes.
+// They are subcommands of this same executable (warden policy, warden
+// runner, warden serve, warden edge), so one build is always launched with
+// itself; the web UI, GitHub catalog and policy template are found beside
+// it in the release layout. Ctrl+C stops them all.
 func (c *cli) start(args []string) error {
 	fs := flag.NewFlagSet("warden start", flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	configPath := fs.String("config", "", "warden.json (default: <state>/warden.json or $WARDEN_CONFIG)")
 	state := fs.String("state", "", "state directory when no warden.json exists yet")
-	binDir := fs.String("bin-dir", "", "directory holding warden-policy, warden-runner, warden-chat and warden-edge (default: next to warden)")
 	webDir := fs.String("web-dir", "", "built chat UI when warden.json has no paths.webAssets (default: found beside the binaries)")
 	vendorDir := fs.String("vendor-dir", "", "GitHub catalog directory when warden.json has no paths.githubCatalog")
 	template := fs.String("policy-template", "", "sandbox policy template when warden.json has no paths.sandboxPolicyTemplate")
-	googleConfig := fs.String("google-config", "", "operator Google OAuth client file passed to warden-policy (legacy flag mode only)")
-	withoutEdge := fs.Bool("without-edge", false, "do not start warden-edge")
+	withoutEdge := fs.Bool("without-edge", false, "do not start the edge (no previews; the app is reachable on the chat port only)")
 	detach := fs.Bool("detach", false, "run in the background; logs to <state>/warden.log, stop with `warden stop`")
 	popupsMode := fs.String("popups", popupsAuto, "how pending approvals are surfaced: auto (browser when detached, notify otherwise), browser, notify, none")
 	detachedChild := fs.Bool("detached-child", false, "internal: this process was started by --detach")
@@ -54,30 +50,28 @@ func (c *cli) start(args []string) error {
 	if *detach {
 		return c.detach(cfg, args)
 	}
-	if *binDir == "" {
-		exe, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		if exe, err = filepath.EvalSymlinks(exe); err != nil {
-			return err
-		}
-		*binDir = filepath.Dir(exe)
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if exe, err = filepath.EvalSymlinks(exe); err != nil {
+		return err
 	}
 	switch *popupsMode {
 	case popupsAuto, popupsBrowser, popupsNotify, popupsNone:
 	default:
 		return fmt.Errorf("--popups must be auto, browser, notify or none, not %q", *popupsMode)
 	}
-	l := &launcher{c: c, cfg: cfg, configPath: path, binDir: *binDir, googleConfig: *googleConfig, withoutEdge: *withoutEdge, popups: *popupsMode, detached: *detachedChild}
-	if l.assets, err = locateAssets(cfg, *binDir, *webDir, *vendorDir, *template); err != nil {
+	l := &launcher{c: c, cfg: cfg, configPath: path, exe: exe, withoutEdge: *withoutEdge, popups: *popupsMode, detached: *detachedChild}
+	if l.assets, err = locateAssets(cfg, filepath.Dir(exe), *webDir, *vendorDir, *template); err != nil {
 		return err
 	}
 	return l.run()
 }
 
-// serviceNames in start order; shutdown is the reverse.
-var serviceNames = []string{"warden-policy", "warden-runner", "warden-chat", "warden-edge"}
+// services in start order (shutdown is the reverse): the log name each one
+// writes under <state>/ and the warden subcommand that runs it.
+var services = []struct{ name, subcommand string }{{"warden-policy", "policy"}, {"warden-runner", "runner"}, {"warden-chat", "serve"}, {"warden-edge", "edge"}}
 
 type assets struct{ web, vendor, template string }
 
@@ -128,15 +122,14 @@ func locateAssets(cfg config.Config, binDir, web, vendor, template string) (asse
 }
 
 type launcher struct {
-	c            *cli
-	cfg          config.Config
-	configPath   string
-	binDir       string
-	assets       assets
-	googleConfig string
-	withoutEdge  bool
-	popups       string // --popups mode
-	detached     bool   // started by --detach: nobody is watching this terminal
+	c           *cli
+	cfg         config.Config
+	configPath  string
+	exe         string // this executable; every service is a subcommand of it
+	assets      assets
+	withoutEdge bool
+	popups      string // --popups mode
+	detached    bool   // started by --detach: nobody is watching this terminal
 
 	procs []*service
 }
@@ -146,90 +139,6 @@ type service struct {
 	cmd  *exec.Cmd
 	log  *os.File
 	done chan error
-}
-
-func (l *launcher) binary(name string) (string, error) {
-	path := filepath.Join(l.binDir, name)
-	if err := executableFile(path); err != nil {
-		return "", fmt.Errorf("%s: %w (build it with `go -C chat build -o %s ./cmd/%s`)", path, err, path, name)
-	}
-	return path, nil
-}
-
-// versionOutput runs one binary's --version; tests replace it.
-var versionOutput = func(binary string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, binary, "--version").Output()
-	return string(out), err
-}
-
-// checkVersions prints the revision and protocol of every binary about to
-// be launched, beside this launcher's own, and refuses a set whose protocol
-// numbers differ (the services would refuse each other anyway; better one
-// message here than four logs). Revisions may differ. A binary that prints
-// no protocol (an older build) is reported and left out of the comparison
-// so the legacy flag path below keeps working.
-func (l *launcher) checkVersions(binaries map[string]string) error {
-	self := handshake.Self("warden")
-	fmt.Fprintf(l.c.stdout, "warden: %s\n", self)
-	peers := []handshake.Peer{self}
-	for _, name := range serviceNames {
-		binary, ok := binaries[name]
-		if !ok {
-			continue
-		}
-		out, err := versionOutput(binary)
-		if err != nil {
-			fmt.Fprintf(l.c.stdout, "warden: %s: no version information (%v)\n", name, err)
-			continue
-		}
-		peer, err := handshake.Parse(out)
-		if err != nil {
-			fmt.Fprintf(l.c.stdout, "warden: %s: no version information (%v)\n", name, err)
-			continue
-		}
-		fmt.Fprintf(l.c.stdout, "warden: %s\n", peer)
-		if peer.Protocol == 0 {
-			fmt.Fprintf(l.c.stdout, "warden: %s reports no protocol number (older build)\n", name)
-			continue
-		}
-		peers = append(peers, peer)
-	}
-	var lines []string
-	for _, p := range peers[1:] {
-		if p.Protocol != self.Protocol {
-			lines = append(lines, p.String())
-		}
-	}
-	if len(lines) > 0 {
-		return fmt.Errorf("mismatched Warden binaries in %s: %s requires protocol %d but %s; install one release's binaries together", l.binDir, self, self.Protocol, strings.Join(lines, ", "))
-	}
-	return nil
-}
-
-// supportsConfigFlag probes a service binary's usage for the --config flag
-// Track A adds; before that merge the equivalent legacy flags are passed.
-func supportsConfigFlag(binary string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "-h")
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
-	_ = cmd.Run()
-	return usageHasConfigFlag(out.String())
-}
-
-// usageHasConfigFlag looks for a "-config" flag line in flag-package usage
-// output ("  -config string"); "-google-config" must not match.
-func usageHasConfigFlag(usage string) bool {
-	for _, line := range strings.Split(usage, "\n") {
-		flagName := strings.TrimLeft(line, " \t")
-		if strings.HasPrefix(flagName, "-config") && (len(flagName) == len("-config") || flagName[len("-config")] == ' ' || flagName[len("-config")] == '\t') {
-			return true
-		}
-	}
-	return false
 }
 
 func (l *launcher) run() error {
@@ -248,30 +157,7 @@ func (l *launcher) run() error {
 	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return errors.New("Warden is already running or shutting down in this state directory.")
 	}
-	policy, err := l.binary("warden-policy")
-	if err != nil {
-		return err
-	}
-	runner, err := l.binary("warden-runner")
-	if err != nil {
-		return err
-	}
-	chat, err := l.binary("warden-chat")
-	if err != nil {
-		return err
-	}
-	edge, edgeErr := l.binary("warden-edge")
-	set := map[string]string{"warden-policy": policy, "warden-runner": runner, "warden-chat": chat}
-	if edgeErr == nil && !l.withoutEdge {
-		set["warden-edge"] = edge
-	}
-	if err = l.checkVersions(set); err != nil {
-		return err
-	}
-	legacy := !supportsConfigFlag(policy)
-	if legacy {
-		fmt.Fprintln(l.c.stdout, "warden: the service binaries predate --config; passing the equivalent flags")
-	}
+	fmt.Fprintf(l.c.stdout, "warden: %s\n", handshake.Self("warden"))
 	wrapper := wrapperPath(state)
 	if err = executableFile(wrapper); err != nil {
 		return fmt.Errorf("%s: %w; run `warden install`", wrapper, err)
@@ -293,26 +179,19 @@ func (l *launcher) run() error {
 	defer cancel()
 	defer l.shutdown()
 
-	if err = l.launch(ctx, "warden-policy", policy, sbxEnv, l.policyArgs(legacy, wrapper), cfg.PolicySocket()); err != nil {
+	if err = l.launch(ctx, "warden-policy", sbxEnv, append([]string{"policy"}, l.policyArgs()...), cfg.PolicySocket()); err != nil {
 		return err
 	}
-	if err = l.launch(ctx, "warden-runner", runner, sbxEnv, l.runnerArgs(legacy, wrapper), cfg.RunnerSocket()); err != nil {
+	if err = l.launch(ctx, "warden-runner", sbxEnv, append([]string{"runner"}, l.runnerArgs()...), cfg.RunnerSocket()); err != nil {
 		return err
 	}
-	if err = l.launch(ctx, "warden-chat", chat, env, l.chatArgs(legacy), cfg.OwnerTokenFile()); err != nil {
+	if err = l.launch(ctx, "warden-chat", env, append([]string{"serve"}, l.chatArgs()...), cfg.OwnerTokenFile()); err != nil {
 		return err
 	}
-	switch {
-	case l.withoutEdge:
+	if l.withoutEdge {
 		fmt.Fprintln(l.c.stdout, "warden: edge not started (--without-edge)")
-	case edgeErr != nil:
-		fmt.Fprintf(l.c.stdout, "warden: edge not started: %v\n", edgeErr)
-	case legacy:
-		fmt.Fprintln(l.c.stdout, "warden: edge not started: this warden-edge build has no local (owner, loopback) mode; previews need the loopback-preview release")
-	default:
-		if err = l.launch(ctx, "warden-edge", edge, env, []string{"--config", l.configPath}, ""); err != nil {
-			return err
-		}
+	} else if err = l.launch(ctx, "warden-edge", env, []string{"edge", "--config", l.configPath}, ""); err != nil {
+		return err
 	}
 	fmt.Fprintf(l.c.stdout, "Warden started with state %s. Run `warden open` to open it. Ctrl+C stops this stack.\n", state)
 	// Surface approvals while the stack runs: a desktop notification, and
@@ -327,10 +206,11 @@ func (l *launcher) run() error {
 	}
 }
 
-// launch starts one service with its output appended to <state>/<name>.log
-// and, when ready names a file, waits until that file appears or changes
-// (inode or mtime), as the Python launcher did, giving up after 10 s.
-func (l *launcher) launch(ctx context.Context, name, binary string, env, args []string, ready string) error {
+// launch starts one service (this executable with the service subcommand
+// first in args) with its output appended to <state>/<name>.log and, when
+// ready names a file, waits until that file appears or changes (inode or
+// mtime), giving up after 10 s.
+func (l *launcher) launch(ctx context.Context, name string, env, args []string, ready string) error {
 	var previous string
 	if ready != "" {
 		previous = fileStamp(ready)
@@ -340,7 +220,7 @@ func (l *launcher) launch(ctx context.Context, name, binary string, env, args []
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(binary, args...)
+	cmd := exec.Command(l.exe, args...)
 	cmd.Env = env
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.Dir = l.cfg.Paths.State
@@ -419,71 +299,35 @@ func (l *launcher) shutdown() {
 	l.procs = nil
 }
 
-// Legacy flag sets: what scripts/warden-chat passed, derived from warden.json.
+// Service arguments: the configuration file plus the resolved asset paths
+// the file leaves empty (a flag may fill an empty field, never disagree
+// with one).
 
-func (l *launcher) policyArgs(legacy bool, wrapper string) []string {
-	if !legacy {
-		args := []string{"--config", l.configPath}
-		if l.cfg.Paths.GitHubCatalog == "" && l.assets.vendor != "" {
-			args = append(args, "--vendor-dir", l.assets.vendor)
-		}
-		if l.cfg.Paths.SandboxPolicyTemplate == "" && l.assets.template != "" {
-			args = append(args, "--policy-template", l.assets.template)
-		}
-		return args
+func (l *launcher) policyArgs() []string {
+	args := []string{"--config", l.configPath}
+	if l.cfg.Paths.GitHubCatalog == "" && l.assets.vendor != "" {
+		args = append(args, "--vendor-dir", l.assets.vendor)
 	}
-	cfg := l.cfg
-	args := []string{"--state", cfg.PolicyState(), "--sbx", wrapper, "--manage-network", "--vendor-dir", l.assets.vendor, "--policy-template", l.assets.template,
-		"--guest-image-digest", cfg.SBX.GuestImageDigest, "--gateway-ca-max-age", (time.Duration(cfg.SBX.InspectionCertMaxAgeDays) * 24 * time.Hour).String()}
-	if cfg.Providers.Codex != nil {
-		args = append(args, "--codex-auth-file", cfg.Providers.Codex.AuthFile)
-	}
-	if cfg.Providers.Claude != nil {
-		args = append(args, "--claude-auth-file", cfg.Providers.Claude.AuthFile)
-	}
-	if l.googleConfig != "" {
-		args = append(args, "--google-config", l.googleConfig)
+	if l.cfg.Paths.SandboxPolicyTemplate == "" && l.assets.template != "" {
+		args = append(args, "--policy-template", l.assets.template)
 	}
 	return args
 }
 
-func (l *launcher) runnerArgs(legacy bool, wrapper string) []string {
-	if !legacy {
-		return []string{"--config", l.configPath}
-	}
-	cfg := l.cfg
-	template := cfg.SBX.GuestImage
-	if cfg.SBX.GuestImageDigest == release.StockTemplateDigest {
-		template = cfg.SBX.GuestImage + "@" + cfg.SBX.GuestImageDigest
-	}
-	args := []string{"--root", cfg.RunnerState(), "--socket", cfg.RunnerSocket(), "--warden-socket", cfg.PolicySocket(), "--runtime-dir", cfg.Runtimes.Codex, "--sbx", wrapper,
-		"--template", template, "--sandbox-memory-mb", strconv.Itoa(cfg.Sandboxes.MemoryMB), "--max-resident", strconv.Itoa(cfg.Sandboxes.MaxRunning), "--spare-sandboxes", strconv.Itoa(cfg.Sandboxes.WarmSpares),
-		"--idle-timeout", (time.Duration(cfg.Sandboxes.StopAfterIdleMinutes) * time.Minute).String(), "--retained", strconv.Itoa(cfg.Sandboxes.KeepStopped)}
-	if cfg.Runtimes.Claude != "" {
-		if _, err := os.Stat(cfg.Runtimes.Claude); err == nil {
-			args = append(args, "--claude-path", cfg.Runtimes.Claude)
-		}
-	}
-	return args
+func (l *launcher) runnerArgs() []string {
+	return []string{"--config", l.configPath}
 }
 
-func (l *launcher) chatArgs(legacy bool) []string {
-	if !legacy {
-		// A flag may fill a field the file leaves empty; it may not disagree.
-		args := []string{"--config", l.configPath}
-		if l.cfg.Paths.WebAssets == "" && l.assets.web != "" {
-			args = append(args, "--web-dir", l.assets.web)
-		}
-		return args
+func (l *launcher) chatArgs() []string {
+	args := []string{"--config", l.configPath}
+	if l.cfg.Paths.WebAssets == "" && l.assets.web != "" {
+		args = append(args, "--web-dir", l.assets.web)
 	}
-	cfg := l.cfg
-	// The pre-loopback chat rejects "localhost" as a suffix; without the
-	// edge there are no external previews, as with the Python launcher.
-	return []string{"--state", cfg.AppState(), "--warden-socket", cfg.PolicySocket(), "--runner-socket", cfg.RunnerSocket(), "--listen", cfg.Chat.Listen, "--preview-suffix", "", "--web-dir", l.assets.web}
+	return args
 }
 
 // open reads <state>/app/endpoint.json and opens the browser on the private
-// launch URL, as `scripts/warden-chat open` did.
+// launch URL.
 func (c *cli) open(args []string) error {
 	fs := flag.NewFlagSet("warden open", flag.ContinueOnError)
 	fs.SetOutput(c.stderr)

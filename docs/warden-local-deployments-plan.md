@@ -877,4 +877,14 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   deletes the GitHub token file (dropping repository selections); the edge
   gates it owner-only. Verified live on the Mac (GitHub disconnect and
   re-login). Released as `v0.1.0-alpha.3`.
+- 2026-09-16: one binary. The four services moved from `chat/cmd/warden-*`
+  to `chat/internal/services/{policysvc,runnersvc,chatsvc,edgesvc}` and run
+  as `warden policy|runner|serve|edge`; the launcher spawns its own
+  executable, so the cross-binary version check, the `--bin-dir` flag and
+  the legacy pre-`--config` flag path are gone (the socket handshake
+  between services stays). Releases ship `bin/warden` alone (13 MB instead
+  of 41 MB); the server image, compose files, the edge systemd unit,
+  release.sh and release.yml follow. `warden uninstall` stops a background
+  Warden, deletes the namespace's sandboxes, stops its daemon and removes
+  `<state>` (`--keep-state`, `--yes`).
 

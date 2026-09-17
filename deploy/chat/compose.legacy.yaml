@@ -27,7 +27,7 @@ services:
     environment:
       <<: *environment
       WARDEN_GITHUB_APP_BROKER: /run/github/broker.json
-    command: [warden-policy, --state, /state, --sbx, /usr/local/bin/sbx, --manage-network, --codex-auth-file, /run/provider/auth.json, --claude-auth-file, /run/provider/claude.json, --google-config, /run/provider/google.json, --guest-image-digest, '${WARDEN_GUEST_DIGEST:-sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919}']
+    command: [warden, policy, --state, /state, --sbx, /usr/local/bin/sbx, --manage-network, --codex-auth-file, /run/provider/auth.json, --claude-auth-file, /run/provider/claude.json, --google-config, /run/provider/google.json, --guest-image-digest, '${WARDEN_GUEST_DIGEST:-sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919}']
     volumes:
       - /var/lib/warden/policy:/state
       - /var/lib/warden/provider:/run/provider:ro
@@ -38,7 +38,7 @@ services:
   runner:
     <<: *service
     environment: *environment
-    command: [warden-runner, --root, /state, --socket, /state/worker.sock, --warden-socket, /run/warden/sbx-control.sock, --sbx, /usr/local/bin/sbx, --runtime-dir, /opt/warden-runtime, --claude-path, /opt/warden-claude/claude, --template, '${WARDEN_GUEST_TEMPLATE:-docker/sandbox-templates:shell-docker@sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919}', --sandbox-memory-mb, '1536', --max-resident, '2', --spare-sandboxes, '${WARDEN_SPARE_SANDBOXES:-1}']
+    command: [warden, runner, --root, /state, --socket, /state/worker.sock, --warden-socket, /run/warden/sbx-control.sock, --sbx, /usr/local/bin/sbx, --runtime-dir, /opt/warden-runtime, --claude-path, /opt/warden-claude/claude, --template, '${WARDEN_GUEST_TEMPLATE:-docker/sandbox-templates:shell-docker@sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919}', --sandbox-memory-mb, '1536', --max-resident, '2', --spare-sandboxes, '${WARDEN_SPARE_SANDBOXES:-1}']
     volumes:
       - /var/lib/warden/runner:/state
       - /var/lib/warden/policy:/run/warden:ro
@@ -50,7 +50,7 @@ services:
     stop_grace_period: 45s
   chat:
     <<: *service
-    command: [warden-chat, --state, /state, --warden-socket, /run/warden/sbx-control.sock, --runner-socket, /run/runner/worker.sock, --listen, '127.0.0.1:18780', --preview-suffix, preview.monaddle.com, --web-dir, /app/web]
+    command: [warden, serve, --state, /state, --warden-socket, /run/warden/sbx-control.sock, --runner-socket, /run/runner/worker.sock, --listen, '127.0.0.1:18780', --preview-suffix, preview.monaddle.com, --web-dir, /app/web]
     volumes:
       - /var/lib/warden/app:/state
       - /var/lib/warden/policy:/run/warden:ro

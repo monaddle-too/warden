@@ -8,7 +8,7 @@ Panta worker, or shared sandbox daemon in this deployment.
 
 - `warden-sbx.service`: SBX 0.42.1, dedicated `warden` user with KVM access.
   All five HOME/XDG directories are isolated under `/var/lib/warden/sbx`.
-- Docker Compose project `warden`: policy broker (`warden-policy`, Go, with
+- Docker Compose project `warden`: policy broker (`warden policy`, Go, with
   in-process loopback gateways), runner, chat/API/static UI.
   They run as the Warden UID, read-only root filesystem, dropped capabilities,
   no Docker socket, and host networking for private loopback SBX gateways.
@@ -57,9 +57,9 @@ Releases are built by the `Warden release` workflow
 (`.github/workflows/release.yml`) from a tag `v*`, or locally with
 `scripts/release.sh` when Actions minutes are unavailable (same tarballs and
 `SHA256SUMS`; `--publish` creates the GitHub release with `gh`; the server
-image is then built on the server as before): the frontend, the five
-binaries (`warden`, `warden-policy`, `warden-runner`, `warden-chat`,
-`warden-edge`) for linux/amd64, linux/arm64 and darwin/arm64 with the tag
+image is then built on the server as before): the frontend, the one
+`warden` binary (the services are its `policy`, `runner`, `serve` and
+`edge` subcommands) for linux/amd64, linux/arm64 and darwin/arm64 with the tag
 linked in as the revision, one tarball per target
 (`warden-<tag>-<os>-<arch>.tar.gz` holding `bin/`, `web/`,
 `config/policy.template.json`, `config/warden.server.example.json` and
@@ -67,11 +67,12 @@ linked in as the revision, one tarball per target
 `ghcr.io/monaddle-too/warden:<tag>` for linux/amd64 and linux/arm64
 (from `deploy/chat/Dockerfile`; the run summary lists the index digest to
 pin and the per-platform manifest digests). A manual run builds everything
-under a `v0.0.0-dev.<sha>` version and publishes no GitHub release. Every
-binary prints `<name> <revision> protocol=<n>` with `--version`;
-`warden-chat` refuses to start beside a runner or policy service on another
-protocol number and logs a warning for a different revision on the same
-protocol, so the containers may be updated one at a time as before.
+under a `v0.0.0-dev.<sha>` version and publishes no GitHub release. The
+binary and each service subcommand print `<name> <revision> protocol=<n>`
+with `--version`; the chat service refuses to start beside a runner or
+policy service on another protocol number and logs a warning for a
+different revision on the same protocol, so the containers may be updated
+one at a time as before.
 
 To build the same image by hand (for example on OVH before the first
 workflow run), from the repository root:
@@ -80,21 +81,18 @@ workflow run), from the repository root:
 pnpm --dir chat/web install --frozen-lockfile
 pnpm --dir chat/web build
 mkdir -p dist/linux-amd64
-for cmd in warden-policy warden-chat warden-runner warden-edge warden; do
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go -C chat build -trimpath \
-    -ldflags "-X warden/chat/internal/release.Revision=$(git describe --always --dirty)" \
-    -o ../dist/linux-amd64/$cmd ./cmd/$cmd
-done
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go -C chat build -trimpath \
+  -ldflags "-X warden/chat/internal/release.Revision=$(git describe --always --dirty)" \
+  -o ../dist/linux-amd64/warden ./cmd/warden
 docker build -f deploy/chat/Dockerfile -t warden:<revision> .
 ```
 
 Upload only `config/policy.template.json`, `vendor`, `deploy/chat`, the built
 binaries under `dist/linux-amd64`, and `chat/web/dist`. Exclude AppleDouble
 files and filesystem xattrs from tar archives. Never include private state or
-logins. The image contains no Python or mitmproxy: `warden-policy selfcheck`
+logins. The image contains no Python or mitmproxy: `warden policy selfcheck`
 loads the REST catalog, GitHub networks and policy template and initialises
-an engine and gateway CA as the packaging smoke check, and the build fails
-if the three binaries report different revisions. Keep previous
+an engine and gateway CA as the packaging smoke check. Keep previous
 images/releases until the new release is verified.
 
 ## Policy broker
@@ -132,7 +130,7 @@ next run:
 
 ```sh
 sudo docker compose -f /opt/warden/current/deploy/chat/compose.yaml stop policy
-sudo docker compose -f /opt/warden/current/deploy/chat/compose.yaml run --rm --no-deps policy warden-policy rotate-gateway-ca --state /state
+sudo docker compose -f /opt/warden/current/deploy/chat/compose.yaml run --rm --no-deps policy warden policy rotate-gateway-ca --state /state
 sudo docker compose -f /opt/warden/current/deploy/chat/compose.yaml start policy
 ```
 
@@ -151,15 +149,15 @@ nothing to copy; the runner still copies into guests made from the stock
 template. After a CA rotation or a runtime bump, rebuild the image (update
 `deploy/guest/warden-proxy.crt` or the pinned versions) and reinstall.
 
-The GitHub App broker is the `warden-policy github-broker --store DIR
+The GitHub App broker is the `warden policy github-broker --store DIR
 --app-id ID --owner LOGIN` subcommand with the unchanged stdin/stdout JSON
 protocol. Before switching, check `/var/lib/warden/github/broker.json`: its
 `command` runs inside the policy container, so a command that invoked
 `python -m warden.github_app` must be changed to
-`/usr/local/bin/warden-policy github-broker …` with the same `--store`,
+`/usr/local/bin/warden policy github-broker …` with the same `--store`,
 `--app-id` and `--owner` values. A command that runs elsewhere (for example
 over SSH) is unaffected. Git push reviews run `git` from the image under
-`warden-policy git-limited` resource limits in `/dev/shm`.
+`warden policy git-limited` resource limits in `/dev/shm`.
 
 Switching back to the previous Python image needs no state migration: the
 files, schemas and directory names are unchanged.
@@ -214,7 +212,7 @@ a file it must agree with the loaded value or the service refuses to start
 naming the flag and the field. `--manage-network` is accepted and always
 on; `--mitmdump` is accepted and ignored. The edge unit keeps its own
 `/opt/warden-preview/config.json` in the original `edge.example.json` shape;
-`warden-edge --config` also accepts `warden.json` and derives the same
+`warden edge --config` also accepts `warden.json` and derives the same
 settings from it (a test keeps the two example files in agreement).
 
 Tests in each command (`TestOVHExampleFileMatchesTheComposeDeployment`,
@@ -234,27 +232,27 @@ use `/var/lib/warden/github/...`.
 
 | Flag | `warden.json` field |
 |---|---|
-| `warden-policy --state` | `paths.state` + `/policy` (`/var/lib/warden/policy`; `compose.legacy.yaml` mounted it at `/state`) |
-| `warden-policy --sbx`, `warden-runner --sbx` | `sbx.executable` |
-| `warden-policy --vendor-dir` | `paths.githubCatalog` |
-| `warden-policy --policy-template` | `paths.sandboxPolicyTemplate` |
-| `warden-policy --gateway-ca-max-age` | `sbx.inspectionCertMaxAgeDays` |
-| `warden-policy --guest-image-digest` | `sbx.guestImageDigest` (default: the stock template digest) |
-| `warden-policy --codex-auth-file` | `providers.codex.authFile` |
-| `warden-policy --claude-auth-file` | `providers.claude.authFile` |
-| `warden-policy --google-config` | `providers.google.docsClient` (a file path; `builtin` is the shared client) |
+| `warden policy --state` | `paths.state` + `/policy` (`/var/lib/warden/policy`; `compose.legacy.yaml` mounted it at `/state`) |
+| `warden policy --sbx`, `warden runner --sbx` | `sbx.executable` |
+| `warden policy --vendor-dir` | `paths.githubCatalog` |
+| `warden policy --policy-template` | `paths.sandboxPolicyTemplate` |
+| `warden policy --gateway-ca-max-age` | `sbx.inspectionCertMaxAgeDays` |
+| `warden policy --guest-image-digest` | `sbx.guestImageDigest` (default: the stock template digest) |
+| `warden policy --codex-auth-file` | `providers.codex.authFile` |
+| `warden policy --claude-auth-file` | `providers.claude.authFile` |
+| `warden policy --google-config` | `providers.google.docsClient` (a file path; `builtin` is the shared client) |
 | `WARDEN_GITHUB_APP_BROKER` | `providers.github.brokerFile` (with `appID`, `appSlug`, `installationOwner`; `github-broker --app-slug` defaults to `monaddle-workspace`) |
-| `warden-policy --github-auth-file` | `providers.github.authFile` (local mode: the user token from `warden login github`; exclusive with the App broker) |
-| `warden-policy --chat-listen` | `chat.listen` (its port is the loopback redirect of the built-in Google Docs client) |
-| `warden-runner --root`, `--socket` | `paths.state` + `/runner`, `/runner/worker.sock` |
-| `warden-runner --warden-socket`, `warden-chat --warden-socket` | `paths.state` + `/policy/sbx-control.sock` |
-| `warden-runner --template` | `sbx.guestImage` `@` `sbx.guestImageDigest` |
-| `warden-runner --runtime-dir`, `--claude-path` | `runtimes.codex`, `runtimes.claude` |
-| `warden-runner --sandbox-memory-mb`, `--max-resident`, `--spare-sandboxes`, `--idle-timeout`, `--retained` | `sandboxes.memoryMB`, `maxRunning`, `warmSpares`, `stopAfterIdleMinutes`, `keepStopped` |
-| `warden-chat --state`, `--runner-socket` | `paths.state` + `/app`, `/runner/worker.sock` |
-| `warden-chat --listen` | `chat.listen` |
-| `warden-chat --web-dir` | `paths.webAssets` |
-| `warden-chat --preview-suffix` | `previews.hostSuffix` (`previews.mode` `public`; `localhost` means loopback previews through the edge on `previews.edgeListen`) |
+| `warden policy --github-auth-file` | `providers.github.authFile` (local mode: the user token from `warden login github`; exclusive with the App broker) |
+| `warden policy --chat-listen` | `chat.listen` (its port is the loopback redirect of the built-in Google Docs client) |
+| `warden runner --root`, `--socket` | `paths.state` + `/runner`, `/runner/worker.sock` |
+| `warden runner --warden-socket`, `warden serve --warden-socket` | `paths.state` + `/policy/sbx-control.sock` |
+| `warden runner --template` | `sbx.guestImage` `@` `sbx.guestImageDigest` |
+| `warden runner --runtime-dir`, `--claude-path` | `runtimes.codex`, `runtimes.claude` |
+| `warden runner --sandbox-memory-mb`, `--max-resident`, `--spare-sandboxes`, `--idle-timeout`, `--retained` | `sandboxes.memoryMB`, `maxRunning`, `warmSpares`, `stopAfterIdleMinutes`, `keepStopped` |
+| `warden serve --state`, `--runner-socket` | `paths.state` + `/app`, `/runner/worker.sock` |
+| `warden serve --listen` | `chat.listen` |
+| `warden serve --web-dir` | `paths.webAssets` |
+| `warden serve --preview-suffix` | `previews.hostSuffix` (`previews.mode` `public`; `localhost` means loopback previews through the edge on `previews.edgeListen`) |
 | edge `origin`, `previewSuffix`, `listen` | `auth.publicURL`, `previews.hostSuffix`, `previews.edgeListen` |
 | edge `clientID`, `ownerEmails`, `demoDomains`, `loginsFile` | `auth.google.signInClientID`, `owners`, `demoDomains`, `signInLedger` (`auth.mode` `google`) |
 | edge `upstream`, `upstreamHost`, `ownerTokenFile` | `chat.listen`, `paths.state` + `/app/endpoint.json` |
@@ -279,8 +277,8 @@ the workflow summary.
    with the hand-build commands above and tag it `warden:<tag>`.
 2. Install the release directory: unpack `warden-<tag>-linux-amd64.tar.gz`
    (or the upload of `deploy/chat`, `config`, `vendor`) to
-   `/opt/warden/releases/<tag>` and check `bin/warden-policy --version`
-   there prints `warden-policy <tag> protocol=2`. Do not move
+   `/opt/warden/releases/<tag>` and check `bin/warden --version` there
+   prints `warden <tag> protocol=2`. Do not move
    `/opt/warden/current` yet.
 3. Write `/opt/warden/releases/<tag>/deploy/chat/warden.json`: copy
    `warden.example.json`, then set `providers.github.appID` to the App ID in
@@ -303,7 +301,8 @@ the workflow summary.
    (the previous target remains under `/opt/warden/releases/`), then
    `docker compose -f /opt/warden/current/deploy/chat/compose.yaml up -d`
    and `systemctl restart warden-edge` only if the edge binary changed
-   (copy `bin/warden-edge` to `/opt/warden-preview/warden-edge` first; its
+   (copy `bin/warden` to `/opt/warden-preview/warden` and install the
+   updated `warden-edge.service`, whose ExecStart is now `warden edge`; the
    config file is unchanged).
 7. Verify, in order:
    - `docker logs --tail 20 warden-chat-1` shows

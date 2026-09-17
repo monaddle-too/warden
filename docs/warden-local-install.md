@@ -2,8 +2,9 @@
 
 This is the operator guide for a local, single-owner Warden: one person, one
 machine, no domain, no TLS certificates, no Google sign-in client, no Docker
-Compose. The four services (`warden-policy`, `warden-runner`, `warden-chat`,
-`warden-edge`) run as your user from one private state directory, and agents
+Compose. The four services (policy, runner, chat and edge, all subcommands
+of the one `warden` binary) run as your user from one private state
+directory, and agents
 run in Docker Sandboxes (SBX) microVMs that Warden manages in an SBX namespace
 of its own. The launcher is the `warden` binary (`chat/cmd/warden`). The
 server-shaped installation on OVH is described in `deploy/chat/README.md`;
@@ -53,9 +54,9 @@ architecture with "unsupported host architecture".
 ## 1. Get the release
 
 **From a release tarball.** A release is a tarball
-`warden-<version>-<os>-<arch>.tar.gz` holding `bin/` (the five binaries:
-`warden`, `warden-policy`, `warden-runner`, `warden-chat`, `warden-edge`),
-`web/` (the built chat UI), `config/` (the sandbox policy template and the
+`warden-<version>-<os>-<arch>.tar.gz` holding `bin/warden` (the one
+binary; the services are its `policy`, `runner`, `serve` and `edge`
+subcommands), `web/` (the built chat UI), `config/` (the sandbox policy template and the
 server example config) and `vendor/` (the GitHub REST catalog). Unpack it
 anywhere and run `bin/warden install` from there: the launcher and the
 services find `web/`, `vendor/` and `config/` beside `bin/` without any
@@ -70,14 +71,11 @@ no GitHub Actions minutes.
 ```sh
 pnpm --dir chat/web install --frozen-lockfile && pnpm --dir chat/web build
 mkdir -p dist/chat
-for b in warden warden-policy warden-runner warden-chat warden-edge; do
-  go -C chat build -trimpath -o ../dist/chat/$b ./cmd/$b
-done
+go -C chat build -trimpath -o ../dist/chat/warden ./cmd/warden
 ```
 
 `dist/chat/warden start` then finds `chat/web/dist`, `vendor/` and
-`config/policy.template.json` in the checkout (the layout
-`scripts/warden-chat` used). This is the layout the live macOS run used.
+`config/policy.template.json` in the checkout.
 
 ## 2. `warden install`
 
@@ -285,9 +283,10 @@ warden start
 `start` requires `warden.json` (from install), takes `<state>/launcher.lock`
 (a second `start` on the same state directory is refused with "Warden is
 already running or shutting down in this state directory."), then runs
-`warden-policy`, `warden-runner`, `warden-chat` and `warden-edge` from the
-directory holding `warden` (or `--bin-dir DIR`), each with `WARDEN_CONFIG`
-pointing at `warden.json` and output appended to `<state>/<service>.log`.
+the four services as `warden policy`, `warden runner`, `warden serve` and
+`warden edge` (the same executable, so one build always runs with itself),
+each with `WARDEN_CONFIG` pointing at `warden.json` and output appended to
+`<state>/<service>.log` (`warden-policy.log` and so on).
 The policy service and the runner run `sbx` themselves, so `start` gives
 them the namespace `HOME`/`XDG_*` environment; without it their sandboxes
 would land in your own namespace. It waits (up to 10 s each) for the policy
@@ -298,9 +297,8 @@ exits 1 with `<service> stopped; inspect <state>/<service>.log`.
 
 Other flags: `--web-dir`, `--vendor-dir`, `--policy-template` (asset
 locations when `warden.json` has no `paths.*`), `--without-edge` (do not
-start `warden-edge`; the app is then only reachable on the chat port and
-previews are not served), `--google-config FILE` (only used with service
-binaries that predate `--config`).
+start the edge; the app is then only reachable on the chat port and
+previews are not served).
 
 ```sh
 warden open           # opens the browser; --print prints the URL instead
@@ -402,11 +400,13 @@ namespace was started detached and keeps running.
 | `warden-policy.log`, `warden-runner.log`, `warden-chat.log`, `warden-edge.log` | Service output, appended across starts. |
 | `launcher.lock` | Held while `warden start` runs. |
 
-**Reset.** Stop `warden start`. To start over completely, remove the
-sandboxes in the namespace (`<state>/bin/warden-sbx ls`, then `rm`), stop
-the namespace daemon with sbx's own daemon command through the wrapper
-(Warden only exercises `daemon start`, `status` and `restart`; the stop
-form is sbx's), and delete `<state>`. Deleting only `app/` forgets the
+**Reset and uninstall.** `warden uninstall` stops a background Warden,
+deletes every sandbox in the namespace, stops the namespace daemon and
+removes `<state>`; `--keep-state` stops after the sbx cleanup, `--yes`
+skips the confirmation. Nothing outside `<state>` was created by install,
+so afterwards only the unpacked release directory (and any PATH entry for
+it) remains; the command prints where to revoke Warden's GitHub and Google
+sign-ins at the providers, which outlive the local files. Deleting only `app/` forgets the
 chats but keeps sandboxes and logins; deleting only `provider/<file>` (or
 `warden login … --replace`) renews one sign-in; deleting
 `sbx/login.json` makes the next install run the SBX sign-in again. Your
@@ -494,8 +494,8 @@ sandboxes in your namespace. `warden start` sets `HOME` and the four
 sandboxes with your own `sbx rm`; the ones under `<state>/sbx` are Warden's.
 
 **404 at `/` after `warden open`.** The chat service could not find the
-built UI. `warden-chat` looks in `paths.webAssets`, then `web/` beside its
-binary, then `chat/web/dist` two levels above it; `warden start` resolves
+built UI. The chat service looks in `paths.webAssets`, then `web/` beside
+the binary, then `chat/web/dist` two levels above it; `warden start` resolves
 the same for a source checkout and passes `--web-dir`. Point it at the
 `web` directory with `warden start --web-dir DIR` or set
 `paths.webAssets` in `warden.json`, and check `<state>/warden-chat.log`.

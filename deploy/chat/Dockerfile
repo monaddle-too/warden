@@ -1,5 +1,5 @@
-# Warden server image: warden-policy, warden-runner and warden-chat with the
-# built UI, the GitHub catalog and the policy template at the /app paths
+# Warden server image: the one warden binary (run as warden policy, warden
+# runner and warden serve by compose.yaml) with the built UI, the GitHub catalog and the policy template at the /app paths
 # warden.example.json names. Built for linux/amd64 and linux/arm64 by
 # .github/workflows/release.yml from the cross-compiled binaries in
 # dist/linux-<arch>/ (a local build needs the same layout: see
@@ -14,14 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 COPY config/policy.template.json /app/config/policy.template.json
 COPY vendor /app/vendor
-COPY dist/linux-${TARGETARCH}/warden-policy dist/linux-${TARGETARCH}/warden-chat dist/linux-${TARGETARCH}/warden-runner /usr/local/bin/
+COPY dist/linux-${TARGETARCH}/warden /usr/local/bin/
 COPY chat/web/dist /app/web
-RUN chmod -R a+rX /app /usr/local/bin/warden-policy /usr/local/bin/warden-chat /usr/local/bin/warden-runner
+RUN chmod -R a+rX /app /usr/local/bin/warden
 # Packaging smoke check: the catalog, policy template and gateway CA
-# generation must work from the installed layout before the image ships,
-# and the three binaries must report one revision and protocol.
-RUN warden-policy selfcheck && git --version \
-    && warden-policy --version && warden-runner --version && warden-chat --version \
-    && test "$(warden-policy --version | cut -d' ' -f2-)" = "$(warden-runner --version | cut -d' ' -f2-)" \
-    && test "$(warden-policy --version | cut -d' ' -f2-)" = "$(warden-chat --version | cut -d' ' -f2-)"
+# generation must work from the installed layout before the image ships.
+RUN warden policy selfcheck && git --version && warden --version
 ENTRYPOINT ["/usr/bin/tini", "-g", "--"]

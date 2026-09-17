@@ -102,19 +102,11 @@ func (c *cli) stopService(args []string) error {
 		os.Remove(pidFile(cfg))
 		return errors.New("Warden is not running in the background (no live pid file); a foreground `warden start` stops with Ctrl+C")
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	if err := stopDetached(cfg, pid); err != nil {
 		return err
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, alive := runningPID(cfg); !alive {
-			os.Remove(pidFile(cfg))
-			fmt.Fprintf(c.stdout, "Warden stopped (pid %d)\n", pid)
-			return nil
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	return fmt.Errorf("Warden (pid %d) did not stop within 30 s", pid)
+	fmt.Fprintf(c.stdout, "Warden stopped (pid %d)\n", pid)
+	return nil
 }
 
 // status reports whether Warden is running and where.

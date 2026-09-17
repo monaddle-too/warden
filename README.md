@@ -201,5 +201,6 @@ Warden now includes the chat UI and managed SBX backend extracted from Panta.
 Install and run it on your own machine with the `warden` launcher, following
 [the local install guide](docs/warden-local-install.md) (`warden install`,
 `doctor`, `login`, `start`, `open`); [the standalone chat guide](docs/warden-chat.md)
-describes what the stack does. The `scripts/warden-chat` launcher is deprecated.
+describes what the stack does. The old `scripts/warden-chat` launcher is gone;
+`warden start` replaced it.
 [Migration progress](docs/warden-chat-migration-plan.md) records validation and the remaining platform work.

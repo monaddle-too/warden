@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build a Warden release locally, without GitHub Actions: the frontend, the
-# five binaries for linux/amd64, linux/arm64 and darwin/arm64 with the
+# warden binary for linux/amd64, linux/arm64 and darwin/arm64 with the
 # revision linked in, one tarball per target and SHA256SUMS, exactly as
 # .github/workflows/release.yml does. With --publish it creates the GitHub
 # release for the current tag with `gh`. GitHub Releases cost no Actions
@@ -59,7 +59,7 @@ if [ "$SKIP_TESTS" != 1 ]; then
   go -C chat test -race ./...
 fi
 
-CMDS="warden warden-policy warden-runner warden-chat warden-edge"
+CMDS="warden"
 for target in linux/amd64 linux/arm64 darwin/arm64; do
   os="${target%/*}"; arch="${target#*/}"
   out="dist/${os}-${arch}"
@@ -71,15 +71,14 @@ for target in linux/amd64 linux/arm64 darwin/arm64; do
   done
 done
 
-# The binaries for this host run here: all must report the version and one
-# protocol number.
+# The binary for this host runs here: it and each service subcommand must
+# report the version.
 host="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
 if [ -d "dist/$host" ]; then
-  for cmd in $CMDS; do
-    "dist/$host/$cmd" --version | grep -q "^$cmd ${VERSION} protocol=" || { echo "$cmd does not report ${VERSION}" >&2; exit 1; }
+  "dist/$host/warden" --version | grep -q "^warden ${VERSION} protocol=" || { echo "warden does not report ${VERSION}" >&2; exit 1; }
+  for svc in policy runner serve edge; do
+    "dist/$host/warden" $svc --version | grep -q " ${VERSION} protocol=" || { echo "warden $svc does not report ${VERSION}" >&2; exit 1; }
   done
-  protocols="$(for cmd in $CMDS; do "dist/$host/$cmd" --version | sed 's/.*protocol=//'; done | sort -u | wc -l | tr -d ' ')"
-  [ "$protocols" = 1 ] || { echo "binaries disagree on the protocol number" >&2; exit 1; }
 fi
 
 # Tarballs: reproducible ownership and mtimes with GNU or BSD tar.
@@ -112,7 +111,7 @@ done
 if [ -f "dist/release/warden-${VERSION}-${host}.tar.gz" ]; then
   rm -rf dist/check; mkdir -p dist/check
   tar -C dist/check -xzf "dist/release/warden-${VERSION}-${host}.tar.gz"
-  "dist/check/warden-${VERSION}-${host}/bin/warden-policy" selfcheck
+  "dist/check/warden-${VERSION}-${host}/bin/warden" policy selfcheck
   "dist/check/warden-${VERSION}-${host}/bin/warden" --version
 fi
 

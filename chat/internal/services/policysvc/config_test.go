@@ -1,4 +1,4 @@
-package main
+package policysvc
 
 import (
 	"flag"
@@ -108,7 +108,7 @@ func TestFileAndFlagsMustAgree(t *testing.T) {
 func TestOVHExampleFileMatchesTheComposeDeployment(t *testing.T) {
 	t.Setenv(config.Env, "")
 	t.Setenv("WARDEN_GITHUB_APP_BROKER", "/var/lib/warden/github/broker.json")
-	s, err := policySettings(t, "--config", filepath.Join("..", "..", "..", "deploy", "chat", "warden.example.json"))
+	s, err := policySettings(t, "--config", filepath.Join("..", "..", "..", "..", "deploy", "chat", "warden.example.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestOVHExampleFileMatchesTheComposeDeployment(t *testing.T) {
 	}
 	// The compose file's WARDEN_GITHUB_APP_BROKER must name the same file.
 	t.Setenv("WARDEN_GITHUB_APP_BROKER", "/run/github/broker.json")
-	if _, err = policySettings(t, "--config", filepath.Join("..", "..", "..", "deploy", "chat", "warden.example.json")); err == nil || !strings.Contains(err.Error(), "brokerFile") {
+	if _, err = policySettings(t, "--config", filepath.Join("..", "..", "..", "..", "deploy", "chat", "warden.example.json")); err == nil || !strings.Contains(err.Error(), "brokerFile") {
 		t.Fatal("broker path disagreement accepted", err)
 	}
 }

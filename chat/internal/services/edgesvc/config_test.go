@@ -1,4 +1,4 @@
-package main
+package edgesvc
 
 import (
 	"os"
@@ -58,7 +58,7 @@ func TestEdgeLoadsBothConfigShapes(t *testing.T) {
 // the unit can switch files later without a behaviour change.
 func TestOVHExampleFilesAgree(t *testing.T) {
 	t.Setenv(config.Env, "")
-	dir := filepath.Join("..", "..", "..", "deploy", "chat")
+	dir := filepath.Join("..", "..", "..", "..", "deploy", "chat")
 	legacy, err := loadEdgeConfig(filepath.Join(dir, "edge.example.json"))
 	if err != nil {
 		t.Fatal(err)
