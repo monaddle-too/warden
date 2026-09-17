@@ -366,6 +366,11 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 	phase := "runtime"
 	if !s.Created {
 		phase = "create"
+	} else if err = w.ensureResidencyLocked(ctx, s); err != nil {
+		// A stopped pod-based sandbox has no runtime to attest until its pod
+		// is back (under the namespace's default deny); see the same call
+		// after creation below.
+		return Response{}, err
 	}
 	if err = w.Gate.Check(ctx, grant, phase); err != nil {
 		w.failEnforcementLocked(s)
