@@ -2,7 +2,13 @@
    the unread divider and the "new messages" count behind the jump button.
    What the reader has seen is remembered per chat in localStorage as the
    last entry that was on screen while they were following the transcript. */
-type Item = { id: string; role: string; createdAt: number; turnID?: string };
+type Item = {
+  id: string;
+  role: string;
+  createdAt: number;
+  turnID?: string;
+  sender?: { principalID: string };
+};
 
 /* The last entry the reader saw: its ID, and its time for when the ID is
    gone (a chat whose entries the service replaced). */
@@ -26,16 +32,22 @@ export function readSeen(
    remembered entry, or the first newer than its time if that entry is
    gone. -1 when nothing is unread, on a first visit (everything would be
    new, so a divider would say nothing) and when every entry is new (the
-   divider divides; a chat seen empty starts at the top anyway). */
+   divider divides; a chat seen empty starts at the top anyway). The
+   reader's own messages are never unread: one sent while scrolled up (the
+   seen mark only advances while following) would otherwise head the
+   stretch, so the divider moves past them to what came after. */
 export function unreadStart<T extends Item>(
   entries: T[],
   seen: Seen | undefined,
+  mine: (entry: T) => boolean = () => false,
 ): number {
   if (!seen) return -1;
   const known = entries.findIndex((e) => e.id === seen.id);
-  const start =
+  let start =
     known >= 0 ? known + 1 : entries.findIndex((e) => e.createdAt > seen.at);
-  return start > 0 && start < entries.length ? start : -1;
+  if (start <= 0) return -1;
+  while (start < entries.length && mine(entries[start])) start++;
+  return start < entries.length ? start : -1;
 }
 
 /* The divider is a place, not a rule: the ID of the entry it goes before,
@@ -46,8 +58,9 @@ export function unreadStart<T extends Item>(
 export function unreadEntry<T extends Item>(
   entries: T[],
   seen: Seen | undefined,
+  mine?: (entry: T) => boolean,
 ): string {
-  const start = unreadStart(entries, seen);
+  const start = unreadStart(entries, seen, mine);
   return start >= 0 ? entries[start].id : "";
 }
 

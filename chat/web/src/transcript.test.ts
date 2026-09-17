@@ -77,6 +77,16 @@ describe("unread divider", () => {
       expect(unreadStart(later, seen)).toBe(7);
     }
   });
+  it("moves past the reader's own messages at the head of the unread stretch", () => {
+    // Sent while scrolled up, so the seen mark stayed on m1: the divider
+    // goes before the reply, not before what the reader wrote themselves.
+    const mine = (e: { role: string }) => e.role === "user";
+    expect(unreadEntry(entries, { id: "m1", at: 13 }, mine)).toBe("a3");
+    expect(unreadStart(entries.slice(0, 5), { id: "m1", at: 13 }, mine)).toBe(
+      -1,
+    );
+    expect(unreadEntry(entries, { id: "m1", at: 13 })).toBe("u2");
+  });
   it("keeps a fixed divider in place as the transcript grows or loses it", () => {
     const id = unreadEntry(entries, { id: "m1", at: 13 });
     expect(id).toBe("u2");

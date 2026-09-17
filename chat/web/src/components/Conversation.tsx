@@ -284,7 +284,13 @@ export function Conversation({
   // never appears above what arrives during the visit.
   const seenKey = "warden-seen:" + location.origin + ":" + chat.id;
   const [unreadID] = useState(() =>
-    unreadEntry(entries, readSeenLocal(seenKey)),
+    unreadEntry(
+      entries,
+      readSeenLocal(seenKey),
+      (e) =>
+        e.role === "user" &&
+        (e.sender?.principalID ?? "owner") === me.principalID,
+    ),
   );
   const unread = unreadIndex(entries, unreadID);
   // `wake` only re-runs the effect when the tab comes back (the state it
@@ -658,6 +664,10 @@ export function Conversation({
     try {
       localStorage.setItem(key + ":attempt", JSON.stringify(message));
     } catch {}
+    // Follow before the request: the message arrives over the event
+    // stream, often before the reply, and the seen mark advances only
+    // while following.
+    setFollow(true);
     try {
       await api(`chats/${chat.id}/message`, message);
       lastTyping.current = 0;
@@ -667,7 +677,6 @@ export function Conversation({
       try {
         localStorage.removeItem(key + ":attempt");
       } catch {}
-      setFollow(true);
     } catch (e) {
       setError(String(e));
     } finally {
