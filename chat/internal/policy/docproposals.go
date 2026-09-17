@@ -649,8 +649,9 @@ func (d *DocumentProposals) rebaseOnto(r *docRow, proposal docProposal, draft do
 
 // Apply writes the approved draft. The document is read again first: an
 // unchanged document is written against its current revision, a changed
-// one is rebased (and handed back to the owner on conflict). No retry after
-// an ambiguous Google response.
+// one is rebased (and handed back to the owner on conflict). A write Google
+// refuses because the revision moved in between is retried once from a
+// fresh read; nothing else is retried, and never after an ambiguous answer.
 func (d *DocumentProposals) Apply(id string) {
 	d.s.mu.Lock()
 	r, err := d.rowLocked(id)
@@ -662,44 +663,62 @@ func (d *DocumentProposals) Apply(id string) {
 	proposal, draft, outcome := r.parts()
 	status := "failed"
 	out := map[string]any{}
+	rebased := false
 	err = func() error {
-		fresh, _, err := d.readable(r.sandbox, proposal.DocumentID)
-		if err != nil {
-			return err
-		}
-		if !sameDocument(proposal.Base, fresh.Paragraphs) {
-			merged, conflicts := mergeDocuments(proposal.Base, draft.Paragraphs, fresh.Paragraphs)
-			if len(conflicts) > 0 {
-				if _, err := d.rebaseOnto(r, proposal, draft, outcome, fresh); err != nil {
-					return err
+		for attempt := 0; ; attempt++ {
+			fresh, _, err := d.readable(r.sandbox, proposal.DocumentID)
+			if err != nil {
+				return err
+			}
+			if !sameDocument(proposal.Base, fresh.Paragraphs) {
+				merged, conflicts := mergeDocuments(proposal.Base, draft.Paragraphs, fresh.Paragraphs)
+				if len(conflicts) > 0 {
+					if _, err := d.rebaseOnto(r, proposal, draft, outcome, fresh); err != nil {
+						return err
+					}
+					status = "stale"
+					return valueErr("The document changed since the agent read it and some changes overlap; review the merged draft and approve again")
 				}
-				status = "stale"
-				return valueErr("The document changed since the agent read it and some changes overlap; review the merged draft and approve again")
+				if proposal.RebasedFrom == "" {
+					proposal.RebasedFrom = proposal.BaseRevision
+				}
+				proposal.Base, draft.Paragraphs, rebased = fresh.Paragraphs, merged, true
+				for i := range draft.Comments {
+					if draft.Comments[i].Paragraph > len(merged) {
+						draft.Comments[i].Paragraph = len(merged)
+					}
+				}
 			}
-			draft.Paragraphs = merged
-		}
-		body, _, err := CompileDocumentUpdate(fresh, draft.Paragraphs)
-		if err != nil {
-			return err
-		}
-		code, response, err := d.s.Google.BatchUpdate(proposal.DocumentID, mustJSON(body))
-		if err != nil {
-			return err
-		}
-		if code != 200 {
-			message, _ := response["error"].(map[string]any)
-			text := stringField(message, "message")
-			if code == 400 && strings.Contains(strings.ToLower(text), "revision") {
-				return valueErr("The document changed while writing; refresh it from Google and approve again")
+			proposal.BaseRevision = fresh.RevisionID
+			body, _, err := CompileDocumentUpdate(fresh, draft.Paragraphs)
+			if err != nil {
+				return err
 			}
-			return errors.New("Google rejected the write (HTTP " + strconv.Itoa(code) + ")")
+			code, response, err := d.s.Google.BatchUpdate(proposal.DocumentID, mustJSON(body))
+			if err != nil {
+				return err
+			}
+			if code != 200 {
+				message, _ := response["error"].(map[string]any)
+				text := stringField(message, "message")
+				if code == 400 && strings.Contains(strings.ToLower(text), "revision") {
+					if attempt == 0 {
+						continue
+					}
+					return valueErr("The document keeps changing while writing; refresh it from Google and approve again")
+				}
+				return errors.New("Google rejected the write (HTTP " + strconv.Itoa(code) + ")")
+			}
+			control, _ := response["writeControl"].(map[string]any)
+			out["revision_id"] = stringField(control, "requiredRevisionId")
+			out["url"] = proposal.URL
+			out["written"] = len(body["requests"].([]map[string]any))
+			if rebased {
+				out["rebased_from"] = proposal.RebasedFrom
+			}
+			status = "applied"
+			return nil
 		}
-		control, _ := response["writeControl"].(map[string]any)
-		out["revision_id"] = stringField(control, "requiredRevisionId")
-		out["url"] = proposal.URL
-		out["written"] = len(body["requests"].([]map[string]any))
-		status = "applied"
-		return nil
 	}()
 	if err != nil && status != "stale" {
 		message := "Writing to Google failed. Check the document and Google before approving again."
@@ -708,7 +727,7 @@ func (d *DocumentProposals) Apply(id string) {
 		}
 		out["error"] = message
 		out["url"] = proposal.URL
-		if strings.HasPrefix(message, "The document changed while writing") {
+		if strings.HasPrefix(message, "The document keeps changing") {
 			status = "pending"
 		}
 	}
@@ -718,6 +737,11 @@ func (d *DocumentProposals) Apply(id string) {
 	d.s.mu.Lock()
 	defer d.s.mu.Unlock()
 	if d.s.DB != nil {
+		if status == "applied" && rebased {
+			// The review now reads against the revision that was written.
+			_, _ = d.s.DB.Exec("UPDATE document_proposals SET status=?,outcome=?,proposal=?,draft=? WHERE id=?", status, string(mustJSON(out)), string(mustJSON(proposal)), string(mustJSON(draft)), id)
+			return
+		}
 		_, _ = d.s.DB.Exec("UPDATE document_proposals SET status=?,outcome=? WHERE id=?", status, string(mustJSON(out)), id)
 	}
 }

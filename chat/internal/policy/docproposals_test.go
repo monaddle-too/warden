@@ -297,13 +297,19 @@ func TestStaleDocumentIsRebasedOrHandedBack(t *testing.T) {
 	if done := f.waitStatus(id2, "applied", "failed", "stale", "pending"); done["status"] != "applied" || len(f.google.batchCalls) != 2 {
 		t.Fatalf("second approval: %v", done)
 	}
-	// Google refusing the revision hands the proposal back as pending.
+	// A clean rebase leaves the review reading against what was written.
+	rebasedPreview := f.dispatch("doc_preview", map[string]any{"id": id})
+	if p := rebasedPreview["proposal"].(docProposal); p.BaseRevision != "r2" || p.RebasedFrom != "r1" || joinTexts(p.Base) != "Plan|Say **hello** to the world|one|two|END" || rebasedPreview["rebased_from"] != "r1" {
+		t.Fatalf("rebased record: %+v %v", p, rebasedPreview["rebased_from"])
+	}
+	// Google refusing the revision is retried once from a fresh read; a
+	// second refusal hands the proposal back as pending.
 	f.google.document = docFixture("r1", docBase()...)
 	id3 := f.dispatch("doc_submit", docSubmission(map[string]any{"callID": "call-3"}))["request_id"].(string)
 	f.google.batchStatus, f.google.batchResponse = 400, map[string]any{"error": map[string]any{"message": "The document revision has changed"}}
 	f.dispatch("doc_resolve", map[string]any{"id": id3, "allow": true})
-	if back := f.waitStatus(id3, "applied", "failed", "stale", "pending"); back["status"] != "pending" || !strings.Contains(back["error"].(string), "changed while writing") {
-		t.Fatalf("revision refusal: %v", back)
+	if back := f.waitStatus(id3, "applied", "failed", "stale", "pending"); back["status"] != "pending" || !strings.Contains(back["error"].(string), "keeps changing") || len(f.google.batchCalls) != 4 {
+		t.Fatalf("revision refusal: %v (%d writes)", back, len(f.google.batchCalls))
 	}
 	f.google.batchStatus, f.google.batchResponse = 500, map[string]any{}
 	f.dispatch("doc_resolve", map[string]any{"id": id3, "allow": true})
