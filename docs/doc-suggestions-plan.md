@@ -182,6 +182,9 @@ first tab.
 
 ## Remaining work / follow-ups
 
+- The paragraph-list preview is being replaced by a Google Docs–style page
+  built on Panta's docs editor: [doc-suggestions-view-plan](doc-suggestions-view-plan.md).
+
 - Decide whether to retire the direct `write` grant level (decision 8).
 - Show the underlying named style of list items in the projection.
 - Tables and inline images as editable content (v2), multiple tabs,
