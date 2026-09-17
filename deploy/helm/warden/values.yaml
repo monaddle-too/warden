@@ -190,8 +190,9 @@ storage:
 # Names of existing Secrets in the release namespace holding provider
 # logins (plan decision 8). The chart creates none of them and only the
 # policy ServiceAccount may read or write them. Each holds the same JSON
-# the sbx shapes keep in providers.<p>.authFile, under the key `auth.json`
-# (Codex refreshes it through the API).
+# the sbx shapes keep in providers.<p>.authFile, under a key named like
+# that file: codex `auth.json`, claude `claude.json`, github `github.json`
+# (user-token mode; App mode uses `broker.json` and `app-private-key.pem`).
 secrets:
   codex: warden-codex-login
   claude: warden-claude-login

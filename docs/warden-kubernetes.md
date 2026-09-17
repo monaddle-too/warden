@@ -87,9 +87,10 @@ section of `warden.json`.
 
 Everything except the sandboxes lives in the release namespace (`warden`
 below). The provider logins are Secrets you create there first; each holds
-the same JSON the sbx shapes keep in `providers.<p>.authFile`, under the
-key `auth.json`. The default names are the ones `values.secrets` lists;
-change both together.
+the same JSON the sbx shapes keep in `providers.<p>.authFile`, under a key
+named like that file (`auth.json` for Codex, `claude.json` for Claude,
+`github.json` for GitHub). The default names are the ones `values.secrets`
+lists; change both together.
 
 ```sh
 kubectl create namespace warden
@@ -117,7 +118,7 @@ the same file without an install:
 
 ```sh
 scripts/warden-claude-token "$TMPDIR/claude.json"
-kubectl -n warden create secret generic warden-claude-login --from-file=auth.json="$TMPDIR/claude.json"
+kubectl -n warden create secret generic warden-claude-login --from-file=claude.json="$TMPDIR/claude.json"
 rm -f "$TMPDIR/claude.json"
 ```
 
@@ -127,12 +128,13 @@ login github` writes (`{"token":"gho_…","login":"…","scopes":[…],
 install:
 
 ```sh
-kubectl -n warden create secret generic warden-github-login --from-file=auth.json="$HOME/.warden/provider/github.json"
+kubectl -n warden create secret generic warden-github-login --from-file=github.json="$HOME/.warden/provider/github.json"
 ```
 
 In GitHub App mode (`providers.github.appID` set) the same Secret holds the
-App broker's credential instead of a user token; its key layout in this
-shape is not yet pinned by the chart or the plan (to be verified in step 7).
+App broker's credential instead of a user token, under the keys
+`broker.json` and `app-private-key.pem`; the App-mode broker on Kubernetes
+is not wired yet (to be verified in step 7).
 
 A provider you do not use is turned off with `providers.<p>.enabled:
 false`; its Secret is then not required and not granted.
@@ -497,7 +499,7 @@ service watches the named Secrets and picks up the new value without a
 restart (to be verified in step 7):
 
 ```sh
-kubectl -n warden create secret generic warden-claude-login --from-file=auth.json="$TMPDIR/claude.json" --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n warden create secret generic warden-claude-login --from-file=claude.json="$TMPDIR/claude.json" --dry-run=client -o yaml | kubectl apply -f -
 ```
 
 Until a Secret exists or while its token is rejected, chats on that
