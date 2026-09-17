@@ -108,19 +108,39 @@ The report is not persisted anywhere: a restart clears it with the run.
 ## Steps
 
 1. [x] Worktree, cherry-pick of the Resources section, plan.
-2. [ ] `sandbox`: `Progress`, context reporter, worker progress map, `progress` op, stages in `prepare`, `PrepareTimeout`.
-3. [ ] Kubernetes driver: detail reports; SBX driver: create/boot reports.
-4. [ ] `kube` client: nodes, metrics resources and types, `ParseQuantity`, `LogOptions`.
-5. [ ] `sandbox/kube/cluster.go`: `PodInfo`, `ClusterStatus`, logs; runner ops.
-6. [ ] Chat engine: startup map, `View`, progress polling; runner client deadline; `cluster` routes; edge `ownerOnly`.
-7. [ ] Web: status line, sidebar, workspace panel pod section, admin console Cluster section and log viewer; TUI line.
-8. [ ] Chart RBAC, values, goldens.
-9. [ ] Docs: feature map, operator guide.
+2. [x] `sandbox`: `Progress`, context reporter, worker progress map, `progress` op, stages in `prepare`, `PrepareTimeout`.
+3. [x] Kubernetes driver: detail reports; SBX driver: create/boot reports.
+4. [x] `kube` client: nodes, metrics resources and types, `ParseQuantity`, `LogOptions`.
+5. [x] `sandbox/kube/cluster.go`: `PodInfo`, `ClusterStatus`, logs; runner ops.
+6. [x] Chat engine: startup map, `View`, progress polling; runner client deadline; `cluster` routes; edge `ownerOnly`.
+7. [x] Web: status line, sidebar, workspace panel pod section, admin console Cluster section and log viewer; TUI line.
+8. [x] Chart RBAC, values, goldens.
+9. [x] Docs: feature map, operator guide.
 10. [ ] Live check on the Lima cluster: cold start stages, resume stages, cluster page, logs.
 
 ## Progress
 
-- 2026-09-17: step 1 done; steps 2–10 in progress.
+- 2026-09-17: steps 1–9 done; `go test ./...`, `pnpm build && pnpm test`
+  and `deploy/helm/warden/test.sh` pass. Two things found on the way: the
+  metrics server reports CPU in nanocores (`ParseQuantity` takes `n`/`u`),
+  and the reads the workspace panel polls (`status`, `usage`, `pod`) were
+  queueing behind `prepare`'s registry lock, so during a slow start the
+  panel and the chat header went stale exactly when they mattered — they
+  now answer from a registry snapshot when the lock is busy
+  (`sandbox/snapshot.go`), and a resuming sandbox is marked `starting`
+  before its pod is recreated.
+- 2026-09-17: step 10 on the Lima cluster (k3s 1.36.4, gVisor, image
+  `warden:v0.1.0-alpha.8-118-…`): a cold start that adopted a spare showed
+  binding → launching → connecting in under two seconds; a resume after a
+  workspace stop showed binding → preparing → attesting → launching →
+  connecting; with the node cordoned the resume showed `resuming · waiting
+  for a node: 0/1 nodes are available: 1 node(s) were unschedulable` for the
+  20 s until the uncordon, then `starting the container`, and `GET
+  environments` answered in 46 ms meanwhile with the pod Pending and that
+  reason. The admin console's Cluster section listed the node with usage,
+  the spare and bound sandbox pods and the four service pods; the log
+  viewer read a sandbox pod (no output, as expected of the guest's init)
+  and the runner's log with local-time stamps.
 
 ## Decisions
 
@@ -141,5 +161,12 @@ The report is not persisted anywhere: a restart clears it with the run.
 ## Remaining
 
 - Kata tier not exercised live in this session (the dev VM boots Kata
-  bimodally); the stage reports are driver-level and tier-independent.
+  bimodally); the stage reports are driver-level and tier-independent, and
+  a Kata boot shows as `starting the container` (ContainerCreating) for its
+  duration.
+- A cold creation on a cluster that has to pull the guest image or add a
+  node was simulated (cordon) rather than observed; the detail strings for
+  the image pull come from `StartupDetail`'s unit table.
 - The TUI shows the stage line but has no cluster view.
+- Merge order: this branch carries `feat/workspace-sandbox-stats` (be91f42)
+  as a cherry-pick; merging both into main leaves one copy.

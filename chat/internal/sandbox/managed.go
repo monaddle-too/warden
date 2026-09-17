@@ -381,7 +381,15 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		if adopted {
 			stage, detail = StageCreating, "adopting a warm spare sandbox"
 		}
-		err = w.ensureResidencyLocked(report(stage, detail), s)
+		// The panel reads the state from the registry snapshot meanwhile:
+		// say the resume has begun, and take it back if the pod never came.
+		previous := s.State
+		s.State = "starting"
+		_ = w.saveManagedLocked()
+		if err = w.ensureResidencyLocked(report(stage, detail), s); err != nil {
+			s.State = previous
+			_ = w.saveManagedLocked()
+		}
 	}
 	if err != nil {
 		// A stopped pod-based sandbox has no runtime to attest until its pod
