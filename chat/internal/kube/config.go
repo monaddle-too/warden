@@ -114,7 +114,7 @@ func LoadKubeconfigContext(path, context string) (*Config, error) {
 func parseKubeconfig(data []byte, baseDir, contextName string) (*Config, error) {
 	var doc any
 	var err error
-	if trimmed := bytes.TrimSpace(data); len(trimmed) > 0 && trimmed[0] == '{' {
+	if trimmed := bytes.TrimSpace(data); len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
 		doc, err = parseJSONDocument(trimmed)
 	} else {
 		doc, err = parseYAML(data)
