@@ -6,12 +6,70 @@
   flex: 1;
   overflow: hidden;
 }
+/* The scroll box and the jump button floating over its end. */
+.conversation-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
 .conversation-scroll {
   flex: 1;
   overflow: auto;
   padding: 28px 24px 8px;
   min-height: 120px;
   scrollbar-gutter: stable;
+}
+/* Shown once the reader has scrolled away from the end; says how many
+   messages arrived since. */
+.jump-bottom {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 32px;
+  padding: 0 14px 0 10px;
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  color: var(--text-2);
+  animation: rise 120ms ease-out;
+}
+.jump-bottom:hover {
+  color: var(--text);
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .jump-bottom {
+    animation: none;
+  }
+}
+/* Before the first entry the reader has not seen. The label is CSS
+   content so it is neither selected nor found by the find bar. */
+.unread-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -8px 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+.unread-divider::before {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--accent-line);
+}
+.unread-divider::after {
+  content: "New messages";
 }
 .transcript {
   max-width: 760px;

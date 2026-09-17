@@ -1,5 +1,6 @@
 // Panta's transcript/composer layout adapted to Warden's standalone API.
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -9,7 +10,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { ArrowUp, Bot, Paperclip, Square } from "lucide-react";
+import { ArrowDown, ArrowUp, Bot, Paperclip, Square } from "lucide-react";
 import {
   canResend,
   messageAttempt,
@@ -24,6 +25,7 @@ import {
   pastedName,
   transferFiles,
 } from "../attachments";
+import { groupEntries, newSince, readSeen, unreadStart } from "../transcript";
 import type { Chat, Entry } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
 import { ActivityGroup, EntryView } from "./EntryView";
@@ -41,18 +43,6 @@ export type RequestCard = {
   note?: ReactNode;
   actions: { label: string; primary?: boolean; onClick: () => void }[];
 };
-/* Consecutive tool steps render as one collapsible group. */
-function groupEntries(entries: Entry[]) {
-  const items: ({ entry: Entry } | { group: Entry[] })[] = [];
-  for (const entry of entries) {
-    const last = items[items.length - 1];
-    if (entry.role === "activity") {
-      if (last && "group" in last) last.group.push(entry);
-      else items.push({ group: [entry] });
-    } else items.push({ entry });
-  }
-  return items;
-}
 function draft(key: string) {
   try {
     return localStorage.getItem(key) || "";
@@ -60,6 +50,15 @@ function draft(key: string) {
     return "";
   }
 }
+function readSeenLocal(key: string) {
+  try {
+    return readSeen(localStorage, key);
+  } catch {
+    return undefined;
+  }
+}
+const reducedMotion = () =>
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 export function Conversation({
   chat,
   live,
@@ -169,7 +168,70 @@ export function Conversation({
   );
   const scroll = useRef<HTMLDivElement>(null);
   const transcript = useRef<HTMLDivElement>(null);
+  const entries = chat.conversation.entries;
+  // Following: the transcript keeps its end in view as it grows. Once the
+  // reader scrolls up, `away` holds the ID of the last entry they had in
+  // view, so the jump button can say how many messages arrived since; the
+  // ref is the same fact for callbacks that cannot wait for a render.
   const follow = useRef(true);
+  const [away, setAway] = useState<string | null>(null);
+  const setFollow = useCallback((value: boolean, lastID = "") => {
+    follow.current = value;
+    setAway(value ? null : lastID);
+  }, []);
+  // A smooth jump passes through positions that are not near the end;
+  // those scroll events must not count as leaving again.
+  const jumping = useRef(false);
+  const lastID = () => entries[entries.length - 1]?.id ?? "";
+  function jump() {
+    const el = scroll.current;
+    if (!el) return;
+    jumping.current = true;
+    setFollow(true);
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: reducedMotion() ? "auto" : "smooth",
+    });
+  }
+  // The unread divider sits before the first entry the reader has not
+  // seen: what they saw is the last entry that was in view while they
+  // followed the transcript with the tab visible, remembered per chat and
+  // read once when the chat opens, so the divider stays put while reading.
+  const seenKey = "warden-seen:" + location.origin + ":" + chat.id;
+  const [seen] = useState(() => readSeenLocal(seenKey));
+  const unread = unreadStart(entries, seen);
+  const unreadID = unread >= 0 ? entries[unread].id : "";
+  // `wake` only re-runs the effect when the tab comes back (the state it
+  // reads is the document's, taken live: a page that loads hidden may
+  // become visible before any listener is attached).
+  const [wake, setWake] = useState(0);
+  useEffect(() => {
+    const onChange = () => setWake((n) => n + 1);
+    document.addEventListener("visibilitychange", onChange);
+    window.addEventListener("focus", onChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onChange);
+      window.removeEventListener("focus", onChange);
+    };
+  }, []);
+  const remembered = useRef("");
+  useEffect(() => {
+    const last = entries[entries.length - 1];
+    if (
+      away !== null ||
+      document.visibilityState === "hidden" ||
+      !last ||
+      remembered.current === last.id
+    )
+      return;
+    remembered.current = last.id;
+    try {
+      localStorage.setItem(
+        seenKey,
+        JSON.stringify({ id: last.id, at: last.createdAt }),
+      );
+    } catch {}
+  }, [entries, away, wake, seenKey]);
   const [finding, setFinding] = useState(() =>
     find?.chatID === chat.id ? find : undefined,
   );
@@ -211,7 +273,7 @@ export function Conversation({
       setError("");
       try {
         await api(`chats/${chat.id}/message`, resendAttempt(entry, newID));
-        follow.current = true;
+        setFollow(true);
       } catch (e) {
         setError(String(e));
       } finally {
@@ -219,7 +281,7 @@ export function Conversation({
         setBusy(false);
       }
     },
-    [chat.id],
+    [chat.id, setFollow],
   );
   // Edit puts the entry's text and uploads into the composer, asking first
   // when that would replace something already there.
@@ -294,10 +356,24 @@ export function Conversation({
       else localStorage.removeItem(key);
     } catch {}
   }, [text, key]);
+  // A chat opens at its end, unless the unread stretch is longer than the
+  // view: then it opens at the divider, with the jump button showing how
+  // much is below.
+  const landed = useRef(false);
   useLayoutEffect(() => {
-    if (follow.current && scroll.current)
-      scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [chat, requests.length]);
+    const el = scroll.current;
+    if (!el) return;
+    if (follow.current) el.scrollTop = el.scrollHeight;
+    if (landed.current) return;
+    landed.current = true;
+    const divider = el.querySelector(".unread-divider");
+    if (!divider || unread < 1) return;
+    const top =
+      divider.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    if (top >= 0) return;
+    el.scrollTop += top - 12;
+    setFollow(false, entries[unread - 1].id);
+  }, [chat, requests.length, unread, entries, setFollow]);
   async function send(event: FormEvent) {
     event.preventDefault();
     const attachments = ready.map((p) => p.attachment!.id);
@@ -323,7 +399,7 @@ export function Conversation({
       try {
         localStorage.removeItem(key + ":attempt");
       } catch {}
-      follow.current = true;
+      setFollow(true);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -341,6 +417,7 @@ export function Conversation({
       setBusy(false);
     }
   }
+  const fresh = away === null ? 0 : newSince(entries, away);
   return (
     <div className="conversation">
       {finding && (
@@ -354,82 +431,116 @@ export function Conversation({
           }}
         />
       )}
-      <div
-        className="conversation-scroll"
-        ref={scroll}
-        onScroll={() => {
-          const el = scroll.current!;
-          follow.current =
-            el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-        }}
-      >
-        {!chat.conversation.entries.length && (
-          <div className="empty">
-            <Bot size={30} />
-            <h2>Start the conversation</h2>
-            <p>
-              Give your agent a task. Warden keeps its work in a sandbox and
-              controls access to your apps.
-            </p>
-          </div>
-        )}
-        <div className="transcript" ref={transcript}>
-          {groupEntries(chat.conversation.entries).map((item) =>
-            "group" in item ? (
-              <ActivityGroup key={item.group[0].id} entries={item.group} />
-            ) : (
-              <EntryView
-                provider={chat.provider}
-                chatID={chat.id}
-                key={item.entry.id}
-                entry={item.entry}
-                onFile={onFile}
-                onEdit={edit}
-                onRetry={retry}
-                actions={!busy && canResend(item.entry, chat, live)}
-              />
-            ),
-          )}
-          {chat.approvals
-            .filter((a) => a.state === "pending")
-            .map((a) => (
-              <ApprovalCard key={a.id} chatID={chat.id} approval={a} />
-            ))}
-          {requests.map((r) => (
-            <section
-              key={r.id}
-              className="approval-card request-card"
-              aria-label="Agent request"
-            >
-              <div className="approval-head">
-                <span className="approval-icon" aria-hidden="true">
-                  {r.icon}
-                </span>
-                <div>
-                  <h3>{r.title}</h3>
-                  {r.detail && <p>{r.detail}</p>}
-                </div>
-              </div>
-              {r.note && <p>{r.note}</p>}
-              <div className="approval-actions">
-                {r.actions.map((a) => (
-                  <button
-                    key={a.label}
-                    className={a.primary ? "primary" : ""}
-                    onClick={a.onClick}
-                  >
-                    {a.label}
-                  </button>
-                ))}
-              </div>
-            </section>
-          ))}
-          {chat.error && (
-            <div className="error" role="alert">
-              {chat.error}
+      <div className="conversation-body">
+        <div
+          className="conversation-scroll"
+          ref={scroll}
+          onScroll={() => {
+            const el = scroll.current!;
+            const near = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+            if (near) jumping.current = false;
+            else if (jumping.current) return;
+            if (near !== follow.current) setFollow(near, lastID());
+          }}
+          onWheel={() => {
+            jumping.current = false;
+          }}
+          onTouchMove={() => {
+            jumping.current = false;
+          }}
+        >
+          {!entries.length && (
+            <div className="empty">
+              <Bot size={30} />
+              <h2>Start the conversation</h2>
+              <p>
+                Give your agent a task. Warden keeps its work in a sandbox and
+                controls access to your apps.
+              </p>
             </div>
           )}
+          <div className="transcript" ref={transcript}>
+            {groupEntries(entries, unread).map((item) => {
+              const first = "group" in item ? item.group[0] : item.entry;
+              return (
+                <Fragment key={first.id}>
+                  {first.id === unreadID && (
+                    <div
+                      className="unread-divider"
+                      role="separator"
+                      aria-label="New messages"
+                    />
+                  )}
+                  {"group" in item ? (
+                    <ActivityGroup entries={item.group} />
+                  ) : (
+                    <EntryView
+                      provider={chat.provider}
+                      chatID={chat.id}
+                      entry={item.entry}
+                      onFile={onFile}
+                      onEdit={edit}
+                      onRetry={retry}
+                      actions={!busy && canResend(item.entry, chat, live)}
+                    />
+                  )}
+                </Fragment>
+              );
+            })}
+            {chat.approvals
+              .filter((a) => a.state === "pending")
+              .map((a) => (
+                <ApprovalCard key={a.id} chatID={chat.id} approval={a} />
+              ))}
+            {requests.map((r) => (
+              <section
+                key={r.id}
+                className="approval-card request-card"
+                aria-label="Agent request"
+              >
+                <div className="approval-head">
+                  <span className="approval-icon" aria-hidden="true">
+                    {r.icon}
+                  </span>
+                  <div>
+                    <h3>{r.title}</h3>
+                    {r.detail && <p>{r.detail}</p>}
+                  </div>
+                </div>
+                {r.note && <p>{r.note}</p>}
+                <div className="approval-actions">
+                  {r.actions.map((a) => (
+                    <button
+                      key={a.label}
+                      className={a.primary ? "primary" : ""}
+                      onClick={a.onClick}
+                    >
+                      {a.label}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ))}
+            {chat.error && (
+              <div className="error" role="alert">
+                {chat.error}
+              </div>
+            )}
+          </div>
         </div>
+        {away !== null && (
+          <button
+            type="button"
+            className="jump-bottom"
+            aria-label="Jump to the latest message"
+            onClick={jump}
+          >
+            <ArrowDown size={15} />
+            {fresh
+              ? `${fresh} new message${fresh === 1 ? "" : "s"}`
+              : "Jump to latest"}
+          </button>
+        )}
       </div>
       <form
         className="composer-wrap"
