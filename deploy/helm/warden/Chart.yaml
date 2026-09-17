@@ -8,7 +8,11 @@ description: >-
 type: application
 # The chart, the server image and the base guest image are released together
 # (plan decision 17): appVersion is the release tag and the default image tag.
-# 0.0.0-dev is the placeholder scripts/release.sh --chart replaces.
+# The two values below are placeholders for a checkout; a release sets them
+# at packaging time (.github/workflows/release.yml and scripts/release.sh
+# --chart, both through scripts/package-chart.sh): version = the tag without
+# its v (v0.1.0-alpha.9 -> 0.1.0-alpha.9), appVersion = the tag. Do not bump
+# them here.
 version: 0.0.0-dev
 appVersion: v0.0.0-dev
 kubeVersion: ">=1.30.0"

@@ -200,18 +200,35 @@ the release namespace before the pods can start.
 
 ### 3. `helm install`
 
-From a checkout:
+Every Warden release `v<X>` publishes the chart to
+`oci://ghcr.io/monaddle-too/charts/warden` as chart version `<X>` (the tag
+without its `v`, so `v0.1.0-alpha.9` is `--version 0.1.0-alpha.9`;
+`appVersion` is the tag). The release workflow packages it after the
+server image, so its values default to that release's image: `image.tag`
+is the tag and `image.digest` is the image's index digest, and one chart
+version means one binary. The GitHub release page also carries the
+`warden-<X>.tgz` and its sum in `SHA256SUMS`.
 
 ```sh
-helm install warden deploy/helm/warden -n warden -f values.yaml
+helm install warden oci://ghcr.io/monaddle-too/charts/warden --version <chart version> -n warden --create-namespace -f values.yaml
 ```
 
-From the published chart (published by `release.yml` and by
-`scripts/release.sh --chart`; to be verified in step 10):
+`helm show values oci://ghcr.io/monaddle-too/charts/warden --version <chart
+version>` prints that release's defaults. From a checkout instead, the
+chart has placeholder versions (`0.0.0-dev`) and no image default, so set
+`image.tag` (or `image.digest`) to a published image in your values:
 
 ```sh
-helm install warden oci://ghcr.io/monaddle-too/charts/warden --version <tag> -n warden -f values.yaml
+helm install warden deploy/helm/warden -n warden --create-namespace -f values.yaml --set image.tag=v<X>
 ```
+
+A chart built locally by `scripts/release.sh --chart` (when Actions
+minutes are out) sets the versions and `image.tag` but no digest, because
+that script builds no image; push `ghcr.io/monaddle-too/warden:<tag>` from
+`deploy/chat/Dockerfile` before installing it. To run an image of your own
+from the published chart, set `image.digest=""` together with
+`image.repository` and `image.tag`, because a set digest wins over the
+tag.
 
 One release per namespace: the Services, ServiceAccounts and TLS Secrets
 have fixed names (`warden-policy`, `warden-runner`, `warden-chat`,
@@ -303,9 +320,14 @@ policy service in its PVC.
 
 ### 5. Upgrades
 
+To the next release's chart (which brings its image):
+
 ```sh
-helm upgrade warden deploy/helm/warden -n warden -f values.yaml
+helm upgrade warden oci://ghcr.io/monaddle-too/charts/warden --version <chart version> -n warden -f values.yaml
 ```
+
+(or `helm upgrade warden deploy/helm/warden -n warden -f values.yaml
+--set image.tag=v<X>` from a checkout).
 
 - Each Deployment uses `Recreate`: the old pod stops before the new one
   starts, so each service is down for the restart. An edge restart signs
@@ -576,7 +598,7 @@ so:
 
   ```sh
   kubectl -n warden delete secret warden-policy-tls warden-runner-tls warden-chat-tls warden-edge-tls
-  helm upgrade warden deploy/helm/warden -n warden -f values.yaml
+  helm upgrade warden oci://ghcr.io/monaddle-too/charts/warden --version <chart version> -n warden -f values.yaml
   ```
 
   Deleting only some of them makes the Job fail on purpose.

@@ -40,5 +40,7 @@ intent; it describes the tree as committed.
   tidy` is not expected to work offline).
 - Web: `cd chat/web && pnpm build && pnpm test` (Vite + vitest; `tsc --noEmit`
   runs inside `build`).
-- Release: `scripts/release.sh` (tarballs + GitHub release), guest image via
-  `scripts/build-guest-image-in-sbx.sh`; local deploy `scripts/deploy-local.sh`.
+- Release: `scripts/release.sh` (tarballs + GitHub release; `--chart` /
+  `--publish` for the Helm chart via `scripts/package-chart.sh`), guest image
+  via `scripts/build-guest-image-in-sbx.sh`; local deploy
+  `scripts/deploy-local.sh`; Kubernetes dev loop `scripts/k8s-dev.sh`.
