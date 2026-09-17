@@ -1,0 +1,797 @@
+# Warden on Kubernetes
+
+This is the operator guide for the third shape of Warden: the same `warden`
+binary as the Mac install (`docs/warden-local-install.md`) and the OVH
+Compose install (`deploy/chat/README.md`), installed on a Kubernetes cluster
+by the Helm chart in `deploy/helm/warden`. The design, the decisions and the
+step-by-step record are in `docs/warden-kubernetes-plan.md`; this document
+says what to run and what you get.
+
+What is verified: the chart renders and lints, its four golden renders are
+under `deploy/helm/warden/testdata`, every object it produces was accepted
+by the dev cluster's API server, a real install into a scratch namespace
+issued the four mutual-TLS Secrets through the bootstrap Job, and the
+admission policy rejected each forbidden pod shape (plan, step 6). The
+guest base image runs under both tiers and the NetworkPolicy behaviour was
+proven with test-owned probes (plan, "Spike results"). The services
+themselves do not yet run in the `kubernetes` kind: the runtime driver, the
+policy service's inspector, the shared gateway, the trust publisher and the
+Secret credential store are plan steps 2 and 4, and the first end-to-end
+chat is step 7. Every statement below that depends on them is marked "(to
+be verified in step N)". Until step 7 lands, an install from this chart
+brings up the objects and the pods, and the pods refuse the `kubernetes`
+section of `warden.json`.
+
+## What this shape is, and is not
+
+- **No SBX.** There is no sandboxd, no SBX daemon and no `sbx` executable in
+  any pod. A sandbox is a pod in a dedicated namespace under a Kubernetes
+  RuntimeClass, and the `runtime.kind: kubernetes` setting in `warden.json`
+  (rendered by the chart) selects the Kubernetes driver in the runner and
+  the Kubernetes inspector in the policy service. The Mac and OVH shapes
+  keep SBX unchanged.
+- **Two isolation tiers, chosen at install.** `runtime.tier` is `kata`
+  (a microVM with its own kernel per sandbox) or `gvisor` (a userspace
+  kernel per sandbox). There is deliberately no plain-container tier; see
+  "Tiers".
+- **Four services over mutual TLS.** The policy service, the runner, the
+  chat and the edge are four Deployments (`strategy: Recreate`, one replica
+  each), each with its own ServiceAccount, state PersistentVolumeClaim and
+  NetworkPolicy. They speak the same line-JSON protocol as the other shapes
+  over `tls://` instead of Unix sockets; the client certificate is the
+  service identity, so the edge does not read the chat's `endpoint.json`
+  and the owner bearer of the sbx shapes is not used between services.
+- **One gateway, identity by credential, egress by label.** The policy
+  service runs one gateway listener behind the `warden-gateway` Service,
+  not one loopback port per sandbox. A sandbox is told a proxy URL carrying
+  its binding credential; the gateway authenticates that credential. Egress
+  is granted by setting the label `warden.monaddle.com/egress=gateway` on
+  the sandbox pod and revoked by removing it: one static NetworkPolicy lets
+  labelled pods reach the gateway port and nothing else, and the namespace
+  default-deny covers everything else.
+- **State on PVCs, logins in Secrets.** Each service has a PVC; each
+  sandbox has a workspace PVC mounted at `/home/agent`, which is the only
+  path that survives a stop. Provider logins (Codex, Claude, GitHub) are
+  Kubernetes Secrets the operator creates before installing; the chart
+  never contains a credential and only the policy ServiceAccount may read
+  or write them.
+- **Hardening by admission, proven by the verifier.** The sandbox namespace
+  has Pod Security Admission at `baseline`, a ValidatingAdmissionPolicy
+  that refuses any pod not in the exact shape the runner creates, a
+  ResourceQuota and a LimitRange. The policy service reads these objects
+  back as cluster facts and runs two canary pods to prove NetworkPolicy is
+  enforced; a cluster where it is not is refused, not worked around.
+- **Not in this shape:** Docker inside guests (the `shell-docker` template
+  is an SBX feature), more than one runner or multi-node placement of
+  sandboxes beyond what the scheduler does with one runner, a `warden
+  install` path (Helm is the installer), migrating an SBX installation's
+  sandboxes into a cluster, Windows containers.
+
+## Support matrix
+
+| Requirement | What is needed | Notes |
+|---|---|---|
+| Kubernetes | 1.30 or later (`Chart.yaml` sets `kubeVersion: ">=1.30.0"`) | ValidatingAdmissionPolicy is GA from 1.30; the sandbox namespace's hardening depends on it. |
+| CNI | One that enforces NetworkPolicy, ingress and egress | The spike proved k3s's embedded controller; Cilium, Calico and GKE Dataplane V2 enforce; plain flannel does not. The policy service's canaries refuse a cluster where the policies are not enforced (to be verified in step 7). **Anti-spoofing caveat:** the spike showed a pod cannot bind another pod's address, which is not a proof that the CNI drops spoofed source addresses. The gateway treats the binding credential as the authority and the source pod as a second check for that reason; choose a CNI with source-address filtering (Cilium and Calico document it) where the difference matters. |
+| RuntimeClass, `gvisor` tier | A RuntimeClass whose handler is the `runsc` shim, on nodes with `allow-suid = "true"` in the runsc configuration | GKE Sandbox provides RuntimeClass `gvisor` and sets allow-suid; a self-managed node needs the shim registered in containerd and `/etc/containerd/runsc.toml` with `allow-suid = "true"` (see "Development"), or the guest's passwordless `sudo` does not work. |
+| RuntimeClass, `kata` tier | A RuntimeClass from kata-deploy (`kata-qemu` by default; `runtime.runtimeClassName` names another such as `kata-clh`) on nodes with `/dev/kvm` | Bare metal, VMs with nested virtualization, or cloud nodes that expose KVM. Kata nodes are usually a pool: set `sandboxes.nodeSelector` and `sandboxes.tolerations`. |
+| StorageClass | ReadWriteOnce volumes; `dataSource` PVC cloning for chat forks | Cloning is a CSI feature (GKE `pd.csi.storage.gke.io`, Longhorn, Ceph RBD and others); without it the runner copies the workspace with tar through exec and reports which it used. k3s's `local-path` does not clone. (Both paths to be verified in step 7.) |
+| cert-manager | Optional | With it, the four service certificates are `Certificate` objects renewed automatically; without it a bootstrap Job issues them once. Public previews need cert-manager (or another issuer) for the wildcard preview certificate. |
+| Ingress controller | Public previews only | Any controller; the chart renders one Ingress with the app host and `*.<hostSuffix>`. Loopback previews need no Ingress. |
+| Helm | 3 | `helm.sh/resource-policy: keep` and hooks are used. |
+| Images | `ghcr.io/monaddle-too/warden` (the server) and `ghcr.io/monaddle-too/warden-guest-base` (the guest), or locally built images by digest | The guest image is pinned by its platform manifest digest, never the index digest (`guestImage.digest` is required). |
+
+## Install
+
+### 1. The release namespace and the provider Secrets
+
+Everything except the sandboxes lives in the release namespace (`warden`
+below). The provider logins are Secrets you create there first; each holds
+the same JSON the sbx shapes keep in `providers.<p>.authFile`, under the
+key `auth.json`. The default names are the ones `values.secrets` lists;
+change both together.
+
+```sh
+kubectl create namespace warden
+```
+
+**Codex** (`warden-codex-login`): the `auth.json` that `codex login
+--device-auth` writes. On any machine with a Codex CLI:
+
+```sh
+mkdir -m 700 -p "$TMPDIR/codex-login"
+CODEX_HOME="$TMPDIR/codex-login" codex login --device-auth
+kubectl -n warden create secret generic warden-codex-login --from-file=auth.json="$TMPDIR/codex-login/auth.json"
+rm -rf "$TMPDIR/codex-login"
+```
+
+Codex refreshes its tokens; in this shape the policy service writes the
+refreshed value back into the Secret through the API (to be verified in
+step 7), so the file you created from is stale afterwards.
+
+**Claude** (`warden-claude-login`): the file `warden login claude` writes
+from a `claude setup-token` value, `{"claudeAiOauth":{"accessToken":…,
+"expiresAt":…}}`. On a machine with a Mac-shape install the file is
+`~/.warden/provider/claude.json`; `scripts/warden-claude-token FILE` writes
+the same file without an install:
+
+```sh
+scripts/warden-claude-token "$TMPDIR/claude.json"
+kubectl -n warden create secret generic warden-claude-login --from-file=auth.json="$TMPDIR/claude.json"
+rm -f "$TMPDIR/claude.json"
+```
+
+**GitHub** (`warden-github-login`): in user-token mode the file `warden
+login github` writes (`{"token":"gho_…","login":"…","scopes":[…],
+"obtained":…}`), for example `~/.warden/provider/github.json` from a Mac
+install:
+
+```sh
+kubectl -n warden create secret generic warden-github-login --from-file=auth.json="$HOME/.warden/provider/github.json"
+```
+
+In GitHub App mode (`providers.github.appID` set) the same Secret holds the
+App broker's credential instead of a user token; its key layout in this
+shape is not yet pinned by the chart or the plan (to be verified in step 7).
+
+A provider you do not use is turned off with `providers.<p>.enabled:
+false`; its Secret is then not required and not granted.
+
+### 2. Values
+
+The chart refuses to render without `guestImage.digest`. Start from the
+smallest file for your shape and add what the values reference below
+describes.
+
+Owner sign-in, loopback previews (one person, a port-forward, no domain):
+
+```yaml
+# values.yaml
+guestImage:
+  digest: sha256:<the platform manifest digest of the guest base image>
+runtime:
+  tier: gvisor          # or kata
+tls:
+  bootstrap: true       # no cert-manager
+```
+
+Google sign-in, public previews (a domain, an Ingress controller,
+cert-manager):
+
+```yaml
+# values.yaml
+guestImage:
+  digest: sha256:<the platform manifest digest of the guest base image>
+runtime:
+  tier: gvisor
+auth:
+  mode: google
+  publicURL: https://warden.example.com
+  google:
+    signInClientID: <client id>.apps.googleusercontent.com
+    owners: [you@example.com]
+previews:
+  mode: public
+  hostSuffix: preview.example.com
+  ingress:
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-dns   # DNS-01: the preview host is a wildcard
+tls:
+  certManager:
+    enabled: true
+networkPolicy:
+  edgeIngressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+```
+
+The chart checks the combinations: `previews.mode: public` requires
+`auth.mode: google`, a dotted `previews.hostSuffix` and an `https://`
+`auth.publicURL`; `auth.mode: owner` requires an `http://` URL (default
+`http://127.0.0.1:<edge.port>`); `tls.bootstrap` and
+`tls.certManager.enabled` are exclusive. With neither TLS option set, the
+four Secrets `warden-{policy,runner,chat,edge}-tls` (each with `ca.crt`,
+`tls.crt`, `tls.key` from one CA, CN equal to the identity) must exist in
+the release namespace before the pods can start.
+
+### 3. `helm install`
+
+From a checkout:
+
+```sh
+helm install warden deploy/helm/warden -n warden -f values.yaml
+```
+
+From the published chart (published by `release.yml` and by
+`scripts/release.sh --chart`; to be verified in step 10):
+
+```sh
+helm install warden oci://ghcr.io/monaddle-too/charts/warden --version <tag> -n warden -f values.yaml
+```
+
+One release per namespace: the Services, ServiceAccounts and TLS Secrets
+have fixed names (`warden-policy`, `warden-runner`, `warden-chat`,
+`warden-edge`, `warden-gateway`) because the certificates and the
+addresses in `warden.json` name them. What the install creates:
+
+1. First, with `tls.bootstrap: true`, the pre-install Job
+   `warden-tls-bootstrap` runs `warden tls bootstrap` from the server image
+   and stores the CA and the four certificates as the Secrets
+   `warden-<identity>-tls`. It does nothing when all four exist and fails
+   when only some do (they must share a CA).
+2. The sandbox namespace (`sandboxNamespace.name`, default
+   `warden-sandboxes`) with its PSA labels, the empty trust ConfigMap
+   `warden-guest-trust`, the three sandbox NetworkPolicies (default deny;
+   gateway egress by label; runner ingress), the ResourceQuota and
+   LimitRange, the runner's and the policy service's Roles there, and the
+   cluster-scoped ValidatingAdmissionPolicy and binding named
+   `warden-<sandbox namespace>-sandbox-pods`.
+3. In the release namespace: the ConfigMap `warden-config` holding
+   `warden.json`, four ServiceAccounts, the policy service's credentials
+   Role (the named provider Secrets), four PVCs
+   (`warden-{policy,runner,app,edge}-state`), four Deployments, the
+   Services, the core NetworkPolicies (default deny plus one per service)
+   and, in public mode, the Ingress `warden-edge`. With cert-manager, the
+   Issuers and Certificates.
+
+`helm install` prints the NOTES with the exact commands for your values.
+Then:
+
+```sh
+kubectl -n warden get pods
+kubectl -n warden-sandboxes get pods,pvc
+```
+
+The chart's `kubectl` images: only the bootstrap Job pulls one
+(`tls.bootstrapJob.kubectlImage`, `docker.io/alpine/k8s:1.34.1`), because
+the server image has neither an HTTP client nor kubectl.
+
+### 4. First login
+
+**Owner mode.** Forward the edge port to your machine and keep the forward
+running while you use Warden:
+
+```sh
+kubectl -n warden port-forward svc/warden-edge 18781:18781
+```
+
+In this shape the chat service writes no `endpoint.json` the edge could
+read (they share no volume), so the edge mints the owner sign-in capability
+itself, stores it in `/var/lib/warden/edge/endpoint.json` and logs the
+launch URL (to be verified in step 7). Read it from the log or the state:
+
+```sh
+kubectl -n warden logs deploy/warden-edge | grep -m1 'http://127.0.0.1'
+kubectl -n warden exec deploy/warden-edge -- cat /var/lib/warden/edge/endpoint.json
+```
+
+Open the URL. Previews are `http://<binding-id>.localhost:18781/…` through
+the same forward, with the same ticket, per-request binding check and
+revocation model as the other shapes. The capability rotates when the edge
+restarts; read it again after an upgrade.
+
+**Google mode.** Open `auth.publicURL` and sign in with a Google account
+listed in `auth.google.owners`; any other account is refused, as on OVH.
+Previews are `https://<binding-id>.<hostSuffix>/…` through the Ingress:
+
+```sh
+kubectl -n warden get ingress warden-edge
+```
+
+Google Docs is connected from the browser (Admin console or a chat's
+Documents panel), as in the other shapes; the token is stored by the
+policy service in its PVC.
+
+### 5. Upgrades
+
+```sh
+helm upgrade warden deploy/helm/warden -n warden -f values.yaml
+```
+
+- Each Deployment uses `Recreate`: the old pod stops before the new one
+  starts, so each service is down for the restart. An edge restart signs
+  viewers out (chat and agent work stay server-side); a runner restart
+  reconciles the sandbox pods and PVCs it finds by label (to be verified in
+  step 7).
+- The pods carry a checksum of the rendered `warden.json`, so a values
+  change that alters it rolls the pods; a change that does not (for
+  example `resources`) rolls only what Kubernetes needs to.
+- The PVCs are not touched. The bootstrap Job runs again as a pre-upgrade
+  hook and does nothing while the four TLS Secrets exist.
+- The trust ConfigMap in the sandbox namespace is created empty by the
+  chart and written by the policy service; Helm's three-way merge leaves
+  its data alone on upgrade.
+- Guest image bumps are a values change (`guestImage.digest`); new
+  sandboxes use the new digest, existing pods keep theirs until they are
+  stopped, and the verifier checks each pod's `imageID` against the pinned
+  digest of its own generation (to be verified in step 7).
+
+### 6. Uninstall
+
+```sh
+helm uninstall warden -n warden
+```
+
+What is kept, by default:
+
+- The four service PVCs `warden-{policy,runner,app,edge}-state`
+  (`storage.keepOnUninstall: true`; they hold the chats, the sandbox
+  registry, the gateway CA and the sign-in ledger). Delete them by hand to
+  start over.
+- The sandbox namespace (`sandboxNamespace.keep: true`) with the workspace
+  PVCs and any sandbox pods still in it; the policies, quota, Roles and the
+  trust ConfigMap inside it are release objects and are removed.
+  `kubectl delete namespace warden-sandboxes` removes the rest
+  deliberately.
+- The TLS Secrets from the bootstrap Job (they are not release objects),
+  the Secrets cert-manager wrote, and the provider Secrets you created.
+- The release namespace itself (Helm does not delete namespaces).
+
+Removed: the Deployments, Services, ConfigMap, NetworkPolicies, RBAC, the
+ValidatingAdmissionPolicy and binding, the RuntimeClass if the chart
+created it, the Ingress and the cert-manager objects.
+
+## Values reference
+
+Every top-level key of `deploy/helm/warden/values.yaml`, with the defaults
+from that file. The file itself documents each value and is the reference
+when the two differ.
+
+| Key | Purpose | Default |
+|---|---|---|
+| `image` | The server image: `repository`, `tag` (empty selects the chart's `appVersion`), `digest` (`sha256:<64 hex>`; when set the image is pulled by digest and `tag` is ignored; pin it in production), `pullPolicy`. | `ghcr.io/monaddle-too/warden`, `""`, `""`, `IfNotPresent` |
+| `imagePullSecrets` | Names of existing pull Secrets in the release namespace, applied to the four Deployments and the bootstrap Job. | `[]` |
+| `guestImage` | The guest base image sandboxes run: `repository` and `digest`. The digest is required and must be a platform manifest digest; the runner pins it and the policy service checks each pod's `imageID` against it. | `ghcr.io/monaddle-too/warden-guest-base`, `""` |
+| `runtime` | `tier` (`kata` or `gvisor`); `runtimeClassName` (empty selects the tier default, `gvisor` or `kata-qemu`; the admission policy refuses any other class); `handlers.{gvisor,kata}` (used only when the chart creates the RuntimeClass); `createRuntimeClasses` (off: clusters usually own theirs); `overhead.{memoryMi,cpuMillis}` (the RuntimeClass pod overhead the sandbox quota must allow, typically 160Mi and 250m on Kata; written into the RuntimeClass when the chart creates it). | `gvisor`, `""`, `runsc`/`kata-qemu`, `false`, `0`/`0` |
+| `sandboxNamespace` | `name` of the sandbox namespace, whether the chart creates it, and whether it is kept on uninstall. | `warden-sandboxes`, `true`, `true` |
+| `sandboxes` | Sandbox sizing, mirrored into `warden.json` and into the namespace quota and LimitRange: `memoryMB` (512–16384; request and limit of every sandbox container), `cpuMillis`, `maxRunning`, `warmSpares`, `stopAfterIdleMinutes`, `keepStopped` (stopped workspaces kept), `extraPods` (quota headroom for the two canaries), `extraPVCs` (headroom for a fork clone in flight), `nodeSelector` and `tolerations` for sandbox pods (rendered into `warden.json` only when set). | `1536`, `1000`, `2`, `1`, `15`, `32`, `2`, `2`, `{}`, `[]` |
+| `egress` | `restricted` (the policy template's destination list) or `open` (any public HTTP/HTTPS host); enforced at the gateway, same NetworkPolicies either way. | `restricted` |
+| `auth` | `mode` (`owner` or `google`); `publicURL` (the URL browsers open: `http://127.0.0.1:<edge.port>` by default in owner mode, the Ingress URL in Google mode); `google.signInClientID`, `google.owners`, `google.demoDomains`. | `owner`, `""`, `""`, `[]`, `[]` |
+| `previews` | `mode` (`loopback` or `public`); `hostSuffix` (public only); `ingress.enabled`, `ingress.className`, `ingress.annotations`, `ingress.host` (empty derives the app host from `auth.publicURL`), `ingress.tls.enabled`, `ingress.tls.secretName` (the certificate for the app host and `*.<hostSuffix>`). | `loopback`, `""`, `true`, `""`, `{}`, `""`, `true`, `warden-edge-public-tls` |
+| `edge` | `port` the edge listens on and the `warden-edge` Service exposes; `service.type` and `service.annotations`. | `18781`, `ClusterIP`, `{}` |
+| `gateway` | `port` of the policy service's shared gateway behind the `warden-gateway` Service. | `7000` |
+| `services` | Ports of the mutual-TLS control listeners: `policy.port`, `runner.port`, `chat.port` (rendered as `services.*` in `warden.json`). | `7443`, `7444`, `7445` |
+| `storage` | `className` for every PVC (empty is the cluster default; forks clone when it supports `dataSource`); sizes of the service PVCs `policy`, `runner`, `app`, `edge`; `workspaceGi` per sandbox; `keepOnUninstall`. | `""`, `5Gi`, `5Gi`, `10Gi`, `1Gi`, `20`, `true` |
+| `secrets` | Names of the existing provider login Secrets: `codex`, `claude`, `github`. | `warden-codex-login`, `warden-claude-login`, `warden-github-login` |
+| `providers` | `codex.enabled`, `claude.enabled`, `google.enabled` and `google.docsClient` (`builtin` or a client file path inside the policy pod), `github.enabled`, `github.appID` (0 is user-token mode; otherwise `appSlug` and `installationOwner` are rendered too). A disabled provider renders as JSON `null`. | all `true`, `builtin`, `0`, `""`, `""` |
+| `tls` | `certManager.enabled`, `certManager.issuerRef` (an existing CA issuer; empty makes the chart create a self-signed Issuer, a CA Certificate and a CA Issuer), `certManager.duration`, `renewBefore`, `caDuration`, `caRenewBefore`; `bootstrap` (the pre-install/pre-upgrade Job); `bootstrapJob.kubectlImage`, `kubectlPullPolicy`, `days` (the CA lasts ten times as long). | `false`, `{}`, `8760h`, `720h`, `87600h`, `8760h`, `false`, `docker.io/alpine/k8s:1.34.1`, `IfNotPresent`, `365` |
+| `podSecurityContext` | UID, GID, `fsGroup` and `fsGroupChangePolicy` of the four service pods (the image has no dedicated user). | `1000`, `1000`, `1000`, `OnRootMismatch` |
+| `resources` | Requests and limits per service container: `policy`, `runner`, `chat`, `edge`. | policy and runner 250m/256Mi, limit 1Gi; chat 100m/128Mi, limit 512Mi; edge 100m/64Mi, limit 256Mi |
+| `nodeSelector`, `tolerations`, `affinity` | Scheduling of the four service pods (not the sandboxes). | `{}`, `[]`, `{}` |
+| `networkPolicy` | `enabled` (off only for debugging: the policy service refuses an unenforced cluster anyway); `dns.namespace` and `dns.podSelector` (how the pods reach cluster DNS); `apiServer.cidr` and `apiServer.ports` (kube-apiserver is not a pod; restrict the CIDR where known); `providerEgress.cidr` and `.ports` (the policy pod's egress to provider hosts); `edgeIngressFrom` (empty admits every source; otherwise NetworkPolicyPeer objects such as the Ingress controller's namespace); `edgeEgress` (Google's signing keys in Google mode). | `true`, `kube-system`/`k8s-app: kube-dns`, `0.0.0.0/0`/`[443, 6443]`, `0.0.0.0/0`/`[443]`, `[]`, `0.0.0.0/0`/`[443]` |
+| `rbac` | `policyClusterFacts`: a read-only ClusterRole for the policy service on the cluster-scoped hardening it verifies (the sandbox Namespace, RuntimeClasses, ValidatingAdmissionPolicies and bindings). | `true` |
+| `extraEnv` | Extra environment variables per service container: `policy`, `runner`, `chat`, `edge`. | `[]` each |
+
+What the chart renders into `warden.json` from these (plan, appendix A):
+`runtime.kind: kubernetes`; `services.*` as `tls://0.0.0.0:<port>` listeners
+and `tls://warden-<svc>:<port>` addresses; `tls.*` under `/etc/warden/tls`;
+`kubernetes.{namespace,tier,runtimeClass,guestImage,guestImageDigest,
+storageClass,workspaceSizeGi,gatewayService,gatewayPort,trustConfigMap,
+nodeSelector,tolerations}`; `sandboxes.*` with `egress`;
+`previews.{mode,hostSuffix,edgeListen}`; `auth.*`; and `providers.<p>.secret`
+in place of `authFile`. `paths.state` is `/var/lib/warden`, so each service's
+state is at the same container path as in the Compose file.
+
+## Tiers
+
+Both tiers keep the controls that do not depend on the kernel: the
+namespace default-deny and the label-gated gateway egress, the gateway's
+per-request decisions and credential injection, the admission policy, the
+verifier and the preview model. What differs is the boundary under the
+guest's root, and what the agents' own inner sandboxes can do. The
+measurements are from the plan's step 0 spike (Lima on an M4 Mac, k3s
+v1.36.4, gVisor release-20260914.0 on the systrap platform, Kata 4.2.0 with
+QEMU).
+
+**gVisor** (`runtime.tier: gvisor`). Each sandbox runs on gVisor's
+userspace kernel; the boundary is the sentry's syscall surface, not
+hardware. It runs wherever the `runsc` shim can be installed, including
+managed clusters (GKE Sandbox is exactly this), and a sandbox starts in
+about 0.3 s from a cached image, so warm spares are cheap.
+
+- `allow-suid = "true"` is required in the node's runsc configuration:
+  runsc ignores SUID bits by default and the guest's passwordless `sudo`
+  stays uid 1000 without it. GKE Sandbox sets it; a self-managed node may
+  not.
+- Codex runs **without its inner sandbox** on this tier
+  (`sandbox_mode = "danger-full-access"`): its Linux sandbox needs
+  bubblewrap with `--unshare-net`, which fails under gVisor (netlink
+  `RTM_NEWADDR` unimplemented), and Landlock returns `ENOSYS`. The gVisor
+  boundary, the NetworkPolicy and the gateway are the controls. Claude
+  Code's controls are unchanged (Warden's MCP permission prompt,
+  `--permission-mode default`; it does not use bubblewrap in this launch).
+- Plain bubblewrap with user, pid, ipc and mount namespaces works, so a
+  session can still use it for its own purposes; nested Docker does not.
+- A directory-mounted ConfigMap refreshes inside a running gVisor pod in
+  about 48 s (the kubelet's sync period), which bounds how long a CA
+  rotation takes to reach a running guest.
+
+**Kata Containers** (`runtime.tier: kata`). Each sandbox is a microVM with
+its own guest kernel, the closest match to the SBX guarantee.
+
+- Needs `/dev/kvm` on the sandbox nodes: bare metal, VMs with nested
+  virtualization, or cloud nodes that expose it.
+- The agents' inner sandboxes work as on any Linux: `codex sandbox` runs
+  with bubblewrap and Landlock (ABI 7), so on this tier Codex keeps its full
+  inner sandbox. A hand-run `bwrap --proc` fails on the masked container
+  `/proc`; lifting that needs `procMount: Unmasked` with
+  `hostUsers: false`, which the runner does not set.
+- Pod start from a cached image is about 33 s when the guest boots
+  normally. Under nested virtualization on the Apple Silicon dev VM about
+  half the boots stalled for roughly 17 minutes before the agent started,
+  independent of load; the cause was not found. The plan therefore verifies
+  the Kata tier's timing and its end-to-end runs on a host with real KVM,
+  and treats the dev VM's Kata as functional only. Size `warmSpares` for
+  the boot time you measure.
+- Kata's default `cpu_features = "pmu=off"` is refused by QEMU under nested
+  virtualization on Apple Silicon (the VM's KVM exposes no PMU); the dev
+  loop clears it with a drop-in. Real KVM hosts do not need this.
+- Set `runtime.overhead` to the RuntimeClass's pod overhead (typically
+  160Mi and 250m for `kata-qemu`) so the sandbox quota allows it, and a
+  ConfigMap refresh reaches a running Kata pod in about 3 s.
+
+**Why there is no `runc` tier.** A plain container shares the node kernel
+with everything else on it, and the whole point of the RuntimeClass is that
+root in the guest is a product feature. The gVisor shim installs in one
+step (the dev VM does it in a provisioning script), so a `runc` mode would
+buy nothing and would leak into support. The admission policy refuses a
+sandbox pod without the configured RuntimeClass, and the verifier refuses a
+RuntimeClass whose handler is outside the tier's allowlist (the allowlist
+per tier lives in the policy service; that it accepts the handler names
+GKE Sandbox, kata-deploy and a self-managed `runsc` use is to be verified
+in step 4).
+
+## Operations
+
+```sh
+kubectl -n warden get pods
+kubectl -n warden logs --tail 50 deploy/warden-policy
+kubectl -n warden logs --tail 50 deploy/warden-runner
+kubectl -n warden logs --tail 50 deploy/warden-chat
+kubectl -n warden logs --tail 50 deploy/warden-edge
+kubectl -n warden-sandboxes get pods,pvc -L warden.monaddle.com/sandbox,warden.monaddle.com/egress
+```
+
+Each service logs to stdout; there are no log files on the PVCs. As in the
+other shapes, every service answers `--version` with `<name> <revision>
+protocol=<n>`, the chat logs the three revisions it handshaked with at
+start, and it refuses to run beside a runner or policy service on another
+protocol number.
+
+**The cluster facts and the canary proof.** At start, on any watch event on
+the sandbox namespace's NetworkPolicies, Namespace, RuntimeClass or
+admission objects, and hourly, the policy service establishes the cluster
+fact "this cluster enforces what the chart installed": the namespace's PSA
+label and role label, the three static NetworkPolicies, the
+ValidatingAdmissionPolicy and its binding, the RuntimeClass and its
+handler, and two short-lived canary pods in the sandbox namespace, one
+without the egress label that must fail to reach a cluster address, the
+API server, cluster DNS and an external address, and one with the label
+that must reach the gateway and nothing else. A failed fact refuses every
+sandbox (chats report enforcement unavailable, as "unsupported SBX
+version" does today); nothing is worked around and no sandbox gets egress
+until the fact passes again (to be verified in step 7). Per-sandbox
+verification is control-plane facts only: the pod's spec and labels, the
+policies that select it, its `imageID`, the PVC UID and the per-generation
+pod UID pin. Nothing runs inside a guest on the verifier's behalf.
+
+**Provider Secret rotation.** Replace the Secret's `auth.json`; the policy
+service watches the named Secrets and picks up the new value without a
+restart (to be verified in step 7):
+
+```sh
+kubectl -n warden create secret generic warden-claude-login --from-file=auth.json="$TMPDIR/claude.json" --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Until a Secret exists or while its token is rejected, chats on that
+provider fail with the same "Refresh the … sign-in" message as the other
+shapes. The Admin console's Disconnect for GitHub and Google works as
+before; for GitHub it empties the stored token in the Secret rather than
+deleting a file (to be verified in step 7), and the token stays valid at
+GitHub until you revoke it there.
+
+**Gateway CA rotation.** The gateway CA is in the policy PVC at
+`/var/lib/warden/policy/gateway-ca/`. The policy service publishes the
+guest trust bundle (the base image's system CAs plus the CA in force) into
+the ConfigMap `warden-guest-trust` in the sandbox namespace at start and
+after a rotation; the runner mounts that ConfigMap at `/opt/warden/trust`
+in every sandbox pod, which is where the image's system bundle symlink and
+every client environment variable point, so the kubelet's in-place refresh
+delivers a rotated CA to running guests without exec, root or restart
+(about 48 s on gVisor, 3 s on Kata; the publisher and the mount are to be
+verified in step 7). The service rotates the CA itself at start when it is
+older than the configured maximum age (the sbx shapes set it as
+`sbx.inspectionCertMaxAgeDays`; the name of that setting in the
+`kubernetes` kind is to be verified in step 4). To rotate on demand, stop
+the policy service, run the subcommand against its PVC, and start it again;
+the previous CA directory is kept as `gateway-ca.retired-<timestamp>`:
+
+```sh
+kubectl -n warden scale deploy/warden-policy --replicas=0
+kubectl -n warden wait --for=delete pod -l warden.monaddle.com/component=policy --timeout=60s
+kubectl -n warden apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: warden-rotate-ca
+spec:
+  restartPolicy: Never
+  securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+  containers:
+    - name: rotate
+      image: ghcr.io/monaddle-too/warden:<tag>
+      args: [warden, policy, rotate-gateway-ca, --state, /var/lib/warden/policy]
+      volumeMounts: [{name: state, mountPath: /var/lib/warden/policy}]
+  volumes:
+    - name: state
+      persistentVolumeClaim: {claimName: warden-policy-state}
+EOF
+kubectl -n warden wait --for=jsonpath='{.status.phase}'=Succeeded pod/warden-rotate-ca --timeout=120s
+kubectl -n warden delete pod warden-rotate-ca
+kubectl -n warden scale deploy/warden-policy --replicas=1
+```
+
+Bindings established before the rotation are re-verified when the service
+is back; guests that fetched the new bundle keep working, and a guest that
+replaced its own trust file (running `update-ca-certificates` as root
+inside the sandbox) is only affected until its next pod.
+
+**TLS rotation between the services.** The transport reads each service's
+certificate and key at every handshake, and the CA when a listener starts,
+so:
+
+- With cert-manager, leaf renewals (`tls.certManager.renewBefore`) need no
+  action. When the CA itself is renewed, restart the four Deployments so
+  the listeners load the new CA:
+
+  ```sh
+  kubectl -n warden rollout restart deploy/warden-policy deploy/warden-runner deploy/warden-chat deploy/warden-edge
+  ```
+
+- With the bootstrap Job, the four Secrets share a CA that lasts ten times
+  `tls.bootstrapJob.days`. To re-issue, delete all four and run
+  `helm upgrade`; the pre-upgrade hook issues a new CA and certificates,
+  and the upgrade rolls the pods:
+
+  ```sh
+  kubectl -n warden delete secret warden-policy-tls warden-runner-tls warden-chat-tls warden-edge-tls
+  helm upgrade warden deploy/helm/warden -n warden -f values.yaml
+  ```
+
+  Deleting only some of them makes the Job fail on purpose.
+
+**Backups.** Back up the PVCs with the services stopped
+(`kubectl -n warden scale deploy --all --replicas=0`) using whatever
+snapshot or copy mechanism your StorageClass has. What each holds:
+
+| PVC | Namespace | Content |
+|---|---|---|
+| `warden-policy-state` | release | `bindings.json`, `runtime-identities.json`, `sandboxes/<digest>/`, `sharing.sqlite`, `google.sqlite` (the Google Docs connection), `egress.json` (the Admin console's network-access choice), `gateway-ca/` (the gateway CA key) |
+| `warden-runner-state` | release | `managed-v2.json` and the sandbox registry |
+| `warden-app-state` | release | `chats.json` (every chat and transcript) |
+| `warden-edge-state` | release | `logins.json` (the Google sign-in ledger); in owner mode `endpoint.json` (the launch capability; regenerated at start) |
+| one per sandbox, labelled `warden.monaddle.com/sandbox=<runtime name>` | sandbox | `/home/agent` of that sandbox (to be verified in step 7) |
+
+The provider logins are Secrets, not PVC content; export them with
+`kubectl get secret -o yaml` or keep the files you created them from. The
+TLS Secrets can always be re-issued. Do not restore a policy PVC without
+its runner and app PVCs from the same moment: the runtime identity pins in
+the policy state must agree with the runner's registry.
+
+**Sizing the sandbox namespace.** The ResourceQuota allows
+`maxRunning + warmSpares + extraPods` pods, that many times
+`memoryMB + overhead.memoryMi` of memory and `cpuMillis +
+overhead.cpuMillis` of CPU, `maxRunning + warmSpares + keepStopped +
+extraPVCs` workspace PVCs of `workspaceGi` each, and no Services or
+Secrets; the LimitRange makes every sandbox container exactly `memoryMB`
+and `cpuMillis`. Change these in values, not on the objects.
+
+## The persisted set
+
+A sandbox's persisted set is exactly `/home/agent`, the agent's home and
+working directory, on its workspace PVC. Everything else in the guest is
+image state: package installs (`sudo apt-get install …`), files under `/opt`
+or `/usr`, `/tmp` (an emptyDir) and the trust bundle all come back fresh
+with the next pod. "Stop" deletes the pod and keeps the PVC; "resume"
+creates a new pod on the same PVC (a new generation, with a new pod UID the
+verifier pins afresh, while the PVC UID is the stable identity); "remove"
+deletes the PVC; `sandboxes.keepStopped` bounds how many stopped workspaces
+are retained. Chat forks clone the PVC where the StorageClass supports it
+and copy it otherwise. The base image's entrypoint takes ownership of an
+empty, root-owned volume and seeds it from `/etc/skel` on first start.
+
+This is narrower than SBX, where the whole root filesystem persists, and it
+is a decision, not a footnote: the agent's system prompt states that
+package installs outside the home directory do not survive a stop, so an
+agent that needs a tool across sessions installs it under its home (a
+`venv`, a user-local npm prefix) or reinstalls it. Anything an agent leaves
+under `/home/agent` (including shell startup files) does persist and is
+re-executed on the next session, which is the same as on SBX.
+
+## Threat-model delta against SBX
+
+The bar is the adversarial matrix in `docs/sbx-integration-plan.md`; the
+adversary has root in the guest. Compared with the SBX shapes:
+
+**The same.**
+
+- Gateway-only egress. The sandbox can reach exactly one destination, the
+  gateway, and only while its egress label is present; the gateway decides
+  per request, injects credentials only for approved operations, and
+  refuses everything else. Removing the proxy environment, IP literals,
+  other ports, IPv6, DNS to anything, raw TCP and `CONNECT` to non-HTTP
+  fail the same way.
+- Brokered credentials. The guest holds only placeholders
+  (`WARDEN_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`); the real logins are read
+  only by the policy service and swapped in on the way to the provider.
+- The verifier and the trust model: provisional trust once the gateway is
+  up and egress is granted, background full verification, synchronous
+  re-verification after a failure, a failed check revoking leases and
+  removing egress. The per-sandbox facts are control-plane facts instead of
+  `sbx inspect` output.
+- The edge, the preview session model and the preview isolation audit.
+
+**Weaker.**
+
+- On the gVisor tier the boundary is a userspace kernel, not a microVM.
+  Root in the guest is root of the sentry's view of the world; a sentry
+  escape is a node compromise. Codex also runs without its inner sandbox
+  there. The Kata tier restores the microVM boundary (and the inner
+  sandbox) at the cost of KVM and slower starts.
+- Cluster admin can read everything. Anyone who can read Secrets in the
+  release namespace has the provider logins; anyone who can read the PVCs
+  (or is root on a node) has the gateway CA key, the chats and every
+  workspace. On the Mac and OVH the equivalent is root on one host; a
+  cluster usually has more principals with that reach, and the node's
+  kubelet is one of them.
+- In-cluster lateral reach is bounded by NetworkPolicy, not by the absence
+  of a route. An SBX guest had one gateway and no other network; a sandbox
+  pod is on the pod network with the API server, cluster DNS, every other
+  pod, the node and the cloud metadata address one hop away, and only the
+  default-deny policy keeps them unreachable. If the CNI stops enforcing
+  (misconfiguration, an upgrade), the canary fact fails and sandboxes are
+  refused; it does not fail open, but the enforcement point has moved from
+  the host into the CNI.
+- Source-address spoofing depends on the CNI. The spike could not prove the
+  CNI drops spoofed frames, so the gateway's identity is the binding
+  credential and the source-pod check is defence in depth only. The
+  credential is minted per binding and delivered only to that pod's launch
+  environment; a guest presenting another binding's credential, or
+  forging another pod's address (CNI-dependent), is the row to keep
+  testing.
+- The runner may reach every TCP port of every sandbox pod (one static
+  ingress policy), where SBX published one port per approval. Only the
+  runner's preview proxy is admitted, and it dials only published ports.
+
+**Stronger.**
+
+- Services authenticate to each other. Every control connection is mutual
+  TLS with a per-service certificate and the peer identity checked at the
+  handshake; the chat accepts principal headers only from the edge's
+  certificate. On OVH the three services share a state volume, the host
+  network and Unix sockets, and the edge reads a capability file.
+- The edge shares nothing with the policy service: no volume, no loopback,
+  no ServiceAccount token. The internet-facing component and the component
+  holding the provider logins and the gateway CA key are separate pods with
+  a NetworkPolicy between them that admits exactly edge to chat.
+- Least privilege on the API: the runner can touch pods and PVCs in the
+  sandbox namespace only; the policy service can label and inspect them,
+  read the policies, write the trust ConfigMap and the named provider
+  Secrets, and nothing else; the chat and the edge have no token at all;
+  sandbox pods have no ServiceAccount token (`automountServiceAccountToken:
+  false`, enforced by admission).
+- The admission policy makes the sandbox shape a property of the namespace,
+  not of the runner's good behaviour: a pod without the RuntimeClass, with a
+  host namespace, privileged, with a hostPath or projected volume, or
+  without the Warden label is refused whoever creates it.
+- Image state does not persist. A persistent implant outside `/home/agent`
+  does not survive a stop, and every generation starts from the pinned
+  image digest the verifier checks.
+
+**Adversarial rows the Kubernetes suite runs** (plan, work item 8;
+`tests/k8s`, Go with `-tags k8s` against `KUBECONFIG`; to be verified in
+step 8, first on gVisor in the dev VM, then on Kata where KVM is real). The
+test, not the verifier, execs into a sandbox pod and runs, against
+controlled destinations with unique markers:
+
+| Matrix row (`docs/sbx-integration-plan.md`) | Kubernetes rows |
+|---|---|
+| Approved dependency GET and AI HTTPS | A Codex turn and a Claude turn through the gateway; a published preview through the runner proxy and the edge |
+| Unset proxy env, custom socket client | Direct egress with the proxy variables unset; `no_proxy=*` |
+| Forge headers, use another gateway port, reuse a decision | Wrong or missing proxy credentials; another binding's credentials (must be refused and attributed to neither) |
+| IPv4 literal; alternative ports | IP literal to the gateway's port and to external addresses; other ports on the gateway address |
+| IPv6 | IPv6 literals and routes from the pod |
+| DNS on 53, DoH/DoT | Cluster DNS on 53; external 53; DoH to a public resolver |
+| SSH, opaque TCP, non-HTTP bytes | `CONNECT` to a non-HTTP destination; raw TCP through the gateway port |
+| Drop or change the proxy CA | The trust bundle mount replaced or removed inside the guest: TLS fails, no direct fallback |
+| Host gateway/control/app ports, LAN | The API server, cluster DNS, the metadata address, the node, another sandbox's preview port, the runner's and the chat's control ports |
+| Guest root modifies routes/firewall | A pod without the egress label reaches nothing; routes and `iptables` changes inside the guest change nothing outside it |
+| Restart worker, gateway, daemon with sessions | Restart of the policy Deployment with live bindings: the gateway address is stable (a Service IP), leases are re-established, no binding widens |
+
+Each row records the tier it ran under. Rows about SBX daemon settings, the
+`shell-docker` template's Docker and host loopback aliases do not apply
+here; rows about the edge and previews are shared with the other shapes.
+
+## Development
+
+The dev loop is a Lima VM running k3s with both tiers on an Apple Silicon
+Mac (plan, decision 15 and appendix B). Everything is in
+`deploy/k8s/dev/lima.yaml`, `deploy/k8s/dev/values.yaml` and
+`scripts/k8s-dev.sh`; the step 0 probes are in `deploy/k8s/dev/spike/`.
+
+```sh
+brew install lima kubectl helm
+scripts/k8s-dev.sh up                 # create or start the VM; prints the KUBECONFIG export
+export KUBECONFIG="$(scripts/k8s-dev.sh kubeconfig)"
+kubectl get runtimeclasses            # gvisor, and kata-qemu when /dev/kvm exists in the VM
+```
+
+`up` creates the VM from `lima.yaml` (Ubuntu 24.04, `vmType: vz`,
+`nestedVirtualization: true`, 8 CPUs, 16 GiB, 100 GiB, the workspace
+mounted read-only at the same path), whose provisioning installs the
+pinned gVisor release (`runsc`, the shim and the `gvisor-bin/` sidecars, on
+the systrap platform), k3s without Traefik and with the embedded network
+policy controller, and buildkitd plus nerdctl on k3s's containerd. It then
+applies the `gvisor` RuntimeClass and, when the VM has `/dev/kvm`, installs
+kata-deploy 4.2.0 with the QEMU shim only. The two node-side fixes found in
+step 0 are part of it:
+
+- `/etc/containerd/runsc.toml` sets `allow-suid = "true"` (with the systrap
+  platform and shim logging under `/var/log/runsc`), so the guest's
+  passwordless `sudo` works under gVisor.
+- `/opt/kata/share/defaults/kata-containers/runtimes/qemu/config.d/90-warden-nested-virt.toml`
+  sets `cpu_features = ""`, because nested virtualization on Apple Silicon
+  exposes no PMU and QEMU rejects Kata's default `pmu=off`.
+
+Build the images straight into k3s's containerd, so nothing is pushed or
+pulled:
+
+```sh
+scripts/k8s-dev.sh build-images
+```
+
+This builds the web UI with pnpm and the linux/arm64 binary on the Mac
+(`GOPROXY=off`, as `scripts/release.sh` does), then inside the VM runs
+`deploy/guest/build-base.sh --k3s` for `warden-guest-base:<rev>` and
+`nerdctl build -f deploy/chat/Dockerfile` for `warden:<rev>`, both also
+tagged `dev`. buildkitd runs with the containerd worker in the `k8s.io`
+namespace, which is where the kubelet looks, and the dev values set
+`pullPolicy: Never`. `build-base.sh` prints the image's manifest digest;
+put it in `deploy/k8s/dev/values.yaml` as `guestImage.digest` after a
+rebuild, because the pinned digest is what the runner and the verifier
+use, not the tag.
+
+Deploy with the dev values (gVisor tier, owner sign-in, loopback previews,
+the `local-path` StorageClass, small PVCs, TLS from the bootstrap Job):
+
+```sh
+scripts/k8s-dev.sh deploy               # helm upgrade --install warden … -n warden --create-namespace -f deploy/k8s/dev/values.yaml
+kubectl -n warden port-forward svc/warden-edge 18781:18781
+```
+
+Only the bootstrap Job's kubectl image is pulled from Docker Hub. Lima
+forwards ports the VM listens on to the Mac's loopback; a ClusterIP Service
+does not make the VM listen, so use the port-forward above (or set
+`edge.service.type: LoadBalancer`, which k3s's service load balancer binds
+on the node, and let Lima forward it; to be verified in step 7).
+
+Other subcommands: `scripts/k8s-dev.sh shell [cmd]` for a shell in the VM,
+`down` to stop it with state kept, `delete` to remove it. The VM is
+disposable; everything that matters is in the repository and the values.
+
+Chart checks, no cluster needed:
+
+```sh
+deploy/helm/warden/test.sh              # helm lint, then helm template against each testdata/values-*.yaml and diff with the golden
+deploy/helm/warden/test.sh --update     # rewrite the goldens; review the diff before committing
+go -C chat test ./internal/config -run Helm   # the rendered warden.json's shape (skips without helm)
+```
+
+The step 0 probes (`deploy/k8s/dev/spike/spike.sh`, with `KUBECONFIG` set)
+apply hand-written namespaces, policies, a stand-in gateway and sandbox
+pods per tier, and print the egress and ingress table, the label flip, the
+address-binding check, the ConfigMap refresh time and the pod start time
+per tier. They are the evidence behind "Spike results" in the plan and are
+not used by Warden itself.
