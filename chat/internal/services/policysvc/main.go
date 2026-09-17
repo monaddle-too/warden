@@ -190,7 +190,7 @@ func run(args []string) error {
 		if exe, err := os.Executable(); err == nil {
 			policy.LimitedGitLauncher = []string{exe, "policy", "git-limited"}
 		}
-		registry.GatewayPool = policy.NewGatewayPool(registry, networks)
+		registry.Gateways = policy.NewLoopbackGateways(registry, networks)
 		verifier, err := policy.NewSbxCliVerifier(registry, *sbx, true, nil)
 		if err != nil {
 			return errors.New("verifier: " + err.Error())
@@ -198,7 +198,7 @@ func run(args []string) error {
 		if !policy.ValidImageDigest(*guestDigest) {
 			return errors.New("--guest-image-digest must be sha256:<64 hex>")
 		}
-		verifier.ShellDigest = *guestDigest
+		verifier.Inspector.(*policy.SbxInspector).ShellDigest = *guestDigest
 		registry.Verifier = verifier
 		verifier.StartRefresher()
 	}

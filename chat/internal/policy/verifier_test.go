@@ -111,12 +111,13 @@ func (f *cliFixture) call(args []string, denied bool) (string, error) {
 }
 
 type verifierFixture struct {
-	t        *testing.T
-	clock    *testClock
-	registry *Registry
-	value    map[string]any
-	cli      *cliFixture
-	verifier *SbxCliVerifier
+	t         *testing.T
+	clock     *testClock
+	registry  *Registry
+	value     map[string]any
+	cli       *cliFixture
+	verifier  *RuntimeVerifier
+	inspector *SbxInspector
 }
 
 func newVerifierFixture(t *testing.T) *verifierFixture {
@@ -136,6 +137,7 @@ func newVerifierFixture(t *testing.T) *verifierFixture {
 		t.Fatal(err)
 	}
 	f.verifier = verifier
+	f.inspector = verifier.Inspector.(*SbxInspector)
 	f.registry.Verifier = verifier
 	previous := GatewayHealthy
 	GatewayHealthy = func(*Binding) bool { return true }
@@ -224,7 +226,7 @@ func TestLinuxImmutableDefaultDenySentinel(t *testing.T) {
 
 func TestUnmanagedBootstrapStaysClosed(t *testing.T) {
 	f := newVerifierFixture(t)
-	f.verifier.ManageNetwork = false
+	f.inspector.ManageNetwork = false
 	if f.ready("runtime") {
 		t.Fatal("unmanaged bootstrap deny proved readiness")
 	}
@@ -486,7 +488,7 @@ func TestStaleProofReprovisionsAndVerifiesInBackground(t *testing.T) {
 	f.verifier.WaitIdle()
 	release := make(chan struct{})
 	inner := f.cli.call
-	f.verifier.Runner = func(args []string, denied bool) (string, error) {
+	f.inspector.Runner = func(args []string, denied bool) (string, error) {
 		if strings.Join(args, " ") == "ls --json" {
 			<-release // the background inspection blocks here; the chat path must not
 		}
@@ -517,7 +519,7 @@ func TestProvisionalBeginDoesNotWaitForInspection(t *testing.T) {
 	f := newRefresherFixture(t)
 	release := make(chan struct{})
 	inner := f.cli.call
-	f.verifier.Runner = func(args []string, denied bool) (string, error) {
+	f.inspector.Runner = func(args []string, denied bool) (string, error) {
 		if args[0] == "inspect" {
 			<-release
 		}
@@ -620,7 +622,7 @@ func TestRefresherStartsAndStopsWithRegistryClose(t *testing.T) {
 }
 
 func TestVerifierAcceptsStockTemplateAndPinnedGuestImage(t *testing.T) {
-	v := &SbxCliVerifier{ShellDigest: "sha256:" + strings.Repeat("a", 64)}
+	v := &SbxInspector{ShellDigest: "sha256:" + strings.Repeat("a", 64)}
 	if !v.allowedImage(SBXShellDigest) || !v.allowedImage(v.ShellDigest) {
 		t.Fatal("stock template and pinned guest image must both be allowed")
 	}
@@ -633,8 +635,8 @@ func TestVerifierAcceptsStockTemplateAndPinnedGuestImage(t *testing.T) {
 }
 
 func TestVerifierStockDigestsPerArchitecture(t *testing.T) {
-	amd64 := &SbxCliVerifier{ShellDigest: SBXShellDigest, StockDigests: release.StockTemplateDigests(release.AMD64)}
-	arm64 := &SbxCliVerifier{ShellDigest: SBXShellDigest, StockDigests: release.StockTemplateDigests(release.ARM64)}
+	amd64 := &SbxInspector{ShellDigest: SBXShellDigest, StockDigests: release.StockTemplateDigests(release.AMD64)}
+	arm64 := &SbxInspector{ShellDigest: SBXShellDigest, StockDigests: release.StockTemplateDigests(release.ARM64)}
 	index := release.StockTemplateDigest
 	amdManifest, armManifest := release.StockTemplatePlatformDigests[release.AMD64], release.StockTemplatePlatformDigests[release.ARM64]
 	if !ValidImageDigest(index) || !ValidImageDigest(amdManifest) || !ValidImageDigest(armManifest) || amdManifest == armManifest || amdManifest == index || armManifest == index {
@@ -654,7 +656,7 @@ func TestVerifierStockDigestsPerArchitecture(t *testing.T) {
 	}
 	if v, err := NewSbxCliVerifier(&Registry{State: t.TempDir(), Bindings: map[string]*Binding{}}, "sbx", false, func([]string, bool) (string, error) { return "", nil }); err != nil {
 		t.Fatal(err)
-	} else if len(v.StockDigests) == 0 || v.StockDigests[0] != index {
-		t.Fatalf("new verifier must start from the host architecture's stock set, got %v", v.StockDigests)
+	} else if i := v.Inspector.(*SbxInspector); len(i.StockDigests) == 0 || i.StockDigests[0] != index {
+		t.Fatalf("new verifier must start from the host architecture's stock set, got %v", i.StockDigests)
 	}
 }
