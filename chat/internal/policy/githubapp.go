@@ -566,7 +566,13 @@ func (c *GitHubAppCredentials) Snapshot() map[string]any {
 
 // LoadGitHubAppConfig reads the private broker configuration file.
 func LoadGitHubAppConfig(path string, redactor *Redactor, clock Clock) (*GitHubAppCredentials, error) {
-	raw, err := openPrivate(path, 16384, "credential configuration")
+	return LoadGitHubAppConfigFrom(nil, path, redactor, clock)
+}
+
+// LoadGitHubAppConfigFrom reads the broker configuration named in store
+// (the file at name when store is nil).
+func LoadGitHubAppConfigFrom(store CredentialStore, name string, redactor *Redactor, clock Clock) (*GitHubAppCredentials, error) {
+	raw, err := loadCredential(store, name, name, 16384, "credential configuration")
 	if err != nil {
 		if strings.Contains(err.Error(), "must be private") {
 			return nil, errors.New("credential configuration must be a private regular file")

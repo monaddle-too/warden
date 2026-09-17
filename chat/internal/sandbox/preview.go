@@ -15,10 +15,15 @@ import (
 	"time"
 )
 
+// publication is one guest port the runtime exposes to the core at
+// Address:HostPort (the SBX driver's loopback port; a pod address later)
+// and the runner's own availability listener serves at ProxyPort. HostPort
+// keeps its name so existing worker state files load unchanged.
 type publication struct {
 	ID         string
 	SandboxID  string
 	Port       int
+	Address    string
 	HostPort   int
 	ProxyPort  int
 	Generation string
@@ -128,22 +133,13 @@ func (w *Worker) attachLocked(ctx context.Context, r Request) (Response, error) 
 				return Response{}, err
 			}
 		}
-		for attempt := 0; attempt < 3; attempt++ {
-			var listener net.Listener
-			listener, err = net.Listen("tcp4", "127.0.0.1:0")
-			if err != nil {
-				break
-			}
-			p.HostPort = listener.Addr().(*net.TCPAddr).Port
-			listener.Close()
-			if err = w.saveManagedLocked(); err != nil {
-				break
-			}
-			err = w.Runtime.Publish(ctx, s.RuntimeName, p.Port, p.HostPort)
-			if err == nil {
-				break
-			}
-		}
+		// The driver chooses the endpoint and hands it back through reserve
+		// before publishing, so the record is durable before the mapping
+		// exists (a crash in between is reconciled on resume).
+		_, err = w.Runtime.Publish(ctx, s.RuntimeName, p.Port, func(m PortMapping) error {
+			p.Address, p.HostPort = m.Address, m.Port
+			return w.saveManagedLocked()
+		})
 		if err != nil {
 			p.State = "error"
 			_ = w.saveManagedLocked()
@@ -282,7 +278,7 @@ func (w *Worker) servePreview(id string, rw http.ResponseWriter, r *http.Request
 		http.Error(rw, "Preview isolation audit is stale; awaiting background verification", http.StatusServiceUnavailable)
 		return
 	}
-	target := &url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", strconv.Itoa(pub.HostPort))}
+	target := &url.URL{Scheme: "http", Host: net.JoinHostPort(pub.Address, strconv.Itoa(pub.HostPort))}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	director := proxy.Director
 	proxy.Director = func(req *http.Request) {
@@ -313,7 +309,7 @@ func (w *Worker) servePreview(id string, rw http.ResponseWriter, r *http.Request
 		defer w.mu.Unlock()
 		s := w.managed.Sandboxes[pub.SandboxID]
 		current := w.managed.Publications[pubKey(pub.SandboxID, pub.Port)]
-		if s == nil || current == nil || s.State != "running" || current.State != "available" || current.Generation != pub.Generation || current.HostPort != pub.HostPort {
+		if s == nil || current == nil || s.State != "running" || current.State != "available" || current.Generation != pub.Generation || current.mapping() != pub.mapping() {
 			return nil, errors.New("preview generation changed")
 		}
 		return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, network, address)

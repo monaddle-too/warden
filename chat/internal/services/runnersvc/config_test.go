@@ -121,3 +121,23 @@ func TestRunnerTransportSettings(t *testing.T) {
 		t.Fatal("policy address disagreement accepted", err)
 	}
 }
+
+// The runner selects its driver by runtime.kind: the SBX driver for the
+// sbx shapes, a clear refusal for a kind this build cannot drive.
+func TestRunnerSelectsDriverByRuntimeKind(t *testing.T) {
+	t.Setenv(config.Env, "")
+	s, err := runnerSettings(t, "--root", "/state", "--sbx", "/usr/local/bin/sbx")
+	if err != nil || s.cfg.RuntimeKind() != config.RuntimeSBX {
+		t.Fatalf("%+v %v", s.cfg.Runtime, err)
+	}
+	driver, err := runtimeDriver(s.cfg.RuntimeKind())
+	if err != nil || driver == nil {
+		t.Fatal(err)
+	}
+	if _, err = runtimeDriver(config.RuntimeKubernetes); err == nil || !strings.Contains(err.Error(), "not part of this build") {
+		t.Fatalf("kubernetes kind: %v", err)
+	}
+	if _, err = runtimeDriver("firecracker"); err == nil {
+		t.Fatal("unknown kind accepted")
+	}
+}

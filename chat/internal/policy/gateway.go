@@ -36,11 +36,17 @@ const requestInspectionLimit = 8388608
 // ReviewFunc produces a push review; InspectPush is the default.
 type ReviewFunc func(ctx context.Context, repository string, body []byte, auth, upstream string, active func() (bool, error)) (map[string]any, []byte, error)
 
-// GatewayConfig describes one binding's inspected loopback gateway.
+// GatewayConfig describes one binding's inspected gateway: on its own
+// loopback Listener (LoopbackGateways), or with Listener nil, served
+// through a dispatcher that already identified the binding (SharedGateway),
+// in which case Start is never called and Host names the advertised host
+// the guest dials, accepted as a reverse-route authority beside the
+// loopback names.
 type GatewayConfig struct {
 	BindingID  string
 	Capability string
 	Port       int
+	Host       string
 	Listener   net.Listener
 	Control    func(message map[string]any) (map[string]any, error)
 	CA         *GatewayCA
@@ -51,10 +57,10 @@ type GatewayConfig struct {
 	Review     ReviewFunc
 }
 
-// Gateway is the regular-mode explicit proxy with a narrow reverse route
+// BindingGateway is one binding's regular-mode explicit proxy with a narrow reverse route
 // for providers and documents. There is no guest-selectable identity, raw
 // TCP forwarding or TLS passthrough.
-type Gateway struct {
+type BindingGateway struct {
 	cfg          GatewayConfig
 	Redactor     *Redactor
 	server       *http.Server
@@ -117,9 +123,9 @@ func LoadGitHubNetworks(path string) ([]*net.IPNet, error) {
 	return networks, nil
 }
 
-// NewGateway prepares a gateway on a pre-bound loopback listener.
-func NewGateway(cfg GatewayConfig) (*Gateway, error) {
-	if cfg.Listener == nil || cfg.Control == nil || cfg.CA == nil || cfg.Port == 0 {
+// NewBindingGateway prepares a gateway on a pre-bound loopback listener.
+func NewBindingGateway(cfg GatewayConfig) (*BindingGateway, error) {
+	if (cfg.Listener == nil && cfg.Host == "") || cfg.Control == nil || cfg.CA == nil || cfg.Port == 0 {
 		return nil, errors.New("gateway configuration incomplete")
 	}
 	if cfg.Resolve == nil {
@@ -133,7 +139,7 @@ func NewGateway(cfg GatewayConfig) (*Gateway, error) {
 	if cfg.Review == nil {
 		cfg.Review = InspectPush
 	}
-	g := &Gateway{cfg: cfg, Redactor: NewRedactor(), reviewSlots: make(chan struct{}, 2), reviewCache: map[string]reviewCacheEntry{}, done: make(chan struct{})}
+	g := &BindingGateway{cfg: cfg, Redactor: NewRedactor(), reviewSlots: make(chan struct{}, 2), reviewCache: map[string]reviewCacheEntry{}, done: make(chan struct{})}
 	g.server = &http.Server{Handler: g, ReadHeaderTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20, ErrorLog: silentLogger(), TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){}}
 	g.tunnelServer = &http.Server{Handler: g, ReadHeaderTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20, ErrorLog: silentLogger(), TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
@@ -146,7 +152,7 @@ func NewGateway(cfg GatewayConfig) (*Gateway, error) {
 }
 
 // Start serves the listener in the background.
-func (g *Gateway) Start() {
+func (g *BindingGateway) Start() {
 	g.running.Store(true)
 	go func() {
 		defer close(g.done)
@@ -156,10 +162,10 @@ func (g *Gateway) Start() {
 }
 
 // Running reports whether the listener is still served.
-func (g *Gateway) Running() bool { return g.running.Load() }
+func (g *BindingGateway) Running() bool { return g.running.Load() }
 
 // Stop closes the listener and active connections.
-func (g *Gateway) Stop() {
+func (g *BindingGateway) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_ = g.server.Shutdown(ctx)
@@ -173,11 +179,11 @@ func (g *Gateway) Stop() {
 }
 
 // Port returns the loopback port.
-func (g *Gateway) Port() int { return g.cfg.Port }
+func (g *BindingGateway) Port() int { return g.cfg.Port }
 
 // flow is the per-request state of the inspected exchange.
 type flow struct {
-	g             *Gateway
+	g             *BindingGateway
 	w             http.ResponseWriter
 	r             *http.Request
 	ctx           context.Context
@@ -208,7 +214,7 @@ type flow struct {
 }
 
 // ServeHTTP handles direct proxy requests and requests inside tunnels.
-func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (g *BindingGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tunnel, _ := r.Context().Value(tunnelKey).(*tunnelInfo)
 	if r.Method == http.MethodConnect && tunnel == nil {
 		g.handleConnect(w, r)
@@ -326,7 +332,7 @@ func (f *flow) abort() {
 
 // ----- CONNECT -----
 
-func (g *Gateway) handleConnect(w http.ResponseWriter, r *http.Request) {
+func (g *BindingGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	f := &flow{g: g, w: w, r: r, method: r.Method, httpVersion: r.Proto, path: r.RequestURI, watchStop: make(chan struct{})}
 	f.ctx, f.cancel = context.WithCancel(r.Context())
 	defer f.cancel()
@@ -506,7 +512,7 @@ func (f *flow) handle() {
 			return
 		}
 	}
-	reverse := f.host == "host.docker.internal" || f.host == "localhost" || f.host == "127.0.0.1"
+	reverse := f.host == LoopbackGatewayHost || f.host == "localhost" || f.host == "127.0.0.1" || (f.g.cfg.Host != "" && f.host == f.g.cfg.Host)
 	if reverse && strings.HasPrefix(f.path, DocumentPrefix) {
 		f.documentRequest()
 		return
@@ -999,7 +1005,7 @@ func (f *flow) providerRequest() bool {
 	return f.scheme == "https" && f.port == 443 && f.method == http.MethodPost && ProviderEndpoints[[2]string{f.host, f.path}]
 }
 
-func (g *Gateway) cachedReview(key string) (reviewCacheEntry, bool) {
+func (g *BindingGateway) cachedReview(key string) (reviewCacheEntry, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.pruneReviewsLocked()
@@ -1007,7 +1013,7 @@ func (g *Gateway) cachedReview(key string) (reviewCacheEntry, bool) {
 	return entry, ok
 }
 
-func (g *Gateway) storeReview(key string, review map[string]any, body []byte) {
+func (g *BindingGateway) storeReview(key string, review map[string]any, body []byte) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.pruneReviewsLocked()
@@ -1021,7 +1027,7 @@ func (g *Gateway) storeReview(key string, review map[string]any, body []byte) {
 	g.reviewCache[key] = reviewCacheEntry{expires: time.Now().Add(120 * time.Second), review: review, body: body}
 }
 
-func (g *Gateway) pruneReviewsLocked() {
+func (g *BindingGateway) pruneReviewsLocked() {
 	now := time.Now()
 	kept := g.reviewOrder[:0]
 	for _, key := range g.reviewOrder {

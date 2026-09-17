@@ -77,17 +77,26 @@ type Binding struct {
 	Ended          map[string]bool
 	Decisions      map[string]map[string]any
 	ProviderSecret string
-	GatewayPort    int
+	// GatewayPort is the binding's loopback gateway port (gateway-port.json)
+	// on the sbx shapes, or the shared listener's port; a proof names it.
+	GatewayPort int
+	// Endpoint is what the registry's Gateway bound for this binding, which
+	// Begin advertises; unset until Bind ran in this process.
+	Endpoint GatewayEndpoint
 	// LastBegin (when Begun) keeps the binding warm for background
 	// re-verification after its lease ends.
 	LastBegin float64
 	Begun     bool
 }
 
-// GatewayManager runs the inspected loopback gateway for a binding.
-type GatewayManager interface {
-	Ensure(binding *Binding) error
-	Close()
+// endpoint is the gateway endpoint Begin advertises: the one the Gateway
+// bound, else the loopback endpoint of the recorded port (a registry
+// without a Gateway, as the sbx control tests run it).
+func (b *Binding) endpoint() GatewayEndpoint {
+	if b.Endpoint.Port != 0 {
+		return b.Endpoint
+	}
+	return LoopbackEndpoint(b.GatewayPort)
 }
 
 // RegistryOptions configures the registry.
@@ -116,8 +125,11 @@ type Registry struct {
 	ClaudeSource   ProviderSource
 	DocumentAPI    *DocumentAPI
 	Sharing        *Sharing
-	GatewayPool    GatewayManager
-	Clock          Clock
+	// Gateways runs the bindings' gateways (LoopbackGateways on the sbx
+	// shapes, SharedGateway behind one listener); nil in tests that bind
+	// a port by hand.
+	Gateways Gateway
+	Clock    Clock
 	// CA signs every gateway's leaf certificates; its public certificate is
 	// what guests install.
 	CA            *GatewayCA
@@ -672,8 +684,12 @@ func (r *Registry) Begin(value any, renew bool) (map[string]any, error) {
 	}
 	b.Lease = &Lease{Provider: provider, RunID: ctx["runID"], ChatID: ctx["chatID"], ExpiresAt: r.Clock() + LeaseSeconds}
 	b.LastBegin, b.Begun = r.Clock(), true
-	gateway := "http://host.docker.internal:" + itoa(proof.GatewayPort)
-	result := map[string]any{"ok": true, "ready": true, "leaseSeconds": LeaseSeconds, "apiKeyPlaceholder": "warden-proxy-managed", "provider": provider, "proxyURL": gateway}
+	// The proof names the gateway port it was issued for; the endpoint's
+	// host and credential come from the Gateway that bound it.
+	endpoint := b.endpoint()
+	endpoint.Port = proof.GatewayPort
+	gateway := endpoint.BaseURL()
+	result := map[string]any{"ok": true, "ready": true, "leaseSeconds": LeaseSeconds, "apiKeyPlaceholder": endpoint.Placeholder(), "provider": provider, "proxyURL": endpoint.ProxyURL()}
 	if provider == "claude" {
 		result["providerBaseURL"] = gateway + "/anthropic"
 	} else {
@@ -1242,8 +1258,8 @@ func (r *Registry) Close() {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.GatewayPool != nil {
-		r.GatewayPool.Close()
+	if r.Gateways != nil {
+		r.Gateways.Close()
 	}
 	for _, b := range r.Bindings {
 		b.ProviderSecret = ""

@@ -20,12 +20,12 @@ func TestHostWideGatewayCASharedByEveryGateway(t *testing.T) {
 		t.Fatalf("host CA not created under the state directory: %v", err)
 	}
 	var seen []*GatewayCA
-	pool := NewGatewayPool(registry, nil)
-	pool.Factory = func(cfg GatewayConfig) (*Gateway, error) {
+	pool := NewLoopbackGateways(registry, nil)
+	pool.Factory = func(cfg GatewayConfig) (*BindingGateway, error) {
 		seen = append(seen, cfg.CA)
-		return NewGateway(cfg)
+		return NewBindingGateway(cfg)
 	}
-	registry.GatewayPool = pool
+	registry.Gateways = pool
 	certificates := map[string]bool{}
 	for _, sandbox := range []string{"s1", "s2"} {
 		value := runContext(map[string]any{"sandboxID": sandbox, "runtimeName": "sbx-" + sandbox})

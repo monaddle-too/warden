@@ -153,3 +153,17 @@ func TestPolicyTransportSettings(t *testing.T) {
 		t.Fatalf("%+v %v", s, err)
 	}
 }
+
+// The policy service refuses a runtime kind it has no inspector, gateway
+// or credential store for, before touching any state.
+func TestPolicySupportsOnlyTheSBXKindInThisBuild(t *testing.T) {
+	if err := supportedKind(config.RuntimeSBX); err != nil {
+		t.Fatal(err)
+	}
+	if err := supportedKind(config.RuntimeKubernetes); err == nil || !strings.Contains(err.Error(), "not implemented in this build") {
+		t.Fatalf("kubernetes kind: %v", err)
+	}
+	if err := supportedKind("firecracker"); err == nil {
+		t.Fatal("unknown kind accepted")
+	}
+}
