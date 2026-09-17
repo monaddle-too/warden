@@ -1357,6 +1357,9 @@ func readLine(reader *bufio.Reader, limit int) ([]byte, error) {
 	return line[:len(line)-1], nil
 }
 
+// Addr is the bound address (a tls:// listener's ephemeral port, in tests).
+func (s *ControlServer) Addr() net.Addr { return s.listener.Addr() }
+
 // Close stops accepting and waits for in-flight handlers.
 func (s *ControlServer) Close() {
 	s.once.Do(func() {
