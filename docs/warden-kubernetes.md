@@ -701,14 +701,12 @@ adversary has root in the guest. Compared with the SBX shapes:
   credential is minted per binding and delivered only to that pod's launch
   environment; a guest presenting another binding's credential, or
   forging another pod's address (CNI-dependent), is the row to keep
-  testing. The step-8 suite verified on gVisor that the source-pod check is
-  not implemented in this build: a pod that presents another binding's
-  valid credential is served, so the credential is the sole authority.
-  This is not exploitable by itself — the other rows prove a sandbox
-  cannot reach another sandbox or the credential's owner, so it cannot
-  obtain the credential — but the "second check" of plan decision 4 is a
-  hardening step still to add; the `other-binding-credential` row keeps the
-  "must be refused" assertion failing so the gap stays visible.
+  testing. The policy service follows the sandbox pods and the shared
+  gateway honours a credential only from the address of the one live pod
+  running that binding's sandbox (403 otherwise, no challenge); the
+  `other-binding-credential` row of the suite proves it on gVisor. What
+  the check cannot cover is a CNI that lets a pod forge another pod's
+  address, which is why the credential stays the authority.
 - The runner may reach every TCP port of every sandbox pod (one static
   ingress policy), where SBX published one port per approval. Only the
   runner's preview proxy is admitted, and it dials only published ports.
@@ -922,14 +920,11 @@ What it asserts, in order (`-run TestKubernetes/<name>` runs one):
   resumes, re-registers and gets a fresh credential at the same gateway
   address) and that the pre-restart credential no longer works.
 
-The `other-binding-credential` row currently fails, and the failure is a
-finding, not a suite bug: the shared gateway authenticates by the binding
-credential alone, so a pod that presents another binding's valid credential
-is served (verified on gVisor). Decision 4's source-pod "second check" is
-not implemented in this build. It is defence in depth — the other rows
-prove a sandbox cannot reach another sandbox or the credential's owner, so
-it cannot obtain the credential — and the row keeps the "must be refused"
-assertion failing so the gap stays visible until the check is added.
+The `other-binding-credential` row first found that the shared gateway
+authenticated by the credential alone; decision 4's source-pod check has
+been added since (the inspector's pod watch feeds it) and the row passes:
+a valid credential presented from another sandbox's pod is refused with
+403 and no upstream connection.
 
 The suite prints one line per row at the end (`row <name> PASS|FAIL under
 tier …`) and names any expected row that did not run.

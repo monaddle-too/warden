@@ -733,7 +733,7 @@ Decisions this changes:
       `<binding>.localhost:28781` after a pod restart with the workspace
       intact. Only the Google consent itself remains, which is the owner's
       sign-in in the cluster's Admin console.
-- [~] 8 End-to-end suite and the adversarial networking rows on gVisor
+- [x] 8 End-to-end suite and the adversarial networking rows on gVisor
       (work item 8); then the same on Kata (dev VM if step 0 says it
       works, otherwise on the OVH server). Suite landed 2026-09-17
       (`chat/tests/k8s`, build tag `k8s`, `scripts/k8s-dev.sh test`,
@@ -745,8 +745,10 @@ Decisions this changes:
       all pass under gVisor. The suite found that the shared gateway had
       no source-pod check (decision 4's second check); implemented in
       e424bd1 (the inspector follows sandbox pods; a credential from any
-      other address is refused with 403). Kata rows: deferred to real KVM
-      (decision 15, spike results).
+      other address is refused with 403). Full run after the fix:
+      `TestKubernetes` PASS in 209 s, every flow and all eleven adversarial
+      rows under gVisor. Kata rows: deferred to a host with real KVM
+      (decision 15, spike results); the suite runs unchanged there.
 - [~] 9 Public-preview mode with an Ingress and cert-manager on a real
       cluster (Owner: which cluster; the OVH server with k3s alongside the
       Compose install is the cheapest, a managed cluster with gVisor nodes
