@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Archive, ExternalLink, History, Square, Trash2 } from "lucide-react";
+import { Archive, ExternalLink, History, Play, Square, Trash2 } from "lucide-react";
 import type {
   AccessEvent,
   Chat,
@@ -287,20 +287,37 @@ export function WorkspacePanel({
         </div>
         {!ws?.deleted && (
           <div className="workspace-actions">
-            <button
-              disabled={!!busy || (!running && (!state || state === "stopped"))}
-              title={
-                running
-                  ? "Stop the running chat and the workspace's sandbox; files are kept"
-                  : "Stop the workspace's sandbox; files are kept"
-              }
-              onClick={() =>
-                void act("stop", `environments/${chat.sandboxID}/stop`)
-              }
-            >
-              <Square size={12} fill="currentColor" />
-              {busy === "stop" ? "Stopping…" : "Stop"}
-            </button>
+            {!running && (!state || state === "stopped" || state === "error") ? (
+              <button
+                disabled={!!busy || !ws?.runtime}
+                title={
+                  ws?.runtime
+                    ? "Start the workspace's sandbox now, so the next message starts at once"
+                    : "The first message creates the sandbox"
+                }
+                onClick={() =>
+                  void act("start", `environments/${chat.sandboxID}/start`)
+                }
+              >
+                <Play size={12} fill="currentColor" />
+                {busy === "start" ? "Starting…" : "Start"}
+              </button>
+            ) : (
+              <button
+                disabled={!!busy || state === "stopping"}
+                title={
+                  running
+                    ? "Stop the running chat and the workspace's sandbox; files are kept"
+                    : "Stop the workspace's sandbox; files are kept"
+                }
+                onClick={() =>
+                  void act("stop", `environments/${chat.sandboxID}/stop`)
+                }
+              >
+                <Square size={12} fill="currentColor" />
+                {busy === "stop" ? "Stopping…" : "Stop"}
+              </button>
+            )}
             {!ws?.archived && (
               <button
                 disabled={!!busy}

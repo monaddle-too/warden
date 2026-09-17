@@ -660,7 +660,7 @@ func (d *Driver) Resize(ctx context.Context, name string, r sandbox.Resources) (
 	if pod.Metadata.Labels[LabelSandbox] != name || pod.Metadata.Labels[LabelManagedBy] != ManagedBy {
 		return false, fmt.Errorf("sandbox %s: an unmanaged pod holds its name", name)
 	}
-	if applied, _ := resized(&pod, r); applied {
+	if runningAt(&pod, r) {
 		return false, nil
 	}
 	previous := sandbox.Resources{}
@@ -684,11 +684,23 @@ func (d *Driver) Resize(ctx context.Context, name string, r sandbox.Resources) (
 	waitCtx, cancel := context.WithTimeout(ctx, d.resizeWait)
 	defer cancel()
 	uid := pod.Metadata.UID
+	// The conditions an earlier attempt left (Infeasible, the runtime's
+	// error) are still on the pod when the watch starts; only a status
+	// the kubelet writes after this patch says anything about it.
+	first := true
 	_, err = d.awaitPod(waitCtx, name, func(pod *kube.Pod, event kube.EventType) (bool, error) {
 		if event == kube.Deleted || pod == nil || pod.Metadata.UID != uid || pod.Metadata.DeletionTimestamp != nil {
 			return true, fmt.Errorf("sandbox %s: pod went away during the resize", name)
 		}
-		return resized(pod, r)
+		if runningAt(pod, r) {
+			return true, nil
+		}
+		stale := first
+		first = false
+		if stale {
+			return false, nil
+		}
+		return false, resizeFailed(pod)
 	})
 	if err != nil && errors.Is(err, waitCtx.Err()) {
 		err = fmt.Errorf("%w: not applied within %s (deferred by the kubelet)", sandbox.ErrResizeInfeasible, d.resizeWait)
@@ -715,28 +727,10 @@ func (d *Driver) Resize(ctx context.Context, name string, r sandbox.Resources) (
 // applies one within seconds.
 const resizeWait = 15 * time.Second
 
-// resized reports whether the kubelet runs the guest container at r: the
-// resize conditions are off and the container status carries the size.
-// An infeasible resize (the node cannot ever fit it) or one the kubelet
-// failed to apply is the error.
-func resized(pod *kube.Pod, r sandbox.Resources) (bool, error) {
-	for _, c := range pod.Status.Conditions {
-		if c.Status != "True" {
-			continue
-		}
-		switch c.Type {
-		case "PodResizePending":
-			if c.Reason == "Infeasible" {
-				return true, fmt.Errorf("%w: %s", sandbox.ErrResizeInfeasible, strings.TrimSpace(c.Reason+" "+c.Message))
-			}
-			return false, nil // deferred: the node may have the room later
-		case "PodResizeInProgress":
-			if c.Reason == "Error" {
-				return true, fmt.Errorf("%w: %s", sandbox.ErrResizeInfeasible, strings.TrimSpace(c.Message))
-			}
-			return false, nil
-		}
-	}
+// runningAt reports whether the kubelet runs the guest container at r
+// (status.containerStatuses[].resources, 1.33+), whatever the resize
+// conditions say.
+func runningAt(pod *kube.Pod, r sandbox.Resources) bool {
 	for _, c := range pod.Status.ContainerStatuses {
 		if c.Name != ContainerName || c.Resources == nil {
 			continue
@@ -744,10 +738,29 @@ func resized(pod *kube.Pod, r sandbox.Resources) (bool, error) {
 		cpu, errCPU := kube.Milli(c.Resources.Limits["cpu"])
 		memory, errMemory := kube.Bytes(c.Resources.Limits["memory"])
 		if errCPU == nil && errMemory == nil && cpu == int64(r.CPUMilli) && memory == int64(r.MemoryMB)<<20 {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
+}
+
+// resizeFailed is the resize condition that will never clear on its own:
+// infeasible (the node cannot ever fit it) or the runtime's error (GKE
+// Sandbox's gVisor: not implemented). Pending (deferred) and in progress
+// are nil: still worth waiting for.
+func resizeFailed(pod *kube.Pod) error {
+	for _, c := range pod.Status.Conditions {
+		if c.Status != "True" {
+			continue
+		}
+		switch {
+		case c.Type == "PodResizePending" && c.Reason == "Infeasible":
+			return fmt.Errorf("%w: %s", sandbox.ErrResizeInfeasible, strings.TrimSpace(c.Reason+" "+c.Message))
+		case c.Type == "PodResizeInProgress" && c.Reason == "Error":
+			return fmt.Errorf("%w: %s", sandbox.ErrResizeInfeasible, strings.TrimSpace(c.Message))
+		}
+	}
+	return nil
 }
 
 // Remove stops the runtime and deletes its workspace claim.

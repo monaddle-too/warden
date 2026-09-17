@@ -1753,3 +1753,46 @@ func TestPublicationAddressBackfilledFromDriverOnLoad(t *testing.T) {
 		t.Fatalf("address not backfilled: %+v", p)
 	}
 }
+
+// The owner's Start: a stopped, created sandbox is made resident again
+// without a run and reported running; a sandbox never created has nothing
+// to start; a running one is left alone.
+func TestStartBringsAStoppedSandboxBackWithoutARun(t *testing.T) {
+	w, d, _, r := managedFixture(t)
+	r.Operation = "start"
+	if _, err := w.dispatch(context.Background(), r); err == nil || !strings.Contains(err.Error(), "no sandbox yet") {
+		t.Fatalf("start before creation: %v", err)
+	}
+	prepareFixture(t, w, r)
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	s.Active = nil
+	w.mu.Unlock()
+	r.Operation = "stop"
+	if res, err := w.dispatch(context.Background(), r); err != nil || res.Sandbox.State != "stopped" {
+		t.Fatalf("stop: %+v %v", res.Sandbox, err)
+	}
+	d.mu.Lock()
+	before := len(d.calls)
+	d.mu.Unlock()
+	r.Operation = "start"
+	res, err := w.dispatch(context.Background(), r)
+	if err != nil || res.Sandbox.State != "running" {
+		t.Fatalf("start: %+v %v", res.Sandbox, err)
+	}
+	d.mu.Lock()
+	calls := strings.Join(d.calls[before:], "\n")
+	d.mu.Unlock()
+	if !strings.Contains(calls, "hold-residency:"+s.RuntimeName) || strings.Contains(calls, "exec:") {
+		t.Fatalf("start must only restore residency:\n%s", calls)
+	}
+	w.mu.Lock()
+	held := s.residency != nil
+	w.mu.Unlock()
+	if !held {
+		t.Fatal("residency not held after start")
+	}
+	if _, err = w.dispatch(context.Background(), r); err != nil {
+		t.Fatalf("start of a running sandbox: %v", err)
+	}
+}

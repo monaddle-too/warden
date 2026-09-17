@@ -677,6 +677,9 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 		}
 		err = w.stopLocked(ctx, s)
 		return w.statusLocked(r), err
+	case "start":
+		err = w.startLocked(ctx, s)
+		return w.statusLocked(r), err
 	case "remove":
 		if s.Active != nil {
 			return Response{}, errors.New("sandbox has an active run")
@@ -955,6 +958,36 @@ func (w *Worker) stopLocked(ctx context.Context, s *managedSandbox) error {
 		}
 	}
 	s.State = "stopped"
+	return w.saveManagedLocked()
+}
+
+// startLocked brings a stopped, created sandbox back without a run (the
+// owner's Start button): its residency is restored as the next prepare
+// would restore it, so that prepare skips the wait. Attestation and the
+// guest probe stay with the next run, as after any resume; until then the
+// pod or VM sits under its default-deny network. A running sandbox is
+// left as it is; one not created yet has nothing to start.
+func (w *Worker) startLocked(ctx context.Context, s *managedSandbox) error {
+	if s.Active != nil || s.State == "running" || s.State == "starting" {
+		return nil
+	}
+	if !s.Created || s.Creating {
+		return errors.New("the workspace has no sandbox yet; its first message creates one")
+	}
+	w.setProgress(s.ID, StageResuming, "")
+	defer w.clearProgress(s.ID)
+	previous := s.State
+	s.State = "starting"
+	_ = w.saveManagedLocked()
+	err := w.ensureResidencyLocked(WithProgress(ctx, func(detail string) { w.setProgress(s.ID, StageResuming, detail) }), s)
+	if err != nil {
+		w.releaseResidencyLocked(s)
+		s.State = previous
+		_ = w.saveManagedLocked()
+		return err
+	}
+	s.State = "running"
+	s.LastActivity = w.now()
 	return w.saveManagedLocked()
 }
 

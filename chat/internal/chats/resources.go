@@ -66,17 +66,18 @@ func (e *Engine) ResizeEnvironment(ctx context.Context, id string, r *sandbox.Re
 			}
 			e.releaseSandbox(ctx, id, "")
 		}
-		err := e.resizeSandbox(ctx, ran, resolved)
+		err := e.resizeSandbox(ctx, ran, resolved, false)
 		if errors.Is(err, sandbox.ErrResizeRestart) {
 			// A live platform whose cluster could not do it in place under
-			// the run: end the chats and the runner replaces the sandbox at
-			// the new size.
+			// the run (a resident session counts as one): end the chats,
+			// release the session, and the runner replaces the sandbox at
+			// the new size once it sees the run gone.
 			log.Printf("workspace %s: the cluster cannot resize the sandbox in place; stopping its chats and restarting it at %s", id, resolved)
 			if err = e.stopChats(ctx, id); err != nil {
 				return err
 			}
 			e.releaseSandbox(ctx, id, "")
-			err = e.resizeSandbox(ctx, ran, resolved)
+			err = e.resizeSandbox(ctx, ran, resolved, true)
 		}
 		if err != nil {
 			return err
@@ -86,15 +87,18 @@ func (e *Engine) ResizeEnvironment(ctx context.Context, id string, r *sandbox.Re
 }
 
 // resizeSandbox asks the runner to resize the chat's sandbox, waiting out a
-// resident session that was released moments ago.
-func (e *Engine) resizeSandbox(ctx context.Context, c *Chat, r sandbox.Resources) error {
+// resident session that was released moments ago (the runner still holds
+// its run for a moment: "active run" where a resize restarts, and, when
+// afterRelease says the caller just released it, ErrResizeRestart on a
+// live platform, which then means the run is still being torn down).
+func (e *Engine) resizeSandbox(ctx context.Context, c *Chat, r sandbox.Resources, afterRelease bool) error {
 	req := request(c, "resize")
 	req.Resources = &r
 	waitCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	for {
 		_, err := e.Worker.Call(ctx, req)
-		if err == nil || !strings.Contains(err.Error(), "sandbox has an active run") {
+		if err == nil || !(strings.Contains(err.Error(), "sandbox has an active run") || (afterRelease && errors.Is(err, sandbox.ErrResizeRestart))) {
 			return err
 		}
 		select {
@@ -189,7 +193,7 @@ func (e *Engine) resolveResources(c *Chat, a Approval) any {
 	if !restart {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		err := e.resizeSandbox(ctx, c, r)
+		err := e.resizeSandbox(ctx, c, r, false)
 		if err == nil {
 			_ = e.recordResources(c.SandboxID, r)
 			out["note"] = "in effect now; the guest may still report its old memory total, the limit is " + r.String()
@@ -230,7 +234,7 @@ func (e *Engine) restartResized(chatID string, r sandbox.Resources) {
 	if c == nil {
 		return
 	}
-	if err := e.resizeSandbox(ctx, c, r); err != nil {
+	if err := e.resizeSandbox(ctx, c, r, true); err != nil {
 		fail(err)
 		return
 	}

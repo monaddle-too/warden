@@ -176,6 +176,26 @@ func (e *Engine) StopEnvironment(ctx context.Context, id string) error {
 	return err
 }
 
+// StartEnvironment brings a stopped workspace's sandbox back without a
+// message, so the next one starts at once. A workspace that never ran has
+// nothing to start.
+func (e *Engine) StartEnvironment(ctx context.Context, id string) error {
+	st := e.Store.Snapshot()
+	chats := st.environmentChats(id)
+	if len(chats) == 0 {
+		return errors.New("workspace not found")
+	}
+	if st.deleted(id) {
+		return errors.New("workspace was deleted")
+	}
+	ran := ranChat(chats)
+	if ran == nil {
+		return errors.New("the workspace has no sandbox yet; its first message creates one")
+	}
+	_, err := e.Worker.Call(ctx, request(ran, "start"))
+	return err
+}
+
 // stopChats ends every running chat on the workspace (the agent's session
 // and any run in flight) and waits for them to settle: the owner asked
 // for the workspace to stop or change, and a chat that is merely resident

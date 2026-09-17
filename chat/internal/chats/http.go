@@ -178,6 +178,8 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = h.Engine.RevokePort(r.Context(), parts[1])
 	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "stop":
 		err = h.Engine.StopEnvironment(r.Context(), parts[1])
+	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "start":
+		err = h.Engine.StartEnvironment(r.Context(), parts[1])
 	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "archive":
 		err = h.Engine.ArchiveEnvironment(r.Context(), parts[1])
 	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "delete":
