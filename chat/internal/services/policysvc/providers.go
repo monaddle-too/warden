@@ -2,6 +2,7 @@ package policysvc
 
 import (
 	"errors"
+	"warden/chat/internal/config"
 
 	"warden/chat/internal/policy"
 	kubepolicy "warden/chat/internal/policy/kube"
@@ -45,6 +46,11 @@ func (s settings) google() (*policy.GoogleConnection, error) {
 	options := policy.GoogleClientOptions{ConfigFile: s.googleConfig}
 	if s.googleConfigured && s.googleConfig == "" {
 		options.ChatListen = s.chatListen
+		if s.kind == config.RuntimeKubernetes {
+			// The browser reaches chat through the edge only; the callback
+			// comes back to the public origin (auth.publicURL).
+			options.RedirectBase = s.publicURL
+		}
 		options.BuiltinClientID = release.GoogleDocsClientID
 		options.BuiltinClientSecret = release.GoogleDocsClientSecret
 	}

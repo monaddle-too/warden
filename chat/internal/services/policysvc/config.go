@@ -34,6 +34,7 @@ type settings struct {
 	githubConfigured bool   // providers.github present
 	githubAuthFile   string // providers.github.authFile (local user token)
 	chatListen       string // chat.listen; its port is the built-in Google redirect
+	publicURL        string // auth.publicURL; the Google redirect origin in the kubernetes kind
 	egress           string // sandboxes.egress: restricted or open
 	// The kubernetes kind (docs/warden-kubernetes-plan.md, work item 5):
 	// kind is runtime.kind; kubernetes the section; the *Secret fields are
@@ -139,6 +140,7 @@ func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
 		s.githubConfigured = true
 	}
 	s.chatListen = config.Override(o, "chat-listen", *f.chatListen, "chat.listen", cfg.Chat.Listen)
+	s.publicURL = cfg.Auth.PublicURL
 	if env := os.Getenv("WARDEN_GITHUB_APP_BROKER"); env != "" {
 		if source != "" && broker != "" && broker != env {
 			return settings{}, errNamed("$WARDEN_GITHUB_APP_BROKER " + env + " disagrees with providers.github.brokerFile " + broker + " in " + source)
