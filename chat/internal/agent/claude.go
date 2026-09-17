@@ -71,6 +71,9 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		textID := ""
 		text := ""
 		streamed := false
+		// Token usage as the chat service expects it from Codex: a running
+		// total for the process, per turn as the growth of that total.
+		total := claudeUsage{}
 		// A text block ends when Claude turns to a tool; complete it as its own
 		// message so later text is a new bubble after the tool steps, not glued
 		// onto this one.
@@ -295,6 +298,10 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						status = "failed"
 						event("error", map[string]any{"error": map[string]any{"message": claudeResultError(v)}})
 					}
+					if last, ok := claudeTurnUsage(v, total); ok {
+						total = total.add(last)
+						event("thread/tokenUsage/updated", map[string]any{"threadId": thread, "turnId": turn, "tokenUsage": map[string]any{"last": last.params(), "total": total.params()}})
+					}
 					event("turn/completed", map[string]any{"turn": map[string]any{"id": turn, "status": status}})
 				}
 			}
@@ -312,4 +319,38 @@ func claudeResultError(v map[string]any) string {
 		return result
 	}
 	return "Claude could not complete this turn"
+}
+
+// claudeUsage is a token count in the shape of Codex's TokenUsageBreakdown
+// plus the cost, which Claude Code estimates and Codex does not.
+type claudeUsage struct {
+	input, cached, cacheWrite, output int64
+	cost                              float64
+}
+
+func (u claudeUsage) add(v claudeUsage) claudeUsage {
+	return claudeUsage{u.input + v.input, u.cached + v.cached, u.cacheWrite + v.cacheWrite, u.output + v.output, u.cost + v.cost}
+}
+func (u claudeUsage) params() map[string]any {
+	return map[string]any{"inputTokens": u.input, "cachedInputTokens": u.cached, "cacheWriteInputTokens": u.cacheWrite, "outputTokens": u.output, "reasoningOutputTokens": int64(0), "totalTokens": u.input + u.output, "costUSD": u.cost}
+}
+
+// claudeTurnUsage reads what a turn cost from Claude Code's `result`: with
+// streamed input, `usage` is the turn's own (main-loop) tokens, where
+// `input_tokens` excludes the cached and cache-written ones, while
+// `total_cost_usd` is the running estimate for the whole process, so the
+// turn's cost is its growth over `sofar`. False when the result reports no
+// usage (a crash result carries none).
+func claudeTurnUsage(v map[string]any, sofar claudeUsage) (claudeUsage, bool) {
+	usage := Map(v["usage"])
+	if usage == nil {
+		return claudeUsage{}, false
+	}
+	n := func(k string) int64 { f, _ := usage[k].(float64); return int64(f) }
+	u := claudeUsage{cached: n("cache_read_input_tokens"), cacheWrite: n("cache_creation_input_tokens"), output: n("output_tokens")}
+	u.input = n("input_tokens") + u.cached + u.cacheWrite
+	if cost, ok := v["total_cost_usd"].(float64); ok && cost > sofar.cost {
+		u.cost = cost - sofar.cost
+	}
+	return u, true
 }

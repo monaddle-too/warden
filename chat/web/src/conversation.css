@@ -207,8 +207,37 @@
   width: 28px;
   height: 28px;
 }
-.message-assistant .message-actions {
+.message-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   margin: 2px 0 0 -6px;
+}
+/* What the turn took (TurnStats.tsx): beside the action row of the turn's
+   last message, or on its own after a tool-step group. The separators are
+   CSS content, so a selection copies the figures only. */
+.turn-stats {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.turn-stats span + span::before {
+  content: "·";
+  margin-right: 6px;
+}
+.turn-stats.block {
+  margin-top: -14px;
+}
+.turn-stats.active {
+  color: var(--text-2);
+}
+.turn-stats.active svg {
+  color: var(--accent-text);
 }
 .message:hover .message-actions,
 .message:focus-within .message-actions,

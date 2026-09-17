@@ -33,6 +33,13 @@ type activeRun struct {
 	idle     atomic.Bool
 	release  context.CancelFunc
 	done     chan struct{}
+	// The agent process reports token usage as a running total for its
+	// lifetime (a resident session spans turns), so a turn's usage is how
+	// much the total grew: `usage` is the last total seen and `usageBase`
+	// the total when `usageTurn` began. Only the run's goroutine touches
+	// them.
+	usage, usageBase cv.Usage
+	usageTurn        string
 }
 type Engine struct {
 	WardenSocket        string
@@ -350,6 +357,9 @@ func (e *Engine) now() time.Time {
 	return time.Now()
 }
 
+// at is the time as entries record it: unix seconds.
+func (e *Engine) at() float64 { return float64(e.now().UnixMilli()) / 1000 }
+
 // View is the state clients see: the stored snapshot plus who is typing
 // in each chat, expired indicators dropped.
 func (e *Engine) View() State {
@@ -550,6 +560,7 @@ func (e *Engine) run(parent context.Context, id string) {
 				}
 			}
 			c.Conversation.ActiveTurnID = nil
+			c.Conversation.EndTurns(e.at())
 			for i := range c.Conversation.Entries {
 				v := &c.Conversation.Entries[i]
 				v.IsStreaming = false
@@ -808,6 +819,7 @@ func (e *Engine) settleTurn(parent context.Context, id string, a *activeRun) {
 			}
 		}
 		c.Conversation.ActiveTurnID = nil
+		c.Conversation.EndTurns(e.at())
 		for i := range c.Conversation.Entries {
 			c.Conversation.Entries[i].IsStreaming = false
 		}
@@ -928,6 +940,7 @@ func (e *Engine) attempt(id, turn string) (*cv.Entry, error) {
 func (e *Engine) confirm(id, message, turn string) error {
 	return e.Store.update(func(st *State) error {
 		c := st.chat(id)
+		c.Conversation.Begin(turn, e.at())
 		for i := range c.Conversation.Entries {
 			v := &c.Conversation.Entries[i]
 			if v.ID == message {
@@ -939,7 +952,35 @@ func (e *Engine) confirm(id, message, turn string) error {
 		return nil
 	})
 }
+
+// turnUsage reads a `thread/tokenUsage/updated` notification into the usage
+// of the turn it names: the growth of the process's running total since
+// that turn began (see activeRun). Nil when the notification names no turn
+// or the run is gone.
+func (e *Engine) turnUsage(id string, p map[string]any) (string, *cv.Usage) {
+	turn := agent.String(p["turnId"])
+	e.mu.Lock()
+	a := e.active[id]
+	e.mu.Unlock()
+	if turn == "" || a == nil {
+		return "", nil
+	}
+	total := cv.UsageFrom(agent.Map(agent.Map(p["tokenUsage"])["total"]))
+	if a.usageTurn != turn {
+		a.usageTurn, a.usageBase = turn, a.usage
+	}
+	a.usage = total
+	usage := total.Sub(a.usageBase)
+	return turn, &usage
+}
 func (e *Engine) notification(id string, f agent.Frame) error {
+	// Looked up before the store is locked: the engine lock is taken around
+	// store updates elsewhere, never inside one.
+	var usage *cv.Usage
+	var usageTurn string
+	if f.Method == "thread/tokenUsage/updated" {
+		usageTurn, usage = e.turnUsage(id, f.Params)
+	}
 	return e.Store.update(func(st *State) error {
 		c := &st.chat(id).Conversation
 		p := f.Params
@@ -960,7 +1001,11 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 			for _, v := range agent.Array(agent.Map(p["turn"])["items"]) {
 				c.Upsert(agent.Map(v), turn, true)
 			}
-			c.Finish(turn)
+			c.Finish(turn, e.at())
+		case "thread/tokenUsage/updated":
+			if usage != nil {
+				c.Report(usageTurn, *usage)
+			}
 		case "error":
 			if p["willRetry"] != true {
 				c.Entries = append(c.Entries, cv.NewEntry("system", agent.String(agent.Map(p["error"])["message"])))

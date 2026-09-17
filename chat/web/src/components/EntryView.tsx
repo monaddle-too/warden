@@ -13,11 +13,13 @@ import {
 } from "lucide-react";
 import { hasDiff, parseDiff } from "../diff";
 import { senderLabel } from "../export";
+import type { TurnFooter } from "../turns";
 import type { Entry } from "../types";
 import { EntryAttachments } from "./Attachments";
 import { DiffView } from "./DiffView";
 import { ImageAttachment } from "./ImageAttachment";
 import { RichText } from "./RichText";
+import { TurnStats } from "./TurnStats";
 import { useCopy } from "./useCopy";
 const time = (v: number) =>
   new Date(v * 1000).toLocaleTimeString([], {
@@ -157,6 +159,7 @@ export const EntryView = memo(function EntryView({
   onEdit,
   onRetry,
   actions = false,
+  stats,
 }: {
   entry: Entry;
   chatID: string;
@@ -166,6 +169,8 @@ export const EntryView = memo(function EntryView({
   onRetry?: (entry: Entry) => void;
   /* Whether retry and edit would be accepted right now. */
   actions?: boolean;
+  /* The turn's timing and usage, under the turn's last message. */
+  stats?: TurnFooter;
 }) {
   if (entry.role === "image")
     return (
@@ -245,7 +250,10 @@ export const EntryView = memo(function EntryView({
           onFile={onFile}
           agent
         />
-        <MessageActions entry={entry} enabled={false} />
+        <div className="message-foot">
+          <MessageActions entry={entry} enabled={false} />
+          {stats && <TurnStats footer={stats} />}
+        </div>
       </div>
     </article>
   );

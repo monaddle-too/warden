@@ -3,6 +3,7 @@
    `chat.conversation`; nothing is fetched and nothing is rendered, so an
    agent's text goes into the file exactly as it was written. */
 import { formatSize } from "./attachments";
+import { footerText, turnFooters } from "./turns";
 import type { Chat, Entry } from "./types";
 
 export type ExportFormat = "markdown" | "json";
@@ -114,10 +115,23 @@ export function exportMarkdown(
   if (chat.repository) facts.push(`Repository: ${chat.repository}`);
   facts.push(`Exported: ${time(at.getTime() / 1000)}`);
   head.push(...facts.map((f) => `- ${f}`), "", "---", "");
+  // What each finished turn took, under its last entry; a turn still
+  // running when the file is written has no line.
+  const footers = turnFooters(
+    chat.conversation.entries,
+    chat.conversation.turns,
+    false,
+  );
   const body = exportEntries(
     chat.conversation.entries,
     options.activity,
-  ).flatMap((entry) => entryMarkdown(entry, chat.provider, time));
+  ).flatMap((entry) => {
+    const lines = entryMarkdown(entry, chat.provider, time);
+    const footer = footers.get(entry.id);
+    const took = footer ? footerText(footer) : "";
+    if (took) lines.push(`_Turn: ${took}_`, "");
+    return lines;
+  });
   return [...head, ...body].join("\n").replace(/\n+$/, "\n");
 }
 
@@ -140,6 +154,7 @@ export function exportJSON(chat: Chat, options: ExportOptions, at: Date) {
         threadID: chat.conversation.threadID,
       },
       entries: exportEntries(chat.conversation.entries, options.activity),
+      turns: chat.conversation.turns ?? [],
     },
     null,
     2,

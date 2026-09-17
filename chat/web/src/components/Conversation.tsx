@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type DragEvent,
@@ -32,12 +33,14 @@ import {
   unreadEntry,
   unreadIndex,
 } from "../transcript";
+import { sameFooter, turnFooters, type TurnFooter } from "../turns";
 import type { Chat, Entry } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
 import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
 import { FindBar, isFindKey, type FindRequest } from "./FindBar";
 import { ModelSelect } from "./ModelSelect";
+import { TurnStats } from "./TurnStats";
 
 /* An agent request that the owner answers from the transcript: document
    access, document creation, a pull request proposal. */
@@ -373,6 +376,24 @@ export function Conversation({
     chat.status === "running" ||
     chat.status === "queued" ||
     chat.status === "stopping";
+  // Each turn's timing and usage line, keyed by the entry it goes under.
+  // A line that would read the same keeps its object, so the memoised
+  // entry it belongs to is not re-rendered by every streamed chunk.
+  const turns = chat.conversation.turns;
+  const footerCache = useRef(new Map<string, TurnFooter>());
+  const footers = useMemo(() => {
+    const fresh = turnFooters(
+      entries,
+      turns,
+      chat.status === "running" || chat.status === "stopping",
+    );
+    for (const [id, footer] of fresh) {
+      const old = footerCache.current.get(id);
+      if (old && sameFooter(old, footer)) fresh.set(id, old);
+    }
+    footerCache.current = fresh;
+    return fresh;
+  }, [entries, turns, chat.status]);
   // Typing: every keystroke reports at most once per 3 s (the server keeps
   // an indicator for 8 s after the last report), so a steady typist stays
   // visible and a pause fades within seconds.
@@ -516,6 +537,14 @@ export function Conversation({
           <div className="transcript" ref={transcript}>
             {groupEntries(entries, unread).map((item) => {
               const first = "group" in item ? item.group[0] : item.entry;
+              const last =
+                "group" in item
+                  ? item.group[item.group.length - 1]
+                  : item.entry;
+              const footer = footers.get(last.id);
+              // An assistant message carries its turn's line in its own
+              // action row; after a tool-step group it stands alone.
+              const inline = !("group" in item) && last.role === "assistant";
               return (
                 <Fragment key={first.id}>
                   {first.id === unreadID && (
@@ -536,8 +565,10 @@ export function Conversation({
                       onEdit={edit}
                       onRetry={retry}
                       actions={!busy && canResend(item.entry, chat, live)}
+                      stats={inline ? footer : undefined}
                     />
                   )}
+                  {footer && !inline && <TurnStats footer={footer} block />}
                 </Fragment>
               );
             })}

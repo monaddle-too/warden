@@ -2,7 +2,7 @@
    the unread divider and the "new messages" count behind the jump button.
    What the reader has seen is remembered per chat in localStorage as the
    last entry that was on screen while they were following the transcript. */
-type Item = { id: string; role: string; createdAt: number };
+type Item = { id: string; role: string; createdAt: number; turnID?: string };
 
 /* The last entry the reader saw: its ID, and its time for when the ID is
    gone (a chat whose entries the service replaced). */
@@ -75,7 +75,8 @@ export function newSince<T extends Item>(entries: T[], lastID: string): number {
 }
 
 /* Consecutive tool steps render as one collapsible group; a group never
-   spans the unread divider, so the divider can sit before `breakAt`. */
+   spans the unread divider, so the divider can sit before `breakAt`, and
+   never two turns, so a turn's line can follow its last group. */
 export function groupEntries<T extends Item>(
   entries: T[],
   breakAt = -1,
@@ -84,7 +85,13 @@ export function groupEntries<T extends Item>(
   entries.forEach((entry, index) => {
     const last = items[items.length - 1];
     if (entry.role === "activity") {
-      if (last && "group" in last && index !== breakAt) last.group.push(entry);
+      if (
+        last &&
+        "group" in last &&
+        index !== breakAt &&
+        last.group[0].turnID === entry.turnID
+      )
+        last.group.push(entry);
       else items.push({ group: [entry] });
     } else items.push({ entry });
   });

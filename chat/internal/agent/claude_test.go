@@ -29,7 +29,7 @@ func TestClaudeStreamingTranslation(t *testing.T) {
 		for _, delta := range []string{"hello ", "world"} {
 			_ = e.Encode(map[string]any{"type": "stream_event", "event": map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": delta}}})
 		}
-		_ = e.Encode(map[string]any{"type": "result", "is_error": false, "result": "hello world"})
+		_ = e.Encode(map[string]any{"type": "result", "is_error": false, "result": "hello world", "usage": map[string]any{"input_tokens": 100.0, "cache_read_input_tokens": 900.0, "cache_creation_input_tokens": 50.0, "output_tokens": 40.0}, "total_cost_usd": 0.0125})
 	}()
 	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(_ *Client, f Frame) { done <- f })
 	if err != nil {
@@ -43,6 +43,7 @@ func TestClaudeStreamingTranslation(t *testing.T) {
 		t.Fatal(err)
 	}
 	session, reply := "", ""
+	var usage map[string]any
 	for {
 		select {
 		case f := <-done:
@@ -52,9 +53,20 @@ func TestClaudeStreamingTranslation(t *testing.T) {
 			if f.Method == "item/completed" {
 				reply = String(Map(f.Params["item"])["text"])
 			}
+			if f.Method == "thread/tokenUsage/updated" {
+				if String(f.Params["threadId"]) != session || String(f.Params["turnId"]) == "" {
+					t.Fatalf("usage names the wrong turn: %+v", f.Params)
+				}
+				usage = Map(Map(f.Params["tokenUsage"])["total"])
+			}
 			if f.Method == "turn/completed" {
 				if session != "saved-claude-session" || reply != "hello world" {
 					t.Fatal(session, reply)
+				}
+				// The turn's usage arrives before its completion, in Codex's
+				// shape: input counts the cached tokens too.
+				if usage == nil || usage["inputTokens"] != 1050.0 || usage["cachedInputTokens"] != 900.0 || usage["cacheWriteInputTokens"] != 50.0 || usage["outputTokens"] != 40.0 || usage["totalTokens"] != 1090.0 || usage["costUSD"] != 0.0125 {
+					t.Fatalf("usage %+v", usage)
 				}
 				return
 			}
@@ -230,5 +242,24 @@ func TestClaudeTurnInputImages(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("no user message reached the CLI")
+	}
+}
+
+func TestClaudeTurnUsageIsGrowthOfTheRunningCost(t *testing.T) {
+	sofar := claudeUsage{input: 10, cost: 0.01}
+	u, ok := claudeTurnUsage(map[string]any{"usage": map[string]any{"input_tokens": 100.0, "cache_read_input_tokens": 900.0, "output_tokens": 40.0}, "total_cost_usd": 0.03}, sofar)
+	if !ok || u.input != 1000 || u.cached != 900 || u.cacheWrite != 0 || u.output != 40 || u.cost < 0.0199 || u.cost > 0.0201 {
+		t.Fatalf("usage %+v", u)
+	}
+	// A crash result carries no usage; a cost that did not grow adds none.
+	if _, ok = claudeTurnUsage(map[string]any{"is_error": true}, sofar); ok {
+		t.Fatal("usage from a result without one")
+	}
+	u, _ = claudeTurnUsage(map[string]any{"usage": map[string]any{"output_tokens": 1.0}, "total_cost_usd": 0.01}, sofar)
+	if u.cost != 0 {
+		t.Fatalf("cost %v", u.cost)
+	}
+	if p := sofar.add(u).params(); p["totalTokens"] != int64(11) || p["costUSD"] != 0.01 {
+		t.Fatalf("params %+v", p)
 	}
 }

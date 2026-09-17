@@ -32,11 +32,26 @@ const chat: Chat = {
   approvals: [],
   conversation: {
     threadID: "t",
+    turns: [
+      {
+        id: "turn",
+        startedAt: 1_789_000_001,
+        endedAt: 1_789_000_065,
+        usage: {
+          input: 1200,
+          cached: 800,
+          output: 300,
+          total: 1500,
+          costUSD: 0.02,
+        },
+      },
+    ],
     entries: [
       entry({
         id: "u",
         role: "user",
         text: "Please fix it",
+        turnID: "turn",
         attachments: [
           {
             id: "a",
@@ -48,7 +63,12 @@ const chat: Chat = {
         ],
       }),
       entry({ id: "s", role: "activity", text: "Ran tests", detail: "ok\n" }),
-      entry({ id: "r", role: "assistant", text: "# Done\n\nFixed." }),
+      entry({
+        id: "r",
+        role: "assistant",
+        text: "# Done\n\nFixed.",
+        turnID: "turn",
+      }),
       entry({ id: "m", role: "system", text: "Turn ended\nearly" }),
       entry({ id: "i", role: "image", text: "The result", detail: "img" }),
       entry({
@@ -128,6 +148,8 @@ describe("chat export", () => {
         "",
         "Fixed.",
         "",
+        "_Turn: 1m 05s · 1.5k tokens (1.2k in, 300 out) · $0.02_",
+        "",
         "> Turn ended",
         "> early",
         "",
@@ -190,6 +212,25 @@ describe("chat export", () => {
       "f",
     ]);
     expect(parsed.entries[0].attachments[0].name).toBe("shot.png");
+    expect(parsed.turns).toEqual(chat.conversation.turns);
+  });
+  it("notes what a turn took under its last message", () => {
+    const md = exportMarkdown(
+      chat,
+      { format: "markdown", activity: false },
+      at,
+      time,
+    );
+    expect(md).toContain(
+      "Fixed.\n\n_Turn: 1m 05s · 1.5k tokens (1.2k in, 300 out) · $0.02_\n",
+    );
+    const bare = {
+      ...chat,
+      conversation: { entries: chat.conversation.entries },
+    };
+    expect(
+      exportMarkdown(bare, { format: "markdown", activity: false }, at, time),
+    ).not.toContain("_Turn:");
   });
   it("names the file after the title, the time and the format", () => {
     const local = new Date(2026, 8, 17, 9, 7);

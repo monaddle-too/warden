@@ -23,6 +23,22 @@ const entries = [
   entry("m2", "assistant", 22),
 ];
 
+describe("activity groups", () => {
+  it("never span two turns", () => {
+    const steps = [
+      { ...entry("a1", "activity", 1), turnID: "t1" },
+      { ...entry("a2", "activity", 2), turnID: "t1" },
+      { ...entry("a3", "activity", 3), turnID: "t2" },
+      { ...entry("a4", "activity", 4) },
+    ];
+    expect(groupEntries(steps)).toEqual([
+      { group: steps.slice(0, 2) },
+      { group: [steps[2]] },
+      { group: [steps[3]] },
+    ]);
+  });
+});
+
 describe("unread divider", () => {
   it("starts after the last entry the reader saw", () => {
     expect(unreadStart(entries, { id: "m1", at: 13 })).toBe(4);
@@ -45,7 +61,11 @@ describe("unread divider", () => {
   it("stays where it was fixed when entries arrive after a fully-seen open", () => {
     // A return visit to a chat read to its end: nothing is unread, and
     // the reader's next message (or the reply) must not grow a divider.
-    const later = [...entries, entry("u3", "user", 30), entry("m3", "assistant", 31)];
+    const later = [
+      ...entries,
+      entry("u3", "user", 30),
+      entry("m3", "assistant", 31),
+    ];
     for (const seen of [
       { id: "m2", at: 22 },
       { id: "gone", at: 22 },
