@@ -29,9 +29,11 @@ type Options struct {
 	Tier         string
 	RuntimeClass string
 	Handlers     []string
-	// GuestImage (optional) and GuestImageDigest pin what a sandbox pod
-	// runs: the spec must name the image by this digest and the running
-	// container's imageID must carry it.
+	// GuestImageDigest pins what a sandbox pod runs: a digest in the
+	// spec's image reference must be it, and the running container's
+	// imageID must carry it (an imported image is named by tag in the spec
+	// and reports the digest once running). GuestImage, when set, is the
+	// repository a tag reference must name.
 	GuestImage       string
 	GuestImageDigest string
 	// GatewayPort is the shared gateway's port, which the gateway-egress
@@ -381,6 +383,8 @@ func (i *Inspector) violations(pod *api.Pod, identity map[string]string) []strin
 		// imageID is the digest either way (spike results) and is the pin.
 		if spec := digestOf(spec.Containers[0].Image); spec != "" && spec != i.o.GuestImageDigest {
 			add("pod runs an unpinned image")
+		} else if spec == "" && i.o.GuestImage != "" && !sameRepository(pod.Spec.Containers[0].Image, i.o.GuestImage) {
+			add("pod runs an unpinned image")
 		} else if id := imageDigest(pod); id != "" && id != i.o.GuestImageDigest {
 			add("pod runs an unpinned image")
 		} else if id == "" && pod.Status.Phase == "Running" {
@@ -446,6 +450,25 @@ func digestOf(ref string) string {
 		return ref
 	}
 	return ""
+}
+
+// sameRepository reports whether two image references name the same
+// repository, ignoring tags, digests and Docker Hub's implied prefixes.
+func sameRepository(a, b string) bool {
+	return repositoryOf(a) == repositoryOf(b)
+}
+
+func repositoryOf(ref string) string {
+	if idx := strings.Index(ref, "@"); idx >= 0 {
+		ref = ref[:idx]
+	}
+	slash := strings.LastIndex(ref, "/")
+	if colon := strings.LastIndex(ref, ":"); colon > slash {
+		ref = ref[:colon]
+	}
+	ref = strings.TrimPrefix(ref, "docker.io/")
+	ref = strings.TrimPrefix(ref, "library/")
+	return ref
 }
 
 // egressState derives the egress fact from the label and the policies that

@@ -29,7 +29,6 @@ type kubernetesRuntime struct {
 	gatewayHost string
 	inspector   *kubepolicy.Inspector
 	gateway     *policy.SharedGateway
-	cancel      context.CancelFunc
 }
 
 // newKubernetesRuntime builds the client (in-cluster, or the kubeconfig
@@ -132,8 +131,9 @@ func (r *kubernetesRuntime) publishTrust(ctx context.Context, ca *policy.Gateway
 
 // enforce wires the shared gateway and the inspector into the registry
 // and starts the verifier: one listener on every interface at the gateway
-// port, advertised as the Service's ClusterIP; the inspector's watches;
-// the verifier's refresher, whose first cycle proves the cluster with the
+// port, advertised as the Service's ClusterIP; the inspector's watches
+// (until ctx ends, which also abandons a canary proof in flight); the
+// verifier's refresher, whose first cycle proves the cluster with the
 // canaries.
 func (r *kubernetesRuntime) enforce(ctx context.Context, registry *policy.Registry, networks []*net.IPNet) error {
 	k := r.settings.kubernetes
@@ -165,9 +165,7 @@ func (r *kubernetesRuntime) enforce(ctx context.Context, registry *policy.Regist
 		return errors.New("inspector: " + err.Error())
 	}
 	inspector.SetGateway(r.gatewayHost)
-	ctx, r.cancel = context.WithCancel(ctx)
 	if err := inspector.Start(ctx); err != nil {
-		r.cancel()
 		return errors.New("inspector: " + err.Error())
 	}
 	verifier := policy.NewRuntimeVerifier(registry, inspector)
@@ -175,11 +173,4 @@ func (r *kubernetesRuntime) enforce(ctx context.Context, registry *policy.Regist
 	verifier.StartRefresher()
 	r.inspector, r.gateway = inspector, gateway
 	return nil
-}
-
-// stop ends the watches; the registry closes the gateway.
-func (r *kubernetesRuntime) stop() {
-	if r.cancel != nil {
-		r.cancel()
-	}
 }

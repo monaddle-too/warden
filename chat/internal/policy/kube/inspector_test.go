@@ -78,6 +78,7 @@ func TestFactsViolations(t *testing.T) {
 			p.Status.ContainerStatuses[0].ImageID = "docker.io/library/warden-guest-base@sha256:" + strings.Repeat("b", 64)
 		}, "pod runs an unpinned image"},
 		{"running image unreported", func(p *api.Pod) { p.Status.ContainerStatuses = nil }, "pod image digest not reported"},
+		{"tag of another repository", func(p *api.Pod) { p.Spec.Containers[0].Image = "docker.io/library/busybox:1.37" }, "pod runs an unpinned image"},
 		{"labelled for another binding", func(p *api.Pod) { p.Metadata.Labels[LabelBinding] = "other" }, "pod is labelled for another binding"},
 		{"unexpected egress value", func(p *api.Pod) { p.Metadata.Labels[LabelEgress] = "all" }, "pod carries an unexpected egress label"},
 		{"canary label", func(p *api.Pod) { p.Metadata.Labels[LabelCanary] = CanaryDeny }, "pod is a canary"},
@@ -92,7 +93,7 @@ func TestFactsViolations(t *testing.T) {
 			pod := sandboxPod("wc-one", "wc-one-home")
 			tc.mutate(pod)
 			f.seed(api.Pods, testNamespace, pod)
-			i := newInspector(t, f, nil)
+			i := newInspector(t, f, func(o *Options) { o.GuestImage = "warden-guest-base" })
 			facts, err := i.Facts(ctxT(t), identity("wc-one"))
 			if err != nil {
 				t.Fatal(err)
@@ -108,10 +109,10 @@ func TestFactsViolations(t *testing.T) {
 	f := cluster(t)
 	f.seed(api.PersistentVolumeClaims, testNamespace, &api.PersistentVolumeClaim{Metadata: api.ObjectMeta{Name: "wc-one-home"}})
 	pod := sandboxPod("wc-one", "wc-one-home")
-	pod.Spec.Containers[0].Image = "warden-guest-base:dev"
+	pod.Spec.Containers[0].Image = "docker.io/library/warden-guest-base:dev"
 	pod.Metadata.Labels[LabelBinding] = policy.BindingDigest(identity("wc-one"))
 	f.seed(api.Pods, testNamespace, pod)
-	i := newInspector(t, f, func(o *Options) { o.RequireBindingLabel = true })
+	i := newInspector(t, f, func(o *Options) { o.RequireBindingLabel, o.GuestImage = true, "warden-guest-base" })
 	facts, err := i.Facts(ctxT(t), identity("wc-one"))
 	if err != nil || len(facts.Violations) != 0 || facts.ImageDigest != testDigest {
 		t.Fatalf("accepted variations: %+v %v", facts, err)

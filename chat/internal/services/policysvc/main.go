@@ -224,7 +224,6 @@ func run(args []string) error {
 			if err := k8s.enforce(serviceCtx, registry, networks); err != nil {
 				return err
 			}
-			defer k8s.stop()
 		} else if err := enforcement(s, registry, networks); err != nil {
 			return err
 		}
@@ -244,6 +243,10 @@ func run(args []string) error {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 	<-signals
+	// The watches and any canary proof in flight end first, so closing the
+	// registry (which waits for background verifications) does not wait on
+	// canary pods.
+	stopService()
 	server.Close()
 	if listen.Scheme == transport.SchemeUnix {
 		_ = os.Remove(listen.Path)
