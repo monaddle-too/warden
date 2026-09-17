@@ -563,9 +563,73 @@ publisher) and the `SharedGateway`.
 - `release.yml` and `scripts/release.sh` publish the chart; the guest
   image workflow publishes the base image.
 
+## Spike results (step 0, 2026-09-16/17)
+
+Environment: Lima 2.2.0 (`vz`, `nestedVirtualization: true`, 8 CPUs, 16 GiB)
+on the owner's M4 Mac; Ubuntu 24.04.4; k3s v1.36.4+k3s1 (containerd
+2.3.4, flannel, the embedded network policy controller, local-path
+storage); gVisor release-20260914.0 (`runsc` with the `gvisor-bin/`
+sidecars, systrap platform); Kata Containers 4.2.0 via the kata-deploy Helm
+chart (`k8sDistribution=k3s`, qemu shim only, `defaultShim.<arch>=qemu`);
+buildkit 0.33.0 and nerdctl 2.3.5 on k3s's containerd. All of it is in
+`deploy/k8s/dev/lima.yaml` and `scripts/k8s-dev.sh`; the probes are in
+`deploy/k8s/dev/spike/`.
+
+Two host-side fixes were needed and are now part of the dev loop:
+
+- **runsc ignores SUID bits by default**, so the guest's passwordless
+  `sudo` stayed uid 1000. `allow-suid = "true"` in `/etc/containerd/runsc.toml`
+  restores it. The chart's support matrix must require this on gVisor nodes
+  (GKE Sandbox sets it; self-managed nodes may not).
+- **Kata's default `cpu_features = "pmu=off"` is refused by QEMU under
+  nested virtualization** on Apple Silicon (the VM's KVM exposes no PMU).
+  A drop-in in `runtimes/qemu/config.d/` clears it.
+
+Results against the step 0 questions:
+
+| Question | gVisor | Kata |
+|---|---|---|
+| NetworkPolicy enforced both ways (default deny, egress to the gateway only by label, ingress from the runner only) | all 8 egress rows and 3 ingress rows pass | same |
+| Grant/deny by label on a running pod | effective within 3 s, no restart | same |
+| A pod cannot use another pod's IP | blocked (the probe could not bind the address; not a proof that the CNI filters spoofed frames) | same caveat |
+| `HTTPS_PROXY` credentials honoured | curl and Python send `Proxy-Authorization: Basic` preemptively; libcurl-based git sends none on `CONNECT` until the proxy answers 407 with `Proxy-Authenticate: Basic`, then retries | same (client behaviour, not tier) |
+| Directory-mounted ConfigMap refreshes in a running pod | yes, ~48 s (kubelet sync) | yes, ~3 s |
+| Base guest image runs as-is | yes: `agent` uid 1000, Codex 0.154.0, Claude 2.1.272, manifest, trust symlink; `sudo` after `allow-suid` | yes, including `sudo` |
+| Agents' inner sandboxes | bubblewrap with user, pid, ipc and mount namespaces works; `--unshare-net` fails (netlink `RTM_NEWADDR` unimplemented), which is what `codex sandbox` uses; Landlock `ENOSYS` | `codex sandbox` works (bubblewrap + Landlock ABI 7); a hand-run `bwrap --proc` fails on the masked container `/proc`, which `procMount: Unmasked` would lift but needs `hostUsers: false` |
+| Pod start, image cached, create → Ready | 0.3 s | 33 s when the guest boots normally; about half the boots on this Mac stall for ~17 min before the agent starts (seen with 0, 1 and 2 other Kata VMs running, so not load) |
+
+Decisions this changes:
+
+- **Decision 14 (agents under gVisor).** On the gVisor tier Codex runs
+  without its inner sandbox (`sandbox_mode = "danger-full-access"`); the
+  gVisor boundary, the NetworkPolicy and the gateway are the controls, and
+  the tier documentation says so. Claude Code's controls are unchanged on
+  both tiers (Warden's MCP permission prompt, `--permission-mode default`;
+  it does not use bubblewrap in this launch). On Kata Codex keeps its full
+  inner sandbox.
+- **Decision 15 (dev loop).** The Mac loop runs gVisor; Kata is functional
+  here but its boot time is bimodal under nested virtualization, so the
+  Kata tier's end-to-end and adversarial runs move to a host with real KVM
+  (the OVH server), as the decision already allowed. The dev VM keeps Kata
+  installed for functional checks.
+- **Decision 4 (gateway identity), refinement.** Provider traffic does not
+  go through the proxy: the runner points `OPENAI_BASE_URL`-style settings
+  and `ANTHROPIC_BASE_URL` straight at the gateway with a bearer placeholder
+  (`WARDEN_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`). The binding credential
+  therefore rides in that placeholder on provider routes and in
+  `Proxy-Authorization` on proxied routes; `Begin` mints both and the
+  gateway must answer unauthenticated `CONNECT` with 407 and
+  `Proxy-Authenticate: Basic`, or libcurl clients never send it.
+- **Decision 2 / work item 4.** The pod spec must leave
+  `allowPrivilegeEscalation` unset (PSA baseline allows it) or `sudo`
+  cannot work; `capabilities.drop: [ALL]` is fine.
+- **Runtime facts.** `imageID` for a locally built image is the manifest
+  digest `build-base.sh` prints, so the pin works without a registry.
+
 ## Steps and parallel tracks
 
-- [ ] 0 Spike, in the dev VM, before any driver code: bring up Lima + k3s
+- [x] 0 Spike, in the dev VM, before any driver code (done 2026-09-17; see
+      "Spike results"): bring up Lima + k3s
       with gVisor and Kata RuntimeClasses; hand-write a sandbox pod from the
       current guest image, the default-deny policy, the label-gated gateway
       egress policy and a stand-in proxy pod; prove with test-owned probes
@@ -578,15 +642,25 @@ publisher) and the `SharedGateway`.
       tier; note whether Kata boots under nested virtualization on this
       Mac. Output: a "Spike results" section here with the pinned versions
       and the decisions this changes.
-- [ ] 1 Transport abstraction and mutual TLS (work item 1); sbx shapes on
+- [x] 1 Transport abstraction and mutual TLS (work item 1); sbx shapes on
       Unix sockets with no behaviour change; race suite, vet, frontend
-      build, live Mac run green.
+      build, live Mac run green. Done 2026-09-16 (track A, merged 496a8cf):
+      `chat/internal/transport`, `warden tls bootstrap`, `services.*` and
+      `tls.*` config; the merged binary passes `warden doctor` against the
+      owner's existing install.
 - [ ] 2 Runtime, inspector, gateway and credential-store seams plus
       configuration (work item 2); sbx behaviour unchanged.
-- [ ] 3 Minimal Kubernetes client (work item 3), no dependency on 1 or 2.
+- [x] 3 Minimal Kubernetes client (work item 3), no dependency on 1 or 2.
+      Done 2026-09-17 (track B, merged 625b91b): `chat/internal/kube` with
+      in-cluster and kubeconfig config, typed REST, watch/ListWatch, exec
+      over WebSocket, logs; fake API server tests.
 - [ ] 4 Kubernetes driver, inspector, shared gateway, trust publisher and
       Secret store (work items 4 and 5), after 1, 2 and 3.
-- [ ] 5 Guest base image (work item 6), from day one.
+- [x] 5 Guest base image (work item 6), from day one. Done 2026-09-17
+      (track C, merged 2414686): `Dockerfile.base` built for real in the dev
+      VM (`warden-guest-base:dev`, manifest digest
+      `sha256:cd77d0ff2af115f3cb700414c7c54840c2c1c87c3322ea0a98c17880ef07b63e`
+      for linux/arm64) and exercised under both tiers.
 - [ ] 6 Chart (work item 7); the static hardening objects, RBAC and
       NetworkPolicies after step 0, the Deployments after step 4.
 - [ ] 7 First milestone on the Mac: chat → gVisor pod → loopback preview
