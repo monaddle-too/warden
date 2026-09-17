@@ -2,6 +2,17 @@
 
 **Target architecture:** [Warden platform plan](warden-platform-plan.md) defines the new standalone chat/SBX/MCP ownership boundary. The description below documents existing implementation and security scope, not completion of that plan.
 
+**Deployment shapes of the chat stack:** the standalone chat stack
+([warden-chat.md](warden-chat.md)) is one `warden` binary in three shapes.
+On your own machine, agents run in SBX microVMs
+([warden-local-install.md](warden-local-install.md)); on a server, the same
+with Docker Compose ([deploy/chat/README.md](../deploy/chat/README.md)); on
+a Kubernetes cluster there is no SBX: sandboxes are pods under a Kata or
+gVisor RuntimeClass, gateway-only egress is a NetworkPolicy, and the four
+services authenticate to each other with mutual TLS
+([warden-kubernetes.md](warden-kubernetes.md), including the threat-model
+delta against SBX). The VM pair described below is the original prototype.
+
 The adversary controls root in the macOS guest. The physical Mac, its user,
 Virtualization.framework, Warden launcher/control service, and Linux appliance
 are trusted. Hypervisor or Linux proxy exploitation is outside the current

@@ -1,7 +1,7 @@
 # Warden — an AI sandbox for Apple Silicon
 
 **Current direction:** [Warden platform plan](docs/warden-platform-plan.md). Warden will own agent chats, SBX lifecycle, granular permissions, and the agent-facing MCP server. Current work focuses only on Warden; Panta is a future application integration. The implementation description below records the existing prototype.
-To run Warden's chat stack on your own machine (Apple Silicon Mac, or x86_64 Linux with KVM), see [the local install guide](docs/warden-local-install.md).
+To run Warden's chat stack on your own machine (Apple Silicon Mac, or x86_64 Linux with KVM), see [the local install guide](docs/warden-local-install.md); on a server with Docker Compose, [the OVH deployment](deploy/chat/README.md); on a Kubernetes cluster, without SBX, [the Kubernetes guide](docs/warden-kubernetes.md).
 
 A persistent macOS development VM connected only to a trusted Linux inspection
 VM, with host-side GitHub permissions and redacted audit events. The guest may
@@ -202,5 +202,9 @@ Install and run it on your own machine with the `warden` launcher, following
 [the local install guide](docs/warden-local-install.md) (`warden install`,
 `doctor`, `login`, `start`, `open`); [the standalone chat guide](docs/warden-chat.md)
 describes what the stack does. The old `scripts/warden-chat` launcher is gone;
-`warden start` replaced it.
+`warden start` replaced it. The same binary has two server shapes: Docker
+Compose with SBX on OVH ([deploy/chat/README.md](deploy/chat/README.md)),
+and a Helm chart for Kubernetes with no SBX, where each sandbox is a pod
+under a Kata or gVisor RuntimeClass and egress is a NetworkPolicy
+([the Kubernetes guide](docs/warden-kubernetes.md)).
 [Migration progress](docs/warden-chat-migration-plan.md) records validation and the remaining platform work.
