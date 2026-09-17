@@ -57,11 +57,13 @@ import { sameFooter, turnFooters, type TurnFooter } from "../turns";
 import type { Chat, Entry } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
 import { chatStatusLabel, startupLine } from "../stages";
+import { pendingReply } from "../thinking";
 import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
 import { FindBar, isFindKey, type FindRequest } from "./FindBar";
 import { ModelSelect, modelOptions } from "./ModelSelect";
 import { Suggest, usePathCompletion, type Suggestion } from "./Suggest";
+import { PendingReply } from "./Thinking";
 import { TurnStats } from "./TurnStats";
 
 /* An agent request that the owner answers from the transcript: document
@@ -419,6 +421,11 @@ export function Conversation({
     chat.status === "running" ||
     chat.status === "queued" ||
     chat.status === "stopping";
+  // The model is being waited on, and nothing on screen shows it yet.
+  const awaited = pendingReply(
+    chat,
+    requests.length > 0 || chat.approvals.some((a) => a.state === "pending"),
+  );
   // Slash commands and @path mentions: the caret decides which list is
   // up; Escape puts a trigger away until the caret leaves it, and the list
   // is only shown while the textarea has the focus.
@@ -777,6 +784,9 @@ export function Conversation({
                 </Fragment>
               );
             })}
+            {awaited && (
+              <PendingReply provider={chat.provider} since={awaited.since} />
+            )}
             {chat.approvals
               .filter((a) => a.state === "pending")
               .map((a) => (

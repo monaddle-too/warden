@@ -4,6 +4,8 @@ export type Entry = {
   text: string;
   detail: string;
   createdAt: number;
+  /* When a thinking entry stopped streaming; unset for other entries. */
+  endedAt?: number;
   isStreaming: boolean;
   delivery: string;
   /* The agent turn this entry belongs to; a user message gets it once the

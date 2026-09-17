@@ -86,6 +86,17 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 			textID = claudeID()
 			streamed = true
 		}
+		// A thinking block is a reasoning item in Codex's shape, streamed
+		// as it arrives so the transcript can show the model at work; each
+		// block (one per model call, so one before every tool) is its own.
+		thinkingID, thinking := "", ""
+		flushThinking := func() {
+			if thinkingID == "" {
+				return
+			}
+			event("item/completed", map[string]any{"turnId": turn, "item": map[string]any{"id": thinkingID, "type": "reasoning", "summary": []any{thinking}}})
+			thinkingID, thinking = "", ""
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -248,18 +259,39 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 					}
 				case "stream_event":
 					e := Map(v["event"])
-					if e["type"] == "content_block_delta" {
+					switch e["type"] {
+					case "content_block_start":
+						if Map(e["content_block"])["type"] == "thinking" {
+							flushThinking()
+							thinkingID = claudeID()
+							event("item/started", map[string]any{"turnId": turn, "item": map[string]any{"id": thinkingID, "type": "reasoning", "summary": []any{}}})
+						}
+					case "content_block_delta":
 						d := Map(e["delta"])
-						if d["type"] == "text_delta" {
+						switch d["type"] {
+						case "text_delta":
 							if text == "" {
 								event("item/started", map[string]any{"turnId": turn, "item": map[string]any{"id": textID, "type": "agentMessage", "text": ""}})
 							}
 							delta := String(d["text"])
 							text += delta
 							event("item/agentMessage/delta", map[string]any{"turnId": turn, "itemId": textID, "delta": delta})
+						case "thinking_delta":
+							if thinkingID == "" {
+								thinkingID = claudeID()
+								event("item/started", map[string]any{"turnId": turn, "item": map[string]any{"id": thinkingID, "type": "reasoning", "summary": []any{}}})
+							}
+							delta := String(d["thinking"])
+							thinking += delta
+							event("item/reasoning/summaryTextDelta", map[string]any{"turnId": turn, "itemId": thinkingID, "delta": delta})
 						}
+					case "content_block_stop":
+						// Only a thinking block is tracked to its stop; text ends
+						// with the message or the next tool.
+						flushThinking()
 					}
 				case "assistant":
+					flushThinking()
 					for _, x := range Array(Map(v["message"])["content"]) {
 						b := Map(x)
 						if b["type"] == "tool_use" {
@@ -292,6 +324,7 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 					if text == "" && !streamed {
 						text = String(v["result"])
 					}
+					flushThinking()
 					flushText()
 					status := "completed"
 					if v["is_error"] == true {

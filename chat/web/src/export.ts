@@ -51,8 +51,12 @@ export function fenceFor(text: string) {
   return "`".repeat(Math.max(3, longest + 1));
 }
 
+/* Tool steps and the model's thinking are the agent's working, kept out
+   unless asked for. */
 export function exportEntries(entries: Entry[], activity: boolean) {
-  return entries.filter((e) => activity || e.role !== "activity");
+  return entries.filter(
+    (e) => activity || (e.role !== "activity" && e.role !== "thinking"),
+  );
 }
 
 /* One entry as markdown; a message keeps its text verbatim (it is markdown
@@ -97,6 +101,11 @@ function entryMarkdown(
       }
       break;
     }
+    case "thinking":
+      lines.push("### Thinking", "");
+      if (entry.text)
+        lines.push(`> ${entry.text.split("\n").join("\n> ")}`, "");
+      break;
     case "image":
       lines.push(`_Image${entry.text ? `: ${entry.text}` : ""}_`, "");
       break;

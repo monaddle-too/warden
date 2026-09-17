@@ -75,13 +75,16 @@ type Actor struct {
 	Name        string `json:"name,omitempty"`
 }
 type Entry struct {
-	Sender      *Actor  `json:"sender,omitempty"`
-	ID          string  `json:"id"`
-	Role        string  `json:"role"`
-	Text        string  `json:"text"`
-	Detail      string  `json:"detail"`
-	TurnID      *string `json:"turnID,omitempty"`
-	CreatedAt   float64 `json:"createdAt"`
+	Sender    *Actor  `json:"sender,omitempty"`
+	ID        string  `json:"id"`
+	Role      string  `json:"role"`
+	Text      string  `json:"text"`
+	Detail    string  `json:"detail"`
+	TurnID    *string `json:"turnID,omitempty"`
+	CreatedAt float64 `json:"createdAt"`
+	// EndedAt is when a thinking entry stopped streaming, so the
+	// transcript can say how long the model thought; 0 for other entries.
+	EndedAt     float64 `json:"endedAt,omitempty"`
 	IsStreaming bool    `json:"isStreaming"`
 	Delivery    string  `json:"delivery"`
 	// Attachments are the files the sender added to a user message. Each

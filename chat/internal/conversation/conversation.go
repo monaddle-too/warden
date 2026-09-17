@@ -3,8 +3,12 @@ package conversation
 import (
 	"fmt"
 	"strings"
+	"time"
 	"warden/chat/internal/agent"
 )
+
+// now is the entry clock, replaced by tests.
+var now = func() float64 { return float64(time.Now().UnixMilli()) / 1000 }
 
 func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) {
 	id, kind := agent.String(item["id"]), agent.String(item["type"])
@@ -48,15 +52,14 @@ func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) 
 	case "webSearch":
 		e.Text = "Search: " + agent.String(item["query"])
 	case "reasoning":
-		// The model's thinking: a step that says so while it streams (the
-		// long silence before a first reply is usually this), then its
-		// summary when the model wrote one.
-		e.Text = "Thinking…"
+		// The model's thinking (the long silence before a first reply is
+		// usually this): its summary, or the text itself where the agent
+		// streams that, as a thinking entry the transcript shows the way
+		// the agent's own app does. EndedAt says how long it took.
+		e.Role = "thinking"
+		e.Text = reasoningSummary(item)
 		if completed {
-			e.Text = "Thought about it"
-			if summary := reasoningSummary(item); summary != "" {
-				e.Text = "Thought: " + summary
-			}
+			e.EndedAt = now()
 		}
 	default:
 		return
@@ -71,8 +74,11 @@ func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) 
 					e.Text = old.Text
 				}
 			}
-			if e.Text == "" && !completed {
+			if e.Text == "" && (!completed || e.Role == "thinking") {
 				e.Text = old.Text
+			}
+			if e.Role == "thinking" && old.EndedAt != 0 {
+				e.EndedAt = old.EndedAt
 			}
 			c.Entries[i] = e
 			return
@@ -87,7 +93,13 @@ func tail(s string, n int) string {
 	}
 	return s
 }
-func (c *Conversation) Delta(id, turn, delta string, command bool) {
+
+// Delta appends streamed text to entry `id`, adding the entry when the
+// agent streams before announcing it: `role` is what it then is, an
+// assistant message, a thinking entry, or a command whose output the
+// delta is.
+func (c *Conversation) Delta(id, turn, delta, role string) {
+	command := role == "activity"
 	for i := range c.Entries {
 		e := &c.Entries[i]
 		if e.ID == id {
@@ -100,16 +112,27 @@ func (c *Conversation) Delta(id, turn, delta string, command bool) {
 			return
 		}
 	}
-	e := NewEntry("assistant", delta)
+	e := NewEntry(role, delta)
 	e.ID = id
 	e.TurnID = Ptr(turn)
 	e.IsStreaming = true
 	if command {
-		e.Role = "activity"
 		e.Text = "Running command"
 		e.Detail = delta
 	}
 	c.Entries = append(c.Entries, e)
+}
+
+// Break starts a new paragraph in thinking entry `id`: Codex streams a
+// reasoning summary as parts, each of which reads on its own.
+func (c *Conversation) Break(id string) {
+	for i := range c.Entries {
+		e := &c.Entries[i]
+		if e.ID == id && e.Text != "" && !strings.HasSuffix(e.Text, "\n\n") {
+			e.Text = strings.TrimRight(e.Text, "\n") + "\n\n"
+			return
+		}
+	}
 }
 
 // Turn is the record of turn `id`, added when there is none yet.
@@ -145,6 +168,9 @@ func (c *Conversation) Finish(turn string, at float64) {
 	for i := range c.Entries {
 		e := &c.Entries[i]
 		if e.TurnID != nil && *e.TurnID == turn {
+			if e.IsStreaming && e.Role == "thinking" && e.EndedAt == 0 {
+				e.EndedAt = at
+			}
 			e.IsStreaming = false
 		}
 	}
@@ -154,11 +180,17 @@ func (c *Conversation) Finish(turn string, at float64) {
 }
 
 // EndTurns ends every begun turn that has no end yet, for a run that
-// stopped or failed without the agent completing its turn.
+// stopped or failed without the agent completing its turn; thinking that
+// was still streaming ends with it.
 func (c *Conversation) EndTurns(at float64) {
 	for i := range c.Turns {
 		if c.Turns[i].EndedAt == 0 {
 			c.Turns[i].EndedAt = at
+		}
+	}
+	for i := range c.Entries {
+		if e := &c.Entries[i]; e.IsStreaming && e.Role == "thinking" && e.EndedAt == 0 {
+			e.EndedAt = at
 		}
 	}
 }
@@ -275,5 +307,5 @@ func reasoningSummary(item map[string]any) string {
 			parts = append(parts, text)
 		}
 	}
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "\n\n")
 }

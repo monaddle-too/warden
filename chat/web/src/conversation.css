@@ -681,3 +681,147 @@ button.attachment-chip {
     padding: 10px 16px 12px;
   }
 }
+
+/* The model's thinking (Thinking.tsx): a disclosure in the manner of the
+   agent's own app. The heading shimmers while it streams; the text is
+   muted and smaller behind a rule, as claude.ai and the Codex app set
+   reasoning apart from the reply. */
+.thinking {
+  align-self: flex-start;
+  max-width: 100%;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.thinking > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 2px 4px 2px 0;
+  cursor: pointer;
+  color: var(--muted);
+  user-select: none;
+}
+.thinking > summary::-webkit-details-marker {
+  display: none;
+}
+.thinking > summary:hover {
+  color: var(--text);
+}
+.thinking .chevron {
+  transition: transform 0.15s;
+}
+.thinking[open] > summary .chevron {
+  transform: rotate(90deg);
+}
+.thinking-body {
+  margin: 2px 0 4px 6px;
+  padding: 2px 0 2px 14px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--muted);
+  max-height: 320px;
+  overflow: auto;
+}
+.thinking-body .rich-text {
+  font-size: 13px;
+  line-height: 1.55;
+}
+.thinking-body .rich-text strong {
+  color: var(--text-2);
+}
+.thinking-body > .muted {
+  margin: 0;
+}
+.thinking-codex > summary {
+  font-weight: 500;
+}
+.thinking-claude .thinking-body {
+  font-style: italic;
+}
+
+/* A label the light sweeps across while something is being awaited. */
+.shimmer {
+  color: var(--muted);
+  background: linear-gradient(
+    90deg,
+    var(--muted) 0%,
+    var(--muted) 35%,
+    var(--text) 50%,
+    var(--muted) 65%,
+    var(--muted) 100%
+  );
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 2.2s linear infinite;
+}
+@keyframes shimmer {
+  from {
+    background-position: 125% 0;
+  }
+  to {
+    background-position: -125% 0;
+  }
+}
+
+/* The reply not yet begun. Claude's row is the assistant's, with its mark
+   breathing as claude.ai's does; Codex's is the "Working" line with the
+   turn's elapsed time. */
+.pending-reply {
+  animation: appear 160ms ease-out;
+}
+@keyframes appear {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+.pending-claude .message-body {
+  justify-content: center;
+  font-size: 13px;
+}
+.message-avatar.pulse {
+  animation: breathe 1.6s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.86);
+    opacity: 0.55;
+  }
+}
+.pending-codex {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  min-height: 28px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.pending-codex .muted {
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.pending-codex .muted::before {
+  content: "·";
+  margin-right: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    color: var(--text-2);
+  }
+  .message-avatar.pulse,
+  .pending-reply {
+    animation: none;
+  }
+}

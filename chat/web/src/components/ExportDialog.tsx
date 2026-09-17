@@ -29,7 +29,9 @@ export function ExportDialog({
   const messages = entries.filter(
     (e) => e.role === "user" || e.role === "assistant",
   ).length;
-  const steps = entries.filter((e) => e.role === "activity").length;
+  const steps = entries.filter(
+    (e) => e.role === "activity" || e.role === "thinking",
+  ).length;
   function save(event: FormEvent) {
     event.preventDefault();
     const at = new Date();

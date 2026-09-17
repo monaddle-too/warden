@@ -27,6 +27,7 @@ type Entry struct {
 	Text        string  `json:"text"`
 	Detail      string  `json:"detail"`
 	CreatedAt   float64 `json:"createdAt"`
+	EndedAt     float64 `json:"endedAt"`
 	IsStreaming bool    `json:"isStreaming"`
 	Delivery    string  `json:"delivery"`
 	Sender      *struct {

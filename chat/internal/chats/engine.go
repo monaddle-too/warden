@@ -1129,8 +1129,14 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 			c.ActiveTurnID = cv.Ptr(turn)
 		case "item/started", "item/completed":
 			c.Upsert(agent.Map(p["item"]), turn, f.Method == "item/completed")
-		case "item/agentMessage/delta", "item/commandExecution/outputDelta":
-			c.Delta(agent.String(p["itemId"]), turn, agent.String(p["delta"]), strings.Contains(f.Method, "commandExecution"))
+		case "item/agentMessage/delta":
+			c.Delta(agent.String(p["itemId"]), turn, agent.String(p["delta"]), "assistant")
+		case "item/commandExecution/outputDelta":
+			c.Delta(agent.String(p["itemId"]), turn, agent.String(p["delta"]), "activity")
+		case "item/reasoning/summaryTextDelta":
+			c.Delta(agent.String(p["itemId"]), turn, agent.String(p["delta"]), "thinking")
+		case "item/reasoning/summaryPartAdded":
+			c.Break(agent.String(p["itemId"]))
 		case "turn/completed":
 			for _, v := range agent.Array(agent.Map(p["turn"])["items"]) {
 				c.Upsert(agent.Map(v), turn, true)

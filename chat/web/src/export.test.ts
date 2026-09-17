@@ -188,6 +188,34 @@ describe("chat export", () => {
     );
     expect(md).toContain("````\n```js\nx\n```\n````\n");
   });
+  it("quotes the model's thinking as a step, left out with the steps", () => {
+    const thought = {
+      ...chat,
+      conversation: {
+        entries: [
+          entry({ role: "thinking", text: "**Plan**\n\nRead, then test." }),
+          entry({ id: "m", text: "Done." }),
+        ],
+      },
+    };
+    const md = exportMarkdown(
+      thought,
+      { format: "markdown", activity: true },
+      at,
+      time,
+    );
+    expect(md).toContain(
+      "### Thinking\n\n> **Plan**\n> \n> Read, then test.\n",
+    );
+    expect(
+      exportMarkdown(
+        thought,
+        { format: "markdown", activity: false },
+        at,
+        time,
+      ),
+    ).not.toContain("Thinking");
+  });
   it("exports JSON with the chat's records under a named format", () => {
     const parsed = JSON.parse(
       exportJSON(chat, { format: "json", activity: false }, at),
