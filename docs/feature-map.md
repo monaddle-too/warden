@@ -84,6 +84,7 @@ Legacy macOS-VM stack (pre-SBX, still in tree): `warden` (Python launcher),
 | Local install: `warden install|doctor|start|open|stop|status|uninstall`, private sbx namespace, runtimes layout, popups | `cmd/warden/*.go` (`install.go`, `doctor.go`, `sbx.go`, `runtimes.go`, `notify.go`, `service.go`), `hostinfo/` | | | `cmd/warden/*_test.go` | [warden-local-install](warden-local-install.md), [warden-local-deployments-plan](warden-local-deployments-plan.md) |
 | Terminal client `warden chat` (TUI), `chat list|new|send --wait|approve` | `tui/` | same HTTP API | `tui/app.go`, `tui/follow.go` | `tui/*_test.go` | |
 | Releases: version handshake, pinned runtimes, guest image, OAuth clients | `release/release.go`, `handshake/` | | | | `scripts/release.sh`, `scripts/build-guest-image-in-sbx.sh`, [warden-guest-image-plan](warden-guest-image-plan.md) |
+| CI: release, guest image and OCSF workflows on the self-hosted Mac runner | `.github/workflows/*.yml`, `deploy/ci/lima-docker.yaml` | | | | [ci-mac-runner](ci-mac-runner.md) |
 | Deployment (OVH compose, Caddy, systemd; local `deploy-local.sh`) | `deploy/chat/*`, `deploy/guest/*` | | | | `deploy/chat/README.md`, [ovh-html-demo-plan](ovh-html-demo-plan.md) |
 | Audit events / SIEM export | `policy/audit.go`, `policy/redact.go`, `policy/retention.go`, `schemas/audit-event.schema.json` | | | | [siem](siem.md) |
 | Untrusted image normalisation | `imageguard/` | | | `imageguard/*_test.go` | |

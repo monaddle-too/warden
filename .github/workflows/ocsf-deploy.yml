@@ -13,10 +13,13 @@ concurrency:
   group: ocsf-${{ github.ref }}
   cancel-in-progress: false
 
+# Both jobs run on the self-hosted macOS runner (docs/ci-mac-runner.md).
+# Docker is the runner's Lima VM; the integration test's `sudo install`
+# calls need the runner user to have passwordless sudo for /usr/bin/install.
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ocsf-viewer
@@ -58,27 +61,29 @@ jobs:
   deploy:
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 15
     environment: ovh-production
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ocsf-${{ github.sha }}
+      # The identity lives under the job's temp directory, never in the
+      # runner user's ~/.ssh: the runner is a persistent machine.
       - name: Install deployment SSH identity
         env:
           DEPLOY_KEY: ${{ secrets.OVH_DEPLOY_KEY }}
           HOST_KEYS: ${{ secrets.OVH_KNOWN_HOSTS }}
         run: |
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/ovh_deploy
-          printf '%s\n' "$HOST_KEYS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/ovh_deploy ~/.ssh/known_hosts
+          install -d -m 700 "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/ssh/ovh_deploy"
+          printf '%s\n' "$HOST_KEYS" > "$RUNNER_TEMP/ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/ssh/ovh_deploy" "$RUNNER_TEMP/ssh/known_hosts"
       - name: Deploy with server-side health checks and rollback
         env:
           OVH_HOST: ${{ vars.OVH_HOST }}
         run: |
-          ssh -i ~/.ssh/ovh_deploy -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 "ocsf-ci@$OVH_HOST" "deploy $GITHUB_SHA" < release.tar
+          ssh -i "$RUNNER_TEMP/ssh/ovh_deploy" -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 "ocsf-ci@$OVH_HOST" "deploy $GITHUB_SHA" < release.tar
       - name: Verify public revision
         env:
           SITE_HOST: ${{ vars.SITE_HOST }}
@@ -86,4 +91,4 @@ jobs:
           curl --fail --silent --show-error --max-time 20 "https://$SITE_HOST/healthz" | jq -e --arg revision "$GITHUB_SHA" '.status == "ok" and .revision == $revision'
       - name: Remove deployment identity
         if: always()
-        run: rm -f ~/.ssh/ovh_deploy
+        run: rm -rf "$RUNNER_TEMP/ssh"

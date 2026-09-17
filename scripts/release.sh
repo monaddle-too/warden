@@ -1,10 +1,10 @@
 #!/bin/sh
-# Build a Warden release locally, without GitHub Actions: the frontend, the
-# warden binary for linux/amd64, linux/arm64 and darwin/arm64 with the
-# revision linked in, one tarball per target and SHA256SUMS, exactly as
-# .github/workflows/release.yml does. With --publish it creates the GitHub
-# release for the current tag with `gh`. GitHub Releases cost no Actions
-# minutes, so this is the complete path when the Actions budget is exhausted.
+# Build a Warden release: the frontend, the warden binary for linux/amd64,
+# linux/arm64 and darwin/arm64 with the revision linked in, one tarball per
+# target and SHA256SUMS. .github/workflows/release.yml runs this script on the
+# self-hosted Mac runner and adds the server image and the GitHub release;
+# run it by hand for the same tarballs without Actions. With --publish it
+# creates the GitHub release for the current tag with `gh` itself.
 #
 #   scripts/release.sh [--version vX.Y.Z] [--skip-tests] [--publish]
 #
@@ -51,8 +51,8 @@ $PNPM --dir chat/web install --frozen-lockfile
 $PNPM --dir chat/web build
 test -f chat/web/dist/index.html
 
-# Go runs from the module cache; nothing is fetched.
-export GOPROXY=off GOFLAGS=-mod=mod CGO_ENABLED=0
+# Go resolves from the module cache unless the caller sets GOPROXY (CI does).
+export GOPROXY="${GOPROXY:-off}" GOFLAGS=-mod=mod CGO_ENABLED=0
 if [ "$SKIP_TESTS" != 1 ]; then
   test -z "$(gofmt -l chat)"
   go -C chat vet ./...
