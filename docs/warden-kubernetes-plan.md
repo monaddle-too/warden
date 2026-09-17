@@ -208,7 +208,8 @@ Isolation tiers in terms of what they promise:
    The transport abstraction lands first, with the sbx shapes still on Unix
    sockets and no behaviour change, so the runtime change and the topology
    change are not debugged together. Owner: confirm four Deployments and
-   mTLS from the start.
+   mTLS from the start. Proceeding with this under the execution loop
+   started 2026-09-16; the owner may override before step 6.
 
 6. **Kubernetes API access through a small in-tree client, not
    client-go.** `chat/internal/kube`: in-cluster configuration, typed JSON
@@ -221,7 +222,8 @@ Isolation tiers in terms of what they promise:
    hundred modules to a tree built from an offline cache, and the surface
    used is small. The client gets its own tests against an `httptest` API
    server. Owner: confirm; the alternative is client-go with the module
-   cache populated once outside the sandbox.
+   cache populated once outside the sandbox. Proceeding with the in-tree
+   client under the execution loop started 2026-09-16.
 
 7. **Guest image split: a plain base image, and the SBX variant layered on
    top.** `deploy/guest/Dockerfile.base` builds `warden-guest-base` from
@@ -712,6 +714,14 @@ the repository and in the chart values.
 ## Progress
 
 - 2026-09-16: plan drafted from the a45aeaf inventory; no code yet.
+- 2026-09-16 (execution): the owner started an agent loop to run the plan
+  to completion. Decisions 5 and 6 proceed with their recommendations;
+  step 9's real cluster stays the owner's call, so that step is exercised
+  in the dev VM (Ingress controller plus a self-signed issuer) and the
+  real-cluster run is recorded as remaining. Track branches from 5ef87fd:
+  `k8s/track-a` (step 1, then 2 and 4) in `.local/wk8s-track-a`,
+  `k8s/track-b` (step 3) in `.local/wk8s-track-b`, `k8s/track-c` (step 5)
+  in `.local/wk8s-track-c`; step 0 runs in this worktree.
 - 2026-09-16 (revision): reviewed for single-host assumptions carried
   over. Replaced: the single core pod with four Deployments over mutual
   TLS (decision 5); per-binding gateway ports with one credentialed
