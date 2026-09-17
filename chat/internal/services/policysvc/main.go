@@ -174,6 +174,7 @@ func run(args []string) error {
 	sharing.GitHubConfigured, sharing.GitHubAppSlug = s.githubConfigured, s.githubSlug
 	sharing.Egress = registry
 	sharing.Network = registry
+	sharing.PublicURL = s.publicURL
 	registry.Sharing = sharing
 	if *claudeAuth != "" {
 		registry.ClaudeSource = &policy.ClaudeCredentials{Path: *claudeAuth}

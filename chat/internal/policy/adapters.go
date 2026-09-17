@@ -134,9 +134,26 @@ func AccessRank(access string) int {
 	return -1
 }
 
-// docsImageEdits fetch a remote URI on Google's side, which would let an
-// agent exfiltrate data through the URL; no grant level permits them.
+// docsImageEdits make Google fetch a URI, which would let an agent
+// exfiltrate data through a URL of its choosing. They are allowed only with
+// a placeholder naming an image the agent attached (WardenImageURI); the
+// sharing store publishes that image itself for the duration of the edit.
 var docsImageEdits = stringSet("insertInlineImage", "replaceImage")
+
+// WardenImageURI is the placeholder an agent writes as an image edit's uri:
+// warden-image:<attach_image id>.
+var WardenImageURI = regexp.MustCompile(`^warden-image:([a-f0-9]{64})$`)
+
+// imageEditPlaceholder returns the attached image an image edit names, or
+// "" when its uri is anything else.
+func imageEditPlaceholder(edit any) string {
+	fields, _ := edit.(map[string]any)
+	uri, _ := fields["uri"].(string)
+	if m := WardenImageURI.FindStringSubmatch(uri); m != nil {
+		return m[1]
+	}
+	return ""
+}
 
 // docsTextEdits are the requests a "write" grant covers; every other
 // batchUpdate request (tables, tabs, headers, named ranges, page breaks, ...)
@@ -198,8 +215,11 @@ func DocumentWriteOperation(method, path string, query []QueryPair, body []byte)
 			return "", "", errors.New("invalid edit")
 		}
 		for key, value := range edit {
-			if _, isObject := value.(map[string]any); !isObject || docsImageEdits[key] {
-				return "", "", errors.New("remote image edits are not allowed")
+			if _, isObject := value.(map[string]any); !isObject {
+				return "", "", errors.New("invalid edit")
+			}
+			if docsImageEdits[key] && imageEditPlaceholder(value) == "" {
+				return "", "", errors.New("image edits must use uri warden-image:<image_id> from attach_image; remote URLs are not allowed")
 			}
 			if !docsTextEdits[key] {
 				access = "structure"

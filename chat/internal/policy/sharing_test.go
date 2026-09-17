@@ -3,6 +3,7 @@ package policy
 import (
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -122,7 +123,8 @@ func (f *sharingFixture) read(doc, chat, sandbox string, changes map[string]any)
 	for k, v := range changes {
 		request[k] = v
 	}
-	return f.s.Authorize(chat, sandbox, request)
+	grant, authorization, _, err := f.s.Authorize(chat, sandbox, request)
+	return grant, authorization, err
 }
 
 func TestSharingDurableRequestIdempotencyAndCompletion(t *testing.T) {
@@ -336,7 +338,7 @@ func (f *sharingFixture) write(doc, chat string, edits []any, path string) error
 		path = "/v1/documents/" + doc + ":batchUpdate"
 	}
 	body := mustJSON(map[string]any{"requests": edits})
-	_, _, err := f.s.Authorize(chat, "sbx", map[string]any{"scheme": "https", "port": 443, "host": "docs.googleapis.com", "method": "POST", "path": path, "body_base64": base64.StdEncoding.EncodeToString(body)})
+	_, _, _, err := f.s.Authorize(chat, "sbx", map[string]any{"scheme": "https", "port": 443, "host": "docs.googleapis.com", "method": "POST", "path": path, "body_base64": base64.StdEncoding.EncodeToString(body)})
 	return err
 }
 
@@ -384,18 +386,18 @@ func TestStructureGrantLevels(t *testing.T) {
 		t.Fatal("write grant allowed a table")
 	}
 	sheetStructure := map[string]any{"scheme": "https", "port": 443, "host": "sheets.googleapis.com", "method": "POST", "path": "/v4/spreadsheets/doc:batchUpdate", "body_base64": base64.StdEncoding.EncodeToString([]byte(`{"requests":[{"addSheet":{}}]}`))}
-	if _, _, err := f.s.Authorize("chat", "sbx", sheetStructure); err == nil {
+	if _, _, _, err := f.s.Authorize("chat", "sbx", sheetStructure); err == nil {
 		t.Fatal("write grant allowed a sheet structure edit")
 	}
 	sheetValues := map[string]any{"scheme": "https", "port": 443, "host": "sheets.googleapis.com", "method": "POST", "path": "/v4/spreadsheets/doc/values/A1:append?valueInputOption=RAW", "body_base64": base64.StdEncoding.EncodeToString([]byte(`{"values":[["x"]]}`))}
-	if _, _, err := f.s.Authorize("chat", "sbx", sheetValues); err != nil {
+	if _, _, _, err := f.s.Authorize("chat", "sbx", sheetValues); err != nil {
 		t.Fatal(err)
 	}
 	f.writeGrant("structure", "2")
 	if err := f.write("", "", table, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := f.s.Authorize("chat", "sbx", sheetStructure); err != nil {
+	if _, _, _, err := f.s.Authorize("chat", "sbx", sheetStructure); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.write("", "", nil, ""); err != nil {
@@ -403,6 +405,69 @@ func TestStructureGrantLevels(t *testing.T) {
 	}
 	if _, err := f.s.Dispatch("request", map[string]any{"chatID": "chat", "sandboxID": "sbx", "callID": "3", "reason": "x", "access": "admin"}); err == nil {
 		t.Fatal("unknown level accepted")
+	}
+}
+
+// An attached image goes into a Doc through a placeholder: the policy
+// publishes it under a one-off token, rewrites the edit to that URL and
+// withdraws the token afterwards. Images of other conversations, write-level
+// grants and installs without a public https address are refused.
+func TestInlineImageEditsArePublishedOnce(t *testing.T) {
+	f := newSharingFixture(t)
+	f.s.PublicURL = "https://warden.example"
+	added := f.dispatch("image_add", map[string]any{"chatID": "chat", "sandboxID": "sbx", "caption": "Chart", "png": base64.StdEncoding.EncodeToString(testPNG)})
+	id := added["image_id"].(string)
+	edits := []any{map[string]any{"insertInlineImage": map[string]any{"uri": "warden-image:" + id, "location": map[string]any{"index": 1}}}}
+	authorize := func(chat string) (*Rewrite, error) {
+		body := mustJSON(map[string]any{"requests": edits})
+		_, _, rewrite, err := f.s.Authorize(chat, "sbx", map[string]any{"scheme": "https", "port": 443, "host": "docs.googleapis.com", "method": "POST", "path": "/v1/documents/doc:batchUpdate", "body_base64": base64.StdEncoding.EncodeToString(body)})
+		return rewrite, err
+	}
+	f.writeGrant("write", "1")
+	if _, err := authorize("chat"); err == nil {
+		t.Fatal("write grant allowed an image")
+	}
+	f.writeGrant("structure", "2")
+	if _, err := authorize("other"); err == nil {
+		t.Fatal("another conversation's image was published")
+	}
+	rewrite, err := authorize("chat")
+	if err != nil || rewrite == nil || len(rewrite.Publications) != 1 {
+		t.Fatalf("rewrite: %+v %v", rewrite, err)
+	}
+	token := rewrite.Publications[0]
+	var body map[string]any
+	if err := json.Unmarshal(rewrite.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	uri := body["requests"].([]any)[0].(map[string]any)["insertInlineImage"].(map[string]any)["uri"]
+	if uri != "https://warden.example/published/"+token+".png" {
+		t.Fatalf("uri %v", uri)
+	}
+	if png, err := f.s.Images.Published(token); err != nil || string(png) != string(testPNG) {
+		t.Fatalf("published: %v", err)
+	}
+	if r, err := f.s.Dispatch("image_published", map[string]any{"token": token}); err != nil || r["png"] != base64.StdEncoding.EncodeToString(testPNG) {
+		t.Fatalf("image_published: %v", err)
+	}
+	f.s.Images.Unpublish([]string{token})
+	if _, err := f.s.Images.Published(token); err == nil {
+		t.Fatal("still published after unpublish")
+	}
+	rewrite, _ = authorize("chat")
+	f.clock.now += PublicationTTL + 1
+	if _, err := f.s.Images.Published(rewrite.Publications[0]); err == nil {
+		t.Fatal("still published after the TTL")
+	}
+	f.clock.now = 1000
+	f.s.PublicURL = ""
+	if _, err := authorize("chat"); err == nil {
+		t.Fatal("published without a public address")
+	}
+	// Text-only structure edits are forwarded untouched.
+	edits = []any{map[string]any{"insertTable": map[string]any{"rows": 1, "columns": 1}}}
+	if rewrite, err := authorize("chat"); err != nil || rewrite != nil {
+		t.Fatalf("table: %+v %v", rewrite, err)
 	}
 }
 

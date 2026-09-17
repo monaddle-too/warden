@@ -44,6 +44,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "method not allowed", 405)
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/published/") {
+			h.publishedHTTP(w, r)
+			return
+		}
 		http.FileServer(http.Dir(h.WebDir)).ServeHTTP(w, r)
 		return
 	}

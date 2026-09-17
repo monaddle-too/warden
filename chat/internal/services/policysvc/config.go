@@ -3,6 +3,7 @@ package policysvc
 import (
 	"flag"
 	"os"
+	"strings"
 	"time"
 
 	"warden/chat/internal/config"
@@ -31,6 +32,7 @@ type settings struct {
 	githubAuthFile   string // providers.github.authFile (local user token)
 	chatListen       string // chat.listen; its port is the built-in Google redirect
 	egress           string // sandboxes.egress: restricted or open
+	publicURL        string // auth.publicURL: where attached images are published for Docs edits (https only)
 }
 
 type policyFlags struct {
@@ -58,6 +60,9 @@ func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
 	s.caMaxAge = config.Override(o, "gateway-ca-max-age", *f.caMaxAge, "sbx.inspectionCertMaxAgeDays", time.Duration(cfg.SBX.InspectionCertMaxAgeDays)*24*time.Hour)
 	s.guestDigest = config.Override(o, "guest-image-digest", *f.guestDigest, "sbx.guestImageDigest", cfg.GuestDigest())
 	s.egress = config.Override(o, "egress", *f.egress, "sandboxes.egress", cfg.Sandboxes.Egress)
+	if strings.HasPrefix(cfg.Auth.PublicURL, "https://") {
+		s.publicURL = strings.TrimRight(cfg.Auth.PublicURL, "/")
+	}
 	codex := ""
 	if cfg.Providers.Codex != nil {
 		codex = cfg.Providers.Codex.AuthFile

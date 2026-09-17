@@ -904,7 +904,7 @@ func (r *Registry) DocumentRequest(sandbox string, capability any, message map[s
 	return map[string]any{"allow": true, "status": status, "body": base64.StdEncoding.EncodeToString(data)}, nil
 }
 
-var gatewayActions = stringSet("authorize", "egress", "active", "event", "egress.finish", "provider", "providerRoute", "destination")
+var gatewayActions = stringSet("authorize", "egress", "active", "event", "egress.finish", "unpublish", "provider", "providerRoute", "destination")
 var providerRouteTargets = map[[2]string]bool{
 	{"api.openai.com", "/v1/responses"}:                true,
 	{"api.openai.com", "/v1/chat/completions"}:         true,
@@ -974,8 +974,9 @@ func (r *Registry) Proxy(sandbox string, capability any, message any) (map[strin
 		if !engine.NetworkEnabled() {
 			return denied, nil
 		}
-		grant, authorization, err := sharing.Authorize(lease.ChatID, sandbox, request)
+		grant, authorization, rewrite, err := sharing.Authorize(lease.ChatID, sandbox, request)
 		if err != nil {
+			denied["reason"] = err.Error()
 			return denied, nil
 		}
 		grantID, _ := grant["request_id"].(string)
@@ -993,7 +994,29 @@ func (r *Registry) Proxy(sandbox string, capability any, message any) (map[strin
 		if remaining < 0 {
 			remaining = 0
 		}
-		return map[string]any{"allow": true, "authorization": authorization, "decision_id": decision, "request_id": decision, "expires_at": expires, "remaining_seconds": remaining}, nil
+		result := map[string]any{"allow": true, "authorization": authorization, "decision_id": decision, "request_id": decision, "expires_at": expires, "remaining_seconds": remaining}
+		if rewrite != nil {
+			result["body_base64"] = base64.StdEncoding.EncodeToString(rewrite.Body)
+			published := make([]any, 0, len(rewrite.Publications))
+			for _, t := range rewrite.Publications {
+				published = append(published, t)
+			}
+			result["publications"] = published
+		}
+		return result, nil
+	}
+	if sharing != nil && action == "unpublish" {
+		// The gateway reports a Docs image edit finished; the published
+		// images go away whatever the upstream answered.
+		var tokens []string
+		items, _ := msg["publications"].([]any)
+		for _, t := range items {
+			if token, ok := t.(string); ok {
+				tokens = append(tokens, token)
+			}
+		}
+		sharing.Images.Unpublish(tokens)
+		return map[string]any{"released": true}, nil
 	}
 	if sharing != nil && action == "active" && strings.HasPrefix(decisionID, "gdoc-") {
 		record := b.Decisions[decisionID]

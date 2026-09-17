@@ -359,10 +359,17 @@ func TestDocumentWriteOperationLevels(t *testing.T) {
 	if access, _, err := DocumentWriteOperation("POST", "/v1/documents/doc:batchUpdate", nil, table); err != nil || access != "structure" {
 		t.Fatalf("table: %s %v", access, err)
 	}
+	placeholder := "warden-image:" + strings.Repeat("ab", 32)
 	for _, key := range []string{"insertInlineImage", "replaceImage"} {
-		body := mustJSON(map[string]any{"requests": []any{map[string]any{key: map[string]any{"uri": "https://evil.test"}}}})
-		if _, _, err := DocumentWriteOperation("POST", "/v1/documents/doc:batchUpdate", nil, body); err == nil {
-			t.Fatalf("%s accepted", key)
+		for _, uri := range []string{"https://evil.test", "warden-image:zz", "", "https://example.test/published/x.png"} {
+			body := mustJSON(map[string]any{"requests": []any{map[string]any{key: map[string]any{"uri": uri}}}})
+			if _, _, err := DocumentWriteOperation("POST", "/v1/documents/doc:batchUpdate", nil, body); err == nil {
+				t.Fatalf("%s %q accepted", key, uri)
+			}
+		}
+		body := mustJSON(map[string]any{"requests": []any{map[string]any{key: map[string]any{"uri": placeholder, "location": map[string]any{"index": 1}}}}})
+		if access, _, err := DocumentWriteOperation("POST", "/v1/documents/doc:batchUpdate", nil, body); err != nil || access != "structure" {
+			t.Fatalf("%s placeholder: %s %v", key, access, err)
 		}
 	}
 	values := []byte(`{"values":[["1"]]}`)

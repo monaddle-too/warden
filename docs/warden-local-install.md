@@ -436,6 +436,13 @@ answer and who gave it land in the workspace's Access history.
   **structure** (tables, tabs, adding or deleting sheets, formats, charts).
   Reconnect Google once after upgrading so the spreadsheet scope is
   granted.
+- **Images in Docs** (public deployments only): with structure access an
+  agent can place an image it attached with `attach_image` into a shared
+  document. Google only takes images by URL and copies them at insertion,
+  so Warden publishes the attachment at an unguessable address under
+  `auth.publicURL` for that one edit and withdraws it as soon as Google
+  has answered. Any other image URL is refused. A loopback install has no
+  address Google can reach, so the edit fails there with that reason.
 - **Host directories** (local installs only; `request_host_directory` and
   `sync_host_directory`): copy a directory from this machine into the
   sandbox at `/home/agent/host/<name>` (a snapshot, up to 1 GiB, never

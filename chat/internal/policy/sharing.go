@@ -376,6 +376,17 @@ type Sharing struct {
 	// Network, when set, applies owner-approved temporary host grants to a
 	// sandbox's engine (the "network_allow" operation).
 	Network NetworkGrants
+	// PublicURL is this Warden's https origin (auth.publicURL), where
+	// attached images are briefly published for Docs inline-image edits;
+	// empty on installs Google cannot reach.
+	PublicURL string
+}
+
+// Rewrite is a request body Authorize changed before forwarding, and the
+// image publications to withdraw once the upstream has answered.
+type Rewrite struct {
+	Body         []byte
+	Publications []string
 }
 
 // NetworkGrants is the registry as the sharing store needs it for
@@ -1117,31 +1128,31 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 // Authorize finds the grant covering one Docs or Sheets API request (a
 // grant covers its own access level and below) and returns it with the
 // owner's credential.
-func (s *Sharing) Authorize(chat, sandbox string, request map[string]any) (map[string]any, string, error) {
+func (s *Sharing) Authorize(chat, sandbox string, request map[string]any) (map[string]any, string, *Rewrite, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	port, _ := asInt(request["port"])
 	if request["scheme"] != "https" || port != 443 || (request["host"] != "docs.googleapis.com" && request["host"] != "sheets.googleapis.com") {
-		return nil, "", errors.New("unsupported document authority")
+		return nil, "", nil, errors.New("unsupported document authority")
 	}
 	path, _ := request["path"].(string)
 	parsed, err := url.Parse(path)
 	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.Fragment != "" {
-		return nil, "", errors.New("invalid document route")
+		return nil, "", nil, errors.New("invalid document route")
 	}
 	bodyEncoded, _ := request["body_base64"].(string)
 	body, err := base64.StdEncoding.Strict().DecodeString(bodyEncoded)
 	if err != nil {
-		return nil, "", errors.New("invalid document body")
+		return nil, "", nil, errors.New("invalid document body")
 	}
 	method, _ := request["method"].(string)
 	access, doc, err := DocumentWriteOperation(method, parsed.Path, parseQSL(parsed.RawQuery), body)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	rows, err := s.rowsLocked("SELECT "+sharingColumns+" FROM requests WHERE sandbox=? AND status='granted' AND expires>?", sandbox, s.Clock())
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	var grant map[string]any
 	for _, r := range rows {
@@ -1161,23 +1172,33 @@ func (s *Sharing) Authorize(chat, sandbox string, request map[string]any) (map[s
 		}
 	}
 	if grant == nil {
-		return nil, "", errors.New("document is not shared with this environment")
+		return nil, "", nil, errors.New("document is not shared with this environment")
 	}
 	blocked, err := s.blockedLocked()
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	if blocked[doc] {
-		return nil, "", errors.New("document is tagged unsharable with AI")
+		return nil, "", nil, errors.New("document is tagged unsharable with AI")
 	}
 	if s.Google == nil {
-		return nil, "", errors.New("Google is not configured")
+		return nil, "", nil, errors.New("Google is not configured")
 	}
 	authorization, err := s.Google.Authorization()
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	return grant, authorization, nil
+	var rewrite *Rewrite
+	if request["host"] == "docs.googleapis.com" && access == "structure" {
+		rewritten, tokens, err := s.Images.rewriteImageEditsLocked(chat, sandbox, body)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		if tokens != nil {
+			rewrite = &Rewrite{Body: rewritten, Publications: tokens}
+		}
+	}
+	return grant, authorization, rewrite, nil
 }
 
 // Active reports whether a grant still applies to the sandbox.

@@ -185,6 +185,7 @@ type flow struct {
 	tunnel        *tunnelInfo
 	requestID     string
 	decisionID    string
+	publications  []string // images published for this edit; withdrawn after the upstream answers
 	remaining     float64
 	denied        bool
 	wroteHeader   bool
@@ -596,6 +597,22 @@ func (f *flow) handle() {
 	f.dispatch()
 }
 
+// unpublish withdraws the images published for this edit. Google fetches
+// them while handling the request, so once the upstream has answered (or
+// failed) they are no longer needed; this runs before the response is
+// relayed so nothing stays fetchable after the agent sees the result.
+func (f *flow) unpublish() {
+	if len(f.publications) == 0 {
+		return
+	}
+	published := make([]any, 0, len(f.publications))
+	for _, token := range f.publications {
+		published = append(published, token)
+	}
+	f.publications = nil
+	_, _ = f.control(map[string]any{"action": "unpublish", "decision_id": f.decisionID, "publications": published})
+}
+
 func splitAuthority(authority, scheme string) (string, int) {
 	host := authority
 	port := 80
@@ -917,6 +934,22 @@ func (f *flow) guardRequest() bool {
 			f.setHeader("User-Agent", "Warden/0.1")
 		}
 		f.body = body
+		// The policy may hand back a rewritten body (Docs image placeholders
+		// replaced by briefly published URLs) to forward instead.
+		if encoded, ok := decision["body_base64"].(string); ok {
+			rewritten, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return fail(valueErr("invalid rewritten request"))
+			}
+			f.body = rewritten
+		}
+		if items, ok := decision["publications"].([]any); ok {
+			for _, item := range items {
+				if token, ok := item.(string); ok {
+					f.publications = append(f.publications, token)
+				}
+			}
+		}
 		f.git = git != nil
 		f.decisionID, _ = decision["decision_id"].(string)
 		f.remaining, _ = asNumber(decision["remaining_seconds"])
@@ -1154,6 +1187,7 @@ func (f *flow) dispatch() {
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	res, err := client.Do(req)
+	f.unpublish()
 	if err != nil {
 		f.transportError(err)
 		return
