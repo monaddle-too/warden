@@ -9,7 +9,10 @@ import (
 	"io"
 )
 
-type PortMapping struct {
+// sbxPortMapping is one row of `sbx ports --json`. Only explicit IPv4
+// loopback publications are accepted: the SBX driver never exposes a guest
+// port beyond the host, so any other host IP is an unregistered publication.
+type sbxPortMapping struct {
 	HostIP      string `json:"host_ip"`
 	HostPort    int    `json:"host_port"`
 	SandboxPort int    `json:"sandbox_port"`
@@ -22,11 +25,11 @@ func parsePortMappings(raw []byte) ([]PortMapping, error) {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	var mappings []PortMapping
-	if err := decoder.Decode(&mappings); err != nil {
+	var rows []sbxPortMapping
+	if err := decoder.Decode(&rows); err != nil {
 		return nil, fmt.Errorf("invalid SBX port inventory: %w", err)
 	}
-	if mappings == nil {
+	if rows == nil {
 		return nil, errors.New("SBX port inventory must be an array")
 	}
 	var trailing any
@@ -35,8 +38,9 @@ func parsePortMappings(raw []byte) ([]PortMapping, error) {
 	}
 	hosts := map[int]bool{}
 	guests := map[int]bool{}
-	for _, m := range mappings {
-		if m.HostIP != "127.0.0.1" || m.Protocol != "tcp4" || m.HostPort < 1 || m.HostPort > 65535 || m.SandboxPort < 1 || m.SandboxPort > 65535 {
+	mappings := []PortMapping{}
+	for _, m := range rows {
+		if m.HostIP != loopbackAddress || m.Protocol != "tcp4" || m.HostPort < 1 || m.HostPort > 65535 || m.SandboxPort < 1 || m.SandboxPort > 65535 {
 			return nil, errors.New("SBX mapping is not an explicit valid IPv4 loopback publication")
 		}
 		if hosts[m.HostPort] || guests[m.SandboxPort] {
@@ -44,6 +48,7 @@ func parsePortMappings(raw []byte) ([]PortMapping, error) {
 		}
 		hosts[m.HostPort] = true
 		guests[m.SandboxPort] = true
+		mappings = append(mappings, PortMapping{Address: m.HostIP, Port: m.HostPort, GuestPort: m.SandboxPort})
 	}
 	return mappings, nil
 }
@@ -57,6 +62,12 @@ func (d *sbxRuntime) Mappings(ctx context.Context, name string) ([]PortMapping, 
 	}
 	return parsePortMappings(out.Bytes())
 }
+
+// mapping is the publication as the driver reported it.
+func (p *publication) mapping() PortMapping {
+	return PortMapping{Address: p.Address, Port: p.HostPort, GuestPort: p.Port}
+}
+
 func (w *Worker) verifyMappingsLocked(ctx context.Context, s *managedSandbox, expected *publication, requireExpected bool) error {
 	mappings, err := w.Runtime.Mappings(ctx, s.RuntimeName)
 	if err != nil {
@@ -64,16 +75,16 @@ func (w *Worker) verifyMappingsLocked(ctx context.Context, s *managedSandbox, ex
 	}
 	found := false
 	for _, m := range mappings {
-		p := w.managed.Publications[pubKey(s.ID, m.SandboxPort)]
-		if p == nil || p.HostPort != m.HostPort || m.HostIP != "127.0.0.1" || m.Protocol != "tcp4" {
+		p := w.managed.Publications[pubKey(s.ID, m.GuestPort)]
+		if p == nil || p.mapping() != m {
 			return errors.New("sandbox has an unregistered or mismatched port publication")
 		}
-		if expected != nil && m.SandboxPort == expected.Port && m.HostPort == expected.HostPort {
+		if expected != nil && m == expected.mapping() {
 			found = true
 		}
 	}
 	if requireExpected && !found {
-		return errors.New("SBX did not confirm the requested loopback publication")
+		return errors.New("runtime did not confirm the requested port publication")
 	}
 	return nil
 }
@@ -84,8 +95,8 @@ func (w *Worker) unpublishIfPresentLocked(ctx context.Context, s *managedSandbox
 		return err
 	}
 	for _, m := range mappings {
-		if m.HostPort == p.HostPort && m.SandboxPort == p.Port {
-			if err := w.Runtime.Unpublish(ctx, s.RuntimeName, p.Port, p.HostPort); err != nil {
+		if m.Port == p.HostPort && m.GuestPort == p.Port {
+			if err := w.Runtime.Unpublish(ctx, s.RuntimeName, m); err != nil {
 				return err
 			}
 			remaining, err := w.Runtime.Mappings(ctx, s.RuntimeName)
@@ -93,8 +104,8 @@ func (w *Worker) unpublishIfPresentLocked(ctx context.Context, s *managedSandbox
 				return err
 			}
 			for _, current := range remaining {
-				if current.HostPort == p.HostPort && current.SandboxPort == p.Port {
-					return errors.New("SBX did not remove the revoked loopback publication")
+				if current.Port == p.HostPort && current.GuestPort == p.Port {
+					return errors.New("runtime did not remove the revoked port publication")
 				}
 			}
 			return nil
@@ -109,9 +120,9 @@ func (w *Worker) reconcileRemovedLocked(ctx context.Context, s *managedSandbox) 
 	return w.unpublishRemovedLocked(ctx, s)
 }
 
-// unpublishRemovedLocked clears host ports of removed publications that SBX
-// may have restored on resume. It only touches the guest when such a
-// publication exists.
+// unpublishRemovedLocked clears the endpoints of removed publications that
+// the runtime may have restored on resume (SBX keeps a stopped guest's
+// publications). It only touches the guest when such a publication exists.
 func (w *Worker) unpublishRemovedLocked(ctx context.Context, s *managedSandbox) error {
 	for _, p := range w.managed.Publications {
 		if p.SandboxID == s.ID && p.State == "removed" && p.HostPort != 0 {
