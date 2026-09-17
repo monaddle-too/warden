@@ -90,7 +90,7 @@ func run(args []string) error {
 		return err
 	}
 	defer store.Close()
-	handler := &chats.HTTP{Engine: nil, Host: net.JoinHostPort(host, port), Origin: "http://" + net.JoinHostPort(host, port), WebDir: *web}
+	handler := &chats.HTTP{Host: net.JoinHostPort(host, port), Origin: "http://" + net.JoinHostPort(host, port), WebDir: *web}
 	endpointPath := ""
 	if mutual {
 		// The edge's certificate is its authority; no capability exists and
