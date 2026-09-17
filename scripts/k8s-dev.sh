@@ -6,6 +6,7 @@
 #   scripts/k8s-dev.sh shell [cmd]   shell into the VM
 #   scripts/k8s-dev.sh build-images  build the guest base image and the warden image into k3s
 #   scripts/k8s-dev.sh deploy        helm upgrade --install with the dev values
+#   scripts/k8s-dev.sh test [args]   run the end-to-end suite (chat/tests/k8s) against the deployed release
 #   scripts/k8s-dev.sh down          stop the VM (state kept); `delete` removes it
 set -euo pipefail
 
@@ -94,13 +95,26 @@ cmd_deploy() {
     ${digest:+--set "guestImage.digest=${digest}"} "$@"
 }
 
+cmd_test() {
+  # The suite (docs/warden-kubernetes.md, "Development") drives the release
+  # deployed by `deploy` through the edge's forwarded port and execs into
+  # sandbox pods with the VM's kubeconfig; extra arguments go to go test
+  # (for example -run TestKubernetes/Adversarial).
+  local kubeconfig; kubeconfig="$(kubeconfig_path)"
+  [ -f "$kubeconfig" ] || { echo "no kubeconfig for VM $NAME; run scripts/k8s-dev.sh up first" >&2; exit 1; }
+  local port; port="$(sed -n 's/^  port: *\([0-9]*\).*/\1/p' "$ROOT/deploy/k8s/dev/values.yaml" | head -1)"
+  WARDEN_K8S_KUBECONFIG="$kubeconfig" WARDEN_K8S_EDGE_URL="${WARDEN_K8S_EDGE_URL:-http://127.0.0.1:${port:-28781}}" \
+    GOPROXY=off GOFLAGS=-mod=mod go -C "$ROOT/chat" test -tags k8s ./tests/k8s/ -run TestKubernetes -v -count=1 -timeout 60m "$@"
+}
+
 case "${1:-}" in
   up) shift; cmd_up "$@" ;;
   kubeconfig) kubeconfig_path ;;
   shell) shift; limactl shell "$NAME" "$@" ;;
   build-images) shift; cmd_build_images "$@" ;;
   deploy) shift; cmd_deploy "$@" ;;
+  test) shift; cmd_test "$@" ;;
   down) limactl stop "$NAME" ;;
   delete) limactl delete --force "$NAME" ;;
-  *) sed -n '2,10p' "$0"; exit 2 ;;
+  *) sed -n '2,11p' "$0"; exit 2 ;;
 esac

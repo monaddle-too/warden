@@ -701,7 +701,14 @@ adversary has root in the guest. Compared with the SBX shapes:
   credential is minted per binding and delivered only to that pod's launch
   environment; a guest presenting another binding's credential, or
   forging another pod's address (CNI-dependent), is the row to keep
-  testing.
+  testing. The step-8 suite verified on gVisor that the source-pod check is
+  not implemented in this build: a pod that presents another binding's
+  valid credential is served, so the credential is the sole authority.
+  This is not exploitable by itself — the other rows prove a sandbox
+  cannot reach another sandbox or the credential's owner, so it cannot
+  obtain the credential — but the "second check" of plan decision 4 is a
+  hardening step still to add; the `other-binding-credential` row keeps the
+  "must be refused" assertion failing so the gap stays visible.
 - The runner may reach every TCP port of every sandbox pod (one static
   ingress policy), where SBX published one port per approval. Only the
   runner's preview proxy is admitted, and it dials only published ports.
@@ -736,8 +743,10 @@ adversary has root in the guest. Compared with the SBX shapes:
   image digest the verifier checks.
 
 **Adversarial rows the Kubernetes suite runs** (plan, work item 8;
-`tests/k8s`, Go with `-tags k8s` against `KUBECONFIG`; to be verified in
-step 8, first on gVisor in the dev VM, then on Kata where KVM is real). The
+`chat/tests/k8s`, Go with `-tags k8s` against `WARDEN_K8S_KUBECONFIG`,
+run by `scripts/k8s-dev.sh test` — see "Development"). Verified on the
+gVisor tier of the dev VM (the "Development" section lists each row and
+its result); the Kata tier runs the same suite where KVM is real. The
 test, not the verifier, execs into a sandbox pod and runs, against
 controlled destinations with unique markers:
 
@@ -813,18 +822,117 @@ the `local-path` StorageClass, small PVCs, TLS from the bootstrap Job):
 
 ```sh
 scripts/k8s-dev.sh deploy               # helm upgrade --install warden … -n warden --create-namespace -f deploy/k8s/dev/values.yaml
-kubectl -n warden port-forward svc/warden-edge 18781:18781
+kubectl -n warden logs deploy/warden-edge | grep 'launch URL'   # the owner capability, minted at every edge start
 ```
 
-Only the bootstrap Job's kubectl image is pulled from Docker Hub. Lima
-forwards ports the VM listens on to the Mac's loopback; a ClusterIP Service
-does not make the VM listen, so use the port-forward above (or set
-`edge.service.type: LoadBalancer`, which k3s's service load balancer binds
-on the node, and let Lima forward it; to be verified in step 7).
+Only the bootstrap Job's kubectl image is pulled from Docker Hub. The dev
+values make the edge a `LoadBalancer` Service on port 28781: k3s's service
+load balancer binds it on the node and Lima forwards node ports to the
+Mac's loopback, so the app is at `http://127.0.0.1:28781` and `*.localhost`
+previews need no port-forward. 28781, not 18781, because a local
+`warden start` on the same Mac already holds 18781 and Lima would silently
+lose the race for it. (With a ClusterIP edge, `kubectl -n warden
+port-forward svc/warden-edge 28781:28781` does the same.)
 
 Other subcommands: `scripts/k8s-dev.sh shell [cmd]` for a shell in the VM,
-`down` to stop it with state kept, `delete` to remove it. The VM is
-disposable; everything that matters is in the repository and the values.
+`test` for the end-to-end suite below, `down` to stop the VM with state
+kept, `delete` to remove it. The VM is disposable; everything that matters
+is in the repository and the values.
+
+### The end-to-end suite
+
+`chat/tests/k8s` (Go, build tag `k8s`; plan, work item 8) drives the
+deployed release the way the browser and `warden chat` do, then attacks it
+from inside its own sandbox pods. It installs nothing: the precondition is
+`scripts/k8s-dev.sh up`, `build-images` and `deploy`, with the edge
+reachable on the Mac's loopback as above.
+
+```sh
+scripts/k8s-dev.sh test                                    # the whole suite, about ten minutes on the dev VM
+scripts/k8s-dev.sh test -run TestKubernetes/Adversarial    # one part; subtests create what they need on first use
+cd chat && WARDEN_K8S_KUBECONFIG="$(../scripts/k8s-dev.sh kubeconfig)" GOPROXY=off GOFLAGS=-mod=mod \
+  go test -tags k8s ./tests/k8s/ -run TestKubernetes -v -count=1      # the same by hand
+```
+
+`WARDEN_K8S_KUBECONFIG` is required (without it the package skips, so
+`go test ./...` never needs a cluster); `WARDEN_K8S_EDGE_URL` (default
+`http://127.0.0.1:28781`), `WARDEN_K8S_NAMESPACE` (`warden`) and
+`WARDEN_K8S_SANDBOX_NAMESPACE` (`warden-sandboxes`) point it at another
+release. The suite reads the release's `warden-config` ConfigMap for the
+tier, RuntimeClass, image digest and gateway, reads the owner capability
+from the edge pod's endpoint file over `pods/exec`, and talks to the chat
+API through the edge with that bearer. It creates its own chats (titled
+`k8s suite <provider> <time>`, one workspace per provider) and deletes
+their workspaces and its own pods when it ends, whatever the outcome; it
+waits for `sandboxes.maxRunning` capacity rather than stopping anyone
+else's workspace (stopping its own idle one to make room), and it needs
+two resident sandboxes of its own for the cross-sandbox rows. A published
+preview keeps a workspace resident, so another person's previewed
+workspace holds a slot until it is revoked.
+
+What it asserts, in order (`-run TestKubernetes/<name>` runs one):
+
+- `CodexTurn`, `ClaudeTurn`: a turn on a fresh chat of each provider runs
+  `id -u; uname -r` in the guest and answers with uid 1000 and the tier's
+  kernel (`gvisor` in the release name on the gVisor tier); the pod's
+  `runtimeClassName` is the configured one and its `imageID` is the pinned
+  digest.
+- `Preview`: the Codex agent serves a page with a random marker from the
+  workspace on `0.0.0.0:8080` and calls `preview_attach`; the suite
+  approves the `warden/ports/bind` request as the owner, fetches
+  `http://<binding>.localhost:28781/` through the edge's sign-in redirects
+  with the owner's cookie session (the page came through the runner's
+  mTLS preview listener) and checks the marker; an anonymous request gets
+  the sign-in redirect, not the page.
+- `StopResume`: after a turn wrote a marker file, `environments/{id}/stop`
+  removes the pod (same name on resume, new UID, the claim kept) and the
+  next turn reads the file back.
+- `Adversarial/*`: the rows of the table in "Threat-model delta", from a
+  test-owned exec in the Codex chat's pod as the guest account, each
+  recorded with the RuntimeClass it ran under and each with its expected
+  refusal asserted: direct egress with no proxy variables, `no_proxy=*`
+  and IP destinations; missing and wrong proxy credentials (407 with
+  `Proxy-Authenticate`) and a foreign bearer on the provider route (401);
+  IP literals through the gateway and other ports on an allowed host
+  (403); IPv6 (no global address, literals fail, the gateway refuses
+  them); DNS on 53 to the cluster resolver and public resolvers, DoT, the
+  system resolver and DoH through the gateway (403); `CONNECT` to a
+  non-443 port and a plain-HTTP tunnel (403), a disallowed method on an
+  allowed host (403) and SSH bytes on the gateway port (400, not
+  forwarded); the trust bundle without the gateway CA (curl exit 60, no
+  fallback) and `--cacert /dev/null`; the API server, cluster DNS, the
+  metadata address, the node's API, kubelet and SSH ports and the
+  release's control and preview ports (all unreachable); another
+  binding's credential presented from this pod (its owner's pod is the
+  positive control); another sandbox's listener by pod IP both ways; a
+  pod without the egress label (created by the suite under the
+  RuntimeClass with the guest image: it reaches neither the gateway nor
+  anything else, and a pod without the RuntimeClass is refused by
+  admission). A positive control (an approved dependency GET through the
+  gateway) runs first, so a row cannot pass because the lease was absent.
+- `PolicyRestart`: with the Codex chat's binding live, the policy
+  Deployment is restarted (the other suite workspace is stopped first so
+  the new pod's canary proof fits the namespace quota). The gateway
+  Service IP is unchanged across the roll and no binding widens. The live
+  run is fail-closed by design — while the policy service is down the
+  runner's periodic lease renewal fails, so it ends the run and stops the
+  sandbox rather than let a guest keep egress it can no longer verify — so
+  the sandbox does not survive the restart with its binding intact. The row
+  proves the binding re-establishes cleanly on the next turn (the sandbox
+  resumes, re-registers and gets a fresh credential at the same gateway
+  address) and that the pre-restart credential no longer works.
+
+The `other-binding-credential` row currently fails, and the failure is a
+finding, not a suite bug: the shared gateway authenticates by the binding
+credential alone, so a pod that presents another binding's valid credential
+is served (verified on gVisor). Decision 4's source-pod "second check" is
+not implemented in this build. It is defence in depth — the other rows
+prove a sandbox cannot reach another sandbox or the credential's owner, so
+it cannot obtain the credential — and the row keeps the "must be refused"
+assertion failing so the gap stays visible until the check is added.
+
+The suite prints one line per row at the end (`row <name> PASS|FAIL under
+tier …`) and names any expected row that did not run.
 
 Chart checks, no cluster needed:
 
