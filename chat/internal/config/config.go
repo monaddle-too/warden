@@ -126,9 +126,16 @@ type Kubernetes struct {
 	// GatewayService is the Service the shared gateway is advertised
 	// through; warden-gateway when unset.
 	GatewayService string `json:"gatewayService,omitempty"`
+	// GatewayPort is the port the shared gateway listens on and the
+	// warden-gateway Service exposes; 7000 when unset.
+	GatewayPort int `json:"gatewayPort,omitempty"`
 	// TrustConfigMap is the guest trust bundle the policy service publishes
 	// and the runner mounts; warden-guest-trust when unset.
 	TrustConfigMap string `json:"trustConfigMap,omitempty"`
+	// GatewayCAMaxAgeDays is how old the gateway CA may be before the policy
+	// service rotates it at startup; 365 when unset. It replaces
+	// sbx.inspectionCertMaxAgeDays for this kind.
+	GatewayCAMaxAgeDays int `json:"gatewayCAMaxAgeDays,omitempty"`
 }
 
 // SBX describes the sandbox runtime on this host.
@@ -520,6 +527,12 @@ func merge(c *Config, file Config) {
 		if k.TrustConfigMap == "" {
 			k.TrustConfigMap = "warden-guest-trust"
 		}
+		if k.GatewayPort == 0 {
+			k.GatewayPort = 7000
+		}
+		if k.GatewayCAMaxAgeDays == 0 {
+			k.GatewayCAMaxAgeDays = 365
+		}
 		c.Kubernetes = &k
 	}
 	setString(&c.Paths.WebAssets, file.Paths.WebAssets)
@@ -739,6 +752,12 @@ func (c Config) validateKind() error {
 		}
 		if !dnsLabel(k.GatewayService) || !dnsLabel(k.TrustConfigMap) || (k.StorageClass != "" && !dnsLabel(k.StorageClass)) {
 			return errors.New("kubernetes.gatewayService, trustConfigMap and storageClass must be DNS labels")
+		}
+		if k.GatewayPort < 1 || k.GatewayPort > 65535 {
+			return errors.New("kubernetes.gatewayPort must be a TCP port")
+		}
+		if k.GatewayCAMaxAgeDays < 0 {
+			return errors.New("kubernetes.gatewayCAMaxAgeDays must not be negative")
 		}
 		for name, p := range map[string]*AuthFile{"codex": c.Providers.Codex, "claude": c.Providers.Claude} {
 			if p == nil {
