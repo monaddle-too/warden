@@ -21,6 +21,37 @@ type fakeGoogle struct {
 	connected     bool
 	canWrite      bool
 	disconnected  bool
+	document      map[string]any
+	documentErr   error
+	batchCalls    [][]byte
+	batchStatus   int
+	batchResponse map[string]any
+	batchErr      error
+}
+
+func (g *fakeGoogle) Document(id string) (map[string]any, error) {
+	if g.documentErr != nil {
+		return nil, g.documentErr
+	}
+	if g.document == nil {
+		return nil, errors.New("Google document unavailable")
+	}
+	return g.document, nil
+}
+func (g *fakeGoogle) BatchUpdate(id string, body []byte) (int, map[string]any, error) {
+	g.batchCalls = append(g.batchCalls, body)
+	if g.batchErr != nil {
+		return 0, nil, g.batchErr
+	}
+	status := g.batchStatus
+	if status == 0 {
+		status = 200
+	}
+	response := g.batchResponse
+	if response == nil {
+		response = map[string]any{"documentId": id, "writeControl": map[string]any{"requiredRevisionId": "rev-after"}}
+	}
+	return status, response, nil
 }
 
 func (g *fakeGoogle) Configured() bool { return g.configured }

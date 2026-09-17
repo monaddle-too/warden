@@ -41,6 +41,11 @@ type GoogleSharing interface {
 	Files(page string) (map[string]any, error)
 	File(id string) (map[string]any, error)
 	Create(title string) (map[string]any, error)
+	// Document fetches one document (documents.get, without pending native
+	// suggestions) and BatchUpdate applies one documents.batchUpdate body,
+	// returning Google's status and decoded response.
+	Document(id string) (map[string]any, error)
+	BatchUpdate(id string, body []byte) (int, map[string]any, error)
 	Authorization() (string, error)
 	// Disconnect forgets the stored Google credential (revoking it with
 	// Google on a best-effort basis) so the account must be connected again.
@@ -294,6 +299,58 @@ func (g *GoogleConnection) Create(title string) (map[string]any, error) {
 	return map[string]any{"id": id, "title": name, "url": "https://docs.google.com/document/d/" + id + "/edit", "api_url": "https://docs.googleapis.com/v1/documents/" + id}, nil
 }
 
+// Document reads a document as the connected account sees it with native
+// suggestions hidden, so paragraph ranges match what a write targets.
+func (g *GoogleConnection) Document(id string) (map[string]any, error) {
+	if !googleDocumentID.MatchString(id) {
+		return nil, errors.New("invalid document")
+	}
+	authorization, err := g.Authorization()
+	if err != nil {
+		return nil, err
+	}
+	status, raw, err := g.HTTP("docs.googleapis.com", "GET", "/v1/documents/"+id+"?suggestionsViewMode=PREVIEW_WITHOUT_SUGGESTIONS", nil, map[string]string{"Authorization": authorization, "Accept": "application/json"}, 20*time.Second, docResponseLimit+1)
+	if err != nil {
+		return nil, err
+	}
+	if status != 200 || len(raw) > docResponseLimit {
+		return nil, errors.New("Google document unavailable; check access to it and Google before retrying")
+	}
+	var data map[string]any
+	if err = json.Unmarshal(raw, &data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// BatchUpdate applies one reviewed edit body with the owner's credential.
+func (g *GoogleConnection) BatchUpdate(id string, body []byte) (int, map[string]any, error) {
+	if !googleDocumentID.MatchString(id) {
+		return 0, nil, errors.New("invalid document")
+	}
+	if !g.CanWrite() {
+		return 0, nil, errors.New("Reconnect Google to allow writing documents")
+	}
+	authorization, err := g.Authorization()
+	if err != nil {
+		return 0, nil, err
+	}
+	status, raw, err := g.HTTP("docs.googleapis.com", "POST", "/v1/documents/"+id+":batchUpdate", body, map[string]string{"Authorization": authorization, "Content-Type": "application/json", "Accept": "application/json"}, 60*time.Second, docResponseLimit+1)
+	if err != nil {
+		return 0, nil, err
+	}
+	if len(raw) > docResponseLimit {
+		return status, nil, errors.New("Google write response too large")
+	}
+	var data map[string]any
+	_ = json.Unmarshal(raw, &data)
+	return status, data, nil
+}
+
+// docResponseLimit bounds one Docs API response body (documents can be
+// large; a review never needs more than this).
+const docResponseLimit = 16 << 20
+
 // Files lists recent Google documents visible to the connected account.
 func (g *GoogleConnection) Files(page string) (map[string]any, error) {
 	params := url.Values{}
@@ -370,6 +427,7 @@ type Sharing struct {
 	DB               *sql.DB
 	Images           *Images
 	PullRequests     *PullRequests
+	Documents        *DocumentProposals
 	// Egress, when set, is the registry's runtime egress switch exposed to
 	// the console (the "egress" and "egress_set" operations).
 	Egress EgressSwitch
@@ -468,6 +526,10 @@ func NewSharing(root string, google GoogleSharing, clock Clock, github GitHubCre
 		return nil, err
 	}
 	if s.PullRequests, err = newPullRequests(s); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if s.Documents, err = newDocumentProposals(s); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -653,6 +715,20 @@ func (s *Sharing) Dispatch(op string, data map[string]any) (map[string]any, erro
 		return result, err
 	case strings.HasPrefix(op, "pr_"):
 		return s.PullRequests.Dispatch(op, data)
+	case op == "doc_submit" || op == "doc_read":
+		var result map[string]any
+		var err error
+		if op == "doc_read" {
+			result, err = s.Documents.Read(data)
+		} else {
+			result, err = s.Documents.Submit(data)
+		}
+		if err != nil && isValueError(err) {
+			return map[string]any{"status": "invalid", "error": err.Error()}, nil
+		}
+		return result, err
+	case strings.HasPrefix(op, "doc_"):
+		return s.Documents.Dispatch(op, data)
 	case op == "github_write":
 		return s.githubWrite(data)
 	case strings.HasPrefix(op, "github_"):
@@ -1111,13 +1187,20 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"requests": append(requests, prs...)}, nil
+		docs, err := s.Documents.undeliveredLocked()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"requests": append(append(requests, prs...), docs...)}, nil
 	case "ack":
 		id := stringField(data, "id")
 		if _, err := s.DB.Exec("UPDATE requests SET delivered=1 WHERE id=?", id); err != nil {
 			return nil, err
 		}
 		if _, err := s.DB.Exec("UPDATE pull_requests SET delivered=1 WHERE id=?", id); err != nil {
+			return nil, err
+		}
+		if _, err := s.DB.Exec("UPDATE document_proposals SET delivered=1 WHERE id=?", id); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
