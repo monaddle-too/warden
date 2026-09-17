@@ -72,3 +72,22 @@ func TestOVHExampleFilesAgree(t *testing.T) {
 		t.Fatalf("warden.example.json derives\n%+v\nbut edge.example.json holds\n%+v", derived, legacy)
 	}
 }
+
+// A warden.json with a tls:// chat address gives the edge that upstream and
+// the tls section as its material; the loopback shape derives no material.
+func TestEdgeDerivesTLSUpstream(t *testing.T) {
+	t.Setenv(config.Env, "")
+	path := filepath.Join(t.TempDir(), "warden.json")
+	os.WriteFile(path, []byte(`{"version":1,"paths":{"state":"/var/lib/warden"},
+		"previews":{"mode":"public","hostSuffix":"preview.example.com","edgeListen":"10.0.0.5:8080"},
+		"auth":{"mode":"google","publicURL":"https://warden.example.com","google":{"signInClientID":"client","owners":["owner@example.com"]}},
+		"services":{"policy":{"listen":"tls://0.0.0.0:7443","address":"tls://warden-policy:7443"},"runner":{"listen":"tls://0.0.0.0:7444","address":"tls://warden-runner:7444"},"chat":{"listen":"tls://0.0.0.0:7445","address":"tls://warden-chat:7445"}},
+		"tls":{"caFile":"/etc/warden/tls/ca.crt","certFile":"/etc/warden/tls/tls.crt","keyFile":"/etc/warden/tls/tls.key"}}`), 0600)
+	c, err := loadEdgeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Upstream != "tls://warden-chat:7445" || c.UpstreamHost != "warden-chat:7445" || c.UpstreamTLS == nil || c.UpstreamTLS.CAFile != "/etc/warden/tls/ca.crt" || c.UpstreamTLS.CertFile != "/etc/warden/tls/tls.crt" || c.UpstreamTLS.KeyFile != "/etc/warden/tls/tls.key" || c.OwnerTokenFile != "/var/lib/warden/app/endpoint.json" {
+		t.Fatalf("%+v %+v", c, c.UpstreamTLS)
+	}
+}

@@ -10,9 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"warden/chat/internal/transport"
 )
 
 // Version is the schema version this package reads and writes.
@@ -45,6 +49,12 @@ type Config struct {
 	Previews  Previews  `json:"previews"`
 	Auth      Auth      `json:"auth"`
 	Providers Providers `json:"providers"`
+	// Services and TLS are the transport between the four services; both
+	// are omitted from a written file when they hold nothing, and an
+	// existing file without them keeps today's Unix sockets and loopback
+	// chat.
+	Services Services `json:"services,omitzero"`
+	TLS      *TLS     `json:"tls,omitempty"`
 }
 
 // Paths locates Warden's data and release assets.
@@ -96,9 +106,46 @@ const (
 	EgressOpen       = "open"
 )
 
-// Chat is the web app listener.
+// Chat is the web app listener: the loopback host:port of the sbx shapes.
+// It stays the address the policy service's built-in Google Docs client
+// redirects to; services.chat.listen may replace it as the chat's own
+// listener (a tls:// URL in Kubernetes).
 type Chat struct {
 	Listen string `json:"listen,omitempty"`
+}
+
+// Services are the listeners of the policy service, the runner and the
+// chat, and the addresses their clients dial, one URL each. The sbx shapes
+// leave them unset: unix://<paths.state>/policy/sbx-control.sock and
+// unix://<paths.state>/runner/worker.sock for the first two, and
+// http://<chat.listen> for the chat, the same values as before this
+// section existed. Kubernetes sets tls://<host>:<port> for all of them,
+// with mutual TLS from the tls section (docs/warden-kubernetes-plan.md,
+// decision 5 and appendix A).
+type Services struct {
+	Policy Service `json:"policy,omitzero"`
+	Runner Service `json:"runner,omitzero"`
+	Chat   Service `json:"chat,omitzero"`
+}
+
+// Service is one service's listener and the address its clients dial.
+// Address defaults to Listen when that is a unix:// (or, for the chat,
+// http://) URL; a tls:// listener needs an explicit address, since the
+// listener usually binds every interface.
+type Service struct {
+	Listen  string `json:"listen,omitempty"`
+	Address string `json:"address,omitempty"`
+}
+
+// TLS is the mutual-TLS material every service uses on tls:// URLs: the
+// deployment CA and this service's own certificate and key, PEM files at
+// the same paths in every container (the chart mounts each service's own
+// Secret there). Required, and validated, only when a listener or address
+// is tls://.
+type TLS struct {
+	CAFile   string `json:"caFile"`
+	CertFile string `json:"certFile"`
+	KeyFile  string `json:"keyFile"`
 }
 
 // Previews says how agent web previews reach the browser.
@@ -191,6 +238,76 @@ func (c Config) PolicySocket() string { return filepath.Join(c.PolicyState(), "s
 func (c Config) RunnerSocket() string { return filepath.Join(c.RunnerState(), "worker.sock") }
 func (c Config) OwnerTokenFile() string {
 	return filepath.Join(c.AppState(), "endpoint.json")
+}
+
+// Transport URLs: what each service listens on and what its clients dial.
+// Each is the file's value or the sbx-shape default named in Services.
+func (c Config) PolicyListen() string {
+	return first(c.Services.Policy.Listen, "unix://"+c.PolicySocket())
+}
+func (c Config) PolicyAddress() string {
+	return first(c.Services.Policy.Address, unixOnly(c.Services.Policy.Listen), "unix://"+c.PolicySocket())
+}
+func (c Config) RunnerListen() string {
+	return first(c.Services.Runner.Listen, "unix://"+c.RunnerSocket())
+}
+func (c Config) RunnerAddress() string {
+	return first(c.Services.Runner.Address, unixOnly(c.Services.Runner.Listen), "unix://"+c.RunnerSocket())
+}
+func (c Config) ChatListen() string {
+	return first(c.Services.Chat.Listen, "http://"+c.Chat.Listen)
+}
+func (c Config) ChatAddress() string {
+	return first(c.Services.Chat.Address, httpOnly(c.Services.Chat.Listen), "http://"+c.Chat.Listen)
+}
+
+// TransportTLS is the tls section as the transport package takes it, nil
+// when the file has none.
+func (c Config) TransportTLS() *transport.TLS {
+	if c.TLS == nil {
+		return nil
+	}
+	return &transport.TLS{CAFile: c.TLS.CAFile, CertFile: c.TLS.CertFile, KeyFile: c.TLS.KeyFile}
+}
+
+// UsesTLS reports whether any listener or address is tls://.
+func (c Config) UsesTLS() bool {
+	for _, u := range []string{c.PolicyListen(), c.PolicyAddress(), c.RunnerListen(), c.RunnerAddress(), c.ChatListen(), c.ChatAddress()} {
+		if transport.IsTLS(u) {
+			return true
+		}
+	}
+	return false
+}
+
+func first(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+func unixOnly(u string) string {
+	if strings.HasPrefix(u, "unix://") {
+		return u
+	}
+	return ""
+}
+func httpOnly(u string) string {
+	if strings.HasPrefix(u, "http://") {
+		return u
+	}
+	return ""
+}
+
+// HostOf is the host:port of an http:// or tls:// URL, "" for anything else.
+func HostOf(rawurl string) string {
+	u, err := url.Parse(rawurl)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "tls") {
+		return ""
+	}
+	return u.Host
 }
 
 // PreviewScheme is the URL scheme approved bindings receive.
@@ -306,6 +423,23 @@ func merge(c *Config, file Config) {
 	setInt(&c.Sandboxes.KeepStopped, file.Sandboxes.KeepStopped)
 	setString(&c.Sandboxes.Egress, file.Sandboxes.Egress)
 	setString(&c.Chat.Listen, file.Chat.Listen)
+	setString(&c.Services.Policy.Listen, file.Services.Policy.Listen)
+	setString(&c.Services.Policy.Address, file.Services.Policy.Address)
+	setString(&c.Services.Runner.Listen, file.Services.Runner.Listen)
+	setString(&c.Services.Runner.Address, file.Services.Runner.Address)
+	setString(&c.Services.Chat.Listen, file.Services.Chat.Listen)
+	setString(&c.Services.Chat.Address, file.Services.Chat.Address)
+	if file.Chat.Listen == "" {
+		// A loopback services.chat.listen alone also sets chat.listen, so
+		// the two never disagree unless the file says both.
+		if host := HostOf(httpOnly(file.Services.Chat.Listen)); host != "" {
+			c.Chat.Listen = host
+		}
+	}
+	if file.TLS != nil {
+		t := *file.TLS
+		c.TLS = &t
+	}
 	setString(&c.Previews.Mode, file.Previews.Mode)
 	setString(&c.Previews.HostSuffix, file.Previews.HostSuffix)
 	setString(&c.Previews.EdgeListen, file.Previews.EdgeListen)
@@ -365,6 +499,9 @@ func (c Config) Validate() error {
 	}
 	if err := loopback(c.Chat.Listen); err != nil {
 		return fmt.Errorf("chat.listen: %w", err)
+	}
+	if err := c.validateTransport(); err != nil {
+		return err
 	}
 	switch c.Previews.Mode {
 	case PreviewLoopback:
@@ -428,6 +565,113 @@ func (c Config) Validate() error {
 		return errors.New("providers.google.docsClient must be \"builtin\" or a file path")
 	}
 	return nil
+}
+
+// validateTransport applies the URL rules: unix:// or tls:// for the policy
+// service and the runner, http:// (loopback) or tls:// for the chat, a
+// listener and its address on the same scheme, an explicit address for a
+// tls:// listener, and the tls section whenever any of them is tls://.
+func (c Config) validateTransport() error {
+	services := []struct {
+		name, listen, address string
+		schemes               []string
+	}{
+		{"policy", c.PolicyListen(), c.PolicyAddress(), []string{"unix", "tls"}},
+		{"runner", c.RunnerListen(), c.RunnerAddress(), []string{"unix", "tls"}},
+		{"chat", c.ChatListen(), c.ChatAddress(), []string{"http", "tls"}},
+	}
+	for _, s := range services {
+		listen, err := serviceURL(s.listen, s.schemes, true)
+		if err != nil {
+			return fmt.Errorf("services.%s.listen: %w", s.name, err)
+		}
+		address, err := serviceURL(s.address, s.schemes, false)
+		if err != nil {
+			return fmt.Errorf("services.%s.address: %w", s.name, err)
+		}
+		if listen != address {
+			return fmt.Errorf("services.%s: listen is %s:// but address is %s://", s.name, listen, address)
+		}
+		if listen == "tls" && c.services(s.name).Address == "" {
+			return fmt.Errorf("services.%s.address is required with a tls:// listener", s.name)
+		}
+	}
+	if HostOf(httpOnly(c.ChatListen())) != "" && HostOf(c.ChatListen()) != c.Chat.Listen {
+		return fmt.Errorf("services.chat.listen %s disagrees with chat.listen %s", c.ChatListen(), c.Chat.Listen)
+	}
+	if c.UsesTLS() {
+		if c.TLS == nil {
+			return errors.New("tls (caFile, certFile, keyFile) is required when a service listens on or dials a tls:// URL")
+		}
+		for name, path := range map[string]string{"caFile": c.TLS.CAFile, "certFile": c.TLS.CertFile, "keyFile": c.TLS.KeyFile} {
+			if !filepath.IsAbs(path) {
+				return fmt.Errorf("tls.%s must be an absolute path", name)
+			}
+		}
+	}
+	return nil
+}
+
+func (c Config) services(name string) Service {
+	switch name {
+	case "policy":
+		return c.Services.Policy
+	case "runner":
+		return c.Services.Runner
+	}
+	return c.Services.Chat
+}
+
+// serviceURL checks one transport URL against the allowed schemes and
+// returns its scheme. A listener may bind every interface (tls://:port);
+// an address needs a host. http:// URLs keep the loopback rule the chat
+// listener always had; unix:// paths keep the socket length limit.
+func serviceURL(rawurl string, schemes []string, listener bool) (string, error) {
+	scheme, rest, ok := strings.Cut(rawurl, "://")
+	if !ok || !contains(schemes, scheme) {
+		return "", fmt.Errorf("%q must be a %s URL", rawurl, strings.Join(schemes, ":// or ")+"://")
+	}
+	switch scheme {
+	case "unix":
+		if !strings.HasPrefix(rest, "/") {
+			return "", fmt.Errorf("%q: a unix:// URL needs an absolute socket path", rawurl)
+		}
+		if len(rest) > 100 {
+			return "", fmt.Errorf("%q: socket path too long for a private Unix socket", rawurl)
+		}
+	case "http":
+		u, err := url.Parse(rawurl)
+		if err != nil || u.Path != "" || u.RawQuery != "" || u.User != nil || u.Fragment != "" {
+			return "", fmt.Errorf("%q must be http://<loopback>:<port>", rawurl)
+		}
+		if err := loopback(u.Host); err != nil {
+			return "", fmt.Errorf("%q: %w", rawurl, err)
+		}
+	case "tls":
+		if strings.ContainsAny(rest, "/?#@") {
+			return "", fmt.Errorf("%q: a tls:// URL is host:port only", rawurl)
+		}
+		host, port, err := net.SplitHostPort(rest)
+		if err != nil {
+			return "", fmt.Errorf("%q: %w", rawurl, err)
+		}
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return "", fmt.Errorf("%q: port must be 1-65535", rawurl)
+		}
+		if host == "" && !listener {
+			return "", fmt.Errorf("%q: an address needs a host", rawurl)
+		}
+	}
+	return scheme, nil
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func loopback(addr string) error {

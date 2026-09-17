@@ -2,12 +2,17 @@
 // behind a TLS terminator with Google sign-in; in loopback mode it listens on
 // a loopback port over plain HTTP, serves previews as <binding>.localhost and
 // authenticates the owner by the launcher capability. Its private upstream
-// is the loopback chat server on the Warden host in both modes.
+// is the chat server: on the single-host shapes the loopback chat, reached
+// with the owner capability from endpoint.json as a bearer; on Kubernetes a
+// tls:// address reached with the edge's own certificate, which is its
+// authority to forward the identity headers (no capability, no endpoint
+// file).
 package edge
 
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,6 +27,7 @@ import (
 	"sync"
 	"time"
 	"warden/chat/internal/browserauth"
+	"warden/chat/internal/transport"
 )
 
 const previewCookie = "__Host-warden-preview"
@@ -36,17 +42,21 @@ const (
 type Config struct {
 	// Mode is "google" (default) or "owner": one person identified by the
 	// launcher capability, no sign-in client.
-	Mode           string `json:"mode,omitempty"`
-	Origin         string `json:"origin"`
-	PreviewSuffix  string `json:"previewSuffix"`
-	ClientID       string `json:"clientID"`
-	OwnerEmails    string `json:"ownerEmails"`
-	DemoDomains    string `json:"demoDomains"`
-	Upstream       string `json:"upstream"`
-	UpstreamHost   string `json:"upstreamHost"`
-	OwnerTokenFile string `json:"ownerTokenFile"`
-	LoginsFile     string `json:"loginsFile"`
-	Listen         string `json:"listen"`
+	Mode          string `json:"mode,omitempty"`
+	Origin        string `json:"origin"`
+	PreviewSuffix string `json:"previewSuffix"`
+	ClientID      string `json:"clientID"`
+	OwnerEmails   string `json:"ownerEmails"`
+	DemoDomains   string `json:"demoDomains"`
+	// Upstream is the chat: http://127.0.0.1:<port>, or tls://<host>:<port>
+	// dialed with UpstreamTLS. UpstreamHost is the Host header the chat
+	// expects (its listen host:port, or the host of its tls:// address).
+	Upstream       string         `json:"upstream"`
+	UpstreamHost   string         `json:"upstreamHost"`
+	UpstreamTLS    *transport.TLS `json:"upstreamTLS,omitempty"`
+	OwnerTokenFile string         `json:"ownerTokenFile"`
+	LoginsFile     string         `json:"loginsFile"`
+	Listen         string         `json:"listen"`
 }
 type previewSession struct {
 	Parent, Binding string
@@ -87,6 +97,7 @@ type Server struct {
 	previewPort string // port carried by loopback preview hosts; "" in public mode
 	secure      bool   // Secure, __Host- cookies (https only)
 	target      *url.URL
+	upstreamTLS *tls.Config // mutual TLS to a tls:// upstream; nil for loopback http
 	mu          sync.Mutex
 	sessions    map[string]previewSession
 	tickets     map[string]ticket
@@ -111,13 +122,30 @@ func New(c Config) (*Server, error) {
 		return nil, errors.New("canonical Warden origin required")
 	}
 	target, err := url.Parse(c.Upstream)
-	if err != nil || target.Scheme != "http" || target.Hostname() != "127.0.0.1" || target.Port() == "" || target.Path != "" || target.User != nil {
-		return nil, errors.New("private loopback upstream required")
+	if err != nil || target.Port() == "" || target.Path != "" || target.User != nil || target.RawQuery != "" {
+		return nil, errors.New("private loopback or tls:// upstream required")
+	}
+	var upstreamTLS *tls.Config
+	switch {
+	case target.Scheme == "http" && target.Hostname() == "127.0.0.1":
+	case target.Scheme == "tls" && target.Hostname() != "":
+		if c.UpstreamTLS == nil {
+			return nil, errors.New("a tls:// upstream needs the edge's TLS material")
+		}
+		if upstreamTLS, err = transport.ClientConfig(c.UpstreamTLS, target.Hostname()); err != nil {
+			return nil, err
+		}
+		target = &url.URL{Scheme: "https", Host: target.Host}
+	default:
+		return nil, errors.New("private loopback or tls:// upstream required")
 	}
 	if c.UpstreamHost == "" || strings.ContainsAny(c.PreviewSuffix, "/:@?#*") {
 		return nil, errors.New("upstream host and preview suffix required")
 	}
-	s := &Server{Config: c, host: origin.Host, scheme: origin.Scheme, secure: origin.Scheme == "https", target: target, sessions: map[string]previewSession{}, tickets: map[string]ticket{}, bindings: map[string]bool{}, Client: &http.Client{Timeout: 5 * time.Second}}
+	s := &Server{Config: c, host: origin.Host, scheme: origin.Scheme, secure: origin.Scheme == "https", target: target, upstreamTLS: upstreamTLS, sessions: map[string]previewSession{}, tickets: map[string]ticket{}, bindings: map[string]bool{}, Client: &http.Client{Timeout: 5 * time.Second}}
+	if upstreamTLS != nil {
+		s.Client.Transport = &http.Transport{Proxy: nil, TLSClientConfig: upstreamTLS}
+	}
 	mode := c.Mode
 	if mode == "" {
 		mode = ModeGoogle
@@ -203,17 +231,28 @@ func (s *Server) token() (string, error) {
 	}
 	return value, nil
 }
+
+// credential is the bearer the chat admits on the loopback shape; over
+// mutual TLS the edge's certificate is the credential and none is sent.
+func (s *Server) credential() (string, error) {
+	if s.upstreamTLS != nil {
+		return "", nil
+	}
+	return s.token()
+}
 func (s *Server) Refresh(ctx context.Context) error {
-	token, err := s.token()
+	token, err := s.credential()
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", s.Config.Upstream+"/api/ports", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", s.target.String()+"/api/ports", nil)
 	if err != nil {
 		return err
 	}
 	req.Host = s.Config.UpstreamHost
-	req.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	res, err := s.Client.Do(req)
 	if err != nil {
 		return err
@@ -539,7 +578,7 @@ func (s *Server) preview(id string, w http.ResponseWriter, r *http.Request) {
 	s.proxy(id, w, r.WithContext(ctx))
 }
 func (s *Server) proxy(binding string, w http.ResponseWriter, r *http.Request) {
-	token, err := s.token()
+	token, err := s.credential()
 	if err != nil {
 		http.Error(w, "Warden host unavailable", 503)
 		return
@@ -573,13 +612,16 @@ func (s *Server) proxy(binding string, w http.ResponseWriter, r *http.Request) {
 		req.Header.Del("X-Forwarded-Host")
 		req.Header.Del("X-Forwarded-Proto")
 		req.Header.Del("X-Warden-CSRF")
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Del("Authorization")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		if req.Header.Get("Origin") != "" {
-			req.Header.Set("Origin", "http://"+s.Config.UpstreamHost)
+			req.Header.Set("Origin", s.target.Scheme+"://"+s.Config.UpstreamHost)
 		}
 	}
 	proxy.FlushInterval = -1
-	proxy.Transport = &http.Transport{Proxy: nil, ResponseHeaderTimeout: 30 * time.Second}
+	proxy.Transport = &http.Transport{Proxy: nil, ResponseHeaderTimeout: 30 * time.Second, TLSClientConfig: s.upstreamTLS}
 	proxy.ModifyResponse = func(res *http.Response) error {
 		res.Header.Del("Set-Cookie")
 		res.Header.Del("Content-Security-Policy")

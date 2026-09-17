@@ -238,7 +238,7 @@ func TestWorkerAnswersTheVersionHandshake(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); w.Serve(ctx, l) }()
 	defer func() { cancel(); l.Close(); <-done }()
-	peer, err := handshake.Runner(ctx, socket)
+	peer, err := handshake.Runner(ctx, "unix://"+socket, nil)
 	if err != nil || peer.Protocol != release.Protocol || peer.Revision != "built-here" || peer.Name != "warden-runner" {
 		t.Fatalf("%+v %v", peer, err)
 	}

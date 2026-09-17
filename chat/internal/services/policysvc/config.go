@@ -3,10 +3,12 @@ package policysvc
 import (
 	"flag"
 	"os"
+	"path/filepath"
 	"time"
 
 	"warden/chat/internal/config"
 	"warden/chat/internal/policy"
+	"warden/chat/internal/transport"
 )
 
 // settings are the effective values after reconciling the legacy flags with
@@ -16,6 +18,8 @@ import (
 type settings struct {
 	cfg              config.Config
 	state            string // policy state directory (paths.state/policy)
+	listen           string // services.policy.listen (unix://<state>/sbx-control.sock)
+	tls              *transport.TLS
 	sbx              string // sbx.executable
 	codexAuth        string // providers.codex.authFile
 	claudeAuth       string // providers.claude.authFile
@@ -46,6 +50,13 @@ func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
 	o := config.NewOverrides(fs, source)
 	s := settings{cfg: cfg}
 	s.state = config.Override(o, "state", *f.state, "paths.state (policy directory)", cfg.PolicyState())
+	// The listener: the file's services.policy.listen, or, with the legacy
+	// --state flag alone, the socket inside that directory as before.
+	s.listen = cfg.PolicyListen()
+	if !o.FromFile() {
+		s.listen = "unix://" + filepath.Join(s.state, "sbx-control.sock")
+	}
+	s.tls = cfg.TransportTLS()
 	s.sbx = config.Override(o, "sbx", *f.sbx, "sbx.executable", cfg.SBX.Executable)
 	s.vendorDir = config.Override(o, "vendor-dir", *f.vendorDir, "paths.githubCatalog", cfg.Paths.GitHubCatalog)
 	if s.vendorDir == "" {

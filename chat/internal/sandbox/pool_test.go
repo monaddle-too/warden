@@ -3,24 +3,18 @@ package sandbox
 import (
 	"bufio"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
 	"io"
-	"math/big"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 	"warden/chat/internal/hoststats"
+	"warden/chat/internal/transport"
 )
 
 func poolFixture(t *testing.T) (*Pool, *Client) {
@@ -44,7 +38,7 @@ func poolFixture(t *testing.T) (*Pool, *Client) {
 		if id == "mac" {
 			capacity = 1
 		}
-		p.config.Nodes = append(p.config.Nodes, PoolNode{ID: id, Name: id, Capacity: capacity, Socket: socket, client: &Client{Socket: socket, Legacy: true}})
+		p.config.Nodes = append(p.config.Nodes, PoolNode{ID: id, Name: id, Capacity: capacity, Socket: socket, client: &Client{Address: "unix://" + socket, Legacy: true}})
 		go func() {
 			for {
 				c, err := l.Accept()
@@ -84,7 +78,7 @@ func poolFixture(t *testing.T) (*Pool, *Client) {
 		t.Fatal(err)
 	}
 	go p.Serve(ctx, l)
-	return p, &Client{Socket: socket, Pool: true}
+	return p, &Client{Address: "unix://" + socket, Pool: true}
 }
 func leaseTest(t *testing.T, c *Client, id string, fresh bool) (io.ReadWriteCloser, Response) {
 	t.Helper()
@@ -163,7 +157,7 @@ func TestPoolConcurrentLeaseAndCrossRunnerTransfer(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			conn, r, err := c.Open(context.Background(), Request{Operation: "lease", ProjectID: "project", SessionID: "task-" + big.NewInt(int64(i)).String(), NewSession: true})
+			conn, r, err := c.Open(context.Background(), Request{Operation: "lease", ProjectID: "project", SessionID: "task-" + strconv.Itoa(i), NewSession: true})
 			if err != nil {
 				t.Error(err)
 				return
@@ -205,23 +199,19 @@ func TestPoolConcurrentLeaseAndCrossRunnerTransfer(t *testing.T) {
 }
 func TestRemoteWorkerRequiresMutualTLS(t *testing.T) {
 	root := t.TempDir()
-	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	ca := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test CA"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
-	der, _ := x509.CreateCertificate(rand.Reader, ca, ca, &key.PublicKey, key)
-	os.WriteFile(filepath.Join(root, "ca"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0600)
-	for i, name := range []string{"server", "client"} {
-		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		cert := &x509.Certificate{SerialNumber: big.NewInt(int64(i + 2)), DNSNames: []string{name}, NotBefore: ca.NotBefore, NotAfter: ca.NotAfter, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}}
-		der, _ := x509.CreateCertificate(rand.Reader, cert, ca, &k.PublicKey, key)
-		kd, _ := x509.MarshalECPrivateKey(k)
-		os.WriteFile(filepath.Join(root, name+".crt"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0600)
-		os.WriteFile(filepath.Join(root, name+".key"), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kd}), 0600)
-	}
-	server, err := ServerTLS(filepath.Join(root, "ca"), filepath.Join(root, "server.crt"), filepath.Join(root, "server.key"))
+	ca, err := transport.NewCA("test", time.Now(), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := tls.Listen("tcp", "127.0.0.1:0", server)
+	server, err := ca.Material(filepath.Join(root, "server"), transport.Runner, []string{"127.0.0.1"}, time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := ca.Material(filepath.Join(root, "client"), transport.Chat, nil, time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := transport.Listen("tls://127.0.0.1:0", transport.ListenOptions{TLS: server, Peers: []string{transport.Chat}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +224,7 @@ func TestRemoteWorkerRequiresMutualTLS(t *testing.T) {
 			}
 			go func() {
 				defer c.Close()
+				_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 				var r Request
 				if json.NewDecoder(c).Decode(&r) == nil {
 					json.NewEncoder(c).Encode(Response{Output: "ok"})
@@ -241,27 +232,36 @@ func TestRemoteWorkerRequiresMutualTLS(t *testing.T) {
 			}()
 		}
 	}()
-	config, err := ClientTLS(filepath.Join(root, "ca"), filepath.Join(root, "client.crt"), filepath.Join(root, "client.key"), "server")
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := &Client{Address: l.Addr().String(), TLS: config, Legacy: true}
+	address := "tls://" + l.Addr().String()
+	c := &Client{Address: address, TLS: client, Legacy: true}
 	if _, err = c.Call(context.Background(), Request{Operation: "health"}); err != nil {
 		t.Fatal(err)
 	}
-	c.TLS = config.Clone()
-	c.TLS.Certificates = nil
-	if _, err = c.Call(context.Background(), Request{Operation: "health"}); err == nil {
-		t.Fatal("anonymous client accepted")
+	// Another identity from the same CA is not admitted by the runner.
+	other, err := ca.Material(filepath.Join(root, "other"), transport.Edge, nil, time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
 	}
-	c.TLS = config.Clone()
-	c.TLS.ServerName = "wrong"
+	c.TLS = other
+	if _, err = c.Call(context.Background(), Request{Operation: "health"}); err == nil {
+		t.Fatal("unadmitted identity accepted")
+	}
+	wrong := *client
+	wrong.ServerName = "wrong"
+	c.TLS = &wrong
 	if _, err = c.Call(context.Background(), Request{Operation: "health"}); err == nil {
 		t.Fatal("wrong server accepted")
 	}
 	c.TLS = nil
 	if _, err = c.Call(context.Background(), Request{Operation: "health"}); err == nil {
 		t.Fatal("plaintext accepted")
+	}
+	// The pool builds the same client from its node configuration.
+	if _, err = NewPool(PoolConfig{Local: "mac", Routes: filepath.Join(root, "routes.json"), Nodes: []PoolNode{{ID: "mac", Name: "mac", Capacity: 1, Socket: filepath.Join(root, "mac.sock")}, {ID: "vm", Name: "vm", Capacity: 1, Address: l.Addr().String(), ServerName: transport.Runner, CA: client.CAFile, Certificate: client.CertFile, Key: client.KeyFile}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = NewPool(PoolConfig{Local: "mac", Routes: filepath.Join(root, "routes.json"), Nodes: []PoolNode{{ID: "mac", Name: "mac", Capacity: 1, Socket: filepath.Join(root, "mac.sock")}, {ID: "vm", Name: "vm", Capacity: 1, Address: l.Addr().String(), CA: client.CAFile, Certificate: client.CertFile, Key: client.KeyFile}}}); err == nil {
+		t.Fatal("remote node without a server name accepted")
 	}
 }
 

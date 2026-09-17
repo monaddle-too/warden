@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +15,7 @@ import (
 	"sync"
 	"time"
 	"warden/chat/internal/hoststats"
+	"warden/chat/internal/transport"
 )
 
 type WorkerStatus struct {
@@ -73,21 +72,24 @@ func NewPool(config PoolConfig) (*Pool, error) {
 			return nil, errors.New("invalid runner configuration")
 		}
 		ids[n.ID] = true
-		n.client = &Client{Socket: n.Socket, Legacy: true}
 		if n.ID == config.Local {
 			if !filepath.IsAbs(n.Socket) || n.Address != "" {
 				return nil, errors.New("local runner requires a Unix socket")
 			}
+			n.client = &Client{Address: "unix://" + n.Socket, Legacy: true}
 		} else {
 			host, _, err := net.SplitHostPort(n.Address)
 			if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() || n.Socket != "" {
 				return nil, errors.New("remote runner must use a loopback tunnel")
 			}
-			config, err := ClientTLS(n.CA, n.Certificate, n.Key, n.ServerName)
-			if err != nil {
+			if n.ServerName == "" {
+				return nil, errors.New("runner TLS server name required")
+			}
+			material := &transport.TLS{CAFile: n.CA, CertFile: n.Certificate, KeyFile: n.Key, ServerName: n.ServerName}
+			if _, err = transport.ClientConfig(material, n.ServerName); err != nil {
 				return nil, err
 			}
-			n.client = &Client{Address: n.Address, TLS: config, Legacy: true}
+			n.client = &Client{Address: "tls://" + n.Address, TLS: material, Legacy: true}
 		}
 	}
 	if !ids[config.Local] || !filepath.IsAbs(config.Routes) {
@@ -106,43 +108,6 @@ func NewPool(config PoolConfig) (*Pool, error) {
 		}
 	}
 	return p, nil
-}
-
-func ClientTLS(ca, certificate, key, name string) (*tls.Config, error) {
-	if name == "" {
-		return nil, errors.New("runner TLS server name required")
-	}
-	pool, err := readCA(ca)
-	if err != nil {
-		return nil, err
-	}
-	pair, err := tls.LoadX509KeyPair(certificate, key)
-	if err != nil {
-		return nil, err
-	}
-	return &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: pool, ServerName: name, Certificates: []tls.Certificate{pair}}, nil
-}
-func ServerTLS(ca, certificate, key string) (*tls.Config, error) {
-	pool, err := readCA(ca)
-	if err != nil {
-		return nil, err
-	}
-	pair, err := tls.LoadX509KeyPair(certificate, key)
-	if err != nil {
-		return nil, err
-	}
-	return &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool, Certificates: []tls.Certificate{pair}}, nil
-}
-func readCA(path string) (*x509.CertPool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(data) {
-		return nil, errors.New("invalid runner CA")
-	}
-	return pool, nil
 }
 
 func (p *Pool) node(id string) *PoolNode {
