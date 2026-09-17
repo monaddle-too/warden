@@ -39,9 +39,13 @@ type docProposal struct {
 	RebasedFrom string `json:"rebased_from,omitempty"`
 }
 
-// docComment is an owner note anchored to a draft paragraph.
+// docComment is an owner note anchored to a draft paragraph, optionally
+// to a range of its plain text (offsets in runes) with the quoted words.
 type docComment struct {
 	Paragraph int    `json:"paragraph"`
+	From      int    `json:"from,omitempty"`
+	To        int    `json:"to,omitempty"`
+	Quote     string `json:"quote,omitempty"`
 	Text      string `json:"text"`
 }
 
@@ -115,9 +119,50 @@ func (d *DocumentProposals) result(r *docRow, preview bool) map[string]any {
 }
 
 // reviewView is what the owner reviews: the current hunks of
-// diff(base, draft) with the agent's reasons, and the proposal's hunks the
-// draft no longer contains, each marked whether it can still be accepted.
+// diff(base, draft) with the agent's reasons, the proposal's hunks the
+// draft no longer contains (each marked whether it can still be accepted),
+// and the page: a Tiptap document with the changes as suggestions plus one
+// card per change.
 func reviewView(proposal docProposal, draft docDraft) map[string]any {
+	current := currentHunks(proposal, draft)
+	// A suggestion counts as taken while the draft still changes the
+	// paragraphs it touched, even if the owner edited it further; only
+	// one whose paragraphs read as the document does is rejected.
+	applied := map[int]bool{}
+	for _, c := range current {
+		for _, h := range proposal.Hunks {
+			if rangesMeet(c.From, c.To, h.From, h.To) {
+				applied[h.ID] = true
+			}
+		}
+	}
+	document, cards := suggestionDocument(proposal.Base, draft.Paragraphs, current)
+	rejected := []map[string]any{}
+	for _, h := range proposal.Hunks {
+		if applied[h.ID] {
+			continue
+		}
+		_, _, ok := mapBaseRange(current, h.From, h.To)
+		rejected = append(rejected, map[string]any{"hunk": h, "acceptable": ok})
+		var deleted, inserted []string
+		for _, p := range h.Removed {
+			deleted = append(deleted, plainInline(p.Text))
+		}
+		for _, p := range h.Added {
+			inserted = append(inserted, plainInline(p.Text))
+		}
+		kind, summary := summarize(deleted, inserted, "")
+		reasons := h.Reasons
+		if reasons == nil {
+			reasons = []string{}
+		}
+		cards = append(cards, suggestionCard{ID: -h.ID, Kind: kind, Summary: summary, Reasons: reasons, Status: "rejected", Acceptable: ok, Hunk: h.ID})
+	}
+	return map[string]any{"hunks": current, "rejected": rejected, "document": document, "suggestions": cards, "comments": draft.Comments}
+}
+
+// currentHunks diffs base and draft and binds the proposal's reasons.
+func currentHunks(proposal docProposal, draft docDraft) []DocHunk {
 	current := documentHunks(proposal.Base, draft.Paragraphs)
 	var ops []DocOp
 	for _, h := range proposal.Hunks {
@@ -126,23 +171,7 @@ func reviewView(proposal docProposal, draft docDraft) map[string]any {
 		}
 	}
 	bindReasons(current, ops)
-	applied := map[int]bool{}
-	for _, c := range current {
-		for _, h := range proposal.Hunks {
-			if c.From == h.From && c.To == h.To && sameDocument(c.Added, h.Added) {
-				applied[h.ID] = true
-			}
-		}
-	}
-	rejected := []map[string]any{}
-	for _, h := range proposal.Hunks {
-		if applied[h.ID] {
-			continue
-		}
-		_, _, ok := mapBaseRange(current, h.From, h.To)
-		rejected = append(rejected, map[string]any{"hunk": h, "acceptable": ok})
-	}
-	return map[string]any{"hunks": current, "rejected": rejected}
+	return current
 }
 
 // mapBaseRange finds where base positions [from, to) sit in the draft,
@@ -436,7 +465,20 @@ func (d *DocumentProposals) Dispatch(op string, data map[string]any) (map[string
 	proposal, draft, outcome := r.parts()
 	switch op {
 	case "doc_draft":
-		paragraphs, err := decodeDraft(data["paragraphs"], proposal.Base)
+		// The page posts the edited Tiptap document; the older paragraph
+		// list is still accepted.
+		var paragraphs []DocParagraph
+		if document, present := data["document"]; present {
+			var frozen []DocParagraph
+			for _, p := range proposal.Base {
+				if p.Frozen != "" {
+					frozen = append(frozen, p)
+				}
+			}
+			paragraphs, err = docToCanonical(document, frozen)
+		} else {
+			paragraphs, err = decodeDraft(data["paragraphs"], proposal.Base)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -452,12 +494,24 @@ func (d *DocumentProposals) Dispatch(op string, data map[string]any) (map[string
 			}
 		}
 	case "doc_decide":
-		hunkID, ok := asInt(data["hunk"])
+		// hunk names one of the proposal's suggestions (accept restores a
+		// rejected one); change names a current change of the draft, which
+		// reject puts back to the base text.
 		accept, isBool := data["accept"].(bool)
-		if !ok || !isBool {
+		if !isBool {
 			return nil, errors.New("invalid decision")
 		}
-		if err = decide(proposal, &draft, int(hunkID), accept); err != nil {
+		if changeID, ok := asInt(data["change"]); ok {
+			if accept {
+				return nil, errors.New("a current change is already in the draft")
+			}
+			err = revert(proposal, &draft, int(changeID))
+		} else if hunkID, ok := asInt(data["hunk"]); ok {
+			err = decide(proposal, &draft, int(hunkID), accept)
+		} else {
+			return nil, errors.New("invalid decision")
+		}
+		if err != nil {
 			return nil, err
 		}
 	case "doc_resolve", "doc_return":
@@ -487,9 +541,32 @@ func decodeComments(raw any, paragraphs int) ([]docComment, error) {
 		if !ok || err != nil || n < 0 || int(n) > paragraphs {
 			return nil, valueErr("each comment needs a paragraph number and text")
 		}
-		out = append(out, docComment{Paragraph: int(n), Text: strings.TrimSpace(text)})
+		c := docComment{Paragraph: int(n), Text: strings.TrimSpace(text)}
+		from, _ := asInt(fields["from"])
+		to, _ := asInt(fields["to"])
+		if from < 0 || to < from || to > docParagraphLimit {
+			return nil, valueErr("comment range is invalid")
+		}
+		c.From, c.To = int(from), int(to)
+		if quote, present := fields["quote"]; present {
+			if c.Quote, err = proposalText(quote, 500, true); err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, c)
 	}
 	return out, nil
+}
+
+// revert puts the base paragraphs back behind one current change.
+func revert(proposal docProposal, draft *docDraft, changeID int) error {
+	for _, c := range currentHunks(proposal, *draft) {
+		if c.ID == changeID {
+			replaceDraft(draft, c.AfterFrom, c.AfterTo, proposal.Base[c.From:c.To])
+			return nil
+		}
+	}
+	return errors.New("unknown change")
 }
 
 // decide applies or reverts one of the proposal's hunks in the draft.

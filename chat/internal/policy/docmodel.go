@@ -33,8 +33,11 @@ type DocParagraph struct {
 	Depth  int    `json:"depth,omitempty"`
 	Text   string `json:"text"`
 	Frozen string `json:"frozen,omitempty"`
-	Start  int    `json:"-"`
-	End    int    `json:"-"`
+	// Cells is a frozen table's cell text, row by row, so a review can show
+	// the table read-only; it is never part of the paragraph's identity.
+	Cells [][]string `json:"cells,omitempty"`
+	Start int        `json:"-"`
+	End   int        `json:"-"`
 	// named is the underlying namedStyleType of a projected list item and
 	// endsWithLink whether its last run is a link: what inserted text would
 	// inherit from it.
@@ -110,6 +113,7 @@ func ProjectDocument(doc map[string]any) (*DocProjection, error) {
 			rows, _ := asInt(table["rows"])
 			columns, _ := asInt(table["columns"])
 			p.Frozen, p.Text = "table", "[table "+strconv.FormatInt(rows, 10)+"×"+strconv.FormatInt(columns, 10)+"]"
+			p.Cells = tableCells(table)
 		case element["tableOfContents"] != nil:
 			p.Frozen, p.Text = "table of contents", "[table of contents]"
 		case element["sectionBreak"] != nil:
@@ -213,6 +217,42 @@ func projectParagraph(p *DocParagraph, paragraph map[string]any, lists map[strin
 		return
 	}
 	p.Text = renderInline(runs)
+}
+
+// tableCells reads a table's cell text (paragraph text runs only, one line
+// per paragraph) for read-only display; anything else in a cell is dropped.
+func tableCells(table map[string]any) [][]string {
+	var out [][]string
+	rows, _ := table["tableRows"].([]any)
+	for _, rawRow := range rows {
+		row, _ := rawRow.(map[string]any)
+		cells, _ := row["tableCells"].([]any)
+		var texts []string
+		for _, rawCell := range cells {
+			cell, _ := rawCell.(map[string]any)
+			content, _ := cell["content"].([]any)
+			var lines []string
+			for _, rawElement := range content {
+				element, _ := rawElement.(map[string]any)
+				paragraph, _ := element["paragraph"].(map[string]any)
+				if paragraph == nil {
+					continue
+				}
+				var b strings.Builder
+				elements, _ := paragraph["elements"].([]any)
+				for _, rawPart := range elements {
+					part, _ := rawPart.(map[string]any)
+					run, _ := part["textRun"].(map[string]any)
+					text, _ := run["content"].(string)
+					b.WriteString(text)
+				}
+				lines = append(lines, strings.TrimSuffix(b.String(), "\n"))
+			}
+			texts = append(texts, strings.Join(lines, "\n"))
+		}
+		out = append(out, texts)
+	}
+	return out
 }
 
 // docListNumbered reports whether a list level renders numbers rather than
@@ -585,6 +625,7 @@ func decodeDraft(raw any, base []DocParagraph) ([]DocParagraph, error) {
 			if seen >= len(frozen) || frozen[seen].key() != p.key() {
 				return nil, valueErr("frozen paragraphs must stay as the document has them")
 			}
+			p = frozen[seen] // keeps what the base knows (table cells)
 			seen++
 		} else if err := validateParagraph(&p); err != nil {
 			return nil, err

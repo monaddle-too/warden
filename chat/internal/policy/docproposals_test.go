@@ -132,8 +132,8 @@ func TestProposalIsReviewedAsSuggestionsAndWrittenOnApproval(t *testing.T) {
 	if got := hunkTexts(view["hunks"]); got[0] != "Say **hello** to the world→Say **hi** to the *whole* world [shorter]" {
 		t.Fatalf("after edit: %v", got)
 	}
-	if rejected := view["rejected"].([]map[string]any); len(rejected) != 1 || rejected[0]["acceptable"] != false {
-		t.Fatalf("hand-edited suggestion must not be re-acceptable: %v", rejected)
+	if rejected := view["rejected"].([]map[string]any); len(rejected) != 0 {
+		t.Fatalf("a hand-edited suggestion is still taken, not rejected: %v", rejected)
 	}
 	// Approval writes exactly diff(base, draft) against the read revision.
 	if r := f.dispatch("doc_resolve", map[string]any{"id": id, "allow": true, "actor": "owner"}); r["status"] != "applying" {
