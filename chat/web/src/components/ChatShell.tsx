@@ -11,6 +11,7 @@ import {
   Archive,
   ArchiveRestore,
   Box,
+  Download,
   FileText,
   GitPullRequest,
   MoreHorizontal,
@@ -24,6 +25,7 @@ import {
 } from "lucide-react";
 import type { Environment, State } from "../types";
 import { api, signedIn, subscribe } from "../api";
+import { providerName } from "../export";
 import {
   PullRequestReview,
   type PullRequestReviewHandle,
@@ -43,9 +45,8 @@ import { Conversation, type RequestCard } from "./Conversation";
 import { ModelSelect } from "./ModelSelect";
 import { AdminConsole } from "./AdminConsole";
 import { WorkspacePanel } from "./WorkspacePanel";
+import { ExportDialog } from "./ExportDialog";
 
-const providerName = (provider?: string) =>
-  provider === "claude" ? "Claude" : "Codex";
 const plural = (n: number, one: string, many = one + "s") =>
   `${n} ${n === 1 ? one : many}`;
 
@@ -80,6 +81,7 @@ export function ChatShell({
   const [busy, setBusy] = useState(false);
   const [workspaceState, setWorkspaceState] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [previewCount, setPreviewCount] = useState(0);
   const [workspaces, setWorkspaces] = useState<Environment[]>([]);
   const [workspaceOpen, setWorkspaceOpen] = useState(
@@ -544,6 +546,16 @@ export function ChatShell({
                   </button>
                   <button
                     role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setExporting(true);
+                    }}
+                  >
+                    <Download size={15} />
+                    Export…
+                  </button>
+                  <button
+                    role="menuitem"
                     disabled={chatBusy}
                     onClick={() => {
                       setMenuOpen(false);
@@ -588,6 +600,13 @@ export function ChatShell({
               <p className="error" role="alert">
                 {error}
               </p>
+            )}
+            {exporting && (
+              <ExportDialog
+                key={chat.id + "export"}
+                chat={chat}
+                onClose={() => setExporting(false)}
+              />
             )}
             <div className="warden-chat-content">
               <Conversation

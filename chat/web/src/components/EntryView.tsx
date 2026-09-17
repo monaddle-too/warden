@@ -1,8 +1,10 @@
 // Adapted from Panta Conversation.tsx at bf61d5b; presentation retained, app dependencies removed.
-import { memo, useMemo } from "react";
+import { memo, useCallback, useMemo } from "react";
 import {
   Bot,
+  Check,
   ChevronRight,
+  Copy,
   FileText,
   LoaderCircle,
   Pencil,
@@ -10,11 +12,13 @@ import {
   User,
 } from "lucide-react";
 import { hasDiff, parseDiff } from "../diff";
+import { senderLabel } from "../export";
 import type { Entry } from "../types";
 import { EntryAttachments } from "./Attachments";
 import { DiffView } from "./DiffView";
 import { ImageAttachment } from "./ImageAttachment";
 import { RichText } from "./RichText";
+import { useCopy } from "./useCopy";
 const time = (v: number) =>
   new Date(v * 1000).toLocaleTimeString([], {
     hour: "2-digit",
@@ -74,20 +78,13 @@ export const ActivityGroup = memo(function ActivityGroup({
     </details>
   );
 });
-// Who wrote a user entry: their Google name, else their email, else the
-// owner ("You" on a local install, where the owner is the only person).
-export function senderLabel(sender?: Entry["sender"]) {
-  if (!sender) return "You";
-  if (sender.name) return sender.name;
-  if (sender.email) return sender.email;
-  return sender.principalID === "owner" ? "You" : "Collaborator";
-}
-
-/* Retry and edit for a message the owner sent. Shown on hover or focus
-   (always when the message failed to deliver, since retrying is the fix);
-   `enabled` is false while a send would be refused, so the buttons still
-   show what is possible instead of failing in the composer. */
-function UserActions({
+/* Under every message: copy its markdown source, and for one the owner
+   sent, retry and edit. Shown on hover or focus (always when the message
+   failed to deliver, since retrying is the fix); `enabled` is false while a
+   send would be refused, so the buttons still show what is possible instead
+   of failing in the composer. Copy waits for a streaming message to finish,
+   so the clipboard never holds half a message. */
+function MessageActions({
   entry,
   enabled,
   onEdit,
@@ -95,9 +92,10 @@ function UserActions({
 }: {
   entry: Entry;
   enabled: boolean;
-  onEdit: (entry: Entry) => void;
-  onRetry: (entry: Entry) => void;
+  onEdit?: (entry: Entry) => void;
+  onRetry?: (entry: Entry) => void;
 }) {
+  const { copied, copy } = useCopy(useCallback(() => entry.text, [entry.text]));
   return (
     <div
       className={`message-actions${entry.delivery === "failed" ? " shown" : ""}`}
@@ -107,27 +105,41 @@ function UserActions({
       <button
         type="button"
         className="ghost icon"
-        aria-label="Edit and resend"
-        title="Edit and resend"
-        disabled={!enabled}
-        onClick={() => onEdit(entry)}
+        aria-label={copied ? "Copied" : "Copy as markdown"}
+        title="Copy as markdown"
+        disabled={entry.isStreaming || !entry.text}
+        onClick={copy}
       >
-        <Pencil size={14} />
+        {copied ? <Check size={14} /> : <Copy size={14} />}
       </button>
-      <button
-        type="button"
-        className="ghost icon"
-        aria-label="Retry"
-        title={
-          entry.delivery === "failed"
-            ? "Send this message again"
-            : "Send this message again as a new message"
-        }
-        disabled={!enabled}
-        onClick={() => onRetry(entry)}
-      >
-        <RotateCcw size={14} />
-      </button>
+      {onEdit && (
+        <button
+          type="button"
+          className="ghost icon"
+          aria-label="Edit and resend"
+          title="Edit and resend"
+          disabled={!enabled}
+          onClick={() => onEdit(entry)}
+        >
+          <Pencil size={14} />
+        </button>
+      )}
+      {onRetry && (
+        <button
+          type="button"
+          className="ghost icon"
+          aria-label="Retry"
+          title={
+            entry.delivery === "failed"
+              ? "Send this message again"
+              : "Send this message again as a new message"
+          }
+          disabled={!enabled}
+          onClick={() => onRetry(entry)}
+        >
+          <RotateCcw size={14} />
+        </button>
+      )}
     </div>
   );
 }
@@ -196,14 +208,12 @@ export const EntryView = memo(function EntryView({
             <EntryAttachments chatID={chatID} attachments={entry.attachments} />
           )}
         </div>
-        {onEdit && onRetry && (
-          <UserActions
-            entry={entry}
-            enabled={actions}
-            onEdit={onEdit}
-            onRetry={onRetry}
-          />
-        )}
+        <MessageActions
+          entry={entry}
+          enabled={actions}
+          onEdit={onEdit}
+          onRetry={onRetry}
+        />
       </article>
     );
   return (
@@ -220,6 +230,7 @@ export const EntryView = memo(function EntryView({
           entryID={entry.id}
           onFile={onFile}
         />
+        <MessageActions entry={entry} enabled={false} />
       </div>
     </article>
   );

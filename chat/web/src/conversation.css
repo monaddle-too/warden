@@ -82,9 +82,11 @@
   border-radius: 14px 14px 4px 14px;
   background: var(--bubble);
 }
-/* Retry and edit under a sent message: hidden until the message is
-   hovered or one of the buttons has focus, always shown when delivery
-   failed, and always on a touch screen, which has no hover. */
+/* Copy, retry and edit under a message: hidden until the message is
+   hovered or one of its buttons has focus, always shown when delivery
+   failed, and always on a touch screen, which has no hover. Under an
+   agent message the bar keeps its height so the transcript does not shift
+   as the pointer moves. */
 .message-actions {
   display: flex;
   gap: 2px;
@@ -96,8 +98,11 @@
   width: 28px;
   height: 28px;
 }
-.message-user:hover .message-actions,
-.message-user:focus-within .message-actions,
+.message-assistant .message-actions {
+  margin: 2px 0 0 -6px;
+}
+.message:hover .message-actions,
+.message:focus-within .message-actions,
 .message-actions.shown {
   opacity: 1;
 }

@@ -164,7 +164,8 @@ select {
   background-repeat: no-repeat;
   background-position: right 8px center;
 }
-input[type="checkbox"] {
+input[type="checkbox"],
+input[type="radio"] {
   width: 16px;
   height: 16px;
   min-height: 0;

@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Check,
   ChevronsDownUp,
@@ -19,6 +25,7 @@ import { fenceDiff, isDiffFence } from "../diff";
 import { isMermaidFence } from "../mermaid";
 import { DiffView } from "./DiffView";
 import { MermaidDiagram, useMermaid } from "./Mermaid";
+import { useCopy } from "./useCopy";
 
 /* A fenced block from the transcript: language label, copy, wrap toggle and
    a collapse for long output. `children` is the <code> react-markdown already
@@ -42,10 +49,8 @@ export function CodeBlock({
   const lines = lineCount(text);
   const [wrap, setWrap] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [source, setSource] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(() => () => clearTimeout(timer.current), []);
+  const { copied, copy } = useCopy(useCallback(() => text, [text]));
   // An open fence may still grow, so the diagram waits for the final text;
   // the source stays visible until it renders.
   const diagram = useMermaid(text, isMermaidFence(language) && !open);
@@ -64,18 +69,6 @@ export function CodeBlock({
   useEffect(() => {
     if (open && lines > COLLAPSE_LINES) setExpanded(true);
   }, [open, lines]);
-  const copy = () => {
-    // The clipboard is unavailable outside secure contexts; the button then
-    // simply stays "Copy" and the user selects the text by hand.
-    void navigator.clipboard?.writeText(text).then(
-      () => {
-        setCopied(true);
-        clearTimeout(timer.current);
-        timer.current = setTimeout(() => setCopied(false), 1500);
-      },
-      () => {},
-    );
-  };
   return (
     <div
       className={`code-block${wrap ? " wrap" : ""}${collapsed ? " collapsed" : ""}`}

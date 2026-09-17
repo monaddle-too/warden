@@ -282,6 +282,43 @@
   border-top: 1px solid var(--line);
   margin: 6px 0;
 }
+/* The export dialog: format radios and the activity checkbox as rows. */
+.export-format {
+  border: 0;
+  padding: 0;
+  margin: 14px 0 0;
+  min-width: 0;
+}
+.export-format legend {
+  padding: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.export-option {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 10px 0;
+  color: var(--text);
+  cursor: pointer;
+}
+.export-option input {
+  margin-top: 2px;
+}
+.export-option span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.export-option small {
+  font-weight: 400;
+  color: var(--muted);
+}
+.export-option:has(input:disabled) {
+  color: var(--muted);
+  cursor: default;
+}
 
 .chat-main > .error {
   margin: 12px 24px 0;

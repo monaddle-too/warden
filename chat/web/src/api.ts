@@ -1,3 +1,4 @@
+import { saveFile } from "./export";
 import type { Attachment, State } from "./types";
 const key = "warden-chat-session";
 let token = "";
@@ -157,12 +158,7 @@ export async function downloadFile(chatID: string, path: string) {
     { headers: { Authorization: "Bearer " + token } },
   );
   if (!response.ok) throw new Error(await response.text());
-  const url = URL.createObjectURL(await response.blob());
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = path.split("/").pop() || "download";
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  saveFile(path.split("/").pop() || "download", await response.blob());
 }
 
 export async function imageBlob(chatID: string, id: string): Promise<Blob> {
