@@ -75,6 +75,10 @@ const SCROLL_KEYS = new Set([
   "End",
   " ",
 ]);
+/* Whether a key pressed here goes into text rather than to the page. */
+const editable = (target: EventTarget | null) =>
+  target instanceof HTMLElement &&
+  (target.isContentEditable || target.matches("input, textarea, select"));
 export function Conversation({
   chat,
   live,
@@ -210,8 +214,14 @@ export function Conversation({
     if (near !== follow.current) setFollow(near, lastID());
   }
   useEffect(() => {
+    // A space or arrow typed into the composer during a jump moves the
+    // caret, not the transcript, so it is not the reader taking over.
     const onKey = (event: KeyboardEvent) => {
-      if (jumping.current && SCROLL_KEYS.has(event.key))
+      if (
+        jumping.current &&
+        SCROLL_KEYS.has(event.key) &&
+        !editable(event.target)
+      )
         jumping.current = false;
     };
     window.addEventListener("keydown", onKey);
@@ -251,11 +261,16 @@ export function Conversation({
       window.removeEventListener("focus", onChange);
     };
   }, []);
+  // The ref, not `away`, decides: the mount layout effect below may stop
+  // following (landing at the divider) in the same commit, and this effect
+  // then runs with the `away` it closed over, still null, before the
+  // re-render that state scheduled. `away` stays a dependency so the mark
+  // advances again once the reader is back at the end.
   const remembered = useRef("");
   useEffect(() => {
     const last = entries[entries.length - 1];
     if (
-      away !== null ||
+      !follow.current ||
       document.visibilityState === "hidden" ||
       !last ||
       remembered.current === last.id
