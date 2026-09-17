@@ -87,6 +87,7 @@ Legacy macOS-VM stack (pre-SBX, still in tree): `warden` (Python launcher),
 | Deployment (OVH compose, Caddy, systemd; local `deploy-local.sh`) | `deploy/chat/*`, `deploy/guest/*` | | | | `deploy/chat/README.md`, [ovh-html-demo-plan](ovh-html-demo-plan.md) |
 | Audit events / SIEM export | `policy/audit.go`, `policy/redact.go`, `policy/retention.go`, `schemas/audit-event.schema.json` | | | | [siem](siem.md) |
 | Untrusted image normalisation | `imageguard/` | | | `imageguard/*_test.go` | |
+| Kubernetes end-to-end suite: chat/preview/stop-resume flows and the adversarial networking rows against a deployed release | driven through the edge HTTP API and `kube.Client` exec | uses the edge API and `pods/exec` | `scripts/k8s-dev.sh test` | `chat/tests/k8s/*_test.go` (build tag `k8s`, needs `WARDEN_K8S_KUBECONFIG`) | [warden-kubernetes-plan](warden-kubernetes-plan.md) § work item 8, [warden-kubernetes.md](warden-kubernetes.md) § Development |
 
 ## API surface at a glance
 
