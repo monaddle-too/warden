@@ -3,6 +3,8 @@ package chats
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +25,10 @@ type sizeWorker struct {
 	current sandbox.Resources
 	ops     []string
 	resized []sandbox.Resources
+	// inPlaceRefused answers the first resize as a live runner whose
+	// cluster could not apply it under the run (GKE Sandbox's gVisor); a
+	// resize after a stop succeeds, as the runner's fallback does.
+	inPlaceRefused bool
 }
 
 func (w *sizeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
@@ -33,6 +39,9 @@ func (w *sizeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 	case "health":
 		return sandbox.Response{Limits: w.limits}, nil
 	case "resize":
+		if w.inPlaceRefused && !slices.Contains(w.ops, "stop") {
+			return sandbox.Response{}, fmt.Errorf("%w: not implemented", sandbox.ErrResizeRestart)
+		}
 		w.resized = append(w.resized, *r.Resources)
 		w.current = *r.Resources
 	}
@@ -224,5 +233,39 @@ func TestResourceGrantLiveAndRestarting(t *testing.T) {
 	}
 	if got := e2.Store.Snapshot().chat(id2).Resources; got == nil || got.MemoryMB != 4096 {
 		t.Fatalf("chat size after the restart: %+v", got)
+	}
+
+	// A live platform whose cluster refuses the in-place resize under the
+	// run (the runner answers ErrResizeRestart): the grant takes the
+	// restarting path, stop then resize then Warden's note.
+	e3, w3 := sizeEngine(t, live)
+	w3.inPlaceRefused = true
+	id3, _ := e3.Create("Agent", "", "", nil)
+	e3.Store.update(func(st *State) error { ch := st.chat(id3); ch.Status = "running"; ch.RunID = "run"; return nil })
+	c3 := e3.Store.Snapshot().chat(id3)
+	if err := e3.requestGrant(c3, nil, agent.Frame{ID: json.RawMessage(`1`), Params: map[string]any{"tool": "request_resources", "arguments": map[string]any{"memory_mb": 4096, "reason": "tests need it"}}}); err != nil {
+		t.Fatal(err)
+	}
+	a3 := e3.Store.Snapshot().chat(c3.ID).Approvals[0]
+	v = e3.resolveGrant(c3, a3, true, cv.Actor{PrincipalID: "owner"}).(map[string]any)
+	if text = agent.String(agent.Map(agent.Array(v["contentItems"])[0])["text"]); v["success"] != true || !strings.Contains(text, "restarts now with 1 CPU · 4 GiB") {
+		t.Fatalf("refused-in-place allow: %v", v)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		ch := e3.Store.Snapshot().chat(id3)
+		entries := ch.Conversation.Entries
+		if n := len(entries); n > 0 && entries[n-1].Sender != nil && entries[n-1].Sender.PrincipalID == "warden" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("chat not resumed after the refused in-place resize: %+v error %q", ch.Status, ch.Error)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	ops, resized = w3.snapshot()
+	joined = strings.Join(ops, " ")
+	if len(resized) != 1 || resized[0].MemoryMB != 4096 || strings.Index(joined, "stop") > strings.LastIndex(joined, "resize") {
+		t.Fatalf("runner ops %v resized %v", ops, resized)
 	}
 }

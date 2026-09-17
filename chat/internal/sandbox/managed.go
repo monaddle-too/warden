@@ -683,7 +683,10 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 		}
 		return w.removeSandboxLocked(ctx, s)
 	case "resize":
-		if s.Active != nil {
+		// A platform that resizes live may do so under a run (that is the
+		// point of a live resize); one that restarts must have the run
+		// stopped first, and so must the live one's fallback.
+		if s.Active != nil && w.Limits.Restart {
 			return Response{}, errors.New("sandbox has an active run")
 		}
 		err = w.resizeLocked(ctx, s, r)
@@ -809,6 +812,8 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 		res.Error = err.Error()
 		if errors.Is(err, ErrBusy) {
 			res.ErrorCode = "busy"
+		} else if errors.Is(err, ErrResizeRestart) {
+			res.ErrorCode = "resize-restart"
 		}
 	}
 	send(res)
@@ -1007,9 +1012,13 @@ func (w *Worker) resizeLocked(ctx context.Context, s *managedSandbox, r Request)
 	restarted, err := w.Runtime.Resize(ctx, s.RuntimeName, resolved)
 	if errors.Is(err, ErrResizeInfeasible) && !w.Limits.Restart {
 		// The platform could not apply it to the running instance (a
-		// memory decrease the kubelet refuses, a node without the room):
-		// the next generation carries the size. resize is refused while a
-		// run is active, so nothing is interrupted.
+		// runtime without in-place resize, as GKE Sandbox's gVisor; a
+		// memory decrease the kubelet refuses; a node without the room):
+		// the next generation carries the size. Under an active run that
+		// is the caller's to arrange, since a stop would interrupt it.
+		if s.Active != nil {
+			return fmt.Errorf("%w (%v)", ErrResizeRestart, err)
+		}
 		log.Printf("sandbox %s: not resized in place (%v); the next start applies %s", s.ID, err, resolved)
 		if err = w.stopLocked(ctx, s); err != nil {
 			return err

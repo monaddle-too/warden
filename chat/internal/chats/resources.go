@@ -68,6 +68,16 @@ func (e *Engine) ResizeEnvironment(ctx context.Context, id string, r *sandbox.Re
 			e.releaseSandbox(ctx, id, "")
 		}
 		if err := e.resizeSandbox(ctx, ran, resolved); err != nil {
+			if errors.Is(err, sandbox.ErrResizeRestart) {
+				// A live platform whose cluster could not do it in place
+				// under the run: the owner stops the chat, and the resize
+				// then replaces the sandbox at the new size.
+				title := ""
+				if c := busy(chats); c != nil {
+					title = " “" + c.Title + "”"
+				}
+				return errors.New("this cluster cannot resize the running sandbox in place; stop the running chat" + title + " first and the workspace restarts at the new size")
+			}
 			return err
 		}
 	}
@@ -163,11 +173,14 @@ func (e *Engine) resourceRequest(c *Chat, cpus float64, memoryMB int, reason str
 }
 
 // resolveResources performs an approved size grant. Live (Kubernetes): the
-// runner resizes the pod and the tool result says so. Restarting (SBX): the
-// tool result tells the agent the sandbox restarts now, and once the
-// answer is delivered the run is stopped, the sandbox regenerated at the
-// new size and the chat resumed with a note from Warden; the agent asked
-// from inside the instance being replaced, so its process cannot survive.
+// runner resizes the pod under the run and the tool result says so; a
+// cluster that cannot do it in place (GKE Sandbox's gVisor has no in-place
+// resize) answers ErrResizeRestart and the restarting path below takes
+// over. Restarting (SBX, or that fallback): the tool result tells the
+// agent the sandbox restarts now, and once the answer is delivered the run
+// is stopped, the sandbox replaced at the new size and the chat resumed
+// with a note from Warden; the agent asked from inside the instance being
+// replaced, so its process cannot survive.
 func (e *Engine) resolveResources(c *Chat, a Approval) any {
 	r := sandbox.Resources{CPUMilli: number(a.Params["cpu_milli"]), MemoryMB: number(a.Params["memory_mb"])}
 	restart, _ := a.Params["restart"].(bool)
@@ -175,12 +188,16 @@ func (e *Engine) resolveResources(c *Chat, a Approval) any {
 	if !restart {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		if err := e.resizeSandbox(ctx, c, r); err != nil {
+		err := e.resizeSandbox(ctx, c, r)
+		if err == nil {
+			_ = e.recordResources(c.SandboxID, r)
+			out["note"] = "in effect now; the guest may still report its old memory total, the limit is " + r.String()
+			return toolResult(out, nil)
+		}
+		if !errors.Is(err, sandbox.ErrResizeRestart) {
 			return toolResult(nil, errors.New("the owner approved, but the resize failed: "+err.Error()))
 		}
-		_ = e.recordResources(c.SandboxID, r)
-		out["note"] = "in effect now; the guest may still report its old memory total, the limit is " + r.String()
-		return toolResult(out, nil)
+		log.Printf("chat %s: the cluster cannot resize the sandbox in place; restarting it at %s", c.ID, r)
 	}
 	out["note"] = "the sandbox restarts now with " + r.String() + "; your process ends with it, your files and this conversation are kept, and Warden resumes the chat when the sandbox is back"
 	go e.restartResized(c.ID, r)

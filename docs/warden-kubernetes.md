@@ -675,15 +675,22 @@ its creator chose a size in the new-chat form (or `warden chat new
 (Resources › Change…) and an agent asks for more with the
 `request_resources` tool, which the owner approves like any grant. On
 Kubernetes a resize is one patch to the pod's `resize` subresource
-(Kubernetes 1.33+, the runner Role's only `patch`): the pod keeps running
-and its limits change in place, so the agent's process survives. What the
-guest reports (`/proc/meminfo`, `nproc`) may not follow under gVisor or
-Kata; the limit does. A resize the kubelet cannot apply in place (a memory
-decrease it refuses, a node without the room) is applied to the next
-generation instead: the sandbox is stopped and its next start creates the
-pod at the new size, which only happens while no run is active. Warm
-spares are booted at the default size and grown when a larger workspace
-adopts one. See docs/warden-workspace-resources-plan.md.
+(Kubernetes 1.33+, the runner Role's only `patch`): where the node's
+runtime implements it the pod keeps running and its limits change in
+place, so the agent's process survives. What the guest reports
+(`/proc/meminfo`, `nproc`) may not follow under gVisor or Kata; the limit
+does. **GKE Sandbox's gVisor shim does not implement in-place resize**
+(the kubelet reports `Unimplemented`; upstream runsc on the dev cluster
+does), and a kubelet may also refuse a memory decrease or lack the room:
+in every such case the size is applied to the next generation instead.
+With no run active the runner stops the sandbox at once and the next
+start creates the pod at the new size; under an agent's run the chat
+takes the restarting path it uses on SBX (the tool result says the
+sandbox restarts, the run ends, the sandbox is replaced, Warden's note
+resumes the chat). The owner's panel resize under a run is refused with
+"stop the chat first" in that case. Warm spares are booted at the default
+size and grown, or replaced, when a larger workspace adopts one. See
+docs/warden-workspace-resources-plan.md.
 
 ## The persisted set
 

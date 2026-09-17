@@ -23,6 +23,13 @@ const ProtocolVersion = release.Protocol
 
 var ErrBusy = errors.New("sandbox worker is busy")
 
+// ErrResizeRestart is the runner's answer to a resize under an active run
+// on a platform that resizes live, when this cluster could not apply the
+// size in place: only a restart applies it, and the runner does not stop
+// a sandbox under a run. The chat then takes the restarting path it uses
+// on SBX (stop, resize, resume with a note).
+var ErrResizeRestart = errors.New("the running sandbox cannot be resized in place; a restart applies the size")
+
 // WorkerStatus is one runner's reported state.
 type WorkerStatus struct {
 	ID         string            `json:"id"`
@@ -188,6 +195,8 @@ func (c *Client) Open(ctx context.Context, r Request) (io.ReadWriteCloser, Respo
 	if err == nil && response.Error != "" {
 		if response.ErrorCode == "busy" {
 			err = fmt.Errorf("%w: %s", ErrBusy, response.Error)
+		} else if response.ErrorCode == "resize-restart" {
+			err = fmt.Errorf("%w: %s", ErrResizeRestart, response.Error)
 		} else {
 			err = fmt.Errorf("%s", response.Error)
 		}

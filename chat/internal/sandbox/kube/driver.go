@@ -473,6 +473,14 @@ func (d *Driver) watchPod(ctx context.Context, name string, done func(*kube.Pod,
 				if ctx.Err() != nil {
 					return nil, true, ctx.Err()
 				}
+				if !isStatus(ev.Err) {
+					// The stream itself broke (the API server's front end
+					// resets long watches; a pod on Autopilot can wait
+					// minutes for its node): list and watch again.
+					log.Printf("sandbox %s: pod watch interrupted (%v); watching again", name, ev.Err)
+					sleep(ctx, watchRetry)
+					return nil, false, nil
+				}
 				return nil, true, ev.Err
 			}
 			var pod kube.Pod
@@ -489,6 +497,9 @@ func (d *Driver) watchPod(ctx context.Context, name string, done func(*kube.Pod,
 		return nil, false, nil
 	}
 }
+
+// watchRetry is the pause before a broken pod watch is reopened.
+const watchRetry = time.Second
 
 // awaitGone waits for a pod or claim to be deleted.
 func (d *Driver) awaitGone(ctx context.Context, r kube.Resource, name string) error {

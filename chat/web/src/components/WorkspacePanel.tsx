@@ -385,7 +385,7 @@ export function WorkspacePanel({
               <p className="muted">
                 {limits.restart
                   ? "The sandbox is recreated at the new size; files are kept."
-                  : "Applied to the running sandbox without a restart; files are kept."}{" "}
+                  : "Applied in place where the cluster allows it, otherwise the sandbox restarts at the new size; files are kept."}{" "}
                 Up to {resourcesLabel(limits.max.cpuMilli, limits.max.memoryMB)}.
               </p>
               <div className="button-row">

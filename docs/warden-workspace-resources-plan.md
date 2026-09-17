@@ -107,6 +107,14 @@ ceiling.
    way stop/resume already does (session state is under `/home/agent`).
    The agent asked from inside the instance being replaced; there is no
    way to keep its process.
+   *Amended 2026-09-17 after the GKE check:* the platform is decided per
+   resize, not per runner. The Kubernetes runner tries in place under the
+   run (its `resize` op is allowed under an active run when its limits say
+   `restart: false`); a cluster that cannot (GKE Sandbox's gVisor shim
+   answers `Unimplemented`, a kubelet refuses a memory decrease, no room)
+   is `sandbox.ErrResizeRestart` to the chat, which then takes the SBX
+   path above. With no run active the runner stops the sandbox itself and
+   the next generation carries the size.
 7. **Only growth is agent-requestable; the owner can shrink.** An agent
    asks for more, never less (a smaller request is refused with the
    current size and a pointer to the panel). The owner sets any size
@@ -240,8 +248,9 @@ ceiling.
       section with the owner's edit (`environments/{id}/resize`).
 - [ ] 5 Verification on a running install (a chat whose agent asks, the
       restart, the resumed turn seeing the new limit), the Kubernetes CPU
-      probe, docs: the local-install guide gains a "Workspace size"
-      section once the Kubernetes half lands and the wording covers both.
+      probe (`TestLiveResize`, run on GKE 2026-09-17: see Progress), docs:
+      the local-install guide gains a "Workspace size" section once the
+      Kubernetes half lands and the wording covers both.
 
 ## Progress
 

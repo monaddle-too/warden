@@ -1544,18 +1544,36 @@ func TestSizedWorkspaceAdoptsAndResizesASpareOnALivePlatform(t *testing.T) {
 }
 
 // A live platform that cannot apply a size in place (a memory decrease
-// the kubelet refuses) has the sandbox stopped instead, so the next start
-// carries the size; the record holds it either way.
+// the kubelet refuses, a runtime without in-place resize) has the sandbox
+// stopped instead, so the next start carries the size; the record holds
+// it either way. Under an active run the in-place attempt is made (that
+// is what a live resize is for) and, refused, answered with
+// ErrResizeRestart rather than a stop the caller did not arrange.
 func TestResizeInfeasibleInPlaceStopsTheSandboxOnALivePlatform(t *testing.T) {
 	w, d, _, r := managedFixture(t)
 	w.Limits = ResourceLimits{Default: Resources{CPUMilli: 1000, MemoryMB: 1536}, Max: Resources{CPUMilli: 4000, MemoryMB: 8192}, CPUStepMilli: 250}
 	prepareFixture(t, w, r)
+	d.resizeErr = ErrResizeInfeasible
+	r.Operation = "resize"
+	r.Resources = &Resources{CPUMilli: 2000, MemoryMB: 4096}
+	if _, err := w.dispatch(context.Background(), r); !errors.Is(err, ErrResizeRestart) {
+		t.Fatalf("under a run: %v", err)
+	}
 	w.mu.Lock()
 	s := w.managed.Sandboxes[r.SandboxID]
+	state := s.State
+	w.mu.Unlock()
+	if state != "running" {
+		t.Fatalf("the sandbox was stopped under a run: %s", state)
+	}
+	d.resizeErr = nil
+	if res, err := w.dispatch(context.Background(), r); err != nil || res.Sandbox.Resources != *r.Resources || res.Sandbox.State != "running" {
+		t.Fatalf("live resize under a run: %+v %v", res.Sandbox, err)
+	}
+	w.mu.Lock()
 	s.Active = nil
 	w.mu.Unlock()
 	d.resizeErr = ErrResizeInfeasible
-	r.Operation = "resize"
 	r.Resources = &Resources{CPUMilli: 500, MemoryMB: 1024}
 	res, err := w.dispatch(context.Background(), r)
 	if err != nil || res.Sandbox.Resources != *r.Resources || res.Sandbox.State != "stopped" {
