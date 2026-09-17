@@ -269,8 +269,16 @@ func TestKubernetesKindParsesWithDefaults(t *testing.T) {
 	if c.RuntimeKind() != RuntimeKubernetes || c.GatewayMode() != GatewayShared || k == nil {
 		t.Fatalf("kind: %+v", c)
 	}
-	if k.WorkspaceSizeGi != 20 || k.GatewayService != "warden-gateway" || k.TrustConfigMap != "warden-guest-trust" || k.StorageClass != "" || k.Tier != TierGVisor {
+	if k.WorkspaceSizeGi != 20 || k.GatewayService != "warden-gateway" || k.GatewayPort != 7000 || k.TrustConfigMap != "warden-guest-trust" || k.GatewayCAMaxAgeDays != 365 || k.StorageClass != "" || k.Tier != TierGVisor || k.NodeSelector != nil || k.Tolerations != nil {
 		t.Fatalf("kubernetes defaults: %+v", k)
+	}
+	// The placement fields the chart renders (appendix A) are typed.
+	placed, err := Parse([]byte(strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "gatewayPort": 7100, "gatewayCAMaxAgeDays": 30, "nodeSelector": {"warden.monaddle.com/pool": "sandboxes"}, "tolerations": [{"key": "sandbox.gke.io/runtime", "operator": "Equal", "value": "gvisor", "effect": "NoSchedule"}],`, 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pk := placed.Kubernetes; pk.GatewayPort != 7100 || pk.GatewayCAMaxAgeDays != 30 || pk.NodeSelector["warden.monaddle.com/pool"] != "sandboxes" || len(pk.Tolerations) != 1 || pk.Tolerations[0].Key != "sandbox.gke.io/runtime" || pk.Tolerations[0].Effect != "NoSchedule" {
+		t.Fatalf("placement: %+v", pk)
 	}
 	if c.Providers.Codex.Secret != "warden-codex-login" || c.Providers.Codex.AuthFile != "" || c.GitHubMode() != "user" || c.Providers.GitHub.Secret != "warden-github-login" {
 		t.Fatalf("providers: %+v %+v", c.Providers.Codex, c.Providers.GitHub)
@@ -306,6 +314,10 @@ func TestValidationByRuntimeKind(t *testing.T) {
 		"zero workspace":                     strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "workspaceSizeGi": -1,`, 1),
 		"github secret and authFile":         strings.Replace(kubernetesExample, `{ "secret": "warden-github-login" }`, `{ "secret": "warden-github-login", "authFile": "/x" }`, 1),
 		"loopback edge listen with kind sbx": sbx + `,"previews":{"edgeListen":"0.0.0.0:19081"}}`,
+		"bad gateway port":                   strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "gatewayPort": 70000,`, 1),
+		"bad toleration operator":            strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "tolerations": [{"operator": "Sometimes"}],`, 1),
+		"bad toleration effect":              strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "tolerations": [{"key": "k", "effect": "Never"}],`, 1),
+		"unknown toleration field":           strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "tolerations": [{"key": "k", "colour": "blue"}],`, 1),
 	}
 	for name, raw := range bad {
 		if _, err := Parse([]byte(raw)); err == nil {
@@ -313,7 +325,7 @@ func TestValidationByRuntimeKind(t *testing.T) {
 		}
 	}
 	// The kubernetes section's own unknown fields are refused like any other.
-	if _, err := Parse([]byte(strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "nodeSelector": "x",`, 1))); err == nil || !strings.Contains(err.Error(), "nodeSelector") {
+	if _, err := Parse([]byte(strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "nodeSelectors": "x",`, 1))); err == nil || !strings.Contains(err.Error(), "nodeSelectors") {
 		t.Fatalf("unknown kubernetes field accepted: %v", err)
 	}
 	// Loopback-only rules apply to the sbx kind only: a long state path is

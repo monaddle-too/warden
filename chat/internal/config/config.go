@@ -124,11 +124,30 @@ type Kubernetes struct {
 	// WorkspaceSizeGi sizes each sandbox's workspace volume; 20 when unset.
 	WorkspaceSizeGi int `json:"workspaceSizeGi,omitempty"`
 	// GatewayService is the Service the shared gateway is advertised
-	// through; warden-gateway when unset.
+	// through; warden-gateway when unset. GatewayPort is the port the
+	// shared gateway listens on and the Service exposes; 7000 when unset.
 	GatewayService string `json:"gatewayService,omitempty"`
+	GatewayPort    int    `json:"gatewayPort,omitempty"`
 	// TrustConfigMap is the guest trust bundle the policy service publishes
 	// and the runner mounts; warden-guest-trust when unset.
 	TrustConfigMap string `json:"trustConfigMap,omitempty"`
+	// GatewayCAMaxAgeDays bounds the gateway CA's age before the policy
+	// service rotates it (sbx.inspectionCertMaxAgeDays of the sbx shapes);
+	// 365 when unset.
+	GatewayCAMaxAgeDays int `json:"gatewayCAMaxAgeDays,omitempty"`
+	// NodeSelector and Tolerations place sandbox pods (a Kata node pool, a
+	// tainted gVisor pool); none when unset.
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	Tolerations  []Toleration      `json:"tolerations,omitempty"`
+}
+
+// Toleration is a sandbox pod toleration, the Kubernetes field names.
+type Toleration struct {
+	Key               string `json:"key,omitempty"`
+	Operator          string `json:"operator,omitempty"`
+	Value             string `json:"value,omitempty"`
+	Effect            string `json:"effect,omitempty"`
+	TolerationSeconds *int64 `json:"tolerationSeconds,omitempty"`
 }
 
 // SBX describes the sandbox runtime on this host.
@@ -517,8 +536,14 @@ func merge(c *Config, file Config) {
 		if k.GatewayService == "" {
 			k.GatewayService = "warden-gateway"
 		}
+		if k.GatewayPort == 0 {
+			k.GatewayPort = 7000
+		}
 		if k.TrustConfigMap == "" {
 			k.TrustConfigMap = "warden-guest-trust"
+		}
+		if k.GatewayCAMaxAgeDays == 0 {
+			k.GatewayCAMaxAgeDays = 365
 		}
 		c.Kubernetes = &k
 	}
@@ -739,6 +764,20 @@ func (c Config) validateKind() error {
 		}
 		if !dnsLabel(k.GatewayService) || !dnsLabel(k.TrustConfigMap) || (k.StorageClass != "" && !dnsLabel(k.StorageClass)) {
 			return errors.New("kubernetes.gatewayService, trustConfigMap and storageClass must be DNS labels")
+		}
+		if k.GatewayPort < 1 || k.GatewayPort > 65535 {
+			return errors.New("kubernetes.gatewayPort must be a port number")
+		}
+		if k.GatewayCAMaxAgeDays < 1 {
+			return errors.New("kubernetes.gatewayCAMaxAgeDays must be at least 1")
+		}
+		for i, t := range k.Tolerations {
+			if t.Operator != "" && t.Operator != "Equal" && t.Operator != "Exists" {
+				return fmt.Errorf("kubernetes.tolerations[%d].operator must be Equal or Exists", i)
+			}
+			if t.Effect != "" && t.Effect != "NoSchedule" && t.Effect != "PreferNoSchedule" && t.Effect != "NoExecute" {
+				return fmt.Errorf("kubernetes.tolerations[%d].effect must be NoSchedule, PreferNoSchedule or NoExecute", i)
+			}
 		}
 		for name, p := range map[string]*AuthFile{"codex": c.Providers.Codex, "claude": c.Providers.Claude} {
 			if p == nil {

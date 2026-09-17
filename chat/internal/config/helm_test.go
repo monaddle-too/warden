@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"os/exec"
 	"strings"
 	"testing"
@@ -9,14 +8,8 @@ import (
 
 // The Helm chart renders warden.json for the Kubernetes shape
 // (docs/warden-kubernetes-plan.md, decision 13 and appendix A). This test
-// renders the chart with the dev values and checks the file's shape. It
-// does not go through Parse yet: the kind-kubernetes fields (runtime.kind,
-// kubernetes.*, providers.<p>.secret) land with the driver track, and
-// until then a strict decoder refuses them.
-//
-// TODO(k8s driver): once runtime.kind "kubernetes" validates, replace the
-// key check with Parse and assert the transport URLs, the TLS paths and
-// the kubernetes section, as TestOVHExampleParses does for the sbx shape.
+// renders the chart with the dev values and loads the result through
+// Parse, as TestOVHExampleParses does for the sbx shape.
 func TestHelmChartRendersKubernetesConfig(t *testing.T) {
 	helm, err := exec.LookPath("helm")
 	if err != nil {
@@ -31,39 +24,30 @@ func TestHelmChartRendersKubernetesConfig(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	raw := configMapFile(t, string(out), "warden.json")
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &top); err != nil {
-		t.Fatalf("warden.json from the chart is not JSON: %v\n%s", err, raw)
+	c, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("warden.json from the chart does not parse: %v\n%s", err, raw)
 	}
-	var version int
-	if err := json.Unmarshal(top["version"], &version); err != nil || version != Version {
-		t.Fatalf("version = %s, want %d", top["version"], Version)
+	if c.RuntimeKind() != RuntimeKubernetes || c.GatewayMode() != GatewayShared {
+		t.Fatalf("kind: %+v", c.Runtime)
 	}
-	for _, key := range []string{"runtime", "services", "tls", "kubernetes", "paths", "sandboxes", "previews", "auth", "providers"} {
-		if _, ok := top[key]; !ok {
-			t.Errorf("warden.json lacks %q", key)
-		}
-	}
-	var runtime struct{ Kind string }
-	if err := json.Unmarshal(top["runtime"], &runtime); err != nil || runtime.Kind != "kubernetes" {
-		t.Errorf("runtime = %s, want kind kubernetes", top["runtime"])
-	}
-	var services Services
-	if err := json.Unmarshal(top["services"], &services); err != nil {
-		t.Fatal(err)
-	}
-	for name, s := range map[string]Service{"policy": services.Policy, "runner": services.Runner, "chat": services.Chat} {
+	for name, s := range map[string]Service{"policy": c.Services.Policy, "runner": c.Services.Runner, "chat": c.Services.Chat} {
 		if !strings.HasPrefix(s.Listen, "tls://0.0.0.0:") || !strings.HasPrefix(s.Address, "tls://warden-"+name+":") {
 			t.Errorf("services.%s = %+v, want tls:// listener and address", name, s)
 		}
 	}
-	var tls TLS
-	if err := json.Unmarshal(top["tls"], &tls); err != nil || tls.CAFile != "/etc/warden/tls/ca.crt" || tls.CertFile != "/etc/warden/tls/tls.crt" || tls.KeyFile != "/etc/warden/tls/tls.key" {
-		t.Errorf("tls = %s", top["tls"])
+	if c.TLS == nil || c.TLS.CAFile != "/etc/warden/tls/ca.crt" || c.TLS.CertFile != "/etc/warden/tls/tls.crt" || c.TLS.KeyFile != "/etc/warden/tls/tls.key" {
+		t.Errorf("tls = %+v", c.TLS)
 	}
-	var paths Paths
-	if err := json.Unmarshal(top["paths"], &paths); err != nil || paths.State != "/var/lib/warden" {
-		t.Errorf("paths = %s", top["paths"])
+	if c.Paths.State != "/var/lib/warden" {
+		t.Errorf("paths = %+v", c.Paths)
+	}
+	k := c.Kubernetes
+	if k == nil || k.Namespace != "warden-sandboxes" || k.Tier != TierGVisor || k.RuntimeClass != "gvisor" || k.GuestImage == "" || !digestShape(k.GuestImageDigest) || k.StorageClass != "local-path" || k.WorkspaceSizeGi != 4 || k.GatewayService != "warden-gateway" || k.GatewayPort != 7000 || k.TrustConfigMap != "warden-guest-trust" {
+		t.Errorf("kubernetes = %+v", k)
+	}
+	if c.Providers.Codex == nil || c.Providers.Codex.Secret != "warden-codex-login" || c.Providers.GitHub == nil || c.Providers.GitHub.Secret != "warden-github-login" {
+		t.Errorf("providers = %+v %+v", c.Providers.Codex, c.Providers.GitHub)
 	}
 }
 
