@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -19,6 +20,7 @@ type fakeSharing struct {
 	mu      sync.Mutex
 	ops     []map[string]any
 	results map[string]map[string]any
+	errors  map[string]string // action -> refusal, as the policy words it
 }
 
 func newFakeSharing(t *testing.T) (*fakeSharing, string) {
@@ -48,7 +50,12 @@ func newFakeSharing(t *testing.T) (*fakeSharing, string) {
 				f.mu.Lock()
 				f.ops = append(f.ops, m)
 				result := f.results[agent.String(m["action"])]
+				refusal := f.errors[agent.String(m["action"])]
 				f.mu.Unlock()
+				if refusal != "" {
+					_ = json.NewEncoder(conn).Encode(map[string]any{"ok": false, "error": refusal})
+					return
+				}
 				if result == nil {
 					result = map[string]any{}
 				}
@@ -57,6 +64,16 @@ func newFakeSharing(t *testing.T) (*fakeSharing, string) {
 		}
 	}()
 	return f, socket
+}
+
+// refuse makes the policy answer one action with a refusal from now on.
+func (f *fakeSharing) refuse(action, message string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.errors == nil {
+		f.errors = map[string]string{}
+	}
+	f.errors[action] = message
 }
 
 func (f *fakeSharing) op(i int) map[string]any {
@@ -100,17 +117,19 @@ func TestGrantRequestsBecomeApprovalsAndResolve(t *testing.T) {
 	if op["action"] != "network_allow" || data["sandboxID"] != c.SandboxID || data["host"] != "pypi.org" || data["duration"] != float64(3600) || data["actor"] != "Ada" {
 		t.Fatalf("network op: %v", op)
 	}
-	// Repository: merges with the current selection.
-	sharing.results["github_list"] = map[string]any{"repositories": []any{map[string]any{"full_name": "Owner/Repo", "access": []any{"contents"}}}}
+	// Repository: widening merges with the current selection (the request
+	// lists it once before asking the owner, the answer once more).
+	sharing.results["github_list"] = map[string]any{"repositories": []any{map[string]any{"full_name": "Owner/Repo", "access": []any{"contents"}}, map[string]any{"full_name": "owner/other", "access": []any{"issues"}}}}
 	sharing.results["github_select"] = map[string]any{"repositories": []any{}}
 	call("request_repository_access", map[string]any{"repository": "owner/repo", "categories": []any{"issues"}, "reason": "read issues"})
 	a = e.Store.Snapshot().chat(c.ID).Approvals[1]
-	if v := e.resolveGrant(c, a, true, cv.Actor{PrincipalID: "owner"}).(map[string]any); v["success"] != true {
+	v = e.resolveGrant(c, a, true, cv.Actor{PrincipalID: "owner"}).(map[string]any)
+	if v["success"] != true || !strings.Contains(agent.String(agent.Map(agent.Array(v["contentItems"])[0])["text"]), `"widened_from":["contents"]`) {
 		t.Fatalf("repository allow: %v", v)
 	}
-	sel := agent.Map(sharing.op(2)["data"])
-	if sharing.op(2)["action"] != "github_select" || len(agent.Array(sel["repositories"])) != 1 || len(agent.Array(agent.Map(sel["access"])["owner/repo"])) != 2 {
-		t.Fatalf("select op: %v", sharing.op(2))
+	sel := agent.Map(sharing.op(3)["data"])
+	if sharing.op(3)["action"] != "github_select" || len(agent.Array(sel["repositories"])) != 2 || len(agent.Array(agent.Map(sel["access"])["owner/repo"])) != 2 || len(agent.Array(agent.Map(sel["access"])["owner/other"])) != 1 {
+		t.Fatalf("select op: %v", sharing.op(3))
 	}
 	// GitHub write: the exact payload is what the owner sees and what is sent.
 	call("github_write", map[string]any{"repository": "owner/repo", "action": "comment_issue", "number": 4, "body": "thanks"})
@@ -119,7 +138,7 @@ func TestGrantRequestsBecomeApprovalsAndResolve(t *testing.T) {
 		t.Fatalf("write params: %v", a.Params)
 	}
 	e.resolveGrant(c, a, true, cv.Actor{PrincipalID: "owner"})
-	if wr := sharing.op(3); wr["action"] != "github_write" || agent.Map(wr["data"])["body"] != "thanks" || agent.Map(wr["data"])["sandboxID"] != c.SandboxID {
+	if wr := sharing.op(4); wr["action"] != "github_write" || agent.Map(wr["data"])["body"] != "thanks" || agent.Map(wr["data"])["sandboxID"] != c.SandboxID {
 		t.Fatalf("write op: %v", wr)
 	}
 	// Bad input never reaches the owner.
@@ -145,4 +164,46 @@ func TestGrantRequestsBecomeApprovalsAndResolve(t *testing.T) {
 		t.Fatalf("worker op: %s", last)
 	}
 	_ = context.Background
+}
+
+// A repository request the workspace already satisfies is answered at once
+// without an approval; when GitHub cannot be used the agent is told why and
+// what the owner can do, both before and after the owner's approval.
+func TestRepositoryAccessAlreadySharedAndFailures(t *testing.T) {
+	e, _, c := portEngine(t, "")
+	sharing, socket := newFakeSharing(t)
+	e.WardenSocket = socket
+	e.LocalMode = true
+	sharing.results["github_list"] = map[string]any{"repositories": []any{map[string]any{"full_name": "Owner/Repo", "access": []any{"contents", "issues"}}}}
+	text := func(err error) string {
+		t.Helper()
+		if err == nil {
+			t.Fatal("expected a tool result error")
+		}
+		return err.Error()
+	}
+	before := len(e.Store.Snapshot().chat(c.ID).Approvals)
+	// Already covered (a subset of the held categories): no approval.
+	err := e.requestGrant(c, nil, agent.Frame{ID: json.RawMessage(`1`), Params: map[string]any{"tool": "request_repository_access", "arguments": map[string]any{"repository": "owner/repo", "categories": []any{"issues"}, "reason": "r"}}})
+	if err != nil || len(e.Store.Snapshot().chat(c.ID).Approvals) != before {
+		t.Fatalf("already shared request: err=%v approvals=%d", err, len(e.Store.Snapshot().chat(c.ID).Approvals))
+	}
+	// Not covered: becomes an approval.
+	if err = e.requestGrant(c, nil, agent.Frame{ID: json.RawMessage(`1`), Params: map[string]any{"tool": "request_repository_access", "arguments": map[string]any{"repository": "owner/repo", "categories": []any{"pull_requests"}, "reason": "r"}}}); err != nil || len(e.Store.Snapshot().chat(c.ID).Approvals) != before+1 {
+		t.Fatalf("widening request: err=%v", err)
+	}
+	a := e.Store.Snapshot().chat(c.ID).Approvals[before]
+	// The policy's refusal after approval reaches the agent with a remedy.
+	sharing.refuse("github_select", "Refresh the GitHub sign-in before using repositories")
+	v := e.resolveGrant(c, a, true, cv.Actor{PrincipalID: "owner"}).(map[string]any)
+	got := agent.String(agent.Map(agent.Array(v["contentItems"])[0])["text"])
+	if v["success"] != false || !strings.Contains(got, "widen owner/repo from contents, issues to contents, issues, pull_requests") || !strings.Contains(got, "Refresh the GitHub sign-in") || !strings.Contains(got, "warden login github") {
+		t.Fatalf("resolve error: %v", got)
+	}
+	// A listing failure before approval is reported at once, not parked.
+	sharing.refuse("github_list", "GitHub is not connected")
+	msg := text(e.requestGrant(c, nil, agent.Frame{ID: json.RawMessage(`1`), Params: map[string]any{"tool": "request_repository_access", "arguments": map[string]any{"repository": "owner/new", "categories": []any{"contents"}, "reason": "r"}}}))
+	if !strings.Contains(msg, "GitHub is not connected") || !strings.Contains(msg, "warden login github") || len(e.Store.Snapshot().chat(c.ID).Approvals) != before+1 {
+		t.Fatalf("listing failure: %q", msg)
+	}
 }

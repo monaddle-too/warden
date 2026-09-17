@@ -57,7 +57,7 @@ func grantTools(local bool) []any {
 	tools := []any{
 		map[string]any{"type": "function", "name": "request_network_access", "description": "Ask the owner to let this sandbox reach one public website host (HTTP or HTTPS on ports 80 and 443) for a limited time through Warden's gateway, when the network policy refused it. Give the exact hostname without scheme or path, why you need it, and for how long. Waits for the decision; on approval retry the request. No credential is ever attached to a host allowed this way.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"host": str("hostname, e.g. pypi.org", 253), "reason": str("why you need it", 500), "duration_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "how long, in minutes (default 60)"}}, "required": []string{"host", "reason"}, "additionalProperties": false}},
-		map[string]any{"type": "function", "name": "request_repository_access", "description": "Ask the owner to share a GitHub repository with this workspace, or to widen the read categories of one already shared: contents (code, branches, commits, clone), issues (issues, comments, labels, milestones), pull_requests (pull requests, their files and reviews). Read-only; writes need github_write or request_pull_request. Waits for the decision.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+		map[string]any{"type": "function", "name": "request_repository_access", "description": "Ask the owner to share a GitHub repository with this workspace, or to widen the read categories of one already shared: contents (code, branches, commits, clone), issues (issues, comments, labels, milestones), pull_requests (pull requests, their files and reviews). Read-only; writes need github_write or request_pull_request. Waits for the decision; a request the workspace already satisfies is answered at once without asking, and a failure says why (for example a GitHub sign-in the owner must refresh).", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"repository": str("owner/name", 200), "categories": map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"contents", "issues", "pull_requests"}}, "minItems": 1, "maxItems": 3}, "reason": str("why you need it", 500)}, "required": []string{"repository", "categories", "reason"}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "github_write", "description": "Perform one small GitHub write on a repository shared with this workspace, after the owner approves the exact payload: comment_issue or comment_pull_request (number, body), create_issue (title, body), add_labels (number, labels). Warden posts it with the owner's credential; you never hold a token. Waits for the decision and returns the created URL. Larger changes go through request_pull_request.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"repository": str("owner/name", 200), "action": map[string]any{"type": "string", "enum": []string{"comment_issue", "comment_pull_request", "create_issue", "add_labels"}}, "number": map[string]any{"type": "integer", "minimum": 1, "description": "issue or pull request number"}, "title": str("issue title (create_issue)", 256), "body": str("Markdown body", 65536), "labels": map[string]any{"type": "array", "items": map[string]any{"type": "string", "maxLength": 50}, "maxItems": 20}}, "required": []string{"repository", "action"}, "additionalProperties": false}},
@@ -136,6 +136,21 @@ func (e *Engine) requestGrant(c *Chat, client *agent.Client, f agent.Frame) erro
 		}
 		if !strings.Contains(in.Repository, "/") || len(categories) == 0 || in.Reason == "" {
 			return fail("repository (owner/name), at least one category and a reason are required")
+		}
+		// A request the workspace already satisfies changes nothing, so it
+		// is answered at once instead of asking the owner; a missing
+		// connection is reported now rather than after their approval.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		current, err := e.repositoryAccess(ctx, c)
+		cancel()
+		if err != nil {
+			return fail("cannot check the repositories shared with this workspace: " + githubRemedy(err, e.LocalMode))
+		}
+		if have, shared := current[in.Repository]; shared && coversCategories(have, in.Categories) {
+			if client == nil {
+				return nil
+			}
+			return client.Reply(f.ID, toolResult(map[string]any{"repository": in.Repository, "access": have, "already_shared": true, "note": "this workspace already has read access to " + strings.Join(in.Categories, ", ") + " of " + in.Repository + "; no approval was needed. Use list_shared_repositories to see every shared repository and its categories."}, nil))
 		}
 		params = map[string]any{"repository": in.Repository, "categories": categories, "reason": in.Reason}
 	case methodGitHubWrite:
@@ -220,40 +235,50 @@ func (e *Engine) resolveGrant(c *Chat, a Approval, allow bool, actor cv.Actor) a
 		return toolResult(result, err)
 	case methodRepositoryAccess:
 		repo := agent.String(a.Params["repository"])
-		current, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": c.ID, "sandboxID": c.SandboxID})
-		if err != nil {
-			return toolResult(nil, err)
-		}
-		names := []any{}
-		access := map[string]any{}
-		for _, item := range agent.Array(current["repositories"]) {
-			r := agent.Map(item)
-			name := strings.ToLower(agent.String(r["full_name"]))
-			names = append(names, name)
-			access[name] = agent.Array(r["access"])
-		}
-		merged := map[string]bool{}
-		for _, cat := range agent.Array(access[repo]) {
-			merged[agent.String(cat)] = true
-		}
+		var requested []string
 		for _, cat := range agent.Array(a.Params["categories"]) {
-			merged[agent.String(cat)] = true
+			requested = append(requested, agent.String(cat))
 		}
-		if _, present := access[repo]; !present {
-			names = append(names, repo)
+		current, err := e.repositoryAccess(ctx, c)
+		if err != nil {
+			return toolResult(nil, errors.New("could not share "+repo+": "+githubRemedy(err, e.LocalMode)))
 		}
-		list := []any{}
+		before, shared := current[repo]
+		merged := map[string]bool{}
+		for _, cat := range append(append([]string{}, before...), requested...) {
+			merged[cat] = true
+		}
+		list := []string{}
 		for _, cat := range []string{"contents", "issues", "pull_requests"} {
 			if merged[cat] {
 				list = append(list, cat)
 			}
 		}
-		access[repo] = list
+		// The selection is replaced whole: every repository already shared
+		// keeps its categories and the requested one gets the union.
+		names := []any{}
+		access := map[string]any{}
+		for name, cats := range current {
+			names = append(names, name)
+			access[name] = anyList(cats)
+		}
+		if !shared {
+			names = append(names, repo)
+		}
+		access[repo] = anyList(list)
 		result, err := e.sharingCall(ctx, "github_select", map[string]any{"chatID": c.ID, "sandboxID": c.SandboxID, "repositories": names, "access": access, "actor": who})
 		if err != nil {
-			return toolResult(nil, err)
+			what := "share " + repo
+			if shared {
+				what = "widen " + repo + " from " + strings.Join(before, ", ") + " to " + strings.Join(list, ", ")
+			}
+			return toolResult(nil, errors.New("the owner approved, but Warden could not "+what+": "+githubRemedy(err, e.LocalMode)))
 		}
-		return toolResult(map[string]any{"repository": repo, "access": list, "shared": result["repositories"]}, nil)
+		out := map[string]any{"repository": repo, "access": anyList(list), "shared": result["repositories"]}
+		if shared {
+			out["widened_from"] = anyList(before)
+		}
+		return toolResult(out, nil)
 	case methodGitHubWrite:
 		data := map[string]any{"sandboxID": c.SandboxID, "actor": who}
 		for k, v := range a.Params {
@@ -275,4 +300,68 @@ func (e *Engine) resolveGrant(c *Chat, a Approval, allow bool, actor cv.Actor) a
 		return toolResult(map[string]any{"sandbox_path": res.Directory, "host_path": res.Output, "note": map[string]string{"host.import": "the directory is a copy; use sync_host_directory to write changes back", "host.export": "the host directory now has the sandbox's files; nothing was deleted"}[op]}, nil)
 	}
 	return toolResult(nil, errors.New("unknown grant"))
+}
+
+// repositoryAccess is the workspace's current GitHub selection: each shared
+// repository (lower case owner/name) with its read categories in canonical
+// order.
+func (e *Engine) repositoryAccess(ctx context.Context, c *Chat) (map[string][]string, error) {
+	current, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": c.ID, "sandboxID": c.SandboxID})
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for _, item := range agent.Array(current["repositories"]) {
+		r := agent.Map(item)
+		name := strings.ToLower(agent.String(r["full_name"]))
+		cats := []string{}
+		for _, cat := range agent.Array(r["access"]) {
+			cats = append(cats, agent.String(cat))
+		}
+		out[name] = cats
+	}
+	return out, nil
+}
+
+// coversCategories reports whether every wanted category is already held.
+func coversCategories(have, wanted []string) bool {
+	held := map[string]bool{}
+	for _, cat := range have {
+		held[cat] = true
+	}
+	for _, cat := range wanted {
+		if !held[cat] {
+			return false
+		}
+	}
+	return true
+}
+
+func anyList(items []string) []any {
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, item)
+	}
+	return out
+}
+
+// githubRemedy words a sharing error for the agent together with what the
+// owner can do about it, since the agent cannot fix a connection itself.
+func githubRemedy(err error, local bool) string {
+	msg := err.Error()
+	switch {
+	case strings.HasPrefix(msg, "Refresh the GitHub sign-in"):
+		if local {
+			return msg + " (the GitHub token Warden holds was rejected; the owner runs `warden login github` on the host, then retry)"
+		}
+		return msg + " (the GitHub token Warden holds was rejected; the owner reconnects GitHub in the Admin console, then retry)"
+	case msg == "GitHub is not connected":
+		if local {
+			return msg + " (the owner runs `warden login github` on the host, then retry)"
+		}
+		return msg + " (the owner connects GitHub in the Admin console, then retry)"
+	case strings.HasPrefix(msg, "repository is not owned by the connected account"):
+		return msg + " (the signed-in GitHub account cannot see this repository; check the owner/name or ask the owner to sign in with an account that can)"
+	}
+	return msg
 }

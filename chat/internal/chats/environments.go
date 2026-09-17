@@ -196,7 +196,7 @@ func (e *Engine) DeleteEnvironment(ctx context.Context, id string) error {
 		}
 		if ran != nil {
 			// A missing GitHub connection means there is nothing to revoke.
-			if _, err = e.sharingCall(ctx, "github_select", map[string]any{"chatID": ran.ID, "sandboxID": id, "repositories": []string{}}); err != nil && !strings.Contains(err.Error(), "Sharing unavailable") {
+			if _, err = e.sharingCall(ctx, "github_select", map[string]any{"chatID": ran.ID, "sandboxID": id, "repositories": []string{}}); err != nil && !githubDisconnected(err) {
 				return errors.New("repository access could not be revoked; workspace not deleted")
 			}
 		}

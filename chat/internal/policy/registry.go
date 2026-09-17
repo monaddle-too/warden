@@ -1205,14 +1205,19 @@ func (r *Registry) Dispatch(message any) (map[string]any, error) {
 		return map[string]any{"version": 1, "ok": true, "protocol": release.Protocol, "revision": release.Revision}, nil
 	}
 	if operation == "sharing" {
+		// Sharing is driven by the chat service on the owner's behalf and
+		// its refusals are written for people ("Refresh the GitHub sign-in
+		// before using repositories", "repository is not shared with this
+		// workspace"), so unlike sandbox-facing operations the message is
+		// returned; the caller shows it to the owner and the agent.
 		if !sameKeys(msg, "version", "operation", "action", "data") || r.Sharing == nil {
-			return nil, errors.New("sharing unavailable")
+			return map[string]any{"version": 1, "ok": false, "error": "sharing unavailable"}, nil
 		}
 		action, _ := msg["action"].(string)
 		data, _ := msg["data"].(map[string]any)
 		result, err := r.Sharing.Dispatch(action, data)
 		if err != nil {
-			return nil, err
+			return map[string]any{"version": 1, "ok": false, "error": err.Error()}, nil
 		}
 		return map[string]any{"version": 1, "ok": true, "result": result}, nil
 	}

@@ -50,15 +50,32 @@ func (e *Engine) sharingCall(ctx context.Context, op string, data map[string]any
 	}
 	var res struct {
 		OK     bool           `json:"ok"`
+		Error  string         `json:"error"`
 		Result map[string]any `json:"result"`
 	}
 	if err = json.Unmarshal(scanner.Bytes(), &res); err != nil {
 		return nil, err
 	}
 	if !res.OK {
-		return nil, errors.New("Sharing unavailable; check the connected account and selected resources")
+		// The policy service words its sharing refusals for people; an
+		// answer without one is the control server rejecting the frame.
+		if res.Error == "" {
+			res.Error = "Sharing unavailable; check the connected account and selected resources"
+		}
+		return nil, errors.New(res.Error)
 	}
 	return res.Result, nil
+}
+
+// githubDisconnected reports a sharing error that means no GitHub
+// connection is usable at all (never connected, sign-in missing or
+// rejected, sharing not running), as opposed to a refusal of one request.
+func githubDisconnected(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return msg == "GitHub is not connected" || strings.HasPrefix(msg, "Refresh the GitHub sign-in") || strings.HasPrefix(msg, "Sharing unavailable") || msg == "sharing unavailable" || msg == "Sharing is not configured"
 }
 func sharingToolResult(result map[string]any, err error) map[string]any {
 	text := ""
