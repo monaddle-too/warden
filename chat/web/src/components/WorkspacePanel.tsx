@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Archive, ExternalLink, History, Square, Trash2 } from "lucide-react";
-import type { AccessEvent, Chat, Environment } from "../types";
+import type { AccessEvent, Chat, Environment, SandboxUsage } from "../types";
 import { api } from "../api";
 import type { PullRequestProposal } from "./PullRequestReview";
 
@@ -53,6 +53,64 @@ function describe(e: AccessEvent): string {
     default:
       return `${e.status} ${what}`;
   }
+}
+const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+const percent = (used: number, total: number) =>
+  total > 0 ? Math.max(0, Math.min(100, (100 * used) / total)) : 0;
+
+/* One row per resource: what is used of what was provisioned, with a bar.
+   A stopped sandbox shows only the provisioned side; the disk size of a
+   stopped sandbox is unknown until it boots. */
+function Resources({ usage }: { usage: SandboxUsage }) {
+  const rows: { name: string; value: string; percent: number | null }[] = [
+    {
+      name: "CPU",
+      value: !usage.running
+        ? `${usage.cpus} provisioned`
+        : usage.cpuPercent == null
+          ? `sampling… · ${usage.cpus} provisioned`
+          : `${usage.cpuPercent.toFixed(0)}% of ${usage.cpus}`,
+      percent: usage.running ? usage.cpuPercent : null,
+    },
+    {
+      name: "Memory",
+      value: usage.running
+        ? `${gib(usage.memoryUsed)} of ${gib(usage.memoryTotal)}`
+        : `${gib(usage.memoryTotal)} provisioned`,
+      percent: usage.running
+        ? percent(usage.memoryUsed, usage.memoryTotal)
+        : null,
+    },
+    {
+      name: "Disk",
+      value: usage.running
+        ? `${gib(usage.diskUsed)} of ${gib(usage.diskTotal)}`
+        : usage.diskTotal > 0
+          ? `${gib(usage.diskTotal)} provisioned`
+          : "sized at boot",
+      percent: usage.running ? percent(usage.diskUsed, usage.diskTotal) : null,
+    },
+  ];
+  return (
+    <section className="workspace-section">
+      <h2>Resources</h2>
+      <ul className="workspace-resources">
+        {rows.map((r) => (
+          <li key={r.name}>
+            <span>{r.name}</span>
+            <small>{r.value}</small>
+            <meter
+              min={0}
+              max={100}
+              value={r.percent ?? 0}
+              aria-label={`${r.name} used`}
+              className={r.percent == null ? "idle" : ""}
+            />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 const label = (state: string) =>
   state ? state.charAt(0).toUpperCase() + state.slice(1) : "Not started";
@@ -206,6 +264,7 @@ export function WorkspacePanel({
           resumed.
         </p>
       )}
+      {ws?.usage && !ws.deleted && <Resources usage={ws.usage} />}
       <section className="workspace-section">
         <h2>Chats in this workspace</h2>
         <ul>

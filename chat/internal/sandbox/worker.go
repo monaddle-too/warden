@@ -62,6 +62,7 @@ type Worker struct {
 	users                         int
 	changed                       chan struct{}
 	managed                       *managedState
+	usages                        map[string]*usageState // guest resource samples by sandbox ID (guarded by mu)
 	controls                      *controlState
 	Gate                          Enforcement
 	Runtime                       RuntimeDriver

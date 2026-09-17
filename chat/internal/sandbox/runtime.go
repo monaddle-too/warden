@@ -24,6 +24,9 @@ import (
 
 type RuntimeSpec struct{ Name, Directory, Source string }
 
+// defaultMemoryMB sizes a sandbox when the configuration does not.
+const defaultMemoryMB = 1536
+
 // RuntimeDriver is the narrow trusted SBX adapter. Tests never need a daemon.
 type RuntimeDriver interface {
 	Create(context.Context, RuntimeSpec) error
@@ -55,12 +58,12 @@ func (d *sbxRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 	}
 	memoryMB := d.worker.MemoryMB
 	if memoryMB == 0 {
-		memoryMB = 1536
+		memoryMB = defaultMemoryMB
 	}
 	if memoryMB < 512 || memoryMB > 16384 {
 		return errors.New("sandbox memory must be 512–16384 MiB")
 	}
-	args := []string{"create", "--name", s.Name, "--cpus", "1", "--memory", fmt.Sprintf("%dm", memoryMB), "--template", d.worker.Template, "--deny-network", "**", "--no-share-skills"}
+	args := []string{"create", "--name", s.Name, "--cpus", strconv.Itoa(sandboxCPUs), "--memory", fmt.Sprintf("%dm", memoryMB), "--template", d.worker.Template, "--deny-network", "**", "--no-share-skills"}
 	if s.Source != "" {
 		args = append(args, "--clone", "shell", s.Source)
 	} else {
