@@ -189,7 +189,12 @@ func AgentCommand(run RunSpec, opts LaunchOptions) []string {
 		}
 		return args
 	}
-	args := []string{"env", "-u", "OPENAI_API_KEY", "-u", "OPENAI_BASE_URL", "-u", "CODEX_API_KEY", "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "WARDEN_API_KEY=" + broker.APIKeyPlaceholder, "WORKSPACE_DOCUMENT_API_URL=" + broker.DocumentBaseURL, paths.Codex + "/bin/codex", "app-server", "--listen", "stdio://", "-c", `model_provider="warden"`, "-c", `cli_auth_credentials_store="ephemeral"`, "-c", `forced_login_method="api"`, "-c", `model_providers.warden.base_url=` + strconv.Quote(broker.ProviderBaseURL), "-c", `model_providers.warden.name="Warden"`, "-c", `model_providers.warden.wire_api="responses"`, "-c", `model_providers.warden.env_key="WARDEN_API_KEY"`}
+	args := []string{"env", "-u", "OPENAI_API_KEY", "-u", "OPENAI_BASE_URL", "-u", "CODEX_API_KEY", "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "WARDEN_API_KEY=" + broker.APIKeyPlaceholder, "WORKSPACE_DOCUMENT_API_URL=" + broker.DocumentBaseURL, paths.Codex + "/bin/codex", "app-server", "--listen", "stdio://", "-c", `model_provider="warden"`, "-c", `cli_auth_credentials_store="ephemeral"`, "-c", `forced_login_method="api"`, "-c", `model_providers.warden.base_url=` + strconv.Quote(broker.ProviderBaseURL), "-c", `model_providers.warden.name="Warden"`, "-c", `model_providers.warden.wire_api="responses"`, "-c", `model_providers.warden.env_key="WARDEN_API_KEY"`,
+		// The model's reasoning summaries stream as items, so the chat can
+		// show that the model is thinking during the long first reply of a
+		// reasoning model instead of nothing; "auto" leaves whole turns
+		// without one.
+		"-c", `model_reasoning_summary="detailed"`}
 	if opts.CodexSandboxMode != "" {
 		args = append(args, "-c", "sandbox_mode="+strconv.Quote(opts.CodexSandboxMode))
 	}

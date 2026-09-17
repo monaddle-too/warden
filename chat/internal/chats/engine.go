@@ -872,8 +872,8 @@ func (e *Engine) turn(ctx context.Context, id string, current *Chat, client *age
 			if err != nil {
 				return err
 			}
-			if strings.HasPrefix(f.Method, "item/") || f.Method == "turn/completed" {
-				e.clearStartup(id) // the model has answered: the start is over
+			if (strings.HasPrefix(f.Method, "item/") && agent.String(agent.Map(f.Params["item"])["type"]) != "userMessage") || f.Method == "turn/completed" {
+				e.clearStartup(id) // the model has answered (its own echo of the message is not that): the start is over
 			}
 			if f.Method == "turn/completed" && agent.String(agent.Map(f.Params["turn"])["id"]) == turnID {
 				turn = agent.Map(f.Params["turn"])

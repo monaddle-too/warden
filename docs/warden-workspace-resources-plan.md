@@ -298,5 +298,22 @@ ceiling.
   (on every turn) fill the gap and a start over 5 s logs its stages'
   durations. Sign-in sessions now survive an edge restart (every deploy
   signed the owner out). The panel's provisioned CPUs are the size, not
-  the guest's `nproc`. In-app check (form, panel, agent grant) with these
-  fixes: see below.
+  the guest's `nproc`. The owner's resize now runs in the background
+  (`performResize`, `Environment.Resizing`): synchronous, the edge's 30 s
+  upstream limit cut it off half-way ("Warden host is offline"). The
+  driver's retry took a stale resize condition for "applied" and recorded
+  a size it never set (fixed: only the container status says what runs,
+  conditions count from the first post-patch status). A Start button
+  brings a stopped sandbox back without a message (runner op `start`).
+- 2026-09-17 (in-app check on GKE, all green): form size 0.5 CPU · 1 GiB
+  → pod at 500m/1Gi (10.6 s create); agent `request_resources` 2 CPUs ·
+  3 GiB → approval card → in-place refused → chat stopped, pod replaced
+  at 2 CPU · 3 GiB (11 s), Warden's note resumed the run, `nproc` 2 and
+  3072 MiB; panel Change… on a running workspace → same path in the
+  background; Start on a stopped workspace → pod back at its size. The
+  slow first reply is the model: Codex's session log shows 20–34 s from
+  the user message to the first output with no reasoning item; the
+  gateway path is 50 ms. Warden now asks Codex for detailed reasoning
+  summaries (a "Thinking…" step while it reasons), counts the first-reply
+  wait from 3 s in the status line, and no longer takes Codex's echo of
+  the user message for the first reply.

@@ -28,7 +28,10 @@ export function startupLine(s: Startup, now = Date.now() / 1000): string {
   const elapsed = Math.max(0, Math.floor(now - s.since));
   const parts = [stageLabel(s.stage)];
   if (s.detail) parts.push(s.detail);
-  if (elapsed >= 15) parts.push(`${elapsed} s`);
+  // The wait for the model's first reply is the one people watch: count
+  // it from the start; the others only once they are long.
+  if (elapsed >= (s.stage === "firstResponse" ? 3 : 15))
+    parts.push(`${elapsed} s`);
   return parts.join(" · ");
 }
 

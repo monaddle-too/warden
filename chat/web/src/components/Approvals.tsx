@@ -70,7 +70,7 @@ function describeGrant(approval: Approval) {
         title: `Give this workspace ${wanted}`,
         text: p.restart
           ? `Up from ${current}. The sandbox restarts to take the new size: the agent's process ends, files and this conversation are kept, and Warden resumes the chat afterwards. You can shrink it again from the workspace panel.`
-          : `Up from ${current}, applied at once without a restart. You can shrink it again from the workspace panel.`,
+          : `Up from ${current}. Applied to the running sandbox where the cluster allows it; otherwise the sandbox restarts with the new size (files and this conversation are kept, Warden resumes the chat). You can shrink it again from the workspace panel.`,
         reason,
         button: "Resize to " + wanted,
       };
