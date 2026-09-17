@@ -17,7 +17,7 @@ import (
 )
 
 func imageTools() []any {
-	return []any{map[string]any{"type": "function", "name": "attach_image", "description": "Show a PNG/JPEG image from a relative path beneath this conversation's workspace. Warden sanitizes and stores an immutable image attachment in the chat. Returns an image_id to include in request_pull_request images. Maximum 8 MiB input and 4 megapixels. Do not use URLs or absolute paths.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "caption": map[string]any{"type": "string", "maxLength": 500}}, "required": []string{"path", "caption"}, "additionalProperties": false}}}
+	return []any{map[string]any{"type": "function", "name": "attach_image", "description": "Show a PNG/JPEG image from a relative path beneath this conversation's workspace. Warden sanitizes and stores an immutable image attachment in the chat. Returns an image_id to include in request_pull_request images, or to place in a shared Google Doc: with structure-level document access, send a Docs batchUpdate insertInlineImage whose uri is warden-image:<image_id> and Warden serves the image to Google for that edit only. Maximum 8 MiB input and 4 megapixels. Do not use URLs or absolute paths.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "caption": map[string]any{"type": "string", "maxLength": 500}}, "required": []string{"path", "caption"}, "additionalProperties": false}}}
 }
 func (e *Engine) imageTool(ctx context.Context, c *Chat, client *agent.Client, f agent.Frame) error {
 	var in struct {
@@ -86,6 +86,32 @@ func (e *Engine) attachImage(ctx context.Context, c *Chat, path, caption string)
 		return nil
 	})
 	return image, err
+}
+
+// publishedHTTP serves an attached image Google was told to fetch for a
+// Docs inline-image edit. No sign-in: the token is the capability, minted by
+// the policy service for one edit and withdrawn when the edit finishes.
+func (h *HTTP) publishedHTTP(w http.ResponseWriter, r *http.Request) {
+	token, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/published/"), ".png")
+	if !ok || token == "" || strings.Contains(token, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	result, err := h.Engine.sharingCall(r.Context(), "image_published", map[string]any{"token": token})
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	png, err := base64.StdEncoding.DecodeString(agent.String(result["png"]))
+	if err != nil || len(png) > imageguard.MaxBytes {
+		http.Error(w, "invalid image", 500)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Content-Disposition", "inline")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(png)
 }
 
 type imageOutput struct{ bytes.Buffer }

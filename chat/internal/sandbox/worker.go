@@ -63,14 +63,14 @@ type Worker struct {
 	// Cluster is the driver's view of the cluster the sandboxes run in
 	// (Kubernetes); nil on the sbx shapes, where the cluster operations
 	// report unavailable.
-	Cluster                       ClusterInspector
-	Gate                          Enforcement
-	Runtime                       RuntimeDriver
-	RepositorySource              RepositorySource
-	IdleTimeout                   time.Duration
-	MaxResident                   int
-	MemoryMB                      int
-	Now                           func() time.Time
+	Cluster          ClusterInspector
+	Gate             Enforcement
+	Runtime          RuntimeDriver
+	RepositorySource RepositorySource
+	IdleTimeout      time.Duration
+	MaxResident      int
+	MemoryMB         int
+	Now              func() time.Time
 	// PreviewListener and PreviewAddress switch the preview proxy to one
 	// shared server (docs/warden-kubernetes-plan.md, decisions 5 and 10;
 	// config services.runner.previews): Serve runs it on the listener,
@@ -196,6 +196,7 @@ func atomicJSON(path string, v any) error {
 	}
 	return os.Rename(path+".tmp", path)
 }
+
 const fileScript = `import sys,os,json,base64,stat
 root,path,mode=sys.argv[1:]
 path=os.path.realpath(os.path.join(root,path))
@@ -209,6 +210,7 @@ if mode=='file':
  result['bytes']=base64.b64encode(data).decode()
 print(json.dumps(result))
 `
+
 // Descriptor-relative traversal prevents symlink and rename races inside a guest.
 const imageFileScript = `import sys,os,json,base64,stat
 root,path,mode=sys.argv[1:]

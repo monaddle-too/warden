@@ -36,22 +36,22 @@ type WorkerStatus struct {
 }
 
 type Request struct {
-	Provider        string   `json:"provider,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	ChatID          string   `json:"chatID,omitempty"`
-	SandboxID       string   `json:"sandboxID,omitempty"`
-	RunID           string   `json:"runID,omitempty"`
-	PrincipalID     string   `json:"principalID,omitempty"`
-	CallID          string   `json:"callID,omitempty"`
-	AttachmentID    string   `json:"attachmentID,omitempty"`
-	Port            int      `json:"port,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+	ChatID       string `json:"chatID,omitempty"`
+	SandboxID    string `json:"sandboxID,omitempty"`
+	RunID        string `json:"runID,omitempty"`
+	PrincipalID  string `json:"principalID,omitempty"`
+	CallID       string `json:"callID,omitempty"`
+	AttachmentID string `json:"attachmentID,omitempty"`
+	Port         int    `json:"port,omitempty"`
 	// Namespace, Pod, Container, Tail and Previous select pod logs
 	// (cluster.logs).
-	Namespace string `json:"namespace,omitempty"`
-	Pod       string `json:"pod,omitempty"`
-	Container string `json:"container,omitempty"`
-	Tail      int    `json:"tail,omitempty"`
-	Previous  bool   `json:"previous,omitempty"`
+	Namespace       string   `json:"namespace,omitempty"`
+	Pod             string   `json:"pod,omitempty"`
+	Container       string   `json:"container,omitempty"`
+	Tail            int      `json:"tail,omitempty"`
+	Previous        bool     `json:"previous,omitempty"`
 	Path            string   `json:"path,omitempty"`
 	Title           string   `json:"title,omitempty"`
 	NewSession      bool     `json:"newSession,omitempty"`

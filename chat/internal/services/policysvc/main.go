@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -197,6 +198,11 @@ func run(args []string) error {
 	defer sharing.Close()
 	sharing.GitHubConfigured, sharing.GitHubAppSlug = s.githubConfigured, s.githubSlug
 	sharing.Egress = registry
+	sharing.Network = registry
+	// Attached images are published for Docs edits only at an https origin.
+	if strings.HasPrefix(s.publicURL, "https://") {
+		sharing.PublicURL = s.publicURL
+	}
 	registry.Sharing = sharing
 	if *claudeAuth != "" {
 		registry.ClaudeSource = &policy.ClaudeCredentials{Path: *claudeAuth}

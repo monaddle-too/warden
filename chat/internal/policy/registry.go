@@ -186,6 +186,18 @@ func (r *Registry) SetEgressMode(mode string) error {
 	return os.Rename(tmp, filepath.Join(r.State, egressFile))
 }
 
+// AllowHost applies an owner-approved temporary egress grant to the sandbox
+// with this ID (its current binding's engine).
+func (r *Registry) AllowHost(sandbox, host string, until float64) error {
+	r.mu.Lock()
+	b := r.Bindings[sandbox]
+	r.mu.Unlock()
+	if b == nil || b.Engine == nil {
+		return errors.New("sandbox is not registered with the policy service")
+	}
+	return b.Engine.AllowHost(host, until)
+}
+
 // LoadEgressMode reads a mode persisted by SetEgressMode, or "" when none.
 func LoadEgressMode(state string) (string, error) {
 	raw, err := os.ReadFile(filepath.Join(state, egressFile))
@@ -910,7 +922,7 @@ func (r *Registry) DocumentRequest(sandbox string, capability any, message map[s
 	return map[string]any{"allow": true, "status": status, "body": base64.StdEncoding.EncodeToString(data)}, nil
 }
 
-var gatewayActions = stringSet("authorize", "egress", "active", "event", "egress.finish", "provider", "providerRoute", "destination")
+var gatewayActions = stringSet("authorize", "egress", "active", "event", "egress.finish", "unpublish", "provider", "providerRoute", "destination")
 var providerRouteTargets = map[[2]string]bool{
 	{"api.openai.com", "/v1/responses"}:                true,
 	{"api.openai.com", "/v1/chat/completions"}:         true,
@@ -975,13 +987,14 @@ func (r *Registry) Proxy(sandbox string, capability any, message any) (map[strin
 		}
 		return map[string]any{"active": active}, nil
 	}
-	if sharing != nil && action == "authorize" && requestHost == "docs.googleapis.com" {
+	if sharing != nil && action == "authorize" && (requestHost == "docs.googleapis.com" || requestHost == "sheets.googleapis.com") {
 		denied := map[string]any{"allow": false, "status": 403, "reason": "Google document access requires an active sharing grant"}
 		if !engine.NetworkEnabled() {
 			return denied, nil
 		}
-		grant, authorization, err := sharing.Authorize(lease.ChatID, sandbox, request)
+		grant, authorization, rewrite, err := sharing.Authorize(lease.ChatID, sandbox, request)
 		if err != nil {
+			denied["reason"] = err.Error()
 			return denied, nil
 		}
 		grantID, _ := grant["request_id"].(string)
@@ -999,7 +1012,29 @@ func (r *Registry) Proxy(sandbox string, capability any, message any) (map[strin
 		if remaining < 0 {
 			remaining = 0
 		}
-		return map[string]any{"allow": true, "authorization": authorization, "decision_id": decision, "request_id": decision, "expires_at": expires, "remaining_seconds": remaining}, nil
+		result := map[string]any{"allow": true, "authorization": authorization, "decision_id": decision, "request_id": decision, "expires_at": expires, "remaining_seconds": remaining}
+		if rewrite != nil {
+			result["body_base64"] = base64.StdEncoding.EncodeToString(rewrite.Body)
+			published := make([]any, 0, len(rewrite.Publications))
+			for _, t := range rewrite.Publications {
+				published = append(published, t)
+			}
+			result["publications"] = published
+		}
+		return result, nil
+	}
+	if sharing != nil && action == "unpublish" {
+		// The gateway reports a Docs image edit finished; the published
+		// images go away whatever the upstream answered.
+		var tokens []string
+		items, _ := msg["publications"].([]any)
+		for _, t := range items {
+			if token, ok := t.(string); ok {
+				tokens = append(tokens, token)
+			}
+		}
+		sharing.Images.Unpublish(tokens)
+		return map[string]any{"released": true}, nil
 	}
 	if sharing != nil && action == "active" && strings.HasPrefix(decisionID, "gdoc-") {
 		record := b.Decisions[decisionID]
@@ -1023,7 +1058,7 @@ func (r *Registry) Proxy(sandbox string, capability any, message any) (map[strin
 		// CONNECT hostnames so rejected names cannot become DNS egress.
 		method, _ := request["method"].(string)
 		scheme, _ := request["scheme"].(string)
-		allow := requestHost == "github.com" || requestHost == "api.github.com" || requestHost == "api.figma.com" || requestHost == "docs.googleapis.com" || EgressPermits(engine.egressPolicyCopy(), requestHost, method, scheme, false)
+		allow := requestHost == "github.com" || requestHost == "api.github.com" || requestHost == "api.figma.com" || requestHost == "docs.googleapis.com" || requestHost == "sheets.googleapis.com" || EgressPermits(engine.egressPolicyCopy(), requestHost, method, scheme, false) || engine.HostAllowed(requestHost)
 		if allow {
 			if _, err := engine.Audit.Emit("dns.query", map[string]any{"hostname": requestHost, "reason": "SBX destination checked before resolution"}); err != nil {
 				return nil, err
@@ -1188,14 +1223,19 @@ func (r *Registry) Dispatch(message any) (map[string]any, error) {
 		return map[string]any{"version": 1, "ok": true, "protocol": release.Protocol, "revision": release.Revision}, nil
 	}
 	if operation == "sharing" {
+		// Sharing is driven by the chat service on the owner's behalf and
+		// its refusals are written for people ("Refresh the GitHub sign-in
+		// before using repositories", "repository is not shared with this
+		// workspace"), so unlike sandbox-facing operations the message is
+		// returned; the caller shows it to the owner and the agent.
 		if !sameKeys(msg, "version", "operation", "action", "data") || r.Sharing == nil {
-			return nil, errors.New("sharing unavailable")
+			return map[string]any{"version": 1, "ok": false, "error": "sharing unavailable"}, nil
 		}
 		action, _ := msg["action"].(string)
 		data, _ := msg["data"].(map[string]any)
 		result, err := r.Sharing.Dispatch(action, data)
 		if err != nil {
-			return nil, err
+			return map[string]any{"version": 1, "ok": false, "error": err.Error()}, nil
 		}
 		return map[string]any{"version": 1, "ok": true, "result": result}, nil
 	}

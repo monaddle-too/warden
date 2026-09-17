@@ -202,7 +202,7 @@ func TestAppWritePermissionsAreNarrow(t *testing.T) {
 	if perms["pull_requests"] != "write" {
 		t.Fatal("pull permissions")
 	}
-	for _, op := range []string{"admin/delete", "issues/create", "users/get-authenticated"} {
+	for _, op := range []string{"admin/delete", "issues/delete-comment", "users/get-authenticated"} {
 		if _, err := GitHubPermissions(op); err == nil {
 			t.Fatalf("%s accepted", op)
 		}

@@ -119,6 +119,10 @@ func run(args []string) error {
 	// previews.address, a tls:// URL the ports proxy dials as https:// with
 	// this service's certificate); "" keeps the loopback attachment URLs.
 	engine.RunnerPreviewHost, engine.RunnerPreviewTLS = config.HostOf(s.runnerPreviews), s.tls
+	// LocalMode offers the owner's own directories to an agent: a
+	// single-owner install on a machine with such directories, which the
+	// Kubernetes shape is not (the runner is a pod).
+	engine.LocalMode = s.cfg.Auth.Mode == config.AuthOwner && s.cfg.RuntimeKind() != config.RuntimeKubernetes
 	handler.Engine = engine
 	go engine.Serve(ctx)
 	defer func() { cancel(); <-engine.Done() }()

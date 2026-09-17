@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"warden/chat/internal/config"
@@ -140,7 +141,7 @@ func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
 		s.githubConfigured = true
 	}
 	s.chatListen = config.Override(o, "chat-listen", *f.chatListen, "chat.listen", cfg.Chat.Listen)
-	s.publicURL = cfg.Auth.PublicURL
+	s.publicURL = strings.TrimRight(cfg.Auth.PublicURL, "/")
 	if env := os.Getenv("WARDEN_GITHUB_APP_BROKER"); env != "" {
 		if source != "" && broker != "" && broker != env {
 			return settings{}, errNamed("$WARDEN_GITHUB_APP_BROKER " + env + " disagrees with providers.github.brokerFile " + broker + " in " + source)

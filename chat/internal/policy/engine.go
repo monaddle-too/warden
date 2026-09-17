@@ -58,6 +58,7 @@ type Engine struct {
 	restOrder        []string
 	networkDecisions map[string]float64
 	networkEnabled   bool
+	hostAllows       map[string]float64 // host -> unix expiry of an owner-approved temporary allow
 	fingerprintKey   []byte
 	policyPath       string
 }
@@ -482,12 +483,16 @@ func (e *Engine) AuthorizeEgress(request map[string]any) (map[string]any, error)
 		scheme = s
 	}
 	tls, _ := request["tls"].(bool)
+	reason := "destination policy"
 	allowed := e.networkEnabled && EgressPermits(e.egressPolicy(), host, method, scheme, tls)
+	if !allowed && e.networkEnabled && !tls && (scheme == "https" || scheme == "http") && e.hostAllowedLocked(host) {
+		allowed, reason = true, "temporary grant"
+	}
 	event := "egress.denied"
 	if allowed {
 		event = "egress.allowed"
 	}
-	if _, err := e.Audit.Emit(event, map[string]any{"hostname": host, "request": map[string]any{"method": method, "host": host, "scheme": scheme}, "reason": "destination policy"}); err != nil {
+	if _, err := e.Audit.Emit(event, map[string]any{"hostname": host, "request": map[string]any{"method": method, "host": host, "scheme": scheme}, "reason": reason}); err != nil {
 		return nil, err
 	}
 	if !allowed {
@@ -505,6 +510,43 @@ func (e *Engine) AuthorizeEgress(request map[string]any) (map[string]any, error)
 	decision := UUID4()
 	e.networkDecisions[decision] = now + 3600
 	return map[string]any{"allow": true, "decision_id": decision, "remaining_seconds": 3600, "request_id": UUID4()}, nil
+}
+
+// AllowHost grants this sandbox HTTP and HTTPS egress to one public host
+// until the given unix time, beside the policy's destination list: the
+// owner approved an agent's request_network_access. It lives in memory (a
+// policy service restart forgets it; the agent asks again) and is audited.
+func (e *Engine) AllowHost(host string, until float64) error {
+	if !ValidHost(host) {
+		return errors.New("a canonical public DNS hostname is required")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.hostAllows == nil {
+		e.hostAllows = map[string]float64{}
+	}
+	e.hostAllows[host] = until
+	_, err := e.Audit.Emit("egress.granted", map[string]any{"hostname": host, "expires_at": until, "reason": "owner approved network access"})
+	return err
+}
+
+// HostAllowed reports whether a temporary grant covers host right now.
+func (e *Engine) HostAllowed(host string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.hostAllowedLocked(host)
+}
+
+func (e *Engine) hostAllowedLocked(host string) bool {
+	until, ok := e.hostAllows[host]
+	if !ok {
+		return false
+	}
+	if until <= e.Now() {
+		delete(e.hostAllows, host)
+		return false
+	}
+	return true
 }
 
 // FinishEgress releases an in-flight decision.
@@ -713,6 +755,18 @@ func (e *Engine) normalizeLocked(request map[string]any) (*Normalized, error) {
 		result.Summary = map[string]any{"method": method, "host": host, "path": e.Redactor.Text(path), "operation": opID, "file_key": fileKey, "provider": "figma", "body": e.Redactor.Body(len(body))}
 		return result, nil
 	}
+	if host == "sheets.googleapis.com" {
+		access, spreadsheetID, err := GoogleSheetsOperation(method, pathOnly, query, body)
+		if err != nil {
+			return nil, err
+		}
+		opID := "google_sheets/spreadsheets/" + access
+		result.Fingerprint = fingerprint
+		result.Operation = &Operation{OperationID: opID}
+		result.DocumentID = spreadsheetID
+		result.Summary = map[string]any{"method": method, "host": host, "path": e.Redactor.Text(path), "operation": opID, "document_id": spreadsheetID, "provider": "google_sheets", "body": e.Redactor.Body(len(body))}
+		return result, nil
+	}
 	if host == "docs.googleapis.com" {
 		opID, documentID, err := GoogleDocsOperation(method, pathOnly, query, body)
 		if err != nil {
@@ -855,7 +909,7 @@ func (e *Engine) Authorize(request map[string]any) (map[string]any, error) {
 	host, _ := n.Request["host"].(string)
 	scheme, _ := n.Request["scheme"].(string)
 	port, _ := asInt(n.Request["port"])
-	isGoogle := host == "docs.googleapis.com"
+	isGoogle := host == "docs.googleapis.com" || host == "sheets.googleapis.com"
 	isFigma := host == "api.figma.com"
 	isGit := n.Operation != nil && (n.Operation.OperationID == "git/read" || n.Operation.OperationID == "git/push") && host == "github.com"
 	reason := ""

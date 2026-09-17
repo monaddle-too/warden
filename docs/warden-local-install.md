@@ -412,6 +412,43 @@ chats but keeps sandboxes and logins; deleting only `provider/<file>` (or
 `sbx/login.json` makes the next install run the SBX sign-in again. Your
 own sbx namespace is unaffected by any of this.
 
+## What an agent can ask for
+
+Besides sharing documents and repositories yourself, an agent can ask, and
+every request becomes an approval card in the chat, a popup and a
+`warden chat approve` item. Nothing happens until you answer, and the
+answer and who gave it land in the workspace's Access history.
+
+- **Network access** (`request_network_access`): one public host over
+  HTTP/HTTPS for a bounded time, this sandbox only, no credential attached.
+  Useful in restricted mode when an install or download is refused.
+- **Repository access** (`request_repository_access`): share a repository
+  with the workspace, or add read categories (code, issues, pull requests)
+  to one already shared.
+- **Small GitHub writes** (`github_write`): a comment on an issue or pull
+  request, a new issue, or labels. The card shows the exact text; Warden
+  posts it with your credential. Anything larger is a pull request
+  proposal.
+- **Spreadsheets** are part of document sharing: the picker lists Google
+  Sheets beside Docs, and a grant covers the Sheets API for the chosen
+  IDs. Document grants come in three levels, each including the ones
+  below: **read**; **write** (Docs text and styling, Sheets cell values);
+  **structure** (tables, tabs, adding or deleting sheets, formats, charts).
+  Reconnect Google once after upgrading so the spreadsheet scope is
+  granted.
+- **Images in Docs** (public deployments only): with structure access an
+  agent can place an image it attached with `attach_image` into a shared
+  document. Google only takes images by URL and copies them at insertion,
+  so Warden publishes the attachment at an unguessable address under
+  `auth.publicURL` for that one edit and withdraws it as soon as Google
+  has answered. Any other image URL is refused. A loopback install has no
+  address Google can reach, so the edit fails there with that reason.
+- **Host directories** (local installs only; `request_host_directory` and
+  `sync_host_directory`): copy a directory from this machine into the
+  sandbox at `/home/agent/host/<name>` (a snapshot, up to 1 GiB, never
+  Warden's own state), and later copy the sandbox's version back over it,
+  merging file by file without deleting anything.
+
 ## Network access from a sandbox
 
 Every sandbox is created with sbx's network fully denied and exactly one

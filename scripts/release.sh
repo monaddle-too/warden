@@ -1,15 +1,15 @@
 #!/bin/sh
-# Build a Warden release locally, without GitHub Actions: the frontend, the
-# warden binary for linux/amd64, linux/arm64 and darwin/arm64 with the
-# revision linked in, one tarball per target and SHA256SUMS, exactly as
-# .github/workflows/release.yml does. With --chart it also packages the Helm
-# chart (scripts/package-chart.sh: chart version = the tag without its v,
-# appVersion = the tag, values defaulting image.tag to the tag) beside the
-# tarballs. With --publish (which implies --chart) it creates the GitHub
-# release for the current tag with `gh`, pushes the chart to
-# oci://ghcr.io/monaddle-too/charts with `helm push` and attaches the chart
-# tarball to the release. GitHub Releases and GHCR pushes cost no Actions
-# minutes, so this is the complete path when the Actions budget is exhausted.
+# Build a Warden release: the frontend, the warden binary for linux/amd64,
+# linux/arm64 and darwin/arm64 with the revision linked in, one tarball per
+# target and SHA256SUMS. .github/workflows/release.yml runs this script on the
+# self-hosted Mac runner and adds the server image, the Helm chart and the
+# GitHub release; run it by hand for the same tarballs without Actions. With
+# --chart it also packages the Helm chart (scripts/package-chart.sh: chart
+# version = the tag without its v, appVersion = the tag, values defaulting
+# image.tag to the tag) beside the tarballs. With --publish (which implies
+# --chart) it creates the GitHub release for the current tag with `gh`
+# itself, pushes the chart to oci://ghcr.io/monaddle-too/charts with `helm
+# push` and attaches the chart tarball to the release.
 #
 #   scripts/release.sh [--version vX.Y.Z] [--skip-tests] [--chart] [--publish]
 #
@@ -88,8 +88,8 @@ $PNPM --dir chat/web install --frozen-lockfile
 $PNPM --dir chat/web build
 test -f chat/web/dist/index.html
 
-# Go runs from the module cache; nothing is fetched.
-export GOPROXY=off GOFLAGS=-mod=mod CGO_ENABLED=0
+# Go resolves from the module cache unless the caller sets GOPROXY (CI does).
+export GOPROXY="${GOPROXY:-off}" GOFLAGS=-mod=mod CGO_ENABLED=0
 if [ "$SKIP_TESTS" != 1 ]; then
   test -z "$(gofmt -l chat)"
   go -C chat vet ./...
@@ -140,7 +140,7 @@ for target in linux-amd64 linux-arm64 darwin-arm64; do
     find "$stage" -exec touch -m -d "@$mtime" {} + 2>/dev/null || find "$stage" -exec touch -m -t "$(date -r "$mtime" +%Y%m%d%H%M.%S)" {} +
   fi
   # shellcheck disable=SC2086
-  tar -C dist/stage $TARFLAGS -czf "dist/release/$name.tar.gz" "$name"
+  COPYFILE_DISABLE=1 tar -C dist/stage $TARFLAGS --no-xattrs -czf "dist/release/$name.tar.gz" "$name"
 done
 (cd dist/release && { command -v sha256sum >/dev/null 2>&1 && sha256sum -- *.tar.gz || shasum -a 256 -- *.tar.gz; } > SHA256SUMS && cat SHA256SUMS)
 

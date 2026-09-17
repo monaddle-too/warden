@@ -24,7 +24,7 @@ func sharingTools() []any {
 		}, "required": []string{}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "list_shared_repositories", "description": "List the GitHub repositories shared with this conversation, with clone and API URLs and which read categories the user granted each (access: contents = code, branches, commits and git clone; issues = issues, comments, labels, milestones; pull_requests = pull requests, their files and reviews). Persistent read-only access lasts until the user removes a repository. Use HTTPS Git or GitHub REST through the sandbox proxy; never request credentials. Check this tool when you need repository access.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "request_google_document_creation", "description": "Request owner approval to create one Google document with this title and grant this conversation temporary read/write access to it. Waits for approval; returns the created document API URL. Then fill the document with POST {api_url}:batchUpdate through the sandbox proxy. Do not call documents.create yourself. Never request credentials.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"title": map[string]any{"type": "string", "maxLength": 200}, "reason": map[string]any{"type": "string", "maxLength": 2000}}, "required": []string{"title", "reason"}, "additionalProperties": false}},
-		map[string]any{"type": "function", "name": "request_google_docs_access", "description": "Ask the user to select Google documents and an access duration for read or write permission (default read). Write permits batchUpdate text insertion/deletion and text/paragraph styling on the selected IDs only. Waits for their decision; returns only selected document IDs and API URLs. Read them with HTTPS requests through the sandbox proxy. Never request Google credentials.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"reason": map[string]any{"type": "string", "maxLength": 2000}, "access": map[string]any{"type": "string", "enum": []string{"read", "write"}}}, "required": []string{"reason"}, "additionalProperties": false}},
+		map[string]any{"type": "function", "name": "request_google_docs_access", "description": "Ask the user to select Google documents or spreadsheets and an access duration at one permission level (default read). read: Docs documents.get and Sheets reads. write: also Docs batchUpdate text insertion/deletion and text/paragraph styling, and Sheets cell value writes (values update/append/clear). structure: also every other Docs batchUpdate request (tables, tabs, headers, named ranges) and Sheets spreadsheets:batchUpdate (add/delete sheets, formats, charts, merges). Images: only attached ones, via insertInlineImage with uri warden-image:<image_id> from attach_image at structure level; remote image URLs are never allowed. Each level includes the ones below, on the selected IDs only. Ask for the lowest level that does the job. Waits for their decision; returns the selected IDs with their API URLs (docs.googleapis.com for documents, sheets.googleapis.com for spreadsheets). Read them with HTTPS requests through the sandbox proxy. Never request Google credentials.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"reason": map[string]any{"type": "string", "maxLength": 2000}, "access": map[string]any{"type": "string", "enum": []string{"read", "write", "structure"}}}, "required": []string{"reason"}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "list_shared_documents", "description": "List this conversation's currently shared Google documents, API URLs and grant expiry times.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}},
 	}...)
 }
@@ -50,15 +50,32 @@ func (e *Engine) sharingCall(ctx context.Context, op string, data map[string]any
 	}
 	var res struct {
 		OK     bool           `json:"ok"`
+		Error  string         `json:"error"`
 		Result map[string]any `json:"result"`
 	}
 	if err = json.Unmarshal(scanner.Bytes(), &res); err != nil {
 		return nil, err
 	}
 	if !res.OK {
-		return nil, errors.New("Sharing unavailable; check the connected account and selected resources")
+		// The policy service words its sharing refusals for people; an
+		// answer without one is the control server rejecting the frame.
+		if res.Error == "" {
+			res.Error = "Sharing unavailable; check the connected account and selected resources"
+		}
+		return nil, errors.New(res.Error)
 	}
 	return res.Result, nil
+}
+
+// githubDisconnected reports a sharing error that means no GitHub
+// connection is usable at all (never connected, sign-in missing or
+// rejected, sharing not running), as opposed to a refusal of one request.
+func githubDisconnected(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return msg == "GitHub is not connected" || strings.HasPrefix(msg, "Refresh the GitHub sign-in") || strings.HasPrefix(msg, "Sharing unavailable") || msg == "sharing unavailable" || msg == "Sharing is not configured"
 }
 func sharingToolResult(result map[string]any, err error) map[string]any {
 	text := ""
@@ -244,7 +261,7 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 	op := strings.TrimPrefix(path, "sharing/")
 	data := map[string]any{}
 	if r.Method == "GET" {
-		if op != "state" && op != "status" && op != "files" && op != "blocked" && op != "github_repositories" && op != "github_list" && op != "pr_state" && op != "pr_preview" && op != "egress" {
+		if op != "state" && op != "status" && op != "files" && op != "blocked" && op != "github_repositories" && op != "github_list" && op != "pr_state" && op != "pr_preview" && op != "egress" && op != "history" {
 			http.Error(w, "not found", 404)
 			return
 		}
@@ -262,6 +279,9 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 		}
 		if op == "github_list" {
 			data["chatID"] = r.URL.Query().Get("chatID")
+		}
+		if op == "history" {
+			data["sandboxID"] = r.URL.Query().Get("sandboxID")
 		}
 		if op == "pr_preview" {
 			data["id"] = r.URL.Query().Get("id")
@@ -281,6 +301,19 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(&data); err != nil {
 			http.Error(w, "invalid request", 400)
 			return
+		}
+		// Console decisions are attributed to the person the edge identified
+		// (name, else email); a client cannot claim an actor itself.
+		who := requester(r)
+		switch {
+		case who.Name != "":
+			data["actor"] = who.Name
+		case who.Email != "":
+			data["actor"] = who.Email
+		case who.PrincipalID == "owner":
+			data["actor"] = "owner"
+		default:
+			data["actor"] = who.PrincipalID
 		}
 	} else {
 		http.Error(w, "not found", 404)

@@ -24,7 +24,9 @@ type snapshotState struct {
 }
 
 func (w *Worker) snapshotStore() *snapshotState {
-	w.snapshotOnce.Do(func() { w.snapshots = &snapshotState{sandboxes: map[string]sandboxSnapshot{}, usage: map[string]SandboxUsage{}} })
+	w.snapshotOnce.Do(func() {
+		w.snapshots = &snapshotState{sandboxes: map[string]sandboxSnapshot{}, usage: map[string]SandboxUsage{}}
+	})
 	return w.snapshots
 }
 

@@ -315,9 +315,11 @@ the workflow summary.
    (the previous target remains under `/opt/warden/releases/`), then
    `docker compose -f /opt/warden/current/deploy/chat/compose.yaml up -d`
    and `systemctl restart warden-edge` only if the edge binary changed
-   (copy `bin/warden` to `/opt/warden-preview/warden` and install the
-   updated `warden-edge.service`, whose ExecStart is now `warden edge`; the
-   config file is unchanged).
+   (copy `bin/warden` to `/opt/warden-preview/warden.new` and `mv -f` it
+   over `/opt/warden-preview/warden`: a plain `cp` onto the running binary
+   fails with "Text file busy"; then install the updated
+   `warden-edge.service`, whose ExecStart is `warden edge`; the config file
+   is unchanged).
 7. Verify, in order:
    - `docker logs --tail 20 warden-chat-1` shows
      `warden-chat <tag> protocol=2; warden-runner <tag> protocol=2; warden-policy <tag> protocol=2`

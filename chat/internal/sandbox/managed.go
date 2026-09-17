@@ -656,6 +656,17 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 			return Response{}, errors.New("invalid sandbox file response")
 		}
 		return result, nil
+	case "host.import", "host.export":
+		// Owner-approved copy of a host directory into the sandbox, or of
+		// the sandbox's copy back over it (local installs only; the chat
+		// enforces the mode, the runner enforces the path rules).
+		if s.State != "running" {
+			return Response{}, errors.New("sandbox is stopped; resume the chat first")
+		}
+		if err = w.Gate.Check(ctx, s.Grant, "runtime"); err != nil {
+			return Response{}, err
+		}
+		return w.hostDirectoryLocked(ctx, s, r)
 	case "preview.attach":
 		return w.attachLocked(ctx, r)
 	case "preview.remove":
@@ -1325,4 +1336,66 @@ func pinnedClaudeDigest(sha256 string) bool {
 		}
 	}
 	return false
+}
+
+// hostDirectoryLimit bounds what request_host_directory may copy.
+const hostDirectoryLimit = 1 << 30
+
+// hostDirectoryLocked validates a host directory and copies it into
+// /home/agent/host/<name> (host.import) or the sandbox's copy back over the
+// host directory, merging file by file (host.export). The path must be an
+// absolute existing directory outside Warden's own state and under 1 GiB.
+func (w *Worker) hostDirectoryLocked(ctx context.Context, s *managedSandbox, r Request) (Response, error) {
+	host := filepath.Clean(r.Path)
+	if !filepath.IsAbs(host) || host == "/" {
+		return Response{}, errors.New("an absolute directory path is required")
+	}
+	info, err := os.Lstat(host)
+	if err != nil || !info.IsDir() {
+		return Response{}, errors.New("not an existing directory on this machine")
+	}
+	state := filepath.Dir(w.Root)
+	if host == state || strings.HasPrefix(host, state+string(filepath.Separator)) {
+		return Response{}, errors.New("Warden's own state directory cannot be shared")
+	}
+	var total int64
+	err = filepath.WalkDir(host, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if fi, err := d.Info(); err == nil && fi.Mode().IsRegular() {
+			total += fi.Size()
+		}
+		if total > hostDirectoryLimit {
+			return errors.New("directory exceeds 1 GiB")
+		}
+		return nil
+	})
+	if err != nil {
+		return Response{}, err
+	}
+	name := filepath.Base(host)
+	guest := "/home/agent/host/" + name
+	if r.Operation == "host.export" {
+		if _, err := w.Runtime.Exec(ctx, s.RuntimeName, s.Directory, "test", "-d", guest); err != nil {
+			return Response{}, errors.New("the sandbox has no copy of that directory; share it first")
+		}
+		if err := w.Runtime.CopyOut(ctx, s.RuntimeName, guest, filepath.Dir(host)); err != nil {
+			return Response{}, err
+		}
+		return Response{Directory: guest, Output: host}, nil
+	}
+	if _, err := w.Runtime.Exec(ctx, s.RuntimeName, s.Directory, "sudo", "mkdir", "-p", "/home/agent/host"); err != nil {
+		return Response{}, err
+	}
+	if err := w.Runtime.Copy(ctx, s.RuntimeName, host, "/home/agent/host"); err != nil {
+		return Response{}, err
+	}
+	if _, err := w.Runtime.Exec(ctx, s.RuntimeName, s.Directory, "sudo", "chown", "-R", "agent:agent", "/home/agent/host"); err != nil {
+		return Response{}, err
+	}
+	return Response{Directory: guest, Output: host}, nil
 }

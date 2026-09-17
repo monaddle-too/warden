@@ -119,6 +119,8 @@ type RuntimeDriver interface {
 	Prepare(context.Context, RuntimeSpec) (io.Closer, error)
 	Exec(context.Context, string, string, ...string) (string, error)
 	Copy(context.Context, string, string, string) error
+	// CopyOut copies a guest path to a host path (the reverse of Copy).
+	CopyOut(context.Context, string, string, string) error
 	// Address is where the core reaches the guest's published ports and
 	// its own services: the loopback address for SBX, a pod IP later.
 	Address(context.Context, string) (string, error)
@@ -285,6 +287,9 @@ func (d *sbxRuntime) Copy(ctx context.Context, name, source, target string) erro
 		}
 	}
 	return command(ctx, d.worker.Executable, "cp", source, name+":"+target).Run()
+}
+func (d *sbxRuntime) CopyOut(ctx context.Context, name, source, target string) error {
+	return command(ctx, d.worker.Executable, "cp", name+":"+source, target).Run()
 }
 
 // Address is the loopback address: SBX publishes guest ports on the host's

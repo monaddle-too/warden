@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Archive, ExternalLink, Square, Trash2 } from "lucide-react";
-import type { Chat, Environment, PodInfo, SandboxUsage } from "../types";
+import { Archive, ExternalLink, History, Square, Trash2 } from "lucide-react";
+import type { AccessEvent, Chat, Environment, PodInfo, SandboxUsage } from "../types";
 import { stageLabel } from "../stages";
 import { cpu, memory } from "../units";
 import { api } from "../api";
@@ -13,6 +13,49 @@ const remaining = (value: number | null) => {
   if (minutes < 24 * 60) return `${Math.round(minutes / 60)} h`;
   return `${Math.round(minutes / 1440)} d`;
 };
+const when = (value?: number | null) =>
+  value ? new Date(value * 1000).toLocaleString() : "";
+// One line per access event, for the history list.
+function describe(e: AccessEvent): string {
+  if (e.kind === "repositories_selected") {
+    const names = Object.entries(e.repositories || {});
+    if (!names.length) return "Repository sharing cleared";
+    return (
+      "Repositories shared: " +
+      names
+        .map(
+          ([n, a]) =>
+            `${n} (${(a || "").replaceAll("pull_requests", "pull requests").replaceAll("contents", "code").replaceAll(",", ", ")})`,
+        )
+        .join(", ")
+    );
+  }
+  if (e.kind === "github_disconnected") return "GitHub disconnected";
+  const docs = (e.documents || []).map((d) => d.title).join(", ");
+  const what = docs || e.title || "documents";
+  const access =
+    e.access === "read"
+      ? "read"
+      : e.access === "create"
+        ? "create"
+        : e.access === "structure"
+          ? "full edit"
+          : "edit";
+  switch (e.status) {
+    case "pending":
+      return `Requested ${access} access to ${what}`;
+    case "granted":
+      return `${e.expired ? "Expired" : "Granted"} ${access} access to ${what}${e.expires_at ? ` until ${when(e.expires_at)}` : ""}`;
+    case "denied":
+      return `Denied ${access} access to ${what}`;
+    case "revoked":
+      return `Revoked ${access} access to ${what}`;
+    case "failed":
+      return `Failed to create ${what}`;
+    default:
+      return `${e.status} ${what}`;
+  }
+}
 const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 const percent = (used: number, total: number) =>
   total > 0 ? Math.max(0, Math.min(100, (100 * used) / total)) : 0;
@@ -145,7 +188,21 @@ export function WorkspacePanel({
 }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [history, setHistory] = useState<AccessEvent[]>();
+  const [historyError, setHistoryError] = useState("");
   const ws = workspace;
+  async function loadHistory() {
+    if (!ws) return;
+    setHistoryError("");
+    try {
+      const r = await api<{ events: AccessEvent[] }>(
+        `sharing/history?sandboxID=${encodeURIComponent(ws.id)}`,
+      );
+      setHistory(r.events);
+    } catch (e) {
+      setHistoryError(String(e));
+    }
+  }
   const chats = ws?.chats ?? [
     {
       id: chat.id,
@@ -310,13 +367,17 @@ export function WorkspacePanel({
         <ul>
           {documents.flatMap((g) =>
             g.documents.map((d) => (
-              <li key={g.request_id + d.id}>
+              <li
+                key={g.request_id + d.id}
+                className={g.expired ? "expired" : ""}
+              >
                 <a href={d.url} target="_blank" rel="noreferrer">
                   {d.title}
                 </a>
                 <small>
-                  {g.access === "read" ? "read" : "edit"} ·{" "}
-                  {remaining(g.expires_at)}
+                  {g.expired
+                    ? "access expired"
+                    : `${g.access === "read" ? "read" : g.access === "write" ? "edit" : "full edit"} · ${remaining(g.expires_at)}`}
                 </small>
               </li>
             )),
@@ -352,6 +413,55 @@ export function WorkspacePanel({
           ))}
         </ul>
       </section>
+      {ws && (
+        <section className="workspace-section">
+          <details
+            className="workspace-history"
+            onToggle={(e) => {
+              if (e.currentTarget.open && history === undefined)
+                void loadHistory();
+            }}
+          >
+            <summary>
+              <History size={13} />
+              Access history
+            </summary>
+            {historyError && (
+              <p className="error" role="alert">
+                {historyError}
+              </p>
+            )}
+            {history && !history.length && (
+              <p className="muted">
+                Nothing has been shared with this workspace.
+              </p>
+            )}
+            {history && history.length > 0 && (
+              <ul className="workspace-history-list">
+                {history.map((e, i) => (
+                  <li
+                    key={i}
+                    className={
+                      e.status === "granted" && !e.expired ? "active" : ""
+                    }
+                  >
+                    <span>{describe(e)}</span>
+                    <small>
+                      {when(e.resolved_at || e.created_at)}
+                      {e.resolved_by ? ` · ${e.resolved_by}` : ""}
+                    </small>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {history && (
+              <button className="ghost" onClick={() => void loadHistory()}>
+                Refresh
+              </button>
+            )}
+          </details>
+        </section>
+      )}
       {pullRequests.length > 0 && (
         <section className="workspace-section">
           <h2>Pull requests</h2>

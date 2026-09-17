@@ -68,6 +68,9 @@ type Engine struct {
 	ResidentProviders []string
 	ResidentIdle      time.Duration
 	SteeringProviders []string
+	// LocalMode: a single-owner install (auth.mode owner). Host directory
+	// grants exist only there.
+	LocalMode bool
 	// Now is the clock (tests replace it); nil means time.Now.
 	Now func() time.Time
 	// typing: chat id -> principal -> indicator, see Typing.
@@ -77,9 +80,9 @@ type Engine struct {
 	startupMu sync.Mutex
 	startup   map[string]Startup
 	mu        sync.Mutex
-	active   map[string]*activeRun
-	wake     chan struct{}
-	done     chan struct{}
+	active    map[string]*activeRun
+	wake      chan struct{}
+	done      chan struct{}
 }
 
 const runSlots = 2
@@ -675,13 +678,13 @@ func (e *Engine) run(parent context.Context, id string) {
 	}
 	params["runtimeWorkspaceRoots"] = []string{prep.Directory}
 	params["approvalsReviewer"] = "user"
-	params["dynamicTools"] = append(previewTools(), sharingTools()...)
+	tools := append(append(previewTools(), sharingTools()...), grantTools(e.LocalMode)...)
+	params["dynamicTools"] = tools
 	if e.PublicPreviewSuffix != "" {
-		tools := append(previewTools(), sharingTools()...)
-		copy := agent.Map(tools[0])
+		copy := agent.Map(previewTools()[0])
 		copy["name"] = "sandbox_bind_port"
 		copy["description"] = "Request to bind a port inside this sandbox to an externally reachable URL. Warden asks the owner for approval and requires viewers to sign in. Start the server on 0.0.0.0 before requesting."
-		params["dynamicTools"] = append(append(previewTools(), sharingTools()...), copy)
+		params["dynamicTools"] = append(tools, copy)
 	}
 	method := "thread/start"
 	if current.Conversation.ThreadID != nil {
@@ -1016,6 +1019,12 @@ func (e *Engine) request(ctx context.Context, c *Chat, client *agent.Client, f a
 	}
 }
 func (e *Engine) Resolve(chatID, approvalID string, allow bool, answers map[string][]string) error {
+	return e.ResolveAs(chatID, approvalID, allow, answers, cv.Actor{PrincipalID: "owner"})
+}
+
+// ResolveAs answers an approval on behalf of actor, the person the edge
+// identified (grants record who approved them).
+func (e *Engine) ResolveAs(chatID, approvalID string, allow bool, answers map[string][]string, actor cv.Actor) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	a := e.active[chatID]
@@ -1046,6 +1055,9 @@ func (e *Engine) Resolve(chatID, approvalID string, allow bool, answers map[stri
 	case "warden/ports/bind":
 		state := e.Store.Snapshot()
 		result = e.resolvePort(state.chat(chatID), approval, allow)
+	case methodNetworkAllow, methodRepositoryAccess, methodGitHubWrite, methodHostImport, methodHostExport:
+		state := e.Store.Snapshot()
+		result = e.resolveGrant(state.chat(chatID), approval, allow, actor)
 	case "item/permissions/requestApproval":
 		permissions := map[string]any{}
 		if allow {

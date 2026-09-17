@@ -74,6 +74,10 @@ func GitHubReadCategory(operation string) (category string, ok bool) {
 
 var pullWrite = stringSet("pulls/create", "pulls/update", "pulls/merge", "pulls/create-review", "pulls/create-review-comment")
 
+// issuesWrite: the small writes Warden performs itself after a one-shot
+// owner approval (github_write); never covered by a selection.
+var issuesWrite = stringSet("issues/create", "issues/create-comment", "issues/add-labels")
+
 func stringSet(values ...string) map[string]bool {
 	out := map[string]bool{}
 	for _, v := range values {
@@ -96,6 +100,8 @@ func GitHubPermissions(operation string) (map[string]string, error) {
 		return map[string]string{"pull_requests": "read", "metadata": "read"}, nil
 	case issuesRead[operation]:
 		return map[string]string{"issues": "read", "metadata": "read"}, nil
+	case issuesWrite[operation]:
+		return map[string]string{"issues": "write", "metadata": "read"}, nil
 	case pullWrite[operation]:
 		return map[string]string{"pull_requests": "write", "metadata": "read"}, nil
 	}

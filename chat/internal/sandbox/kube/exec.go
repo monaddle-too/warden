@@ -194,6 +194,14 @@ func (d *Driver) Copy(ctx context.Context, name, source, target string) error {
 	return nil
 }
 
+// CopyOut is the reverse of Copy on the sbx shapes: a guest directory back
+// to the owner's machine. The runner is a pod here and holds no directory
+// of the owner's (the chat offers none: LocalMode is off in this kind), so
+// there is nowhere to copy to.
+func (d *Driver) CopyOut(context.Context, string, string, string) error {
+	return errors.New("no host directory on Kubernetes: the runner is a pod")
+}
+
 // writeArchive writes source as a tar stream whose root entry is named
 // base: one file entry, or the directory and its contents. Entries are
 // root-owned; modes are the host's.

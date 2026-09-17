@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 	"warden/chat/internal/agent"
 	"warden/chat/internal/sandbox"
 )
@@ -13,20 +14,20 @@ import (
 // and published ports belong to it, not to the chat that asked for them: every
 // chat on the environment shares its disk and its network lease.
 type Environment struct {
-	ID           string                `json:"id"`
-	Name         string                `json:"name"`
-	Repository   string                `json:"repository"`
-	Chats        []EnvironmentChat     `json:"chats"`
-	Runtime      *sandbox.SandboxInfo  `json:"runtime"`
-	Usage        *sandbox.SandboxUsage `json:"usage"`
+	ID         string                `json:"id"`
+	Name       string                `json:"name"`
+	Repository string                `json:"repository"`
+	Chats      []EnvironmentChat     `json:"chats"`
+	Runtime    *sandbox.SandboxInfo  `json:"runtime"`
+	Usage      *sandbox.SandboxUsage `json:"usage"`
 	// Pod is the sandbox pod on the Kubernetes shape (nil elsewhere, and
 	// while the sandbox is stopped).
-	Pod *sandbox.PodInfo `json:"pod"`
-	Documents    []map[string]any      `json:"documents"`
-	Repositories []any                 `json:"repositories"`
-	Ports        []PortBinding         `json:"ports"`
-	Deleted      bool                  `json:"deleted"`
-	Archived     bool                  `json:"archived"`
+	Pod          *sandbox.PodInfo `json:"pod"`
+	Documents    []map[string]any `json:"documents"`
+	Repositories []any            `json:"repositories"`
+	Ports        []PortBinding    `json:"ports"`
+	Deleted      bool             `json:"deleted"`
+	Archived     bool             `json:"archived"`
 }
 type EnvironmentChat struct {
 	ID       string `json:"id"`
@@ -111,6 +112,10 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		for _, value := range grants {
 			r := agent.Map(value)
 			if agent.String(r["sandboxID"]) == c.SandboxID && agent.String(r["status"]) == "granted" {
+				// An expired grant stays listed, marked, so people see that
+				// access ended rather than wondering where the document went.
+				expires, _ := r["expires_at"].(float64)
+				r["expired"] = expires > 0 && expires <= float64(time.Now().UnixNano())/1e9
 				env.Documents = append(env.Documents, r)
 			}
 		}
@@ -209,7 +214,7 @@ func (e *Engine) DeleteEnvironment(ctx context.Context, id string) error {
 		}
 		if ran != nil {
 			// A missing GitHub connection means there is nothing to revoke.
-			if _, err = e.sharingCall(ctx, "github_select", map[string]any{"chatID": ran.ID, "sandboxID": id, "repositories": []string{}}); err != nil && !strings.Contains(err.Error(), "Sharing unavailable") {
+			if _, err = e.sharingCall(ctx, "github_select", map[string]any{"chatID": ran.ID, "sandboxID": id, "repositories": []string{}}); err != nil && !githubDisconnected(err) {
 				return errors.New("repository access could not be revoked; workspace not deleted")
 			}
 		}

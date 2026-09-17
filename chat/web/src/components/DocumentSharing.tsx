@@ -15,13 +15,26 @@ export type DocumentRequest = {
   chatID: string;
   sandboxID: string;
   reason: string;
-  access: "read" | "write" | "create";
+  access: "read" | "write" | "structure" | "create";
   title: string;
   status: string;
   expires_at: number | null;
   documents: Doc[];
 };
-type File = { id: string; name: string; blocked?: boolean };
+type File = {
+  id: string;
+  name: string;
+  mimeType?: string;
+  blocked?: boolean;
+};
+/* What each grant level lets the agent do; "create" is a structure-level
+   grant on a document Warden made for it. */
+export const ACCESS_LABEL: Record<DocumentRequest["access"], string> = {
+  read: "Read only",
+  write: "Read and edit text and cell values",
+  structure: "Full edit (tables, tabs, sheets, formats)",
+  create: "Full edit",
+};
 export type DocumentSharingHandle = {
   open: () => void;
   decline: () => void;
@@ -83,18 +96,18 @@ export function DocumentSharing({
   const pending = requests.find(
     (r) => r.status === "pending" && (!chatID || r.chatID === chatID),
   );
-  const needsWrite =
-    pending?.access === "create" ||
-    pending?.access === "write" ||
-    (selecting && access === "write");
+  const needsWrite = pending
+    ? pending.access !== "read"
+    : selecting && access !== "read";
   const ready = status.connected && (!needsWrite || status.can_write);
   // Grants belong to the workspace: every chat on the sandbox can use them.
-  const grants = requests.filter(
+  const mine = requests.filter(
     (r) =>
       (sandboxID ? r.sandboxID === sandboxID : r.chatID === chatID) &&
-      r.status === "granted" &&
-      (r.expires_at || 0) > Date.now() / 1000,
+      r.status === "granted",
   );
+  const grants = mine.filter((r) => (r.expires_at || 0) > Date.now() / 1000);
+  const expired = mine.filter((r) => (r.expires_at || 0) <= Date.now() / 1000);
   const scope = siblings.length
     ? `this chat's workspace, which is also used by ${siblings.map((s) => `“${s}”`).join(", ")}`
     : "this chat's workspace";
@@ -248,7 +261,7 @@ export function DocumentSharing({
             <h2 id="sharing-title">
               {pending?.access === "create"
                 ? "Create Google document"
-                : pending?.access === "write"
+                : pending && pending.access !== "read"
                   ? "Allow document editing"
                   : "Share Google documents"}
             </h2>
@@ -269,10 +282,8 @@ export function DocumentSharing({
               <p>
                 <strong>
                   {pending.access === "create"
-                    ? `Create “${pending.title}” and allow editing`
-                    : pending.access === "write"
-                      ? "Read and edit selected documents"
-                      : "Read only"}
+                    ? `Create “${pending.title}” and allow full editing`
+                    : ACCESS_LABEL[pending.access]}
                 </strong>
               </p>
             </>
@@ -350,12 +361,16 @@ export function DocumentSharing({
                           />
                           <span>
                             {f.name}
+                            {f.mimeType ===
+                              "application/vnd.google-apps.spreadsheet" && (
+                              <small> · Sheet</small>
+                            )}
                             {f.blocked && <small> · Unsharable with AI</small>}
                           </span>
                         </label>
                       ))}
                     {!files.length && !busy && (
-                      <p>No Google documents found.</p>
+                      <p>No Google documents or spreadsheets found.</p>
                     )}
                   </div>
                   {page && (
@@ -372,8 +387,9 @@ export function DocumentSharing({
                     value={access}
                     onChange={(e) => setAccess(e.target.value)}
                   >
-                    <option value="read">Read only</option>
-                    <option value="write">Read and edit</option>
+                    <option value="read">{ACCESS_LABEL.read}</option>
+                    <option value="write">{ACCESS_LABEL.write}</option>
+                    <option value="structure">{ACCESS_LABEL.structure}</option>
                   </select>
                 </label>
               )}
@@ -418,7 +434,7 @@ export function DocumentSharing({
                   ? "Working…"
                   : pending?.access === "create"
                     ? "Create document and allow editing"
-                    : pending?.access === "write" || access === "write"
+                    : (pending ? pending.access : access) !== "read"
                       ? "Allow editing selected documents"
                       : "Share selected documents"}
               </button>
@@ -445,8 +461,7 @@ export function DocumentSharing({
                     </p>
                   ))}
                   <p>
-                    {r.access === "read" ? "Read only" : "Read and edit"} ·
-                    Expires{" "}
+                    {ACCESS_LABEL[r.access]} · Expires{" "}
                     {new Date((r.expires_at || 0) * 1000).toLocaleString()}
                   </p>
                   <button
@@ -462,6 +477,22 @@ export function DocumentSharing({
                   >
                     Revoke access
                   </button>
+                </div>
+              ))}
+              {expired.map((r) => (
+                <div key={r.request_id} className="expired">
+                  {r.documents.map((d) => (
+                    <p key={d.id}>
+                      <a href={d.url} target="_blank" rel="noreferrer">
+                        {d.title}
+                      </a>
+                    </p>
+                  ))}
+                  <p>
+                    Access expired{" "}
+                    {new Date((r.expires_at || 0) * 1000).toLocaleString()}.
+                    Share it again to renew.
+                  </p>
                 </div>
               ))}
             </div>

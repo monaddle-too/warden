@@ -372,6 +372,21 @@ func TestPrivateProtocolRoundtripDuplicateJSONAndGenericErrors(t *testing.T) {
 	if _, err := ControlRPC("unix://"+path, nil, map[string]any{"version": 1, "operation": "sharing", "action": "state", "data": map[string]any{}}); err == nil {
 		t.Fatal("sharing without service accepted")
 	}
+	// Sharing refusals travel back with their wording (the chat service
+	// shows them to the owner and the agent); other failures stay generic.
+	response, err := f.registry.Dispatch(map[string]any{"version": 1, "operation": "sharing", "action": "state", "data": map[string]any{}})
+	if err != nil || response["ok"] != false || response["error"] != "sharing unavailable" {
+		t.Fatalf("sharing without service: %v %v", response, err)
+	}
+	f.registry.Sharing = &Sharing{}
+	response, err = f.registry.Dispatch(map[string]any{"version": 1, "operation": "sharing", "action": "github_list", "data": map[string]any{"chatID": "c1", "sandboxID": "s1"}})
+	if err != nil || response["ok"] != false || response["error"] != "GitHub is not connected" {
+		t.Fatalf("sharing refusal: %v %v", response, err)
+	}
+	f.registry.Sharing = nil
+	if _, err = f.registry.Dispatch(map[string]any{"version": 1, "operation": "check", "context": "nope", "phase": "runtime"}); err == nil {
+		t.Fatal("bad check accepted")
+	}
 }
 
 func TestClaudeLeaseRoutesOnlyClaude(t *testing.T) {

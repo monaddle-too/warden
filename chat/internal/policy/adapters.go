@@ -73,9 +73,100 @@ func GoogleDocsOperation(method, path string, query []QueryPair, body []byte) (s
 
 var batchUpdatePath = regexp.MustCompile(`^/v1/documents/([A-Za-z0-9_-]{1,256}):batchUpdate$`)
 
-// DocumentWriteOperation classifies shared-document reads and allowlisted
-// batchUpdate edits. Creation is host-executed after owner approval only.
+// Google Sheets: reads of a spreadsheet or its values, and the value and
+// structure writes a write grant covers. The spreadsheet ID is the grant's
+// document ID, exactly as for Docs.
+var sheetsReadPath = regexp.MustCompile(`^/v4/spreadsheets/([A-Za-z0-9_-]{1,256})(?:/values/[^/]{1,512}|/values:batchGet|/values:batchGetByDataFilter)?$`)
+var sheetsWritePath = regexp.MustCompile(`^/v4/spreadsheets/([A-Za-z0-9_-]{1,256})(?::batchUpdate|/values/[^/]{1,512}|/values:batchUpdate|/values:batchClear)$`)
+var sheetsReadQuery = stringSet("ranges", "includeGridData", "fields", "majorDimension", "valueRenderOption", "dateTimeRenderOption")
+var sheetsWriteQuery = stringSet("valueInputOption", "insertDataOption", "includeValuesInResponse", "responseValueRenderOption", "responseDateTimeRenderOption")
+
+// GoogleSheetsOperation classifies a Sheets API request as a read or write
+// of one spreadsheet.
+func GoogleSheetsOperation(method, path string, query []QueryPair, body []byte) (access, spreadsheet string, err error) {
+	if method == "GET" {
+		m := sheetsReadPath.FindStringSubmatch(path)
+		if m == nil || len(body) > 0 || strings.HasSuffix(path, ":append") || strings.HasSuffix(path, ":clear") {
+			return "", "", errors.New("unsupported Google Sheets read")
+		}
+		for _, pair := range query {
+			if !sheetsReadQuery[pair.Key] {
+				return "", "", errors.New("unsupported Google Sheets query parameter")
+			}
+		}
+		return "read", m[1], nil
+	}
+	m := sheetsWritePath.FindStringSubmatch(path)
+	appendOrClear := strings.HasSuffix(path, ":append") || strings.HasSuffix(path, ":clear")
+	valuesPut := strings.Contains(path, "/values/") && !appendOrClear
+	if m == nil || len(body) == 0 || len(body) > 1024*1024 || (method == "PUT" && !valuesPut) || (method == "POST" && valuesPut) || (method != "POST" && method != "PUT") {
+		return "", "", errors.New("unsupported Google Sheets write")
+	}
+	for _, pair := range query {
+		if !sheetsWriteQuery[pair.Key] {
+			return "", "", errors.New("unsupported Google Sheets query parameter")
+		}
+	}
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil || data == nil {
+		return "", "", errors.New("invalid Google Sheets write")
+	}
+	// Cell values are "write"; spreadsheets:batchUpdate (sheets, ranges,
+	// formats, charts, deleting tabs) needs the "structure" level.
+	if strings.HasSuffix(path, ":batchUpdate") && !strings.Contains(path, "/values:") {
+		return "structure", m[1], nil
+	}
+	return "write", m[1], nil
+}
+
+// AccessRank orders document grant levels: a grant authorizes every
+// operation of its own level and below. "create" is a structure-level
+// grant on a document Warden created for the agent.
+func AccessRank(access string) int {
+	switch access {
+	case "read":
+		return 0
+	case "write":
+		return 1
+	case "structure", "create":
+		return 2
+	}
+	return -1
+}
+
+// docsImageEdits make Google fetch a URI, which would let an agent
+// exfiltrate data through a URL of its choosing. They are allowed only with
+// a placeholder naming an image the agent attached (WardenImageURI); the
+// sharing store publishes that image itself for the duration of the edit.
+var docsImageEdits = stringSet("insertInlineImage", "replaceImage")
+
+// WardenImageURI is the placeholder an agent writes as an image edit's uri:
+// warden-image:<attach_image id>.
+var WardenImageURI = regexp.MustCompile(`^warden-image:([a-f0-9]{64})$`)
+
+// imageEditPlaceholder returns the attached image an image edit names, or
+// "" when its uri is anything else.
+func imageEditPlaceholder(edit any) string {
+	fields, _ := edit.(map[string]any)
+	uri, _ := fields["uri"].(string)
+	if m := WardenImageURI.FindStringSubmatch(uri); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// docsTextEdits are the requests a "write" grant covers; every other
+// batchUpdate request (tables, tabs, headers, named ranges, page breaks, ...)
+// is "structure".
+var docsTextEdits = stringSet("insertText", "deleteContentRange", "updateTextStyle", "updateParagraphStyle")
+
+// DocumentWriteOperation classifies shared-document reads and batchUpdate
+// edits as "read", "write" (text and styling) or "structure" (everything
+// else). Creation is host-executed after owner approval only.
 func DocumentWriteOperation(method, path string, query []QueryPair, body []byte) (access, document string, err error) {
+	if strings.HasPrefix(path, "/v4/spreadsheets/") {
+		return GoogleSheetsOperation(method, path, query, body)
+	}
 	if method == "GET" {
 		_, doc, err := GoogleDocsOperation(method, path, query, body)
 		if err != nil {
@@ -117,24 +208,25 @@ func DocumentWriteOperation(method, path string, query []QueryPair, body []byte)
 			}
 		}
 	}
+	access = "write"
 	for _, item := range edits {
 		edit, ok := item.(map[string]any)
 		if !ok || len(edit) != 1 {
 			return "", "", errors.New("invalid edit")
 		}
 		for key, value := range edit {
-			_, isObject := value.(map[string]any)
-			switch key {
-			case "insertText", "deleteContentRange", "updateTextStyle", "updateParagraphStyle":
-			default:
-				isObject = false
+			if _, isObject := value.(map[string]any); !isObject {
+				return "", "", errors.New("invalid edit")
 			}
-			if !isObject {
-				return "", "", errors.New("only text, text styling and paragraph styling edits are allowed")
+			if docsImageEdits[key] && imageEditPlaceholder(value) == "" {
+				return "", "", errors.New("image edits must use uri warden-image:<image_id> from attach_image; remote URLs are not allowed")
+			}
+			if !docsTextEdits[key] {
+				access = "structure"
 			}
 		}
 	}
-	return "write", m[1], nil
+	return access, m[1], nil
 }
 
 // Figma.

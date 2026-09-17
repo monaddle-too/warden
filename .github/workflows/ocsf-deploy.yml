@@ -13,10 +13,12 @@ concurrency:
   group: ocsf-${{ github.ref }}
   cancel-in-progress: false
 
+# Both jobs run on the self-hosted macOS runner (docs/ci-mac-runner.md);
+# Docker is the runner's Lima VM. Nothing here needs sudo.
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ocsf-viewer
@@ -30,16 +32,25 @@ jobs:
         run: nix develop --command bash scripts/build.sh
       - name: Check deployment scripts
         run: nix develop --command shellcheck scripts/build.sh deploy/*.sh
+      # The image is linux/amd64 for OVH (build.sh compiles the binary for
+      # it); on the arm64 daemon it is built and smoke-tested under QEMU.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: linux/amd64
       - name: Build release image
-        run: docker build --build-arg REVISION="$GITHUB_SHA" -t "ocsf-explorer:$GITHUB_SHA" .
+        run: docker build --platform linux/amd64 --build-arg REVISION="$GITHUB_SHA" -t "ocsf-explorer:$GITHUB_SHA" .
       - name: Test ingestion, outage recovery, and release container
         run: |
           export APP_IMAGE="ocsf-explorer:$GITHUB_SHA" APP_REVISION="$GITHUB_SHA" SITE_HOST=localhost
-          compose() { docker compose -p ocsf-smoke -f deploy/compose.yaml "$@"; }
+          compose() { docker compose -p ocsf-smoke -f deploy/compose.yaml -f deploy/compose.ci.yaml "$@"; }
           export CLICKHOUSE_PASSWORD=ci-clickhouse-password OCSF_ADMIN_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa OCSF_READ_TOKEN=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr OCSF_INGEST_TOKEN=iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii
-          export OCSF_DATA_DIR="$RUNNER_TEMP/ocsf-data"
-          sudo install -d -m 700 -o 65532 -g 65532 "$OCSF_DATA_DIR"
-          trap 'compose logs --tail 30; compose down -v' EXIT
+          # The app's data directory is the named volume from compose.ci.yaml,
+          # handed to the container's uid 65532 by a root helper container
+          # rather than by sudo on the runner.
+          docker volume create ocsf-smoke-data >/dev/null
+          docker run --rm -v ocsf-smoke-data:/app/data alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 \
+            sh -c 'chown 65532:65532 /app/data && chmod 700 /app/data'
+          trap 'compose logs --tail 30; compose down -v; docker volume rm ocsf-smoke-data' EXIT
           compose config --quiet
           compose up -d --wait --wait-timeout 120 app
           nix develop --command node scripts/integration.mjs
@@ -58,27 +69,29 @@ jobs:
   deploy:
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 15
     environment: ovh-production
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ocsf-${{ github.sha }}
+      # The identity lives under the job's temp directory, never in the
+      # runner user's ~/.ssh: the runner is a persistent machine.
       - name: Install deployment SSH identity
         env:
           DEPLOY_KEY: ${{ secrets.OVH_DEPLOY_KEY }}
           HOST_KEYS: ${{ secrets.OVH_KNOWN_HOSTS }}
         run: |
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/ovh_deploy
-          printf '%s\n' "$HOST_KEYS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/ovh_deploy ~/.ssh/known_hosts
+          install -d -m 700 "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/ssh/ovh_deploy"
+          printf '%s\n' "$HOST_KEYS" > "$RUNNER_TEMP/ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/ssh/ovh_deploy" "$RUNNER_TEMP/ssh/known_hosts"
       - name: Deploy with server-side health checks and rollback
         env:
           OVH_HOST: ${{ vars.OVH_HOST }}
         run: |
-          ssh -i ~/.ssh/ovh_deploy -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 "ocsf-ci@$OVH_HOST" "deploy $GITHUB_SHA" < release.tar
+          ssh -i "$RUNNER_TEMP/ssh/ovh_deploy" -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 "ocsf-ci@$OVH_HOST" "deploy $GITHUB_SHA" < release.tar
       - name: Verify public revision
         env:
           SITE_HOST: ${{ vars.SITE_HOST }}
@@ -86,4 +99,4 @@ jobs:
           curl --fail --silent --show-error --max-time 20 "https://$SITE_HOST/healthz" | jq -e --arg revision "$GITHUB_SHA" '.status == "ok" and .revision == $revision'
       - name: Remove deployment identity
         if: always()
-        run: rm -f ~/.ssh/ovh_deploy
+        run: rm -rf "$RUNNER_TEMP/ssh"

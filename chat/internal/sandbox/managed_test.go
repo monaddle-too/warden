@@ -100,6 +100,10 @@ func (d *testRuntime) Copy(_ context.Context, name, source, target string) error
 	d.record("copy:" + name + ":" + target)
 	return nil
 }
+func (d *testRuntime) CopyOut(_ context.Context, name, source, target string) error {
+	d.record("copyout:" + name + ":" + source + ":" + target)
+	return nil
+}
 func (d *testRuntime) Address(context.Context, string) (string, error) { return "127.0.0.1", nil }
 
 // Stream records the launch and, like the SBX driver, installs the broker
