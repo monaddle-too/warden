@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import Markdown, { type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { needsHighlighter } from "../code";
+import { workspaceImagePath } from "../images";
 import { CodeBlock } from "./CodeBlock";
+import { InlineImage } from "./InlineImage";
 
 type RehypePlugins = NonNullable<Options["rehypePlugins"]>;
 
@@ -20,12 +22,18 @@ function loadHighlighter() {
 export function RichText({
   text,
   streaming,
+  chatID,
+  entryID,
   onFile,
 }: {
   text: string;
   /* Set while the entry is still being written; renderers that need the
      whole fence (Mermaid) wait for it to clear. */
   streaming?: boolean;
+  /* Where `![alt](path)` images are read from; without a chat they stay
+     as alt text. */
+  chatID?: string;
+  entryID?: string;
   onFile?: (href: string) => void;
 }) {
   const [rehypePlugins, setRehypePlugins] = useState(highlighter);
@@ -67,7 +75,21 @@ export function RichText({
             ) : (
               <span>{children}</span>
             ),
-          img: ({ alt }) => <span>{alt || "Image"}</span>,
+          // Only a relative workspace path becomes an image, read through
+          // the chat service; a URL or data: source stays as its alt text.
+          img: ({ src, alt }) => {
+            const path = chatID && workspaceImagePath(src);
+            return path ? (
+              <InlineImage
+                chatID={chatID}
+                entryID={entryID || ""}
+                path={path}
+                alt={alt}
+              />
+            ) : (
+              <span>{alt || "Image"}</span>
+            );
+          },
           // Every fence and indented block goes through CodeBlock, which is
           // also where later renderers (Mermaid, diffs) dispatch by language.
           pre: ({ node, children }) => (

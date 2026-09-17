@@ -43,7 +43,7 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
 | 0 | Worktree, plan, add `mermaid`, `rehype-highlight`, `remark-math`, `rehype-katex`, `katex` | done | build 454.6 kB before any use |
 | 1 | Code component: syntax highlighting, language label, copy button, wrap toggle, collapse over ~40 lines | done | one `code`/`pre` override in `RichText.tsx`; highlighter lazy-loaded; theme via tokens for light and dark |
 | 2 | Mermaid fences rendered client-side | done | `securityLevel: "strict"`, `startOnLoad: false`, lazy import; render only once the fence is closed (not while `isStreaming`); parse error → keep the code block with a small error line. Strict alone was not enough (see decisions): HTML labels off and config locked via `secure`, image nodes refused before render, SVG re-filtered after |
-| 3 | Inline images in markdown | pending | `![alt](relative/path)` → fetch via `chats/{id}/file`, normalise server-side with imageguard (new `image-file`-style handling or reuse `attachImage` path), show through `ImageAttachment`-like element with lightbox; `http(s)` and `data:` sources stay as alt text |
+| 3 | Inline images in markdown | done | `![alt](relative/path)` → new `GET chats/{id}/image-file?path=` (worker `image-file` op + the same imageguard subprocess as `attach_image`, shared as `Engine.workspaceImage`; nothing stored, PNG served with the images route's headers); `InlineImage.tsx` shows a thumbnail that opens `Lightbox.tsx` (also used by `ImageAttachment`); `images.ts` accepts only plain relative paths (no scheme, host, absolute or `..`), so `http(s)`, `data:` and the rest stay as alt text; fetches are shared per (chat, entry, path) and capped at 3 in flight |
 | 4 | Diff rendering | pending | detect unified diff in activity `detail` and in ```` ```diff ```` fences; +/- line colouring, file header, hunk collapse |
 | 5 | Math | pending | `remark-math` + `rehype-katex`, KaTeX CSS lazy-loaded, `trust: false`, `throwOnError: false` |
 | 6 | Streaming-safe rendering | pending | while `entry.isStreaming`: close an unterminated fence for display, defer Mermaid/KaTeX; no flicker of half-parsed tables |
@@ -85,6 +85,16 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
   on its own. The CSS filter also rejects `image-set()`, `image()`,
   `src()` and `cross-fade()`, which fetch like `url()`. A CSP on the
   served page would be a further backstop and is out of this plan's scope.
+- Inline images are not attachments. `attach_image` stores an immutable
+  copy in the policy service because a Doc or PR may later refer to it; an
+  `![alt](path)` in the transcript is just a view of a workspace file, so
+  `image-file` reads and normalises on request and stores nothing. The
+  client only asks for plain relative paths (`workspaceImagePath`), the
+  worker refuses symlinks and anything outside the workspace, and the
+  normaliser re-encodes in a memory-capped subprocess, so an agent cannot
+  make the owner's browser fetch anything it did not write into the
+  sandbox. The fetch is keyed per entry, not per path, so a later message
+  showing the same path after an overwrite reads the file again.
 - Attachments live in the sandbox (the agent reads them like any file)
   rather than in a host-side store, so nothing new needs sharing policy.
 
@@ -94,3 +104,4 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
 - 2026-09-17: step 1 done — "Render fenced code with highlighting, copy, wrap and collapse" (`CodeBlock.tsx`, `code.ts`; highlighter is a 167 kB lazy chunk, main chunk 454.6 → 458.8 kB).
 - 2026-09-17: step 2 done — "Render closed mermaid fences as diagrams" (`Mermaid.tsx`, `mermaid.ts`; Mermaid is lazy chunks, main chunk 458.8 → 463.6 kB; verified in a browser that no agent-controlled URL is fetched).
 - 2026-09-17: step 2 fix after review — "Refuse mermaid math labels and lock its label sanitiser": the KaTeX label path fetched before the output filter (confirmed in a browser: 4 beacon requests without the fix, 0 with it); `$$` fences refused, `dompurifyConfig` set, CSS image functions filtered, blank fences skip the chunk, the SVG walk (`scrub`) is pure and unit-tested on a fake tree. Main chunk 463.6 → 463.8 kB.
+- 2026-09-17: step 3 done — "Show workspace images inline in the transcript" (`InlineImage.tsx`, `Lightbox.tsx`, `images.ts`, `chats/{id}/image-file`; main chunk 463.8 → 466.4 kB; verified in a browser that remote, `data:` and `..` sources stay as alt text and no request leaves for them).

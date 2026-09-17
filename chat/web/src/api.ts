@@ -136,3 +136,19 @@ export async function imageBlob(chatID: string, id: string): Promise<Blob> {
     throw new Error("Image unavailable");
   return response.blob();
 }
+
+// A workspace file for an inline transcript image, re-encoded as PNG by the
+// chat service; same checks as imageBlob so a non-image answer never lands
+// in an <img>.
+export async function workspaceImageBlob(
+  chatID: string,
+  path: string,
+): Promise<Blob> {
+  const response = await fetch(
+    `/api/chats/${encodeURIComponent(chatID)}/image-file?path=${encodeURIComponent(path)}`,
+    { headers: token ? { Authorization: "Bearer " + token } : {} },
+  );
+  if (!response.ok || response.headers.get("Content-Type") !== "image/png")
+    throw new Error("Image unavailable");
+  return response.blob();
+}

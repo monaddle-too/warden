@@ -97,6 +97,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respond(w, res, err)
 		return
 	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "image-file" {
+		h.imageFileHTTP(w, r, parts[1])
+		return
+	}
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "file" {
 		name := r.URL.Query().Get("path")
 		if name == "" || len(name) > 2048 {

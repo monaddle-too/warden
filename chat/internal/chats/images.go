@@ -40,31 +40,11 @@ func (e *Engine) attachImage(ctx context.Context, c *Chat, path, caption string)
 	if len(path) > 1024 || len(caption) > 2000 {
 		return nil, errors.New("image path or caption too long")
 	}
-	r := request(c, "image-file")
-	r.Directory = path
-	result, err := e.Worker.Call(ctx, r)
+	png, err := e.workspaceImage(ctx, c, path)
 	if err != nil {
 		return nil, err
 	}
-	if len(result.Bytes) > 8<<20 {
-		return nil, errors.New("image too large")
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, "serve", "--normalize-image")
-	cmd.Env = []string{"GOMEMLIMIT=96MiB", "GOMAXPROCS=1"}
-	cmd.Dir = "/tmp"
-	cmd.Stdin = bytes.NewReader(result.Bytes)
-	var out imageOutput
-	cmd.Stdout = &out
-	if err = cmd.Run(); err != nil {
-		return nil, errors.New("image rejected: provide a valid PNG/JPEG up to 4 megapixels and 4 MiB after normalization")
-	}
-	image, err := e.sharingCall(ctx, "image_add", map[string]any{"chatID": c.ID, "sandboxID": c.SandboxID, "caption": caption, "png": base64.StdEncoding.EncodeToString(out.Bytes())})
+	image, err := e.sharingCall(ctx, "image_add", map[string]any{"chatID": c.ID, "sandboxID": c.SandboxID, "caption": caption, "png": base64.StdEncoding.EncodeToString(png)})
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +66,71 @@ func (e *Engine) attachImage(ctx context.Context, c *Chat, path, caption string)
 		return nil
 	})
 	return image, err
+}
+
+// workspaceImage reads a PNG/JPEG the agent wrote beneath the workspace and
+// returns it as an imageguard-normalised PNG. The worker's image-file op
+// refuses symlinks, non-regular files and anything over 8 MiB; the
+// normaliser runs in a separate, memory-capped process because the input
+// is untrusted. Both attach_image and the transcript's inline images go
+// through here.
+func (e *Engine) workspaceImage(ctx context.Context, c *Chat, path string) ([]byte, error) {
+	r := request(c, "image-file")
+	r.Directory = path
+	result, err := e.Worker.Call(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	if len(result.Bytes) == 0 {
+		return nil, errors.New("image unavailable")
+	}
+	if len(result.Bytes) > 8<<20 {
+		return nil, errors.New("image too large")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exe, "serve", "--normalize-image")
+	cmd.Env = []string{"GOMEMLIMIT=96MiB", "GOMAXPROCS=1"}
+	cmd.Dir = "/tmp"
+	cmd.Stdin = bytes.NewReader(result.Bytes)
+	var out imageOutput
+	cmd.Stdout = &out
+	if err = cmd.Run(); err != nil {
+		return nil, errors.New("image rejected: provide a valid PNG/JPEG up to 4 megapixels and 4 MiB after normalization")
+	}
+	return out.Bytes(), nil
+}
+
+// imageFileHTTP serves a workspace image for an inline `![alt](path)` in
+// the transcript: same normalisation as attach_image, but nothing is stored,
+// so a re-render shows the file as it is now. Only relative workspace paths
+// are accepted (the worker rejects the rest); remote URLs never reach here
+// because the web client keeps them as alt text.
+func (h *HTTP) imageFileHTTP(w http.ResponseWriter, r *http.Request, chatID string) {
+	name := r.URL.Query().Get("path")
+	if name == "" || len(name) > 1024 {
+		http.Error(w, "image path required", 400)
+		return
+	}
+	c := h.Engine.Store.Snapshot().chat(chatID)
+	if c == nil {
+		http.Error(w, "chat not found", 404)
+		return
+	}
+	png, err := h.Engine.workspaceImage(r.Context(), c, name)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Content-Disposition", "inline")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Write(png)
 }
 
 // publishedHTTP serves an attached image Google was told to fetch for a

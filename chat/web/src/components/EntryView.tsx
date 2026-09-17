@@ -105,7 +105,12 @@ export const EntryView = memo(function EntryView({
       <article className="message message-user">
         {header}
         <div className="message-body">
-          <RichText text={entry.text} onFile={onFile} />
+          <RichText
+            text={entry.text}
+            chatID={chatID}
+            entryID={entry.id}
+            onFile={onFile}
+          />
         </div>
       </article>
     );
@@ -119,6 +124,8 @@ export const EntryView = memo(function EntryView({
         <RichText
           text={entry.text}
           streaming={entry.isStreaming}
+          chatID={chatID}
+          entryID={entry.id}
           onFile={onFile}
         />
       </div>

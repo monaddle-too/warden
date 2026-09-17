@@ -59,7 +59,7 @@ Legacy macOS-VM stack (pre-SBX, still in tree): `warden` (Python launcher),
 
 | Feature (owner-facing) | Backend | API | Web / TUI | Tests | Plan |
 |---|---|---|---|---|---|
-| Chats: create, message, typing indicator, rename/archive, stop | `chats/engine.go`, `chats/store.go` | `POST chats`, `chats/{id}/message|typing|edit|stop`, `GET state`, `GET events` (SSE) | `ChatShell.tsx`, `Conversation.tsx`, `EntryView.tsx`, `RichText.tsx`, `CodeBlock.tsx` (+ `code.ts`, `code.test.ts`), `Mermaid.tsx` (+ `mermaid.ts`, `mermaid.test.ts`) | `chats/*_test.go` | [warden-chat-migration-plan](warden-chat-migration-plan.md), [chat-rich-rendering-plan](chat-rich-rendering-plan.md) |
+| Chats: create, message, typing indicator, rename/archive, stop | `chats/engine.go`, `chats/store.go` | `POST chats`, `chats/{id}/message|typing|edit|stop`, `GET chats/{id}/file|image-file`, `GET state`, `GET events` (SSE) | `ChatShell.tsx`, `Conversation.tsx`, `EntryView.tsx`, `RichText.tsx`, `CodeBlock.tsx` (+ `code.ts`, `code.test.ts`), `Mermaid.tsx` (+ `mermaid.ts`, `mermaid.test.ts`), `InlineImage.tsx`, `Lightbox.tsx` (+ `images.ts`, `images.test.ts`) | `chats/*_test.go` | [warden-chat-migration-plan](warden-chat-migration-plan.md), [chat-rich-rendering-plan](chat-rich-rendering-plan.md) |
 | Provider + model choice (fixed per chat; model from composer) | `sandbox/agent_selection.go`, `chats/engine.go` `ConfigureAgentAndRelease` | `chats/{id}/agent` | `ModelSelect.tsx` | | [model-dropdown-plan](model-dropdown-plan.md), [warden-claude-provider-plan](warden-claude-provider-plan.md) |
 | Codex agent stream (app-server over stdio) | `agent/rpc.go`, `sandbox/runtime.go` `Stream` | | | `agent/*_test.go` | [response-streaming-plan](response-streaming-plan.md) |
 | Claude agent stream (SDK control protocol) | `agent/claude.go`, `sandbox/runtime.go` `Stream` | | | `agent/claude_test.go` | [warden-resident-claude-plan](warden-resident-claude-plan.md) |
@@ -94,7 +94,7 @@ Legacy macOS-VM stack (pre-SBX, still in tree): `warden` (Python launcher),
 Chat service (`chat/internal/chats/http.go`, all under `/api/`, bearer token
 from the edge): `state`, `events`, `environments`, `environments/{id}/{stop,
 archive,delete}`, `chats`, `chats/{id}/{agent,message,typing,edit,stop,
-activity,runtime,file}`, `chats/{id}/approvals/{rid}`, `chats/{id}/images/*`,
+activity,runtime,file,image-file}`, `chats/{id}/approvals/{rid}`, `chats/{id}/images/*`,
 `ports`, `ports/{id}/{revoke,proxy/*}`, `sharing/*` (forwarded to the policy
 service: `status, files, select, request, get, resolve, revoke, history,
 blocked, block, connect, callback, disconnect, github_list,

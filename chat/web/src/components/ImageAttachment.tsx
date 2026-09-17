@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { imageBlob } from "../api";
+import { Lightbox } from "./Lightbox";
 export function ImageAttachment({
   chatID,
   id,
@@ -11,6 +12,7 @@ export function ImageAttachment({
 }) {
   const [url, setURL] = useState("");
   const [error, setError] = useState(false);
+  const [open, setOpen] = useState(false);
   useEffect(() => {
     let stopped = false,
       object = "";
@@ -34,13 +36,21 @@ export function ImageAttachment({
   return (
     <figure className="image-attachment">
       {url ? (
-        <a href={url} target="_blank" rel="noreferrer">
+        <button
+          type="button"
+          className="inline-image"
+          title="View full size"
+          onClick={() => setOpen(true)}
+        >
           <img src={url} alt={caption} />
-        </a>
+        </button>
       ) : (
         <p>{error ? "Image unavailable" : "Loading image…"}</p>
       )}
       <figcaption>{caption}</figcaption>
+      {open && url && (
+        <Lightbox url={url} alt={caption} onClose={() => setOpen(false)} />
+      )}
     </figure>
   );
 }
