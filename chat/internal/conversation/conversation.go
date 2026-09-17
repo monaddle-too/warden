@@ -47,6 +47,17 @@ func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) 
 		e.Text = agent.String(item["server"]) + " · " + agent.String(item["tool"])
 	case "webSearch":
 		e.Text = "Search: " + agent.String(item["query"])
+	case "reasoning":
+		// The model's thinking: a step that says so while it streams (the
+		// long silence before a first reply is usually this), then its
+		// summary when the model wrote one.
+		e.Text = "Thinking…"
+		if completed {
+			e.Text = "Thought about it"
+			if summary := reasoningSummary(item); summary != "" {
+				e.Text = "Thought: " + summary
+			}
+		}
 	default:
 		return
 	}
@@ -206,4 +217,23 @@ func (c *Conversation) Hydrate(thread map[string]any) {
 	}
 	appendLocal(len(previous))
 	c.Entries = append(ordered, pending...)
+}
+
+// reasoningSummary joins a reasoning item's summary, whichever shape the
+// agent used: strings, or objects with a text field.
+func reasoningSummary(item map[string]any) string {
+	var parts []string
+	for _, v := range agent.Array(item["summary"]) {
+		text := ""
+		switch t := v.(type) {
+		case string:
+			text = t
+		case map[string]any:
+			text = agent.String(t["text"])
+		}
+		if text = strings.TrimSpace(text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }

@@ -34,12 +34,19 @@ export function startupLine(s: Startup, now = Date.now() / 1000): string {
 
 /* What a chat's status means for people: the startup stage while it is
    starting, otherwise the status itself. */
-export function chatStatusLabel(c: Pick<Chat, "status" | "startup">): string {
+export function chatStatusLabel(
+  c: Pick<Chat, "status" | "startup"> & Partial<Pick<Chat, "conversation">>,
+): string {
   if (c.startup && (c.status === "running" || c.status === "queued"))
     return stageLabel(c.startup.stage);
   switch (c.status) {
-    case "running":
+    case "running": {
+      const entries = c.conversation?.entries ?? [];
+      const last = entries[entries.length - 1];
+      if (last?.role === "activity" && last.isStreaming && last.text === "Thinking…")
+        return "Agent is thinking";
       return "Agent is running";
+    }
     case "queued":
       return "Waiting to start";
     case "stopping":
