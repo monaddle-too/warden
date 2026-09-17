@@ -349,3 +349,51 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+func TestListWatchGoneIsNotATightLoop(t *testing.T) {
+	api := newFakeAPI(t)
+	api.seed(Pods, "ns", podObject("a", nil))
+	c := api.client()
+	ctx, cancel := context.WithCancel(testContext(t))
+	defer cancel()
+	// Every watch is 410: each answer forces a relist, which must back off.
+	api.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Query().Get("watch") == "true" {
+			writeStatus(w, http.StatusGone, "Expired", "too old resource version")
+			return true
+		}
+		return false
+	})
+	events, err := c.ListWatch(ctx, Pods, "ns", ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(1500 * time.Millisecond)
+	errorsSeen := 0
+loop:
+	for {
+		select {
+		case ev := <-events:
+			if ev.Type == Error && !IsGone(ev.Err) {
+				t.Fatalf("unexpected error %v", ev.Err)
+			}
+			if ev.Type == Error {
+				errorsSeen++
+			}
+		case <-deadline:
+			break loop
+		}
+	}
+	lists := 0
+	for _, req := range api.recorded() {
+		if req.Method == "GET" && req.Query.Get("watch") != "true" && strings.HasSuffix(req.Path, "/pods") {
+			lists++
+		}
+	}
+	// Backoff 0.5s, 1s: the initial list plus at most a few more.
+	if lists > 5 || errorsSeen == 0 {
+		t.Fatalf("%d lists and %d error events in 1.5s: the 410 loop is not backing off", lists, errorsSeen)
+	}
+	cancel()
+	expectClosed(t, events)
+}

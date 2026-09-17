@@ -729,3 +729,54 @@ func TestLogs(t *testing.T) {
 		t.Fatal("empty pod accepted")
 	}
 }
+
+func TestExecAgainstHTTP2Server(t *testing.T) {
+	// The API server offers h2; the verbs use it, while the exec upgrade
+	// must stay on HTTP/1.1 (the transport adds h2 to the shared TLS
+	// configuration's NextProtos in place, which must not leak).
+	api := newFakeAPIWith(t, true)
+	api.setExec(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor != 1 {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "exec over "+r.Proto)
+			return
+		}
+		s := upgrade(t, w, r, protocolV5)
+		defer s.conn.Close()
+		s.writeChannel(channelStdout, []byte("ok"))
+		s.writeStatus(exitStatus(0))
+		s.writeClose(1000)
+	})
+	c := api.client()
+	ctx := testContext(t)
+	var pod Pod
+	if err := c.Get(ctx, Pods, "ns", "x", &pod); !IsNotFound(err) {
+		t.Fatalf("want NotFound, got %v", err)
+	}
+	if proto := api.lastRequest().Proto; proto != "HTTP/2.0" {
+		t.Fatalf("REST over %s, want HTTP/2.0", proto)
+	}
+	session, err := c.Exec(ctx, "ns", "sbx-1", "", []string{"true"}, ExecOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proto := api.lastRequest().Proto; proto != "HTTP/1.1" {
+		t.Fatalf("exec over %s, want HTTP/1.1", proto)
+	}
+	if out := readAll(t, session.Stdout()); out != "ok" {
+		t.Fatalf("stdout %q", out)
+	}
+	if code, err := session.Wait(); code != 0 || err != nil {
+		t.Fatalf("wait %d %v", code, err)
+	}
+	// Watch and logs work over h2 as well.
+	events, err := c.Watch(ctx, Pods, "ns", WatchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(ctx, Pods, "ns", Pod{Metadata: ObjectMeta{Name: "h2"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if ev := nextEvent(t, events); ev.Type != Added || ev.Key() != "ns/h2" {
+		t.Fatalf("watch over h2: %+v", ev)
+	}
+}

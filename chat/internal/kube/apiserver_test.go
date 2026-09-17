@@ -95,6 +95,7 @@ func (w *watcher) covers(res apiPath) bool {
 
 type recordedRequest struct {
 	Method      string
+	Proto       string
 	Path        string
 	Query       url.Values
 	ContentType string
@@ -104,8 +105,17 @@ type recordedRequest struct {
 
 func newFakeAPI(t *testing.T) *fakeAPI {
 	t.Helper()
+	return newFakeAPIWith(t, false)
+}
+
+// newFakeAPIWith starts the fake; http2 makes the server offer h2 over
+// ALPN as the real API server does.
+func newFakeAPIWith(t *testing.T, http2 bool) *fakeAPI {
+	t.Helper()
 	api := &fakeAPI{t: t, objects: map[string]map[string]any{}, watchers: map[*watcher]struct{}{}, oldest: 1}
-	api.srv = httptest.NewTLSServer(http.HandlerFunc(api.serve))
+	api.srv = httptest.NewUnstartedServer(http.HandlerFunc(api.serve))
+	api.srv.EnableHTTP2 = http2
+	api.srv.StartTLS()
 	t.Cleanup(api.srv.Close)
 	return api
 }
@@ -195,7 +205,7 @@ func (api *fakeAPI) currentVersion() string {
 func (api *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	api.mu.Lock()
-	api.requests = append(api.requests, recordedRequest{Method: r.Method, Path: r.URL.Path, Query: r.URL.Query(), ContentType: r.Header.Get("Content-Type"), Body: body, Header: r.Header.Clone()})
+	api.requests = append(api.requests, recordedRequest{Method: r.Method, Proto: r.Proto, Path: r.URL.Path, Query: r.URL.Query(), ContentType: r.Header.Get("Content-Type"), Body: body, Header: r.Header.Clone()})
 	token, override, exec, logs := api.token, api.override, api.exec, api.logs
 	api.mu.Unlock()
 	if token != "" && r.Header.Get("Authorization") != "Bearer "+token {

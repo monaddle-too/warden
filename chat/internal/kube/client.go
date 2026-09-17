@@ -100,10 +100,12 @@ func NewClient(cfg *Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The transport gets its own copy: with ForceAttemptHTTP2 it adds h2
+	// to NextProtos in place, and the exec WebSocket must not offer h2.
 	transport := &http.Transport{
 		Proxy:                 nil, // the API server is reached directly, never through HTTP_PROXY
 		DialContext:           (&net.Dialer{Timeout: DefaultTimeout, KeepAlive: 30 * time.Second}).DialContext,
-		TLSClientConfig:       tlsConfig,
+		TLSClientConfig:       tlsConfig.Clone(),
 		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   DefaultTimeout,
 		ResponseHeaderTimeout: DefaultTimeout,

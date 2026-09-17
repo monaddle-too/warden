@@ -245,48 +245,54 @@ func (lw *listWatcher) deliverList(ctx context.Context, fresh map[string]knownOb
 	return send(ctx, lw.ch, Event{Type: Synced, ResourceVersion: lw.version})
 }
 
+// run is the loop after the first list: watch, resume, relist. Every
+// failure is reported as an Error event; the pause between attempts grows
+// from half a second to thirty seconds and resets once a watch delivers
+// something or lives for healthyWatch, so a server that ends quiet watches
+// on schedule is reconnected at once while a flapping one is not hammered.
 func (lw *listWatcher) run(ctx context.Context) {
-	backoff := 500 * time.Millisecond
-	relist := false
+	const minBackoff = 500 * time.Millisecond
+	backoff := minBackoff
+	relist, failed, justListed := false, false, true
 	for ctx.Err() == nil {
+		if failed {
+			if !sleep(ctx, backoff) {
+				return
+			}
+			backoff = nextBackoff(backoff)
+			failed = false
+		}
 		if relist {
 			fresh, version, err := lw.c.listRaw(ctx, lw.r, lw.namespace, lw.opts)
 			if err != nil {
-				if ctx.Err() != nil {
+				if ctx.Err() != nil || !send(ctx, lw.ch, Event{Type: Error, Err: err}) {
 					return
 				}
-				if !send(ctx, lw.ch, Event{Type: Error, Err: err}) || !sleep(ctx, backoff) {
-					return
-				}
-				backoff = nextBackoff(backoff)
+				failed = true
 				continue
 			}
 			lw.version = version
 			if !lw.deliverList(ctx, fresh) {
 				return
 			}
-			relist = false
-			backoff = 500 * time.Millisecond
+			relist, justListed = false, true
 		}
 		events, err := lw.c.Watch(ctx, lw.r, lw.namespace, WatchOptions{
 			LabelSelector: lw.opts.LabelSelector, FieldSelector: lw.opts.FieldSelector,
 			ResourceVersion: lw.version, AllowBookmarks: true,
 		})
 		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			if !send(ctx, lw.ch, Event{Type: Error, Err: err}) {
+			if ctx.Err() != nil || !send(ctx, lw.ch, Event{Type: Error, Err: err}) {
 				return
 			}
 			if IsGone(err) {
-				relist = true
-				continue
+				// List again; a 410 right after a list (the server's
+				// history is shorter than the round trip) backs off first
+				// so the loop is never tight.
+				relist, failed = true, justListed
+			} else {
+				failed = true
 			}
-			if !sleep(ctx, backoff) {
-				return
-			}
-			backoff = nextBackoff(backoff)
 			continue
 		}
 		started := time.Now()
@@ -295,11 +301,12 @@ func (lw *listWatcher) run(ctx context.Context) {
 			switch ev.Type {
 			case Error:
 				// The server ended the watch with a Status; whatever the
-				// reason, a fresh list is the safe way to continue.
+				// reason, a fresh list is the safe way to continue (with a
+				// pause when the last list led straight here).
 				if !send(ctx, lw.ch, ev) {
 					return
 				}
-				relist = true
+				relist, failed = true, justListed && !alive
 			case Bookmark:
 				lw.version = ev.ResourceVersion
 				alive = true
@@ -319,17 +326,14 @@ func (lw *listWatcher) run(ctx context.Context) {
 				}
 			}
 		}
+		if alive {
+			justListed = false
+		}
 		if alive || time.Since(started) > healthyWatch {
-			// A watch that delivered something or lived a while ended on
-			// the server's schedule; reconnect at once.
-			backoff = 500 * time.Millisecond
+			backoff = minBackoff
 		} else if !relist {
-			// A watch that ended at once without delivering anything is
-			// retried with backoff so a flapping server is not hammered.
-			if !sleep(ctx, backoff) {
-				return
-			}
-			backoff = nextBackoff(backoff)
+			// A watch that ended at once without delivering anything.
+			failed = true
 		}
 	}
 }

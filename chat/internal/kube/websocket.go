@@ -84,6 +84,8 @@ func dialWebSocket(ctx context.Context, u *url.URL, tlsConfig *tls.Config, heade
 		if cfg.ServerName == "" {
 			cfg.ServerName = u.Hostname()
 		}
+		// The upgrade is HTTP/1.1; never let ALPN pick h2.
+		cfg.NextProtos = []string{"http/1.1"}
 		tlsConn := tls.Client(raw, cfg)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			raw.Close()
