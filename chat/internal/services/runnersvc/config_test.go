@@ -169,7 +169,7 @@ func TestRunnerSelectsDriverByRuntimeKind(t *testing.T) {
 	if _, ok := driver(nil).(*sandboxkube.Driver); !ok {
 		t.Fatalf("%T", driver(nil))
 	}
-	opts := kubernetesOptions(s.cfg.Kubernetes, s.memoryMB)
+	opts := kubernetesOptions(s.cfg.Kubernetes, s.memoryMB, s.cfg.Sandboxes.CPUMillis)
 	if opts.Namespace != "warden-sandboxes" || opts.Tier != config.TierGVisor || opts.RuntimeClass != "gvisor" || opts.Image() != "warden-guest-base@sha256:"+strings.Repeat("ab", 32) || opts.StorageClass != "local-path" || opts.WorkspaceSizeGi != 4 || opts.TrustConfigMap != "warden-guest-trust" || opts.MemoryMB != 1024 || opts.NodeSelector["pool"] != "sandboxes" {
 		t.Fatalf("options %+v", opts)
 	}

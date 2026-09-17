@@ -181,6 +181,7 @@ Compose file uses.
 {{- $_ = set $cfg "kubernetes" $kube -}}
 {{- $_ = set $cfg "sandboxes" (dict
       "memoryMB" (int .Values.sandboxes.memoryMB)
+      "cpuMillis" (int .Values.sandboxes.cpuMillis)
       "maxRunning" (int .Values.sandboxes.maxRunning)
       "warmSpares" (int .Values.sandboxes.warmSpares)
       "stopAfterIdleMinutes" (int .Values.sandboxes.stopAfterIdleMinutes)

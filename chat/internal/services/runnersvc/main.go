@@ -144,7 +144,7 @@ func runtimeDriver(s settings, kubeconfig string) (func(*sandbox.Worker) sandbox
 		if err != nil {
 			return nil, fmt.Errorf("kubernetes API client: %w", err)
 		}
-		driver, err := sandboxkube.New(client, kubernetesOptions(k, s.memoryMB))
+		driver, err := sandboxkube.New(client, kubernetesOptions(k, s.memoryMB, s.cfg.Sandboxes.CPUMillis))
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +156,7 @@ func runtimeDriver(s settings, kubeconfig string) (func(*sandbox.Worker) sandbox
 
 // kubernetesOptions maps the kubernetes section and the sandbox memory to
 // the driver's options.
-func kubernetesOptions(k *config.Kubernetes, memoryMB int) sandboxkube.Options {
+func kubernetesOptions(k *config.Kubernetes, memoryMB, cpuMillis int) sandboxkube.Options {
 	return sandboxkube.Options{
 		Namespace:        k.Namespace,
 		Tier:             k.Tier,
@@ -167,6 +167,7 @@ func kubernetesOptions(k *config.Kubernetes, memoryMB int) sandboxkube.Options {
 		WorkspaceSizeGi:  k.WorkspaceSizeGi,
 		TrustConfigMap:   k.TrustConfigMap,
 		MemoryMB:         memoryMB,
+		CPUMillis:        cpuMillis,
 		NodeSelector:     k.NodeSelector,
 		Tolerations:      k.Tolerations,
 	}

@@ -624,6 +624,7 @@ data:
         "kind": "kubernetes"
       },
       "sandboxes": {
+        "cpuMillis": 1000,
         "egress": "restricted",
         "keepStopped": 32,
         "maxRunning": 2,
@@ -1141,7 +1142,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: policy
       annotations:
-        checksum/config: b488d15a89bf23e6aade44eeafc63c0fcc469c2c5d15263f23fe3e6c8f5b0292
+        checksum/config: de184bc92cb74411345529dfb7869fe648a554576916117ce072978dc132a86d
     spec:
       serviceAccountName: warden-policy
       automountServiceAccountToken: true
@@ -1276,7 +1277,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: runner
       annotations:
-        checksum/config: b488d15a89bf23e6aade44eeafc63c0fcc469c2c5d15263f23fe3e6c8f5b0292
+        checksum/config: de184bc92cb74411345529dfb7869fe648a554576916117ce072978dc132a86d
     spec:
       serviceAccountName: warden-runner
       automountServiceAccountToken: true
@@ -1408,7 +1409,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: chat
       annotations:
-        checksum/config: b488d15a89bf23e6aade44eeafc63c0fcc469c2c5d15263f23fe3e6c8f5b0292
+        checksum/config: de184bc92cb74411345529dfb7869fe648a554576916117ce072978dc132a86d
     spec:
       serviceAccountName: warden-chat
       automountServiceAccountToken: false
@@ -1540,7 +1541,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: edge
       annotations:
-        checksum/config: b488d15a89bf23e6aade44eeafc63c0fcc469c2c5d15263f23fe3e6c8f5b0292
+        checksum/config: de184bc92cb74411345529dfb7869fe648a554576916117ce072978dc132a86d
     spec:
       serviceAccountName: warden-edge
       automountServiceAccountToken: false

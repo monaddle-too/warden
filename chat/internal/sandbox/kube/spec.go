@@ -62,9 +62,11 @@ type Options struct {
 	StorageClass    string
 	WorkspaceSizeGi int
 	TrustConfigMap  string
-	// MemoryMB is the container's memory request and limit; CPU is one
-	// core, both as the namespace's LimitRange expects (decision 11).
+	// MemoryMB and CPUMillis are the container's memory and CPU request
+	// and limit, as the namespace's LimitRange expects (decision 11); 1536
+	// MiB and one core when unset.
 	MemoryMB     int
+	CPUMillis    int
 	NodeSelector map[string]string
 	Tolerations  []config.Toleration
 	// GuestUID and GuestGID are the account the container runs as and the
@@ -105,6 +107,13 @@ func (o Options) memoryMB() int {
 		return o.MemoryMB
 	}
 	return 1536
+}
+
+func (o Options) cpuMillis() int {
+	if o.CPUMillis > 0 {
+		return o.CPUMillis
+	}
+	return 1000
 }
 
 func (o Options) workspaceSizeGi() int {
@@ -157,7 +166,7 @@ func PodSpec(o Options, name, sandboxID, generation string, spare bool, workspac
 		annotations = nil
 	}
 	uid, gid := o.guestUID(), o.guestGID()
-	resources := kube.ResourceList{"cpu": "1", "memory": strconv.Itoa(o.memoryMB()) + "Mi"}
+	resources := kube.ResourceList{"cpu": strconv.Itoa(o.cpuMillis()) + "m", "memory": strconv.Itoa(o.memoryMB()) + "Mi"}
 	var tolerations []kube.Toleration
 	for _, t := range o.Tolerations {
 		tolerations = append(tolerations, kube.Toleration{Key: t.Key, Operator: t.Operator, Value: t.Value, Effect: t.Effect, TolerationSeconds: t.TolerationSeconds})

@@ -90,7 +90,7 @@ func TestPodSpecHardening(t *testing.T) {
 	if len(c.Command) != 0 || len(c.Args) == 0 {
 		t.Fatal("args, not command, so the image entrypoint stays")
 	}
-	if c.Resources.Limits["memory"] != "1024Mi" || c.Resources.Requests["memory"] != "1024Mi" || c.Resources.Limits["cpu"] != "1" || c.Resources.Requests["cpu"] != "1" {
+	if c.Resources.Limits["memory"] != "1024Mi" || c.Resources.Requests["memory"] != "1024Mi" || c.Resources.Limits["cpu"] != "1000m" || c.Resources.Requests["cpu"] != "1000m" {
 		t.Fatalf("resources %+v", c.Resources)
 	}
 	sc := c.SecurityContext

@@ -167,7 +167,11 @@ type Runtimes struct {
 
 // Sandboxes sets capacity and lifecycle.
 type Sandboxes struct {
-	MemoryMB             int `json:"memoryMB,omitempty"`
+	MemoryMB int `json:"memoryMB,omitempty"`
+	// CPUMillis is each sandbox's CPU request and limit in the kubernetes
+	// kind (1000 = one core, the SBX shapes' fixed --cpus 1); 1000 when
+	// unset. The SBX driver ignores it.
+	CPUMillis            int `json:"cpuMillis,omitempty"`
 	MaxRunning           int `json:"maxRunning,omitempty"`
 	WarmSpares           int `json:"warmSpares,omitempty"`
 	StopAfterIdleMinutes int `json:"stopAfterIdleMinutes,omitempty"`
@@ -293,7 +297,7 @@ func Defaults(state string) Config {
 	c.Paths.State = state
 	c.SBX.PrivateHome = filepath.Join(state, "sbx")
 	c.SBX.InspectionCertMaxAgeDays = 365
-	c.Sandboxes = Sandboxes{MemoryMB: 1536, MaxRunning: 2, WarmSpares: 1, StopAfterIdleMinutes: 15, KeepStopped: 32, Egress: EgressRestricted}
+	c.Sandboxes = Sandboxes{MemoryMB: 1536, CPUMillis: 1000, MaxRunning: 2, WarmSpares: 1, StopAfterIdleMinutes: 15, KeepStopped: 32, Egress: EgressRestricted}
 	c.Chat.Listen = "127.0.0.1:18780"
 	c.Previews = Previews{Mode: PreviewLoopback, HostSuffix: "localhost", EdgeListen: "127.0.0.1:18781"}
 	c.Auth = Auth{Mode: AuthOwner, PublicURL: "http://" + c.Previews.EdgeListen}
@@ -558,6 +562,7 @@ func merge(c *Config, file Config) {
 	setString(&c.Runtimes.Codex, file.Runtimes.Codex)
 	setString(&c.Runtimes.Claude, file.Runtimes.Claude)
 	setInt(&c.Sandboxes.MemoryMB, file.Sandboxes.MemoryMB)
+	setInt(&c.Sandboxes.CPUMillis, file.Sandboxes.CPUMillis)
 	setInt(&c.Sandboxes.MaxRunning, file.Sandboxes.MaxRunning)
 	setInt(&c.Sandboxes.WarmSpares, file.Sandboxes.WarmSpares)
 	setInt(&c.Sandboxes.StopAfterIdleMinutes, file.Sandboxes.StopAfterIdleMinutes)
@@ -698,6 +703,9 @@ func (c Config) Validate() error {
 		return errors.New("sbx.guestImageDigest must be sha256:<64 hex>")
 	}
 	s := c.Sandboxes
+	if s.CPUMillis < 100 || s.CPUMillis > 64000 {
+		return errors.New("sandboxes.cpuMillis must be 100–64000")
+	}
 	if s.MemoryMB < 512 || s.MemoryMB > 16384 || s.MaxRunning < 1 || s.WarmSpares < 0 || s.StopAfterIdleMinutes < 1 || s.KeepStopped < 1 {
 		return errors.New("sandboxes: memoryMB 512–16384, maxRunning ≥ 1, warmSpares ≥ 0, stopAfterIdleMinutes ≥ 1, keepStopped ≥ 1")
 	}
