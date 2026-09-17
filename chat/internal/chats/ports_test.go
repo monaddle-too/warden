@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 	"warden/chat/internal/agent"
 	"warden/chat/internal/sandbox"
+	"warden/chat/internal/transport"
 )
 
 type portWorker struct {
@@ -122,6 +127,114 @@ func TestPortProxyPathsAndCredentialIsolation(t *testing.T) {
 		t.Fatal(out.Code, out.Body.String())
 	}
 }
+
+// On Kubernetes the attachment URL is the runner's shared preview server
+// with the publication's path prefix (https://warden-runner:<port>/<id>/;
+// docs/warden-kubernetes-plan.md, decisions 5 and 10): the ports proxy
+// dials it with the chat's certificate, verifies the runner against the
+// deployment CA under the configured host, keeps the prefix in front of
+// the viewer's path, and accepts no other https origin from the worker.
+func TestPortProxyReachesTheRunnerOverMutualTLSWithThePublicationPrefix(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := transport.NewCA("test", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	material := func(ca *transport.CA, id string) *transport.TLS {
+		m, err := ca.Material(filepath.Join(dir, ca.Certificate.Subject.CommonName, id), id, []string{"127.0.0.1"}, time.Now(), time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	var seen struct {
+		sync.Mutex
+		uri, host, origin, peer string
+	}
+	l, err := transport.Listen("tls://127.0.0.1:0", transport.ListenOptions{TLS: material(ca, transport.Runner), Peers: []string{transport.Chat}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &http.Server{ErrorLog: log.New(io.Discard, "", 0), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Lock()
+		seen.uri, seen.host, seen.origin, seen.peer = r.URL.RequestURI(), r.Host, r.Header.Get("Origin"), transport.IdentityOf(*r.TLS)
+		seen.Unlock()
+		if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" || r.Header.Get("X-Warden-CSRF") != "" {
+			t.Error("credential leak")
+		}
+		if r.URL.Path == "/pub1/login" {
+			w.Header().Set("Location", "https://"+r.Host+"/pub1/app/")
+			w.WriteHeader(302)
+			return
+		}
+		w.Header().Set("Set-Cookie", "bad=yes")
+		io.WriteString(w, "asset")
+	})}
+	go func() { _ = up.Serve(l) }()
+	defer up.Close()
+	host := l.Addr().String()
+
+	e, _, c := portEngine(t, "https://"+host+"/pub1/")
+	// Unconfigured, the https attachment is refused as before.
+	if _, err = e.bindPort(c, portInput{Port: 3000, Title: "Test", Path: "/"}, ""); err == nil {
+		t.Fatal("https attachment accepted without a configured preview server")
+	}
+	e.RunnerPreviewHost, e.RunnerPreviewTLS = host, material(ca, transport.Chat)
+	p, err := e.bindPort(c, portInput{Port: 3000, Title: "Test", Path: "/"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serve := func(path, query string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "http://warden/api/ports/"+p.ID+"/proxy"+path+query, nil)
+		r.Header.Set("Authorization", "secret")
+		r.Header.Set("Cookie", "session=secret")
+		r.Header.Set("X-Warden-CSRF", "secret")
+		r.Header.Set("Origin", "http://"+p.ID+".localhost:18781")
+		out := httptest.NewRecorder()
+		e.ServePort(p.ID, path, out, r)
+		return out
+	}
+	out := serve("/assets/", "?x=1")
+	if out.Code != 200 || out.Body.String() != "asset" || out.Header().Get("Set-Cookie") != "" {
+		t.Fatal(out.Code, out.Body.String())
+	}
+	seen.Lock()
+	uri, seenHost, origin, peer := seen.uri, seen.host, seen.origin, seen.peer
+	seen.Unlock()
+	if uri != "/pub1/assets/?x=1" || seenHost != host || origin != "https://"+host || peer != transport.Chat {
+		t.Fatalf("runner saw %q %q %q %q", uri, seenHost, origin, peer)
+	}
+	// A redirect to the runner origin loses the origin and the prefix.
+	if out = serve("/login", ""); out.Code != 302 || out.Header().Get("Location") != "/app/" {
+		t.Fatal(out.Code, out.Header().Get("Location"))
+	}
+	// The worker cannot redirect the chat's certificate elsewhere: another
+	// https host is refused (TestPreviewURLsAndIdentity has the rest).
+	for _, bad := range []string{"https://evil.example:1/pub1/", "https://127.0.0.1:1/pub1/"} {
+		other, _, oc := portEngine(t, bad)
+		other.RunnerPreviewHost, other.RunnerPreviewTLS = host, material(ca, transport.Chat)
+		if _, err = other.bindPort(oc, portInput{Port: 3000, Title: "Test", Path: "/"}, ""); err == nil {
+			t.Fatalf("%s accepted", bad)
+		}
+	}
+	// A runner from another CA, or the chat presenting no certificate, is
+	// an upstream failure, not a page.
+	stranger, _, sc := portEngine(t, "https://"+host+"/pub1/")
+	otherCA, err := transport.NewCA("other", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger.RunnerPreviewHost, stranger.RunnerPreviewTLS = host, material(otherCA, transport.Chat)
+	if p, err = stranger.bindPort(sc, portInput{Port: 3000, Title: "Test", Path: "/"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	out = httptest.NewRecorder()
+	stranger.ServePort(p.ID, "/", out, httptest.NewRequest("GET", "http://warden/api/ports/"+p.ID+"/proxy/", nil))
+	if out.Code != 502 {
+		t.Fatal("another CA reached the runner", out.Code, out.Body.String())
+	}
+}
+
 func TestLoopbackBindingURLsCarryTheEdgePort(t *testing.T) {
 	e, _, c := portEngine(t, "http://127.0.0.1:23456/")
 	e.PublicPreviewSuffix, e.PreviewScheme, e.PreviewPort = "localhost", "http", "18781"

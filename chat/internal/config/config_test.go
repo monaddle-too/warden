@@ -213,6 +213,70 @@ func TestTransportURLsAndTLSValidation(t *testing.T) {
 	}
 }
 
+// services.runner.previews is the runner's shared mutual-TLS preview
+// server (docs/warden-kubernetes-plan.md, decisions 5 and 10): two tls://
+// URLs set together, needing the tls section, on their own port; unset
+// on the sbx shapes and omitted from a written file.
+func TestRunnerPreviewListener(t *testing.T) {
+	tls := `"tls":{"caFile":"/etc/warden/tls/ca.crt","certFile":"/etc/warden/tls/tls.crt","keyFile":"/etc/warden/tls/tls.key"}`
+	k8s := `{"version":1,"paths":{"state":"/var/lib/warden"},
+	 "services":{"runner":{"listen":"tls://0.0.0.0:7444","address":"tls://warden-runner:7444","previews":{"listen":"tls://0.0.0.0:7446","address":"tls://warden-runner:7446"}}},` + tls + `}`
+	c, err := Parse([]byte(k8s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RunnerPreviewListen() != "tls://0.0.0.0:7446" || c.RunnerPreviewAddress() != "tls://warden-runner:7446" || c.RunnerListen() != "tls://0.0.0.0:7444" {
+		t.Fatalf("%+v", c.Services.Runner)
+	}
+	// The preview server alone is a tls:// URL: the tls section is required
+	// with it, whatever the control listeners use.
+	c, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"previews":{"listen":"tls://0.0.0.0:7446","address":"tls://runner.internal:7446"}}},` + tls + `}`))
+	if err != nil || !c.UsesTLS() || c.RunnerListen() != "unix:///tmp/w/runner/worker.sock" {
+		t.Fatalf("%v %+v", err, c.Services.Runner)
+	}
+	// Unset, nothing is written and the sbx defaults hold.
+	c = Defaults("/tmp/w")
+	if c.RunnerPreviewListen() != "" || c.RunnerPreviewAddress() != "" {
+		t.Fatalf("%+v", c.Services.Runner)
+	}
+	path := filepath.Join(t.TempDir(), "warden.json")
+	if err = Write(path, c); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(path); strings.Contains(string(raw), "\"services\"") {
+		t.Fatalf("unset preview listener written:\n%s", raw)
+	}
+	// A file with only the control listeners writes no previews entry.
+	c, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"listen":"unix:///tmp/w/runner/worker.sock"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Write(path, c); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(path); !strings.Contains(string(raw), "\"runner\": {\n      \"listen\": \"unix:///tmp/w/runner/worker.sock\"\n    }") {
+		t.Fatalf("services.runner written with more than its listener:\n%s", raw)
+	}
+	bad := map[string]string{
+		"listen alone":            `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"previews":{"listen":"tls://0.0.0.0:7446"}}},` + tls + `}`,
+		"address alone":           `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"previews":{"address":"tls://warden-runner:7446"}}},` + tls + `}`,
+		"without the tls section": `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"previews":{"listen":"tls://0.0.0.0:7446","address":"tls://warden-runner:7446"}}}}`,
+		"http listener":           `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"previews":{"listen":"http://127.0.0.1:7446","address":"http://127.0.0.1:7446"}}},` + tls + `}`,
+		"https address":           `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"previews":{"listen":"tls://0.0.0.0:7446","address":"https://warden-runner:7446"}}},` + tls + `}`,
+		"unix listener":           `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"previews":{"listen":"unix:///tmp/p.sock","address":"unix:///tmp/p.sock"}}},` + tls + `}`,
+		"address without a host":  `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"previews":{"listen":"tls://0.0.0.0:7446","address":"tls://:7446"}}},` + tls + `}`,
+		"path in the address":     `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"previews":{"listen":"tls://0.0.0.0:7446","address":"tls://warden-runner:7446/previews"}}},` + tls + `}`,
+		"the control port":        `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"listen":"tls://0.0.0.0:7444","address":"tls://warden-runner:7444","previews":{"listen":"tls://:7444","address":"tls://warden-runner:7444"}}},` + tls + `}`,
+		"unknown previews field":  `{"version":1,"paths":{"state":"/tmp/w"},"services":{"runner":{"previews":{"listen":"tls://0.0.0.0:7446","address":"tls://warden-runner:7446","port":7446}}},` + tls + `}`,
+		"previews on the chat":    `{"version":1,"paths":{"state":"/tmp/w"},"services":{"chat":{"previews":{"listen":"tls://0.0.0.0:7446","address":"tls://warden-chat:7446"}}},` + tls + `}`,
+	}
+	for name, raw := range bad {
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Errorf("%s: accepted %s", name, raw)
+		}
+	}
+}
+
 func TestRuntimeKindDefaultsToSBXAndIsNotWritten(t *testing.T) {
 	c := Defaults("/tmp/w")
 	if c.RuntimeKind() != RuntimeSBX || c.GatewayMode() != GatewayLoopback || c.Kubernetes != nil {

@@ -168,6 +168,12 @@ services:
     port: 7443
   runner:
     port: 7444
+    # The runner's shared preview server (plan decisions 5 and 10): the
+    # chat dials https://warden-runner:<previewPort>/<publication ID> with
+    # its certificate for every published preview, instead of the loopback
+    # listeners the single-host shapes use (services.runner.previews in
+    # warden.json).
+    previewPort: 7446
   chat:
     port: 7445
 

@@ -105,12 +105,19 @@ func TestRunnerTransportSettings(t *testing.T) {
 	if s.listen != "tls://127.0.0.1:7444" || s.policy != "unix:///tmp/w/policy/sbx-control.sock" || s.tls == nil || s.tls.CAFile != "/tls/ca.crt" || s.tls.CertFile != "/tls/tls.crt" || s.tls.KeyFile != "/tls/tls.key" {
 		t.Fatalf("%+v %+v", s, s.tls)
 	}
+	if s.previewListen != "" || s.previewAddress != "" {
+		t.Fatalf("flags alone configured a shared preview server: %+v", s)
+	}
 	path := filepath.Join(t.TempDir(), "warden.json")
 	os.WriteFile(path, []byte(`{"version":1,"paths":{"state":"/var/lib/warden"},
-		"services":{"policy":{"listen":"tls://0.0.0.0:7443","address":"tls://warden-policy:7443"},"runner":{"listen":"tls://0.0.0.0:7444","address":"tls://warden-runner:7444"},"chat":{"listen":"tls://0.0.0.0:7445","address":"tls://warden-chat:7445"}},
+		"services":{"policy":{"listen":"tls://0.0.0.0:7443","address":"tls://warden-policy:7443"},"runner":{"listen":"tls://0.0.0.0:7444","address":"tls://warden-runner:7444","previews":{"listen":"tls://0.0.0.0:7446","address":"tls://warden-runner:7446"}},"chat":{"listen":"tls://0.0.0.0:7445","address":"tls://warden-chat:7445"}},
 		"tls":{"caFile":"/etc/warden/tls/ca.crt","certFile":"/etc/warden/tls/tls.crt","keyFile":"/etc/warden/tls/tls.key"}}`), 0600)
 	if s, err = runnerSettings(t, "--config", path); err != nil || s.listen != "tls://0.0.0.0:7444" || s.policy != "tls://warden-policy:7443" || s.tls == nil || s.tls.CAFile != "/etc/warden/tls/ca.crt" || s.root != "/var/lib/warden/runner" {
 		t.Fatalf("%+v %+v %v", s, s.tls, err)
+	}
+	// The shared preview server comes from the file alone (no flag).
+	if s.previewListen != "tls://0.0.0.0:7446" || s.previewAddress != "tls://warden-runner:7446" {
+		t.Fatalf("%+v", s)
 	}
 	if _, err = runnerSettings(t, "--config", path, "--socket", "/var/lib/warden/runner/worker.sock"); err == nil || !strings.Contains(err.Error(), "services.runner.listen") {
 		t.Fatal("socket flag against a tls file accepted", err)

@@ -29,6 +29,10 @@ type settings struct {
 	residents  int            // sandboxes.maxRunning
 	spares     int            // sandboxes.warmSpares
 	retained   int            // sandboxes.keepStopped
+	// previewListen and previewAddress are services.runner.previews, the
+	// shared mutual-TLS preview server and its advertised address; both ""
+	// on the sbx shapes (per-publication loopback listeners). File only.
+	previewListen, previewAddress string
 }
 
 type runnerFlags struct {
@@ -53,6 +57,7 @@ func resolveSettings(fs *flag.FlagSet, f runnerFlags) (settings, error) {
 		s.listen = config.Override(o, "tls-listen", "tls://"+str(f.tlsListen), "services.runner.listen", cfg.RunnerListen())
 	}
 	s.policy = config.Override(o, "warden-socket", "unix://"+str(f.wardenSocket), "services.policy.address", cfg.PolicyAddress())
+	s.previewListen, s.previewAddress = cfg.RunnerPreviewListen(), cfg.RunnerPreviewAddress()
 	s.tls = cfg.TransportTLS()
 	if o.Set("tls-ca") || o.Set("tls-cert") || o.Set("tls-key") {
 		var current transport.TLS

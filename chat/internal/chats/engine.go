@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -42,6 +43,17 @@ type Engine struct {
 	PolicyAddress       string
 	PolicyTLS           *transport.TLS
 	PublicPreviewSuffix string
+	// RunnerPreviewHost is the host:port of the runner's shared preview
+	// server (services.runner.previews.address; docs/warden-kubernetes-plan.md,
+	// decisions 5 and 10), the only https:// origin an attachment URL may
+	// name, dialed with RunnerPreviewTLS (this service's certificate; the
+	// runner admits only warden-chat). "" on the sbx shapes, where the
+	// runner hands out http://127.0.0.1:<port>/ loopback URLs and nothing
+	// else is accepted.
+	RunnerPreviewHost string
+	RunnerPreviewTLS  *transport.TLS
+	previewMu         sync.Mutex
+	previewTransport  *http.Transport
 	// PreviewScheme and PreviewPort shape approved binding URLs:
 	// <scheme>://<binding-id>.<suffix>[:port]/path. The scheme defaults to
 	// https (public previews); loopback previews use http and the edge port.
@@ -485,7 +497,7 @@ func (e *Engine) Runtime(ctx context.Context, id, op string) (sandbox.Response, 
 		if a.ChatID != c.ID || a.SandboxID != c.SandboxID {
 			return sandbox.Response{}, errors.New("preview binding mismatch")
 		}
-		if invalid := validateAttachment(a); invalid != nil {
+		if invalid := e.validateAttachment(a); invalid != nil {
 			return sandbox.Response{}, invalid
 		}
 	}

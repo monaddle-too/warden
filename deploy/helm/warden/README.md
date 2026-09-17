@@ -73,7 +73,7 @@ Helm` checks the rendered `warden.json`'s shape (skips without helm).
 | `configmap.yaml` | `warden-config` with the rendered `warden.json` (`_helpers.tpl`, `warden.config`) |
 | `pvcs.yaml` | `warden-{policy,runner,app,edge}-state` |
 | `deployments.yaml` | The four Deployments (`Recreate`, non-root, read-only root filesystem) |
-| `services.yaml` | `warden-policy`, `warden-gateway`, `warden-runner`, `warden-chat`, `warden-edge` |
+| `services.yaml` | `warden-policy`, `warden-gateway`, `warden-runner` (control and the preview server), `warden-chat`, `warden-edge` |
 | `networkpolicies.yaml` | Core namespace default deny and one policy per service |
 | `tls-bootstrap.yaml` | The pre-install/pre-upgrade Job issuing the four mTLS Secrets without cert-manager |
 | `tls-certmanager.yaml` | The Issuers and Certificates with cert-manager |

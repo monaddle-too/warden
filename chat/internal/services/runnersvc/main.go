@@ -98,6 +98,19 @@ func run(args []string) error {
 		return services.ExitCode(1)
 	}
 	w := sandbox.NewWorker(*root, *sbx, *template)
+	if s.previewListen != "" {
+		// The shared preview server (services.runner.previews): the chat
+		// dials it as https://<address host>/<publication ID> with its
+		// client certificate, so only the chat is admitted.
+		pl, err := transport.Listen(s.previewListen, transport.ListenOptions{TLS: s.tls, Peers: []string{transport.Chat}})
+		if err != nil {
+			slog.Error("preview listen", "error", err)
+			return services.ExitCode(1)
+		}
+		defer pl.Close()
+		w.PreviewListener, w.PreviewAddress = pl, s.previewAddress
+		slog.Info("previews served over mutual TLS", "listen", s.previewListen, "address", s.previewAddress)
+	}
 	w.Runtime = driver(w)
 	w.RuntimeDir = *runtimeDir
 	w.ClaudePath = *claudePath

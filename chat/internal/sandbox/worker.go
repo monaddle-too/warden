@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,6 +57,17 @@ type Worker struct {
 	MaxResident                   int
 	MemoryMB                      int
 	Now                           func() time.Time
+	// PreviewListener and PreviewAddress switch the preview proxy to one
+	// shared server (docs/warden-kubernetes-plan.md, decisions 5 and 10;
+	// config services.runner.previews): Serve runs it on the listener,
+	// which the runner service bound with mutual TLS admitting only the
+	// chat, every published preview is served under /<publication ID>,
+	// and the attachment URL is PreviewAddress (tls://<host>:<port>, which
+	// the chat dials as https://) followed by that path. Both unset (the
+	// sbx shapes, where the chat shares the host) keeps one loopback
+	// listener per publication and http://127.0.0.1:<port>/ URLs.
+	PreviewListener net.Listener
+	PreviewAddress  string
 }
 
 func (w *Worker) parallelLimit() int {
@@ -75,7 +87,20 @@ func (w *Worker) Serve(ctx context.Context, l net.Listener) error {
 	if err := w.initializeManaged(ctx); err != nil {
 		return err
 	}
-	go func() { <-ctx.Done(); l.Close() }()
+	var previews *http.Server
+	if w.PreviewListener != nil {
+		// Started only once the registry is loaded, so a request racing the
+		// start finds the publications rather than an empty worker.
+		previews = w.previewServer()
+		go func(server *http.Server) { _ = server.Serve(w.PreviewListener) }(previews)
+	}
+	go func() {
+		<-ctx.Done()
+		l.Close()
+		if previews != nil {
+			previews.Close()
+		}
+	}()
 	clients := make(chan struct{}, 64)
 	var wg sync.WaitGroup
 	defer wg.Wait()

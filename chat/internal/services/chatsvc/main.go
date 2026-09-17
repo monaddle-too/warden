@@ -115,6 +115,10 @@ func run(args []string) error {
 	engine.PublicPreviewSuffix = *suffix
 	engine.PreviewScheme, engine.PreviewPort = s.previewScheme, s.previewPort
 	engine.PolicyAddress, engine.PolicyTLS = s.policy, s.tls
+	// The runner's shared preview server on Kubernetes (services.runner.
+	// previews.address, a tls:// URL the ports proxy dials as https:// with
+	// this service's certificate); "" keeps the loopback attachment URLs.
+	engine.RunnerPreviewHost, engine.RunnerPreviewTLS = config.HostOf(s.runnerPreviews), s.tls
 	handler.Engine = engine
 	go engine.Serve(ctx)
 	defer func() { cancel(); <-engine.Done() }()

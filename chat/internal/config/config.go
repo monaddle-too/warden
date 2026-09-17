@@ -208,9 +208,9 @@ type Chat struct {
 // with mutual TLS from the tls section (docs/warden-kubernetes-plan.md,
 // decision 5 and appendix A).
 type Services struct {
-	Policy Service `json:"policy,omitzero"`
-	Runner Service `json:"runner,omitzero"`
-	Chat   Service `json:"chat,omitzero"`
+	Policy Service       `json:"policy,omitzero"`
+	Runner RunnerService `json:"runner,omitzero"`
+	Chat   Service       `json:"chat,omitzero"`
 }
 
 // Service is one service's listener and the address its clients dial.
@@ -220,6 +220,23 @@ type Services struct {
 type Service struct {
 	Listen  string `json:"listen,omitempty"`
 	Address string `json:"address,omitempty"`
+}
+
+// RunnerService is the runner's control listener and address plus, where
+// the chat and the runner do not share a host, its preview server.
+type RunnerService struct {
+	Service
+	// Previews is the runner's one mutual-TLS preview server (listen) and
+	// the address the chat dials it at (docs/warden-kubernetes-plan.md,
+	// decisions 5 and 10): every published preview is served under
+	// <address>/<publication ID>, and only the chat's certificate is
+	// admitted. Both are tls:// URLs, set together or not at all; the
+	// tls section is required with them. Unset (the sbx shapes, where the
+	// chat and the runner share a host) the runner keeps one loopback
+	// listener per publication and hands the chat http://127.0.0.1:<port>/
+	// URLs. Accepted with any runtime kind; the chart sets it for
+	// Kubernetes.
+	Previews Service `json:"previews,omitzero"`
 }
 
 // TLS is the mutual-TLS material every service uses on tls:// URLs: the
@@ -370,6 +387,13 @@ func (c Config) ChatAddress() string {
 	return first(c.Services.Chat.Address, httpOnly(c.Services.Chat.Listen), "http://"+c.Chat.Listen)
 }
 
+// RunnerPreviewListen and RunnerPreviewAddress are the runner's shared
+// preview server and the address the chat dials it at
+// (services.runner.previews), both "" when the file sets none: the sbx
+// shapes' per-publication loopback listeners.
+func (c Config) RunnerPreviewListen() string  { return c.Services.Runner.Previews.Listen }
+func (c Config) RunnerPreviewAddress() string { return c.Services.Runner.Previews.Address }
+
 // TransportTLS is the tls section as the transport package takes it, nil
 // when the file has none.
 func (c Config) TransportTLS() *transport.TLS {
@@ -381,7 +405,7 @@ func (c Config) TransportTLS() *transport.TLS {
 
 // UsesTLS reports whether any listener or address is tls://.
 func (c Config) UsesTLS() bool {
-	for _, u := range []string{c.PolicyListen(), c.PolicyAddress(), c.RunnerListen(), c.RunnerAddress(), c.ChatListen(), c.ChatAddress()} {
+	for _, u := range []string{c.PolicyListen(), c.PolicyAddress(), c.RunnerListen(), c.RunnerAddress(), c.ChatListen(), c.ChatAddress(), c.RunnerPreviewListen(), c.RunnerPreviewAddress()} {
 		if transport.IsTLS(u) {
 			return true
 		}
@@ -573,6 +597,8 @@ func merge(c *Config, file Config) {
 	setString(&c.Services.Policy.Address, file.Services.Policy.Address)
 	setString(&c.Services.Runner.Listen, file.Services.Runner.Listen)
 	setString(&c.Services.Runner.Address, file.Services.Runner.Address)
+	setString(&c.Services.Runner.Previews.Listen, file.Services.Runner.Previews.Listen)
+	setString(&c.Services.Runner.Previews.Address, file.Services.Runner.Previews.Address)
 	setString(&c.Services.Chat.Listen, file.Services.Chat.Listen)
 	setString(&c.Services.Chat.Address, file.Services.Chat.Address)
 	if file.Chat.Listen == "" {
@@ -859,6 +885,9 @@ func (c Config) validateTransport() error {
 	if HostOf(httpOnly(c.ChatListen())) != "" && HostOf(c.ChatListen()) != c.Chat.Listen {
 		return fmt.Errorf("services.chat.listen %s disagrees with chat.listen %s", c.ChatListen(), c.Chat.Listen)
 	}
+	if err := c.validatePreviewListener(); err != nil {
+		return err
+	}
 	if c.UsesTLS() {
 		if c.TLS == nil {
 			return errors.New("tls (caFile, certFile, keyFile) is required when a service listens on or dials a tls:// URL")
@@ -877,9 +906,36 @@ func (c Config) services(name string) Service {
 	case "policy":
 		return c.Services.Policy
 	case "runner":
-		return c.Services.Runner
+		return c.Services.Runner.Service
 	}
 	return c.Services.Chat
+}
+
+// validatePreviewListener applies the rules of services.runner.previews:
+// listen and address are set together or not at all, both tls:// (the
+// chat dials it as https:// with its client certificate, so there is no
+// plaintext form), and the address names a host. The tls section is
+// checked with the other tls:// URLs.
+func (c Config) validatePreviewListener() error {
+	p := c.Services.Runner.Previews
+	if p.Listen == "" && p.Address == "" {
+		return nil
+	}
+	if p.Listen == "" || p.Address == "" {
+		return errors.New("services.runner.previews: listen and address are set together")
+	}
+	if _, err := serviceURL(p.Listen, []string{"tls"}, true); err != nil {
+		return fmt.Errorf("services.runner.previews.listen: %w", err)
+	}
+	if _, err := serviceURL(p.Address, []string{"tls"}, false); err != nil {
+		return fmt.Errorf("services.runner.previews.address: %w", err)
+	}
+	if _, previews, _ := net.SplitHostPort(HostOf(p.Listen)); previews != "" {
+		if _, control, _ := net.SplitHostPort(HostOf(c.RunnerListen())); control == previews {
+			return errors.New("services.runner.previews.listen must use a port other than services.runner.listen: the preview server is its own listener")
+		}
+	}
+	return nil
 }
 
 // serviceURL checks one transport URL against the allowed schemes and
