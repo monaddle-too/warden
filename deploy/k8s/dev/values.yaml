@@ -68,5 +68,9 @@ resources:
 # node ports to the Mac's 127.0.0.1, so *.localhost previews need no
 # port-forward in the dev VM (to be verified in step 7).
 edge:
+  # 28781, not the 18781 a local `warden start` on the same Mac already
+  # binds: Lima forwards the node port to the Mac's 127.0.0.1 and would
+  # silently lose the race for a taken port.
+  port: 28781
   service:
     type: LoadBalancer

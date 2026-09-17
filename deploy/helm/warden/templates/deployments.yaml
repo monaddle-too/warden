@@ -48,6 +48,26 @@ spec:
         seccompProfile:
           type: RuntimeDefault
         {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      # Provisioners hand over the state volume root-owned (local-path makes
+      # it world-writable); the services refuse a state directory they do
+      # not own privately, so one root step fixes ownership and mode once.
+      initContainers:
+        - name: own-state
+          image: {{ include "warden.image" $ | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: [sh, -c, "chown {{ $.Values.podSecurityContext.runAsUser }}:{{ $.Values.podSecurityContext.runAsGroup }} /var/lib/warden/{{ $c.state }} && chmod 0700 /var/lib/warden/{{ $c.state }}"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, FOWNER, DAC_OVERRIDE]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/{{ $c.state }}
       containers:
         - name: {{ $c.name }}
           image: {{ include "warden.image" $ | quote }}

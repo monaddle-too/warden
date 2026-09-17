@@ -821,9 +821,10 @@ rules:
   - apiGroups: [""]
     resources: [pods, persistentvolumeclaims]
     verbs: [create, get, list, watch, delete]
+  # exec over WebSocket is an HTTP GET (verb get); SPDY clients POST (create).
   - apiGroups: [""]
     resources: [pods/exec]
-    verbs: [create]
+    verbs: [get, create]
   - apiGroups: [""]
     resources: [pods/log]
     verbs: [get]
@@ -1137,6 +1138,26 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
         runAsGroup: 1000
         runAsUser: 1000
+      # Provisioners hand over the state volume root-owned (local-path makes
+      # it world-writable); the services refuse a state directory they do
+      # not own privately, so one root step fixes ownership and mode once.
+      initContainers:
+        - name: own-state
+          image: "ghcr.io/monaddle-too/warden:v1.2.3"
+          imagePullPolicy: IfNotPresent
+          command: [sh, -c, "chown 1000:1000 /var/lib/warden/policy && chmod 0700 /var/lib/warden/policy"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, FOWNER, DAC_OVERRIDE]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/policy
       containers:
         - name: policy
           image: "ghcr.io/monaddle-too/warden:v1.2.3"
@@ -1252,6 +1273,26 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
         runAsGroup: 1000
         runAsUser: 1000
+      # Provisioners hand over the state volume root-owned (local-path makes
+      # it world-writable); the services refuse a state directory they do
+      # not own privately, so one root step fixes ownership and mode once.
+      initContainers:
+        - name: own-state
+          image: "ghcr.io/monaddle-too/warden:v1.2.3"
+          imagePullPolicy: IfNotPresent
+          command: [sh, -c, "chown 1000:1000 /var/lib/warden/runner && chmod 0700 /var/lib/warden/runner"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, FOWNER, DAC_OVERRIDE]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/runner
       containers:
         - name: runner
           image: "ghcr.io/monaddle-too/warden:v1.2.3"
@@ -1364,6 +1405,26 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
         runAsGroup: 1000
         runAsUser: 1000
+      # Provisioners hand over the state volume root-owned (local-path makes
+      # it world-writable); the services refuse a state directory they do
+      # not own privately, so one root step fixes ownership and mode once.
+      initContainers:
+        - name: own-state
+          image: "ghcr.io/monaddle-too/warden:v1.2.3"
+          imagePullPolicy: IfNotPresent
+          command: [sh, -c, "chown 1000:1000 /var/lib/warden/app && chmod 0700 /var/lib/warden/app"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, FOWNER, DAC_OVERRIDE]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/app
       containers:
         - name: chat
           image: "ghcr.io/monaddle-too/warden:v1.2.3"
@@ -1476,6 +1537,26 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
         runAsGroup: 1000
         runAsUser: 1000
+      # Provisioners hand over the state volume root-owned (local-path makes
+      # it world-writable); the services refuse a state directory they do
+      # not own privately, so one root step fixes ownership and mode once.
+      initContainers:
+        - name: own-state
+          image: "ghcr.io/monaddle-too/warden:v1.2.3"
+          imagePullPolicy: IfNotPresent
+          command: [sh, -c, "chown 1000:1000 /var/lib/warden/edge && chmod 0700 /var/lib/warden/edge"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, FOWNER, DAC_OVERRIDE]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/warden/edge
       containers:
         - name: edge
           image: "ghcr.io/monaddle-too/warden:v1.2.3"

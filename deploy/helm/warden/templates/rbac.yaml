@@ -34,9 +34,10 @@ rules:
   - apiGroups: [""]
     resources: [pods, persistentvolumeclaims]
     verbs: [create, get, list, watch, delete]
+  # exec over WebSocket is an HTTP GET (verb get); SPDY clients POST (create).
   - apiGroups: [""]
     resources: [pods/exec]
-    verbs: [create]
+    verbs: [get, create]
   - apiGroups: [""]
     resources: [pods/log]
     verbs: [get]

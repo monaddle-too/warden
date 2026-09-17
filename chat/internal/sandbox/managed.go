@@ -18,6 +18,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"warden/chat/internal/release"
 )
 
 type managedSandbox struct {
@@ -325,9 +327,6 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 	if s.Active != nil {
 		return w.statusLocked(r), nil
 	}
-	if w.RuntimeDir == "" {
-		return Response{}, errors.New("worker requires --runtime-dir with the pinned Linux Codex vendor bundle")
-	}
 	if r.OpenAIAPIKey != "" {
 		return Response{}, errors.New("personal keys must be registered with Warden; sandbox secret injection is disabled")
 	}
@@ -427,14 +426,27 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		s.GuestCA = guest.manifest.CA.Sha256
 	}
 	if !s.Installed && guest.codex && guest.manifest != nil {
-		if host, herr := codexBundleMetadata(w.RuntimeDir); herr == nil && guest.manifest.Codex.Version == host.Version && guest.manifest.Codex.Target == host.Target {
+		// The image ships the pinned Codex release (its digest is verified by
+		// the policy service), or it ships the same bundle the host holds.
+		if guest.manifest.Codex.Version == release.CodexVersion && pinnedCodexTarget(guest.manifest.Codex.Target) {
+			s.Installed = true
+		} else if host, herr := codexBundleMetadata(w.RuntimeDir); w.RuntimeDir != "" && herr == nil && guest.manifest.Codex.Version == host.Version && guest.manifest.Codex.Target == host.Target {
 			s.Installed = true
 		}
+	}
+	if !s.Installed && w.RuntimeDir == "" {
+		return fail(errors.New("the guest image does not ship the pinned Codex runtime and no host bundle is configured (runtimes.codex)"))
 	}
 	if err = w.unpublishRemovedLocked(ctx, s); err != nil {
 		return fail(err)
 	}
-	if r.Provider == "claude" {
+	if r.Provider == "claude" && w.ClaudePath == "" {
+		// No host copy: the image must ship the pinned executable.
+		if !(guest.claude && guest.manifest != nil && guest.manifest.Claude.Version == release.ClaudeVersion && pinnedClaudeDigest(guest.manifest.Claude.Sha256)) {
+			return fail(errors.New("the guest image does not ship the pinned Claude executable and no host copy is configured (runtimes.claude)"))
+		}
+		s.ClaudeInstalled = "image:" + guest.manifest.Claude.Sha256
+	} else if r.Provider == "claude" {
 		// The executable is large; copy it once per guest and again only when
 		// the host file changes or the guest copy is missing.
 		fingerprint, ferr := claudeFingerprint(w.ClaudePath)
@@ -1219,4 +1231,26 @@ func (w *Worker) probeGuestLocked(ctx context.Context, s *managedSandbox) (strin
 		}
 	}
 	return report, nil
+}
+
+// pinnedCodexTarget reports whether a guest manifest's Codex target is one
+// of the release's published bundles.
+func pinnedCodexTarget(target string) bool {
+	for _, bundle := range release.CodexBundles {
+		if target != "" && strings.Contains(bundle.URL, "codex-package-"+target+".tar.gz") {
+			return true
+		}
+	}
+	return false
+}
+
+// pinnedClaudeDigest reports whether a guest manifest's Claude executable is
+// one of the release's published builds.
+func pinnedClaudeDigest(sha256 string) bool {
+	for _, exe := range release.ClaudeExecutables {
+		if sha256 != "" && exe.SHA256 == sha256 {
+			return true
+		}
+	}
+	return false
 }
