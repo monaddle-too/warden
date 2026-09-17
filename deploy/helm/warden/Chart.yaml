@@ -1,0 +1,22 @@
+apiVersion: v2
+name: warden
+description: >-
+  Warden on Kubernetes: the policy broker, runner, chat and edge as four
+  Deployments over mutual TLS, agent sandboxes as pods under a RuntimeClass
+  (Kata Containers or gVisor) in a hardened namespace, egress through the
+  policy service's gateway only. docs/warden-kubernetes-plan.md is the design.
+type: application
+# The chart, the server image and the base guest image are released together
+# (plan decision 17): appVersion is the release tag and the default image tag.
+# 0.0.0-dev is the placeholder scripts/release.sh --chart replaces.
+version: 0.0.0-dev
+appVersion: v0.0.0-dev
+kubeVersion: ">=1.30.0"
+home: https://github.com/monaddle-too/warden
+sources:
+  - https://github.com/monaddle-too/warden
+keywords:
+  - warden
+  - sandbox
+  - kata
+  - gvisor
