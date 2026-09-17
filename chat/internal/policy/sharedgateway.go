@@ -33,6 +33,11 @@ type SharedGateway struct {
 	networks []*net.IPNet
 	// Factory is replaceable in tests.
 	Factory func(cfg GatewayConfig) (*BindingGateway, error)
+	// Source, when set, is the second check of decision 4: a valid credential
+	// is honoured only when the request comes from the address of the pod
+	// running the binding's runtime (runtimeName). Requests from any other
+	// address are refused with 403, credential notwithstanding.
+	Source  func(runtimeName string, remote net.IP) bool
 	host    string
 	port    int
 	probe   string // origin the health probe dials
@@ -45,6 +50,7 @@ type SharedGateway struct {
 type sharedEntry struct {
 	signature  string
 	capability string
+	runtime    string
 	gateway    *BindingGateway
 }
 
@@ -111,7 +117,7 @@ func (s *SharedGateway) Bind(b *Binding) (GatewayEndpoint, error) {
 	}
 	// The credential is never audit text.
 	gateway.Redactor.Register(capability)
-	s.entries[sandbox] = &sharedEntry{signature: signature, capability: capability, gateway: gateway}
+	s.entries[sandbox] = &sharedEntry{signature: signature, capability: capability, runtime: b.Identity["runtimeName"], gateway: gateway}
 	b.GatewayPort, b.Endpoint = s.port, s.Endpoint(b)
 	return b.Endpoint, nil
 }
@@ -144,7 +150,7 @@ func (s *SharedGateway) Close() {
 
 // lookup returns the binding's gateway when the presented credential is
 // its capability, compared in constant time.
-func (s *SharedGateway) lookup(bindingID, capability string) *BindingGateway {
+func (s *SharedGateway) lookup(bindingID, capability string) *sharedEntry {
 	if bindingID == "" || capability == "" {
 		return nil
 	}
@@ -154,27 +160,54 @@ func (s *SharedGateway) lookup(bindingID, capability string) *BindingGateway {
 	if entry == nil || subtle.ConstantTimeCompare([]byte(entry.capability), []byte(capability)) != 1 {
 		return nil
 	}
-	return entry.gateway
+	return entry
+}
+
+// fromSource applies the Source check to an admitted entry.
+func (s *SharedGateway) fromSource(entry *sharedEntry, r *http.Request) bool {
+	if s.Source == nil {
+		return true
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	remote := net.ParseIP(host)
+	return remote != nil && s.Source(entry.runtime, remote)
 }
 
 // ServeHTTP dispatches by Proxy-Authorization when present (it must then be
-// valid), else by the bearer placeholder, else challenges.
+// valid), else by the bearer placeholder, else challenges. A credential
+// presented from an address other than its binding's pod is refused.
 func (s *SharedGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var entry *sharedEntry
 	if proxyAuth := r.Header.Get("Proxy-Authorization"); proxyAuth != "" {
-		if gateway := s.lookup(parseBasicCredential(proxyAuth)); gateway != nil {
-			gateway.ServeHTTP(w, r)
-			return
-		}
+		entry = s.lookup(parseBasicCredential(proxyAuth))
+	} else if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		entry = s.lookup(parseBearerCredential(strings.TrimPrefix(auth, "Bearer ")))
+	}
+	if entry == nil {
 		s.challenge(w, r)
 		return
 	}
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		if gateway := s.lookup(parseBearerCredential(strings.TrimPrefix(auth, "Bearer "))); gateway != nil {
-			gateway.ServeHTTP(w, r)
-			return
-		}
+	if !s.fromSource(entry, r) {
+		s.forbidSource(w)
+		return
 	}
-	s.challenge(w, r)
+	entry.gateway.ServeHTTP(w, r)
+}
+
+// forbidSource refuses a valid credential presented from the wrong pod.
+// No challenge: retrying with the same credential cannot succeed.
+func (s *SharedGateway) forbidSource(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Cache-Control", "no-store")
+	h.Set("Connection", "close")
+	payload := []byte(Dumps(map[string]any{"error": "Warden gateway credential presented from another sandbox"}))
+	h.Set("Content-Length", strconv.Itoa(len(payload)))
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write(payload)
 }
 
 // challenge refuses a request no binding's credential admitted. Nothing of

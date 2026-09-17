@@ -44,6 +44,10 @@ func (i *Inspector) Start(ctx context.Context) error {
 	for idx, events := range streams {
 		go i.follow(watches[idx].what, events)
 	}
+	if err := i.watchSources(ctx); err != nil {
+		cancel()
+		return err
+	}
 	go func() {
 		<-ctx.Done()
 		cancel()

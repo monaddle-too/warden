@@ -323,7 +323,19 @@ func (f *fakeAPI) stamp(obj map[string]any, r api.Resource, namespace string, cr
 
 // emit records and broadcasts an event. Caller holds mu.
 func (f *fakeAPI) emit(typ api.EventType, res apiPath, obj map[string]any) {
-	ev := histEvent{rv: f.rv, typ: typ, res: res, object: obj}
+	// Watchers serialise the event on their own goroutine while the caller
+	// may keep mutating the stored object, so the event carries a copy.
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		f.t.Errorf("emit: %v", err)
+		return
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		f.t.Errorf("emit: %v", err)
+		return
+	}
+	ev := histEvent{rv: f.rv, typ: typ, res: res, object: snapshot}
 	f.history = append(f.history, ev)
 	for w := range f.watchers {
 		if w.covers(res) && selectorsMatch(obj, w.labels, w.fields) {

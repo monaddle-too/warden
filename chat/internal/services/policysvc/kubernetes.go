@@ -168,6 +168,8 @@ func (r *kubernetesRuntime) enforce(ctx context.Context, registry *policy.Regist
 	if err := inspector.Start(ctx); err != nil {
 		return errors.New("inspector: " + err.Error())
 	}
+	// Decision 4's second check: a credential only from its own pod.
+	gateway.Source = inspector.SourceAllowed
 	verifier := policy.NewRuntimeVerifier(registry, inspector)
 	registry.Verifier = verifier
 	verifier.StartRefresher()

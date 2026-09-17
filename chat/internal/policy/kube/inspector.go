@@ -85,6 +85,9 @@ type Inspector struct {
 	// abandoned (and its pods deleted) when the service stops.
 	stopMu  sync.Mutex
 	stopCtx context.Context
+
+	// sources maps runtime names to their live pod's address (sources.go).
+	sources sources
 }
 
 // identityPin is one runtime's pinned identity: the workspace volume UID
