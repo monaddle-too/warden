@@ -346,7 +346,11 @@ func (c *Client) Logs(ctx context.Context, namespace, pod, container string, fol
 	if follow {
 		q.Set("follow", "true")
 	}
-	resp, err := c.stream(ctx, http.MethodGet, Pods.path(namespace, pod)+"/log", q, "text/plain")
+	// The API server negotiates the Accept header against its object
+	// serializers before it reaches the log streamer, so "text/plain" alone
+	// is answered 406; kubectl's "application/json, */*" passes negotiation
+	// and the streamer still writes text/plain (seen on k3s 1.36).
+	resp, err := c.stream(ctx, http.MethodGet, Pods.path(namespace, pod)+"/log", q, "application/json, */*")
 	if err != nil {
 		return nil, err
 	}

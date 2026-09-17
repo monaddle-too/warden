@@ -672,7 +672,9 @@ func TestLogs(t *testing.T) {
 		if r.URL.Path != "/api/v1/namespaces/ns/pods/sbx-1/log" {
 			t.Errorf("path %s", r.URL.Path)
 		}
-		if r.Header.Get("Accept") != "text/plain" {
+		// text/plain alone is refused (406) by the real API server's
+		// negotiation; the wildcard is what kubectl sends.
+		if r.Header.Get("Accept") != "application/json, */*" {
 			t.Errorf("accept %q", r.Header.Get("Accept"))
 		}
 		w.Header().Set("Content-Type", "text/plain")

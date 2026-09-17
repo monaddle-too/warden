@@ -269,8 +269,13 @@ func TestKubernetesKindParsesWithDefaults(t *testing.T) {
 	if c.RuntimeKind() != RuntimeKubernetes || c.GatewayMode() != GatewayShared || k == nil {
 		t.Fatalf("kind: %+v", c)
 	}
-	if k.WorkspaceSizeGi != 20 || k.GatewayService != "warden-gateway" || k.TrustConfigMap != "warden-guest-trust" || k.StorageClass != "" || k.Tier != TierGVisor {
+	if k.WorkspaceSizeGi != 20 || k.GatewayService != "warden-gateway" || k.GatewayPort != 7000 || k.TrustConfigMap != "warden-guest-trust" || k.GatewayCAMaxAgeDays != 365 || k.StorageClass != "" || k.Tier != TierGVisor {
 		t.Fatalf("kubernetes defaults: %+v", k)
+	}
+	// The policy side's fields are read when given (appendix A).
+	c, err = Parse([]byte(strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "gatewayPort": 7100, "gatewayCAMaxAgeDays": 30,`, 1)))
+	if err != nil || c.Kubernetes.GatewayPort != 7100 || c.Kubernetes.GatewayCAMaxAgeDays != 30 {
+		t.Fatalf("kubernetes gateway fields: %+v %v", c.Kubernetes, err)
 	}
 	if c.Providers.Codex.Secret != "warden-codex-login" || c.Providers.Codex.AuthFile != "" || c.GitHubMode() != "user" || c.Providers.GitHub.Secret != "warden-github-login" {
 		t.Fatalf("providers: %+v %+v", c.Providers.Codex, c.Providers.GitHub)
@@ -305,6 +310,8 @@ func TestValidationByRuntimeKind(t *testing.T) {
 		"bad digest":                         strings.Replace(kubernetesExample, `"guestImageDigest": "sha256:`, `"guestImageDigest": "sha512:`, 1),
 		"zero workspace":                     strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "workspaceSizeGi": -1,`, 1),
 		"github secret and authFile":         strings.Replace(kubernetesExample, `{ "secret": "warden-github-login" }`, `{ "secret": "warden-github-login", "authFile": "/x" }`, 1),
+		"gateway port out of range":          strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "gatewayPort": 70000,`, 1),
+		"negative CA max age":                strings.Replace(kubernetesExample, `"runtimeClass": "gvisor",`, `"runtimeClass": "gvisor", "gatewayCAMaxAgeDays": -1,`, 1),
 		"loopback edge listen with kind sbx": sbx + `,"previews":{"edgeListen":"0.0.0.0:19081"}}`,
 	}
 	for name, raw := range bad {
