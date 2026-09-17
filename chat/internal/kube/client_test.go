@@ -288,13 +288,13 @@ func TestApply(t *testing.T) {
 		t.Fatal("missing field manager accepted")
 	}
 	// A conflict on apply is IsConflict.
-	api.override = func(w http.ResponseWriter, r *http.Request) bool {
+	api.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
 		if r.Method == "PATCH" {
 			writeStatus(w, http.StatusConflict, "Conflict", "Apply failed with 1 conflict: conflict with \"other\": .data.ca-certificates.crt")
 			return true
 		}
 		return false
-	}
+	})
 	if err := c.Apply(ctx, ConfigMaps, "warden", "warden-guest-trust", bundle, ApplyOptions{FieldManager: "warden-policy"}, nil); !IsConflict(err) {
 		t.Fatalf("want Conflict, got %v", err)
 	}
@@ -304,7 +304,7 @@ func TestForbiddenAndNonStatusErrors(t *testing.T) {
 	api := newFakeAPI(t)
 	c := api.client()
 	ctx := testContext(t)
-	api.override = func(w http.ResponseWriter, r *http.Request) bool {
+	api.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
 		switch {
 		case strings.Contains(r.URL.Path, "secrets"):
 			writeStatus(w, http.StatusForbidden, "Forbidden", `secrets "x" is forbidden: User "system:serviceaccount:warden:runner" cannot get resource "secrets"`)
@@ -315,7 +315,7 @@ func TestForbiddenAndNonStatusErrors(t *testing.T) {
 			return false
 		}
 		return true
-	}
+	})
 	var secret Secret
 	err := c.Get(ctx, Secrets, "warden", "x", &secret)
 	if !IsForbidden(err) || !strings.Contains(err.Error(), "cannot get resource") {
@@ -336,13 +336,13 @@ func TestTimeoutAndCancellation(t *testing.T) {
 	api := newFakeAPI(t)
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	api.override = func(w http.ResponseWriter, r *http.Request) bool {
+	api.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
 		select {
 		case <-release:
 		case <-r.Context().Done():
 		}
 		return true
-	}
+	})
 	c := api.client()
 	c.Timeout = 100 * time.Millisecond
 	var pod Pod
@@ -395,7 +395,7 @@ func TestServerVersionAndGenericObject(t *testing.T) {
 
 func TestTokenFileReread(t *testing.T) {
 	api := newFakeAPI(t)
-	api.token = "one"
+	api.setToken("one")
 	dir := t.TempDir()
 	tokenFile := filepath.Join(dir, "token")
 	if err := os.WriteFile(tokenFile, []byte("one\n"), 0o600); err != nil {
@@ -420,7 +420,7 @@ func TestTokenFileReread(t *testing.T) {
 	}
 	// The server rotates; the file changes; the cached token is refused
 	// once and the file is re-read.
-	api.token = "two"
+	api.setToken("two")
 	if err := os.WriteFile(tokenFile, []byte("two"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +436,7 @@ func TestTokenFileReread(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte("three"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	api.token = "two"
+	api.setToken("two")
 	before = len(api.recorded())
 	if err := c.Get(ctx, Pods, "ns", "a", &pod); err != nil {
 		t.Fatal(err)
@@ -446,7 +446,7 @@ func TestTokenFileReread(t *testing.T) {
 	}
 	// After a minute it is, without a 401.
 	now = now.Add(2 * time.Minute)
-	api.token = "three"
+	api.setToken("three")
 	before = len(api.recorded())
 	if err := c.Get(ctx, Pods, "ns", "a", &pod); err != nil {
 		t.Fatal(err)
@@ -455,7 +455,7 @@ func TestTokenFileReread(t *testing.T) {
 		t.Fatalf("token not refreshed after a minute: %d requests %s", len(reqs), reqs[0].Header.Get("Authorization"))
 	}
 	// A wrong token that the file does not fix is IsUnauthorized after one retry.
-	api.token = "four"
+	api.setToken("four")
 	before = len(api.recorded())
 	if err := c.Get(ctx, Pods, "ns", "a", &pod); !IsUnauthorized(err) {
 		t.Fatalf("want Unauthorized, got %v", err)
@@ -464,13 +464,13 @@ func TestTokenFileReread(t *testing.T) {
 		t.Fatalf("expected exactly one retry, got %d requests", len(reqs))
 	}
 	// A static token is never retried.
-	api.token = "static"
+	api.setToken("static")
 	static := api.client()
 	before = len(api.recorded())
 	if err := static.Get(ctx, Pods, "ns", "a", &pod); err != nil {
 		t.Fatal(err)
 	}
-	api.token = "rotated"
+	api.setToken("rotated")
 	if err := static.Get(ctx, Pods, "ns", "a", &pod); !IsUnauthorized(err) {
 		t.Fatalf("want Unauthorized, got %v", err)
 	}

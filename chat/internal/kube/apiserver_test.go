@@ -34,12 +34,42 @@ type fakeAPI struct {
 	watchers map[*watcher]struct{}
 	requests []recordedRequest
 
-	// Knobs.
+	// Knobs, read under mu by serve and set through the setters.
 	token       string // required bearer token; empty accepts anything
 	goneAsEvent bool   // answer a too-old watch with 200 and an ERROR event instead of 410
 	exec        http.HandlerFunc
 	logs        http.HandlerFunc
 	override    func(w http.ResponseWriter, r *http.Request) bool // handled when true
+}
+
+func (api *fakeAPI) setToken(token string) {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	api.token = token
+}
+
+func (api *fakeAPI) setGoneAsEvent(v bool) {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	api.goneAsEvent = v
+}
+
+func (api *fakeAPI) setExec(h http.HandlerFunc) {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	api.exec = h
+}
+
+func (api *fakeAPI) setLogs(h http.HandlerFunc) {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	api.logs = h
+}
+
+func (api *fakeAPI) setOverride(f func(w http.ResponseWriter, r *http.Request) bool) {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	api.override = f
 }
 
 type histEvent struct {
@@ -83,6 +113,8 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 // config is a Config that trusts the test server.
 func (api *fakeAPI) config() *Config {
 	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: api.srv.Certificate().Raw})
+	api.mu.Lock()
+	defer api.mu.Unlock()
 	return &Config{Host: api.srv.URL, CAData: ca, Token: api.token, Namespace: "default"}
 }
 
@@ -164,13 +196,13 @@ func (api *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	api.mu.Lock()
 	api.requests = append(api.requests, recordedRequest{Method: r.Method, Path: r.URL.Path, Query: r.URL.Query(), ContentType: r.Header.Get("Content-Type"), Body: body, Header: r.Header.Clone()})
-	token := api.token
+	token, override, exec, logs := api.token, api.override, api.exec, api.logs
 	api.mu.Unlock()
 	if token != "" && r.Header.Get("Authorization") != "Bearer "+token {
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "Unauthorized")
 		return
 	}
-	if api.override != nil && api.override(w, r) {
+	if override != nil && override(w, r) {
 		return
 	}
 	if r.URL.Path == "/version" {
@@ -184,18 +216,18 @@ func (api *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch res.subresource {
 	case "exec":
-		if api.exec == nil {
+		if exec == nil {
 			writeStatus(w, http.StatusNotFound, "NotFound", "no exec handler")
 			return
 		}
-		api.exec(w, r)
+		exec(w, r)
 		return
 	case "log":
-		if api.logs == nil {
+		if logs == nil {
 			writeStatus(w, http.StatusNotFound, "NotFound", "no log handler")
 			return
 		}
-		api.logs(w, r)
+		logs(w, r)
 		return
 	case "":
 	default:

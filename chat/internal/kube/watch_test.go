@@ -114,7 +114,7 @@ func TestWatchGoneAndRequestErrors(t *testing.T) {
 		t.Fatalf("want Gone, got %v", err)
 	}
 	// As an ERROR event on a 200 stream, which is the last event.
-	api.goneAsEvent = true
+	api.setGoneAsEvent(true)
 	events, err := c.Watch(ctx, Pods, "ns", WatchOptions{ResourceVersion: "1"})
 	if err != nil {
 		t.Fatal(err)
@@ -125,25 +125,25 @@ func TestWatchGoneAndRequestErrors(t *testing.T) {
 	}
 	expectClosed(t, events)
 	// A refused request is an error, not a channel.
-	api.override = func(w http.ResponseWriter, r *http.Request) bool {
+	api.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Query().Get("watch") == "true" {
 			writeStatus(w, http.StatusForbidden, "Forbidden", "pods is forbidden")
 			return true
 		}
 		return false
-	}
+	})
 	if _, err := c.Watch(ctx, Pods, "ns", WatchOptions{}); !IsForbidden(err) {
 		t.Fatalf("want Forbidden, got %v", err)
 	}
 	// A stream that breaks mid-event reports the local error and closes.
-	api.override = func(w http.ResponseWriter, r *http.Request) bool {
+	api.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Query().Get("watch") == "true" {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"type":"ADDED","object":{"metadata":{"name":"x"}}}` + "\n" + `{"type":"MODI`))
 			return true
 		}
 		return false
-	}
+	})
 	events, err = c.Watch(ctx, Pods, "ns", WatchOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -290,16 +290,16 @@ func TestListWatchFailures(t *testing.T) {
 	ctx, cancel := context.WithCancel(testContext(t))
 	defer cancel()
 	// The first list failing fails the call.
-	api.override = func(w http.ResponseWriter, r *http.Request) bool {
+	api.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
 		writeStatus(w, http.StatusForbidden, "Forbidden", "pods is forbidden")
 		return true
-	}
+	})
 	if _, err := c.ListWatch(ctx, Pods, "ns", ListOptions{}); !IsForbidden(err) {
 		t.Fatalf("want Forbidden, got %v", err)
 	}
 	// Later failures are reported and retried; the channel closes only
 	// with the context.
-	api.override = nil
+	api.setOverride(nil)
 	events, err := c.ListWatch(ctx, Pods, "ns", ListOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -308,19 +308,19 @@ func TestListWatchFailures(t *testing.T) {
 		t.Fatalf("want Synced, got %+v", ev)
 	}
 	waitFor(t, func() bool { return api.watcherCount() == 1 })
-	api.override = func(w http.ResponseWriter, r *http.Request) bool {
+	api.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Query().Get("watch") == "true" {
 			writeStatus(w, http.StatusInternalServerError, "InternalError", "etcd is down")
 			return true
 		}
 		return false
-	}
+	})
 	api.closeWatchers()
 	ev := nextEvent(t, events)
 	if ev.Type != Error || ev.Err == nil || !strings.Contains(ev.Err.Error(), "etcd is down") {
 		t.Fatalf("want an informational error, got %+v", ev)
 	}
-	api.override = nil
+	api.setOverride(nil)
 	waitFor(t, func() bool { return api.watcherCount() == 1 })
 	if err := c.Create(ctx, Pods, "ns", Pod{Metadata: ObjectMeta{Name: "after"}}, nil); err != nil {
 		t.Fatal(err)
