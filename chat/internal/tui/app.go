@@ -1779,8 +1779,16 @@ func (a *App) visible(c *Chat) *Chat {
 	return &v
 }
 
-// compose lays out everything above the status line for the given width.
+// compose lays out everything above the status line for the given width:
+// the transcript and, while the view is at its tail, the notice.
 func (a *App) compose(width int) []string {
+	return a.layout(width, a.scroll == 0)
+}
+
+// layout is compose with or without the notice: a search over the lines
+// (find, a /search jump) measures the transcript alone, since the notice
+// it sets moves above the status line once the view scrolls.
+func (a *App) layout(width int, notice bool) []string {
 	var body []string
 	c := a.chat()
 	switch {
@@ -1800,14 +1808,26 @@ func (a *App) compose(width int) []string {
 			body = append(body, RenderChanges(a.diff, width, a.expanded)...)
 		}
 	}
-	// Notices sit under the transcript for a while.
-	if a.notice != "" && a.now().Sub(a.noticeAt) < 20*time.Second {
-		body = append(body, "")
-		for _, l := range strings.Split(a.notice, "\n") {
-			body = append(body, wrap(l, width, blue+"› "+reset, "  ")...)
-		}
+	// Notices sit under the transcript for a while; with the view scrolled
+	// up (a /find, a /search jump, PgUp) they go above the status line
+	// instead (extraLines), where they can be seen.
+	if notice {
+		body = append(body, a.noticeLines(width)...)
 	}
 	return body
+}
+
+// noticeLines is the current notice, wrapped, while it is fresh; nil
+// otherwise.
+func (a *App) noticeLines(width int) []string {
+	if a.notice == "" || a.now().Sub(a.noticeAt) >= 20*time.Second {
+		return nil
+	}
+	out := []string{""}
+	for _, l := range strings.Split(a.notice, "\n") {
+		out = append(out, wrap(l, width, blue+"› "+reset, "  ")...)
+	}
+	return out
 }
 
 // menuRows is how many suggestions the menu shows at once.
@@ -1817,6 +1837,9 @@ const menuRows = 8
 // line: the completion menu, the files waiting to be sent, a confirmation.
 func (a *App) extraLines(width int) []string {
 	var out []string
+	if a.scroll > 0 {
+		out = append(out, a.noticeLines(width)...)
+	}
 	if m := a.menu; m != nil {
 		start := 0
 		if m.Selected >= menuRows {
@@ -2042,7 +2065,7 @@ func (a *App) find(term string) {
 		rows = 20
 	}
 	needle := strings.ToLower(term)
-	body := a.compose(width)
+	body := a.layout(width, false)
 	top := len(body) - a.scroll - rows // index of the first visible line
 	if i := findAbove(body, needle, top); i < 0 && findOnScreen(body, needle, top) < 0 {
 		// Not on the screen: is it in the entries at all?
@@ -2057,11 +2080,11 @@ func (a *App) find(term string) {
 				opened = append(opened, "output expanded")
 			}
 			if len(opened) > 0 {
-				body = a.compose(width)
+				body = a.layout(width, false)
 				top = len(body) - a.scroll - rows
 				if i := findAbove(body, needle, top); i >= 0 {
-					a.scroll = max(0, len(body)-rows-i)
 					a.setNotice(fmt.Sprintf("found %q %d lines up (%s); /find again for the previous one", term, len(body)-i, strings.Join(opened, ", ")))
+					a.scrollTo(body, i)
 					return
 				}
 				if findOnScreen(body, needle, top) >= 0 {
@@ -2072,8 +2095,8 @@ func (a *App) find(term string) {
 		}
 	}
 	if i := findAbove(body, needle, top); i >= 0 {
-		a.scroll = max(0, len(body)-rows-i)
 		a.setNotice(fmt.Sprintf("found %q %d lines up; /find again for the previous one", term, len(body)-i))
+		a.scrollTo(body, i)
 		return
 	}
 	// Nothing above: say whether it is on screen, so a search that "fails"

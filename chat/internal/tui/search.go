@@ -158,24 +158,49 @@ func (a *App) jumpToHit(h SearchHit) {
 		a.expanded = true
 		opened = append(opened, "output expanded")
 	}
-	width := 100
-	if a.Size != nil {
-		if w, _ := a.Size(); w > 0 {
-			width = w
-		}
-	}
-	rows := a.rows
-	if rows <= 0 {
-		rows = 20
-	}
-	body := a.compose(width)
-	offset := entryOffset(a.visible(c), width, a.expanded, h.EntryID)
-	a.scroll = max(0, len(body)-rows-offset)
 	notice := fmt.Sprintf("%s · %s · %s", title, hitWhere(h), LocalTime(h.CreatedAt))
 	if len(opened) > 0 {
 		notice += " (" + strings.Join(opened, ", ") + ")"
 	}
 	a.setNotice(notice)
+	width, _ := a.viewSize()
+	body := a.layout(width, false)
+	a.scrollTo(body, entryOffset(a.visible(c), width, a.expanded, h.EntryID))
+}
+
+// scrollTo scrolls so that line i of body (the transcript as layout lays
+// it out without the notice) is the first line of the next frame, with
+// the notice just set counted among the lines above the status line.
+func (a *App) scrollTo(body []string, i int) {
+	_, rows := a.viewSize()
+	a.scroll = max(1, len(body)-rows-i)
+}
+
+// viewSize is the width and the transcript rows the next frame will
+// have: the terminal's size less the status line, the composer and what
+// sits between them (the notice while scrolled; the menu is closed by
+// then), as frame computes them.
+func (a *App) viewSize() (width, rows int) {
+	width, height := 100, 0
+	if a.Size != nil {
+		if w, h := a.Size(); w > 0 {
+			width, height = w, h
+		}
+	}
+	if height < 8 {
+		rows = a.rows
+		if rows <= 0 {
+			rows = 20
+		}
+		return width, rows
+	}
+	a.scroll = 1 // as it will be: the notice among the extra lines
+	extra := a.extraLines(width)
+	if len(extra) > height/2 {
+		extra = extra[:height/2]
+	}
+	prompt, _, _ := a.promptLines(width, min(6, height/3))
+	return width, max(1, height-1-len(prompt)-len(extra))
 }
 
 // entryOffset is the line at which entry id starts in the rendered

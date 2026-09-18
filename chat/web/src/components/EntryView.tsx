@@ -19,7 +19,7 @@ import {
 import { compactionLabel } from "../context";
 import { hasDiff, parseDiff } from "../diff";
 import { senderLabel } from "../export";
-import { subagentInput, subagentProgress } from "../tools";
+import { subagentInput, subagentProgress, toolRunning } from "../tools";
 import { groupEntries } from "../transcript";
 import {
   formatCost,
@@ -109,7 +109,9 @@ function SubagentTranscript({
   const parts = [];
   if (steps) parts.push(`${steps} tool call${steps === 1 ? "" : "s"}`);
   if (messages) parts.push(`${messages} message${messages === 1 ? "" : "s"}`);
-  if (running && step) parts.push(step);
+  // The step the agent reports lasts while the subagent itself runs, its
+  // own tool finished or not.
+  if (toolRunning(parent) && step) parts.push(step);
   return (
     <details className="subagent">
       <summary>

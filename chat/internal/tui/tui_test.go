@@ -982,10 +982,14 @@ func TestSearchAcrossChatsListsAndJumps(t *testing.T) {
 	if !app.expanded || !strings.Contains(app.notice, "output expanded") || app.scroll == 0 {
 		t.Fatalf("nested jump: expanded %v scroll %d notice %q", app.expanded, app.scroll, app.notice)
 	}
-	body := app.compose(80)
-	top := len(body) - app.scroll - app.rows
-	if top < 0 || !strings.Contains(plainText(body[top]), "Agent: look") {
-		t.Fatalf("card not at the top: %q", plainText(body[max(top, 0)]))
+	// The next frame shows the card at the top of the view, with the
+	// notice above the status line rather than under the tail.
+	fr := app.frame(80, 30)
+	if !strings.Contains(plainText(fr.Lines[0]), "Agent: look") {
+		t.Fatalf("card not at the top: %q", plainText(fr.Lines[0]))
+	}
+	if !strings.Contains(plainText(strings.Join(fr.Extra, "\n")), "Second chat · claude ·") {
+		t.Fatalf("jump notice not on screen:\n%s\n%s", strings.Join(fr.Lines, "\n"), strings.Join(fr.Extra, "\n"))
 	}
 	app.submit(ctx, "/search 9")
 	if !strings.Contains(app.notice, "N from the last search") {
@@ -1059,6 +1063,10 @@ func TestTabExpandsFindAndCopy(t *testing.T) {
 	app.submit(ctx, "/find counter page")
 	if app.scroll == 0 || !strings.Contains(app.notice, "found") {
 		t.Fatalf("find: scroll %d notice %q", app.scroll, app.notice)
+	}
+	// The found line heads the next frame, the notice above the status.
+	if fr := app.frame(80, 30); !strings.Contains(plainText(fr.Lines[0]), "counter page") || !strings.Contains(plainText(strings.Join(fr.Extra, "\n")), "found \"counter page\"") {
+		t.Fatalf("find frame:\n%s\n%s", fr.Lines[0], strings.Join(fr.Extra, "\n"))
 	}
 	app.submit(ctx, "/find Done.")
 	if !strings.Contains(app.notice, "on screen") && !strings.Contains(app.notice, "found") {
