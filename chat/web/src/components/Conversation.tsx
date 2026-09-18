@@ -132,7 +132,6 @@ import { pendingReply } from "../thinking";
 import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
 import { FindBar, type FindRequest } from "./FindBar";
-import { HistorySearch } from "./HistorySearch";
 import { ComposerMenu } from "./ComposerMenu";
 import { modelOptions } from "../models";
 import { SpendChip } from "./SpendChip";
@@ -448,10 +447,9 @@ export function Conversation({
     ),
   );
   const unread = unreadIndex(entries, unreadID);
-  // This person's earlier prompts, newest first, for Up/Down and Ctrl-R.
+  // This person's earlier prompts, newest first, for Up/Down.
   const history = useMemo(() => promptHistory(all, me.principalID), [all]);
   const [recall, setRecall] = useState<Recall>(NOT_BROWSING);
-  const [searching, setSearching] = useState(false);
   // `wake` only re-runs the effect when the tab comes back (the state it
   // reads is the document's, taken live: a page that loads hidden may
   // become visible before any listener is attached).
@@ -1620,7 +1618,7 @@ const ASIDE_RELEASE_MS = 1500;
           )}
         </p>
         <div className={`composer${dragging ? " dragging" : ""}`}>
-          {open && !searching && (items.length > 0 || note) && (
+          {open && (items.length > 0 || note) && (
             <Suggest
               id="composer-suggest"
               items={items}
@@ -1628,20 +1626,6 @@ const ASIDE_RELEASE_MS = 1500;
               note={note}
               onHover={setActive}
               onPick={pick}
-            />
-          )}
-          {searching && (
-            <HistorySearch
-              history={history}
-              onPick={(picked) => {
-                setSearching(false);
-                setRecall(NOT_BROWSING);
-                place({ text: picked, caret: picked.length });
-              }}
-              onClose={() => {
-                setSearching(false);
-                input.current?.focus();
-              }}
             />
           )}
           <ComposerAttachments
@@ -1778,12 +1762,6 @@ const ASIDE_RELEASE_MS = 1500;
               if (isKey(e, "send")) {
                 e.preventDefault();
                 e.currentTarget.form?.requestSubmit();
-                return;
-              }
-              if (isKey(e, "history-search")) {
-                // Ctrl-R (or ⌘R, which would reload): search the history.
-                e.preventDefault();
-                setSearching(true);
                 return;
               }
               if (modes && isKey(e, "mode-cycle")) {
