@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 )
 
 // ClaudeStream translates Claude Code's documented SDK control protocol into
@@ -57,16 +58,30 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		}()
 		out := json.NewEncoder(bridge)
 		cli := json.NewEncoder(raw)
+		// Writes to the CLI come from this loop, and from askContext's
+		// goroutine (so a CLI slow to read never stalls the loop).
+		var cliMu sync.Mutex
+		cliWrite := func(v any) error {
+			cliMu.Lock()
+			defer cliMu.Unlock()
+			return cli.Encode(v)
+		}
 		send := func(f Frame) { _ = out.Encode(f) }
 		reply := func(id json.RawMessage, v any) { b, _ := json.Marshal(v); send(Frame{ID: id, Result: b}) }
 		event := func(method string, p map[string]any) { send(Frame{Method: method, Params: p}) }
 		control := func(id string, v any) {
-			_ = cli.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": v}})
+			_ = cliWrite(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": id, "response": v}})
 		}
 		thread, turn := "", ""
 		var initID json.RawMessage
 		tools := []any{}
 		pending := map[string]map[string]any{}
+		// Control requests Warden sent the CLI (a permission mode change),
+		// by request id, until the CLI answers them; cliMode is the CLI's
+		// permission mode as last set or reported, so a change is sent only
+		// when it is one.
+		outbound := map[string]claudeOutbound{}
+		cliMode := "default"
 		// Tool calls in flight, by tool_use id, until their result; a
 		// background task's call stays until the task's notification.
 		toolCalls := map[string]claudeTool{}
@@ -105,6 +120,24 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		// An interrupt asked of the CLI: its next result ends the turn as
 		// interrupted, whatever the CLI calls the abort.
 		interrupting := false
+		// The context: what the last model call was given against the
+		// model's window and the CLI's auto-compaction threshold, reported
+		// as thread/context/updated when it changes (claudeContext): from
+		// each call's usage as the turn runs, and from the CLI's own
+		// account (get_context_usage) after a result or a compaction. A
+		// compaction in flight is a transcript item.
+		ctx2 := claudeContext{}
+		compaction := ""
+		var compactionMeta map[string]any
+		reportContext := func() {
+			if p, ok := ctx2.changed(); ok {
+				event("thread/context/updated", map[string]any{"threadId": thread, "turnId": turn, "context": p})
+			}
+		}
+		askContext := func() {
+			req := map[string]any{"type": "control_request", "request_id": "warden-context-" + claudeID(), "request": map[string]any{"subtype": "get_context_usage"}}
+			go func() { _ = cliWrite(req) }()
+		}
 		flushThinking := func() {
 			if thinkingID == "" {
 				return
@@ -169,7 +202,7 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 				switch f.Method {
 				case "initialize":
 					initID = f.ID
-					_ = cli.Encode(map[string]any{"type": "control_request", "request_id": "warden-init", "request": map[string]any{"subtype": "initialize", "sdkMcpServers": []string{"warden"}}})
+					_ = cliWrite(map[string]any{"type": "control_request", "request_id": "warden-init", "request": map[string]any{"subtype": "initialize", "sdkMcpServers": []string{"warden"}}})
 				case "initialized":
 				case "thread/start", "thread/resume":
 					tools = Array(f.Params["dynamicTools"])
@@ -205,16 +238,29 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 							content = append(content, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": data}})
 						}
 					}
-					_ = cli.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil})
+					_ = cliWrite(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil})
 				case "turn/interrupt":
 					// Claude Code's SDK interrupt: the query aborts where it is
 					// (mid-thought, mid-tool) and reports a result; the process
 					// stays up for the next message.
 					if turn != "" && String(f.Params["turnId"]) == turn {
 						interrupting = true
-						_ = cli.Encode(map[string]any{"type": "control_request", "request_id": "warden-interrupt-" + claudeID(), "request": map[string]any{"subtype": "interrupt"}})
+						_ = cliWrite(map[string]any{"type": "control_request", "request_id": "warden-interrupt-" + claudeID(), "request": map[string]any{"subtype": "interrupt"}})
 					}
 					reply(f.ID, map[string]any{})
+				case "permissions/set":
+					// The chat's permission mode (auto, ask, plan) as the CLI's:
+					// plan is plan, the rest is default, since in auto Warden
+					// allows every request itself. Sent only when it changes
+					// the CLI's mode; the CLI's answer completes the call.
+					want := claudePermissionMode(String(f.Params["mode"]))
+					if want == cliMode {
+						reply(f.ID, map[string]any{"mode": cliMode})
+						continue
+					}
+					rid := "warden-mode-" + claudeID()
+					outbound[rid] = claudeOutbound{id: f.ID, mode: want}
+					_ = cliWrite(map[string]any{"type": "control_request", "request_id": rid, "request": map[string]any{"subtype": "set_permission_mode", "mode": want}})
 				case "":
 					key := string(f.ID)
 					p := pending[key]
@@ -234,9 +280,17 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						}
 						control(id, map[string]any{"mcp_response": map[string]any{"jsonrpc": "2.0", "id": msg["id"], "result": map[string]any{"content": content, "isError": result["success"] != true}}})
 					} else {
-						answer := map[string]any{"behavior": "deny", "message": "Denied by Warden"}
+						// The engine's decision on a can_use_tool: accept, or
+						// decline with the message the model reads as the
+						// tool's error; `mode` moves the CLI's permission mode
+						// with the answer (a plan approved into auto or ask).
+						answer := map[string]any{"behavior": "deny", "message": claudeDenial(String(req["tool_name"]), String(result["message"]))}
 						if result["decision"] == "accept" {
 							answer = map[string]any{"behavior": "allow", "updatedInput": req["input"]}
+						}
+						if mode := String(result["mode"]); mode != "" {
+							cliMode = claudePermissionMode(mode)
+							answer["updatedPermissions"] = []any{map[string]any{"type": "setMode", "mode": cliMode, "destination": "session"}}
 						}
 						if req["tool_name"] == "AskUserQuestion" {
 							updated := Map(req["input"])
@@ -276,6 +330,22 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						} else {
 							reply(initID, map[string]any{})
 						}
+					} else if strings.HasPrefix(String(r["request_id"]), "warden-context-") {
+						if r["subtype"] != "error" {
+							ctx2.account(Map(r["response"]))
+							reportContext()
+						}
+					} else if o, ok := outbound[String(r["request_id"])]; ok {
+						delete(outbound, String(r["request_id"]))
+						if r["subtype"] == "error" {
+							send(Frame{ID: o.id, Error: &RPCError{Code: -32000, Message: String(r["error"])}})
+						} else {
+							cliMode = o.mode
+							if m := String(Map(r["response"])["mode"]); m != "" {
+								cliMode = m
+							}
+							reply(o.id, map[string]any{"mode": cliMode})
+						}
 					}
 				case "control_request":
 					req := Map(v["request"])
@@ -302,18 +372,30 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						}
 						control(id, map[string]any{"mcp_response": map[string]any{"jsonrpc": "2.0", "id": msg["id"], "result": result}})
 					} else if req["subtype"] == "can_use_tool" {
-						if req["tool_name"] != "AskUserQuestion" {
+						rid, _ := json.Marshal("claude-" + id)
+						pending[string(rid)] = v
+						if name := String(req["tool_name"]); name != "AskUserQuestion" {
 							// The SBX guest is the security boundary, as with
 							// Codex's dangerFullAccess: built-in tools act only
 							// inside the guest, network egress goes through the
 							// Warden proxy, and every Warden MCP tool obtains
-							// owner approval itself before granting access.
-							// A second per-call prompt here adds no control.
-							control(id, map[string]any{"behavior": "allow", "updatedInput": req["input"]})
+							// owner approval itself before granting access. So
+							// the ask is the chat's permission mode's to decide,
+							// not a control: the engine allows it at once in
+							// auto, by an allow-always rule, or asks the owner
+							// with the call typed as its transcript card
+							// (claude_tools.go) and, for ExitPlanMode, the plan.
+							t := claudeTool{name: name, input: Map(req["input"])}
+							params := map[string]any{"tool": name, "input": t.input, "item": claudeToolItem(String(req["tool_use_id"]), t, nil, nil)}
+							if d := String(req["description"]); d != "" {
+								params["description"] = d
+							}
+							if name == "ExitPlanMode" {
+								params["plan"] = String(t.input["plan"])
+							}
+							send(Frame{ID: rid, Method: "item/tool/requestPermission", Params: params})
 							continue
 						}
-						rid, _ := json.Marshal("claude-" + id)
-						pending[string(rid)] = v
 						questions := []any{}
 						for i, q := range Array(Map(req["input"])["questions"]) {
 							question := Map(q)
@@ -329,9 +411,32 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						// Sent at the start of every turn, so the commands and
 						// settings follow the workspace as it changes.
 						thread = String(v["session_id"])
+						ctx2.model(String(v["model"]))
 						event("thread/started", map[string]any{"thread": claudeThread(thread, v)})
+					case "status":
+						// The CLI compacting its context (/compact, or on its
+						// own near the window): a compaction item runs from
+						// the status to the boundary, or to the failure.
+						if v["status"] == "compacting" {
+							if compaction == "" {
+								openTurn()
+								compaction = claudeID()
+								event("item/started", map[string]any{"turnId": turn, "item": map[string]any{"id": compaction, "type": "compaction", "status": "running"}})
+							}
+						} else if v["compact_result"] == "failed" && compaction != "" {
+							event("item/completed", map[string]any{"turnId": turn, "item": map[string]any{"id": compaction, "type": "compaction", "status": "failed", "error": String(v["compact_error"])}})
+							compaction, compactionMeta = "", nil
+						}
 					case "compact_boundary":
-						event("thread/compacted", claudeCompaction(v, thread, turn))
+						openTurn()
+						if compaction == "" {
+							compaction = claudeID()
+						}
+						compactionMeta = Map(v["compact_metadata"])
+						event("item/completed", map[string]any{"turnId": turn, "item": claudeCompactionItem(compaction, compactionMeta, "")})
+						ctx2.compacted(compactionMeta)
+						reportContext()
+						askContext()
 					case "task_started":
 						// A background task (a command, a subagent) and the
 						// call that started it; its card waits for the task.
@@ -353,6 +458,13 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						}
 						summary := String(v["summary"])
 						settleTask(taskID, claudeTaskStatus(String(v["status"]), summary), summary)
+					}
+					// The CLI reports its permission mode whenever it changes:
+					// after a set_permission_mode, an approved plan, or the
+					// model's own EnterPlanMode, which only shows here.
+					if m := String(v["permissionMode"]); v["subtype"] == "status" && m != "" {
+						cliMode = m
+						event("permissions/modeChanged", map[string]any{"mode": m})
 					}
 				case "stream_event":
 					if String(v["parent_tool_use_id"]) != "" {
@@ -394,11 +506,15 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 				case "assistant":
 					// A subagent's frames name their Agent call; they arrive
 					// complete (never streamed) and leave the conversation's
-					// own text and thinking alone.
+					// own text and thinking alone. Its calls have their own
+					// context, which is not the conversation's.
 					parent := String(v["parent_tool_use_id"])
 					if parent == "" {
 						openTurn()
 						flushThinking()
+						if ctx2.call(Map(v["message"])) {
+							reportContext()
+						}
 					}
 					for _, x := range Array(Map(v["message"])["content"]) {
 						b := Map(x)
@@ -428,6 +544,13 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						}
 					}
 				case "user":
+					if compaction != "" && v["isSynthetic"] == true {
+						// The summary the CLI continues from, sent as a
+						// synthetic user message right after the boundary.
+						event("item/completed", map[string]any{"turnId": turn, "item": claudeCompactionItem(compaction, compactionMeta, claudeMessageText(Map(v["message"])))})
+						compaction, compactionMeta = "", nil
+						continue
+					}
 					parent := String(v["parent_tool_use_id"])
 					results := []map[string]any{}
 					for _, x := range Array(Map(v["message"])["content"]) {
@@ -517,7 +640,13 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						total = total.add(last)
 						event("thread/tokenUsage/updated", map[string]any{"threadId": thread, "turnId": turn, "tokenUsage": map[string]any{"last": last.params(), "total": total.params()}})
 					}
+					ctx2.result(v)
+					reportContext()
+					compaction, compactionMeta = "", nil
 					event("turn/completed", map[string]any{"turn": map[string]any{"id": turn, "status": status}})
+					// The CLI's own account of the context, once the turn is
+					// over (its answer is a thread-level report).
+					askContext()
 				}
 			}
 		}
@@ -525,6 +654,45 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 	return client
 }
 func claudeID() string { var b [16]byte; _, _ = rand.Read(b[:]); return hex.EncodeToString(b[:]) }
+
+// claudeOutbound is a control request Warden sent the CLI: the engine call
+// it answers and, for set_permission_mode, the mode asked for.
+type claudeOutbound struct {
+	id   json.RawMessage
+	mode string
+}
+
+// claudeDenial is the tool error a denied ask hands the model, in the
+// words the CLI itself uses when its own user rejects a tool call, with
+// the person's message where they gave one. The wording matters: a bare
+// message reads to the model as the tool's output (it took one for a
+// prompt injection and retried), while this phrasing is the one it is
+// trained to take as the user's decision. A plan sent back keeps the
+// model in plan mode.
+func claudeDenial(tool, message string) string {
+	if tool == "ExitPlanMode" {
+		if message == "" {
+			return "The user doesn't want to proceed with this plan yet. Stay in plan mode and wait for the user to tell you how to proceed."
+		}
+		return "The user doesn't want to proceed with this plan yet. Stay in plan mode and revise it. To tell you how to proceed, the user said: " + message
+	}
+	const rejected = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file)."
+	if message == "" {
+		return rejected + " STOP what you are doing and wait for the user to tell you how to proceed."
+	}
+	return rejected + " To tell you how to proceed, the user said: " + message
+}
+
+// claudePermissionMode is the CLI's permission mode for one of Warden's:
+// plan is the CLI's plan mode (it withholds edits and asks through
+// ExitPlanMode); auto and ask are both the CLI's default, the difference
+// being whether the engine answers the asks itself.
+func claudePermissionMode(mode string) string {
+	if mode == "plan" {
+		return "plan"
+	}
+	return "default"
+}
 
 // claudeThread is the `thread/started` thread from Claude Code's
 // `system/init`: the session id and what the session offers. Its
@@ -547,14 +715,6 @@ func claudeThread(id string, init map[string]any) map[string]any {
 		commands = append(commands, map[string]any{"name": name})
 	}
 	return map[string]any{"id": id, "commands": commands, "model": String(init["model"]), "permissionMode": String(init["permissionMode"]), "outputStyle": String(init["output_style"])}
-}
-
-// claudeCompaction is the `thread/compacted` notification for a
-// `system/compact_boundary` frame: why the CLI compacted (`manual` for
-// /compact, `auto`) and the context before and after, in tokens.
-func claudeCompaction(v map[string]any, thread, turn string) map[string]any {
-	meta := Map(v["compact_metadata"])
-	return map[string]any{"threadId": thread, "turnId": turn, "trigger": String(meta["trigger"]), "preTokens": meta["pre_tokens"], "postTokens": meta["post_tokens"]}
 }
 
 func claudeResultError(v map[string]any) string {
@@ -603,4 +763,174 @@ func claudeTurnUsage(v map[string]any, sofar claudeUsage) (claudeUsage, bool) {
 		u.cost = cost - sofar.cost
 	}
 	return u, true
+}
+
+// claudeCompactionItem is the transcript item for a compaction: the
+// boundary's trigger (manual for /compact, auto) and the context before
+// and after it in tokens, and the summary the CLI continues from once it
+// follows (the metadata is sent again with it, as the conversation
+// replaces the item whole).
+func claudeCompactionItem(id string, meta map[string]any, summary string) map[string]any {
+	item := map[string]any{"id": id, "type": "compaction", "status": "completed"}
+	if meta != nil {
+		item["trigger"] = String(meta["trigger"])
+		item["preTokens"] = meta["pre_tokens"]
+		item["postTokens"] = meta["post_tokens"]
+	}
+	if summary != "" {
+		item["summary"] = summary
+	}
+	return item
+}
+
+// claudeMessageText is the text of a CLI message whose content is either
+// a string or a list of text blocks.
+func claudeMessageText(m map[string]any) string {
+	if s, ok := m["content"].(string); ok {
+		return s
+	}
+	parts := []string{}
+	for _, b := range Array(m["content"]) {
+		if block := Map(b); block["type"] == "text" {
+			parts = append(parts, String(block["text"]))
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// claudeContext tracks how full the model's context is. Every assistant
+// frame carries its API call's usage, whose input, cache-read and
+// cache-written tokens together are the prompt that call was given: the
+// context length. (The result's usage is the turn's calls summed, so it
+// cannot say.) The window comes from the result's modelUsage once the
+// CLI has reported one, and from claudeContextWindow before that. After a
+// compaction the CLI reports only the summary's size (post_tokens); the
+// context is that plus the fixed prefix — the system prompt and tools,
+// estimated as the smallest context the process has seen — until the
+// next call says.
+type claudeContext struct {
+	used, window, prefix int64
+	// threshold is where the CLI compacts on its own: the window less its
+	// auto-compact buffer (33k on the 200k models), from get_context_usage;
+	// 0 until the CLI has said.
+	threshold int64
+	name      string
+	// reported is what the last notification said, so one goes out only
+	// on a change.
+	reportedUsed, reportedWindow, reportedThreshold int64
+}
+
+func (c *claudeContext) model(name string) {
+	if name != "" {
+		c.name = name
+	}
+	if c.window == 0 && c.name != "" {
+		c.window = claudeContextWindow(c.name)
+	}
+}
+
+// call records an assistant frame's message; false when it carries no
+// usage (the CLI's synthetic messages).
+func (c *claudeContext) call(m map[string]any) bool {
+	if String(m["model"]) == "<synthetic>" {
+		return false
+	}
+	u := Map(m["usage"])
+	if u == nil {
+		return false
+	}
+	n := func(k string) int64 { f, _ := u[k].(float64); return int64(f) }
+	used := n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens")
+	if used == 0 {
+		return false
+	}
+	c.used = used
+	if c.prefix == 0 || used < c.prefix {
+		c.prefix = used
+	}
+	c.model(String(m["model"]))
+	return true
+}
+
+// compacted re-estimates the context from a compact_boundary's metadata.
+func (c *claudeContext) compacted(meta map[string]any) {
+	post, _ := meta["post_tokens"].(float64)
+	if post > 0 {
+		c.used = int64(post) + c.prefix
+	}
+}
+
+// result reads the model's window from a result's modelUsage: the entry
+// for the session's model, else the only one.
+func (c *claudeContext) result(v map[string]any) {
+	models := Map(v["modelUsage"])
+	if models == nil {
+		return
+	}
+	pick := Map(models[c.name])
+	if pick == nil && len(models) == 1 {
+		for _, m := range models {
+			pick = Map(m)
+		}
+	}
+	if w, ok := pick["contextWindow"].(float64); ok && w > 0 {
+		c.window = int64(w)
+	}
+}
+
+// account reads the CLI's own account of its context (the
+// get_context_usage control response): totalTokens is the context as
+// the CLI counts it (the same figure as the last call's usage), maxTokens
+// the window, and the categories include the auto-compact buffer, which
+// the CLI keeps free below the window.
+func (c *claudeContext) account(r map[string]any) {
+	n := func(k string) int64 { f, _ := r[k].(float64); return int64(f) }
+	if used := n("totalTokens"); used > 0 {
+		c.used = used
+		if c.prefix == 0 || used < c.prefix {
+			c.prefix = used
+		}
+	}
+	if w := n("maxTokens"); w > 0 {
+		c.window = w
+		c.threshold = w
+		for _, x := range Array(r["categories"]) {
+			if cat := Map(x); cat["kind"] == "buffer" {
+				if b, _ := cat["tokens"].(float64); b > 0 && int64(b) < w {
+					c.threshold = w - int64(b)
+				}
+			}
+		}
+	}
+}
+
+// changed is the notification's params when the context differs from the
+// last one sent.
+func (c *claudeContext) changed() (map[string]any, bool) {
+	if c.used == 0 || (c.used == c.reportedUsed && c.window == c.reportedWindow && c.threshold == c.reportedThreshold) {
+		return nil, false
+	}
+	c.reportedUsed, c.reportedWindow, c.reportedThreshold = c.used, c.window, c.threshold
+	p := map[string]any{"used": c.used, "window": c.window, "model": c.name}
+	if c.threshold > 0 {
+		p["threshold"] = c.threshold
+	}
+	return p, true
+}
+
+// claudeContextWindow is the context window of a model as the pinned CLI
+// (2.1.272) knows it, for the calls before the first result reports it:
+// 1M for the `[1m]` variants and the models that are natively 1M
+// (sonnet 4.6, opus 4.6 and later, opus 5, fable 5), 200k otherwise.
+func claudeContextWindow(model string) int64 {
+	m := strings.ToLower(model)
+	if strings.Contains(m, "[1m]") {
+		return 1_000_000
+	}
+	for _, id := range []string{"sonnet-4-6", "opus-4-6", "opus-4-7", "opus-4-8", "opus-4-9", "opus-5", "fable-5"} {
+		if strings.Contains(m, id) {
+			return 1_000_000
+		}
+	}
+	return 200_000
 }

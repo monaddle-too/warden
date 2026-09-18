@@ -12,6 +12,7 @@ import {
   Send,
   User,
 } from "lucide-react";
+import { compactionLabel } from "../context";
 import { hasDiff, parseDiff } from "../diff";
 import { senderLabel } from "../export";
 import { subagentInput, subagentProgress } from "../tools";
@@ -345,12 +346,14 @@ export const EntryView = memo(function EntryView({
         onFile={onFile}
       />
     );
-  if (entry.role === "system")
+  if (entry.role === "system" || entry.role === "notice")
     return (
-      <div className="system-entry" data-entry={entry.id}>
+      <div className={`system-entry ${entry.role}-entry`} data-entry={entry.id}>
         {entry.text}
       </div>
     );
+  if (entry.role === "compaction")
+    return <CompactionDivider entry={entry} chatID={chatID} onFile={onFile} />;
   const user = entry.role === "user";
   const header = (
     <header>
@@ -419,3 +422,54 @@ export const EntryView = memo(function EntryView({
     </article>
   );
 });
+
+/* The divider where the agent compacted its context: "Context compacted ·
+   manual · 171k → 2.2k tokens", with the summary it continues from
+   behind a disclosure; "Compacting context…" while it runs; the error
+   when it failed. */
+function CompactionDivider({
+  entry,
+  chatID,
+  onFile,
+}: {
+  entry: Entry;
+  chatID: string;
+  onFile: (href: string) => void;
+}) {
+  const c = entry.compaction ?? { status: "completed" };
+  const running = c.status === "running" || (entry.isStreaming && !c.trigger);
+  const failed = c.status === "failed";
+  const label = compactionLabel(c);
+  return (
+    <div
+      className={`compaction-entry${running ? " running" : failed ? " failed" : ""}`}
+      data-entry={entry.id}
+      role="separator"
+      aria-label={entry.text}
+    >
+      <div className="compaction-line">
+        <span>
+          {running
+            ? "Compacting context…"
+            : failed
+              ? `Compaction failed${c.error ? `: ${c.error}` : ""}`
+              : label
+                ? `Context compacted · ${label}`
+                : "Context compacted"}
+        </span>
+      </div>
+      {!running && !failed && entry.detail && (
+        <details className="compaction-summary">
+          <summary>Summary the agent continues from</summary>
+          <RichText
+            text={entry.detail}
+            chatID={chatID}
+            entryID={entry.id}
+            onFile={onFile}
+            agent
+          />
+        </details>
+      )}
+    </div>
+  );
+}

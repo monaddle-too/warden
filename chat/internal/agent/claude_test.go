@@ -20,11 +20,11 @@ func TestClaudeStreamingTranslation(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "saved-claude-session"})
@@ -78,7 +78,7 @@ func TestClaudeStreamingTranslation(t *testing.T) {
 	}
 }
 
-func TestClaudeBuiltinToolsAllowedAndMCPResponse(t *testing.T) {
+func TestClaudeBuiltinToolAskAndMCPResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	raw, fake := net.Pipe()
@@ -89,20 +89,20 @@ func TestClaudeBuiltinToolsAllowedAndMCPResponse(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init"}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_request", "request_id": "approve", "request": map[string]any{"subtype": "can_use_tool", "tool_name": "Write", "input": map[string]any{"file_path": "/workspace/check", "content": "ok"}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
-		allowed := Map(Map(v["response"])["response"])["behavior"] == "allow"
+		allowed := Map(Map(v["response"])["response"])["behavior"] == "allow" && Map(Map(Map(v["response"])["response"])["updatedInput"])["content"] == "ok"
 		_ = e.Encode(map[string]any{"type": "control_request", "request_id": "preview", "request": map[string]any{"subtype": "mcp_message", "server_name": "warden", "message": map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": map[string]any{"name": "preview_attach", "arguments": map[string]any{"port": 3000, "path": "/", "title": "Preview"}}}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		result := Map(Map(Map(v["response"])["response"])["mcp_response"])
@@ -123,8 +123,18 @@ func TestClaudeBuiltinToolsAllowedAndMCPResponse(t *testing.T) {
 	}
 	select {
 	case f := <-frames:
-		// Built-in tools are allowed without an owner prompt; the first
-		// frame the controller sees is the Warden MCP tool call.
+		// A built-in tool's ask reaches the controller as a permission
+		// request carrying the call typed as its card; the controller's
+		// mode answers it (here: accept).
+		if f.Method != "item/tool/requestPermission" || f.Params["tool"] != "Write" || Map(f.Params["item"])["type"] != "fileChange" {
+			t.Fatal(f)
+		}
+		_ = c.Reply(f.ID, map[string]any{"decision": "accept"})
+	case <-ctx.Done():
+		t.Fatal("permission timeout")
+	}
+	select {
+	case f := <-frames:
 		if f.Method != "item/tool/call" || f.Params["tool"] != "preview_attach" {
 			t.Fatal(f)
 		}
@@ -152,11 +162,11 @@ func TestClaudeTextBlocksAroundToolsAreSeparateItems(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
@@ -213,11 +223,11 @@ func TestClaudeTurnInputImages(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		for d.Decode(&v) == nil {
+		for claudeNext(d, &v) {
 			if v["type"] == "user" {
 				user <- v
 				return
@@ -280,11 +290,11 @@ func TestClaudeThinkingBlocksAreReasoningItems(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
@@ -366,16 +376,16 @@ func TestClaudeInterruptEndsTurnAsInterrupted(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
 		_ = e.Encode(map[string]any{"type": "stream_event", "event": map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": "Working on"}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		interrupts <- v
@@ -383,7 +393,7 @@ func TestClaudeInterruptEndsTurnAsInterrupted(t *testing.T) {
 		// What the CLI reports for an aborted query: an error result.
 		_ = e.Encode(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "result": "Request was aborted."})
 		// The next turn runs on the same process.
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "result", "is_error": false, "result": "Again."})
@@ -631,11 +641,11 @@ func TestClaudeToolItemsThroughTheStream(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
@@ -688,6 +698,190 @@ func TestClaudeToolItemsThroughTheStream(t *testing.T) {
 	}
 }
 
+// claudeFake is a scripted CLI on the far side of the adapter: it answers
+// the initialize handshake, then hands every frame the adapter writes to
+// `writes` and encodes whatever the test sends.
+type claudeFake struct {
+	enc    *json.Encoder
+	writes chan map[string]any
+}
+
+func newClaudeFake(t *testing.T, ctx context.Context) (*Client, *claudeFake, chan Frame) {
+	t.Helper()
+	raw, fake := net.Pipe()
+	t.Cleanup(func() { fake.Close() })
+	cf := &claudeFake{enc: json.NewEncoder(fake), writes: make(chan map[string]any, 32)}
+	go func() {
+		d := json.NewDecoder(fake)
+		for {
+			var v map[string]any
+			if !claudeNext(d, &v) {
+				return
+			}
+			if v["type"] == "control_request" && Map(v["request"])["subtype"] == "initialize" {
+				_ = cf.enc.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{}}})
+				continue
+			}
+			select {
+			case cf.writes <- v:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	frames := make(chan Frame, 32)
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(_ *Client, f Frame) { frames <- f })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	if _, err = c.Call(ctx, "thread/start", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	return c, cf, frames
+}
+
+func (cf *claudeFake) send(v map[string]any) { _ = cf.enc.Encode(v) }
+
+func (cf *claudeFake) next(t *testing.T, ctx context.Context) map[string]any {
+	t.Helper()
+	select {
+	case v := <-cf.writes:
+		return v
+	case <-ctx.Done():
+		t.Fatal("the adapter wrote nothing")
+	}
+	return nil
+}
+
+func nextFrame(t *testing.T, ctx context.Context, frames chan Frame, method string) Frame {
+	t.Helper()
+	for {
+		select {
+		case f := <-frames:
+			if f.Method == method {
+				return f
+			}
+		case <-ctx.Done():
+			t.Fatalf("no %s frame", method)
+		}
+	}
+}
+
+// A tool ask is the controller's to answer: it arrives typed with the
+// call's card, and a decline carries the controller's message to the CLI
+// as the tool's error text.
+func TestClaudePermissionAskDeniedWithMessage(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, cf, frames := newClaudeFake(t, ctx)
+	if _, err := c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "go"}}}); err != nil {
+		t.Fatal(err)
+	}
+	cf.next(t, ctx) // the user message
+	cf.send(map[string]any{"type": "control_request", "request_id": "r1", "request": map[string]any{"subtype": "can_use_tool", "tool_name": "Bash", "tool_use_id": "toolu_9", "description": "Create a file", "input": map[string]any{"command": "touch x", "description": "Create a file"}, "permission_suggestions": []any{}}})
+	f := nextFrame(t, ctx, frames, "item/tool/requestPermission")
+	item := Map(f.Params["item"])
+	if f.Params["tool"] != "Bash" || Map(f.Params["input"])["command"] != "touch x" || f.Params["description"] != "Create a file" || item["type"] != "commandExecution" || item["command"] != "touch x" || item["id"] != "toolu_9" {
+		t.Fatalf("%+v", f.Params)
+	}
+	if err := c.Reply(f.ID, map[string]any{"decision": "decline", "message": "use printf"}); err != nil {
+		t.Fatal(err)
+	}
+	v := cf.next(t, ctx)
+	r := Map(v["response"])
+	answer := Map(r["response"])
+	if v["type"] != "control_response" || r["request_id"] != "r1" || answer["behavior"] != "deny" || answer["updatedPermissions"] != nil {
+		t.Fatalf("%+v", v)
+	}
+	// The message rides in the CLI's own rejection wording, so the model
+	// takes it as the user's decision rather than the tool's output.
+	if msg := String(answer["message"]); !strings.HasPrefix(msg, "The user doesn't want to proceed with this tool use.") || !strings.HasSuffix(msg, "the user said: use printf") {
+		t.Fatal(msg)
+	}
+	if msg := claudeDenial("Bash", ""); !strings.HasSuffix(msg, "wait for the user to tell you how to proceed.") {
+		t.Fatal(msg)
+	}
+	if msg := claudeDenial("ExitPlanMode", "add tests"); !strings.Contains(msg, "Stay in plan mode") || !strings.HasSuffix(msg, "the user said: add tests") {
+		t.Fatal(msg)
+	}
+}
+
+// ExitPlanMode is an ask with the plan; approving it into a mode moves
+// the CLI's mode with the answer.
+func TestClaudeExitPlanModeApprovalSetsMode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, cf, frames := newClaudeFake(t, ctx)
+	if _, err := c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "go"}}}); err != nil {
+		t.Fatal(err)
+	}
+	cf.next(t, ctx)
+	cf.send(map[string]any{"type": "control_request", "request_id": "r2", "request": map[string]any{"subtype": "can_use_tool", "tool_name": "ExitPlanMode", "tool_use_id": "toolu_p", "input": map[string]any{"plan": "# Plan\n1. edit", "planFilePath": "/home/agent/.claude/plans/p.md"}}})
+	f := nextFrame(t, ctx, frames, "item/tool/requestPermission")
+	if f.Params["tool"] != "ExitPlanMode" || f.Params["plan"] != "# Plan\n1. edit" {
+		t.Fatalf("%+v", f.Params)
+	}
+	if err := c.Reply(f.ID, map[string]any{"decision": "accept", "mode": "ask"}); err != nil {
+		t.Fatal(err)
+	}
+	answer := Map(Map(cf.next(t, ctx)["response"])["response"])
+	updates := Array(answer["updatedPermissions"])
+	if answer["behavior"] != "allow" || Map(answer["updatedInput"])["plan"] != "# Plan\n1. edit" || len(updates) != 1 || Map(updates[0])["type"] != "setMode" || Map(updates[0])["mode"] != "default" || Map(updates[0])["destination"] != "session" {
+		t.Fatalf("%+v", answer)
+	}
+	// The CLI now reports default; asking for ask again sends nothing,
+	// plan sends set_permission_mode.
+	if _, err := c.Call(ctx, "permissions/set", map[string]any{"mode": "ask"}); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		v := cf.next(t, ctx)
+		if Map(v["request"])["subtype"] != "set_permission_mode" || Map(v["request"])["mode"] != "plan" {
+			t.Errorf("%+v", v)
+		}
+		cf.send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{"mode": "plan"}}})
+	}()
+	result, err := c.Call(ctx, "permissions/set", map[string]any{"mode": "plan"})
+	if err != nil || result["mode"] != "plan" {
+		t.Fatal(result, err)
+	}
+	select {
+	case v := <-cf.writes:
+		t.Fatalf("unexpected write %+v", v)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// A mode the CLI refuses fails the call; the CLI's own status frames
+// reach the controller as mode changes.
+func TestClaudeModeRefusedAndStatusReported(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, cf, frames := newClaudeFake(t, ctx)
+	go func() {
+		v := cf.next(t, ctx)
+		cf.send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": v["request_id"], "error": "Cannot set permission mode"}})
+	}()
+	if _, err := c.Call(ctx, "permissions/set", map[string]any{"mode": "plan"}); err == nil || !strings.Contains(err.Error(), "Cannot set permission mode") {
+		t.Fatal(err)
+	}
+	cf.send(map[string]any{"type": "system", "subtype": "status", "status": nil, "permissionMode": "plan"})
+	f := nextFrame(t, ctx, frames, "permissions/modeChanged")
+	if f.Params["mode"] != "plan" {
+		t.Fatal(f)
+	}
+	// The CLI is in plan mode now: asking for plan sends nothing more.
+	if r, err := c.Call(ctx, "permissions/set", map[string]any{"mode": "plan"}); err != nil || r["mode"] != "plan" {
+		t.Fatal(r, err)
+	}
+	select {
+	case v := <-cf.writes:
+		t.Fatalf("unexpected write %+v", v)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 // claudeSession runs the adapter against a fake CLI: after the handshake
 // and the first turn's message, `script` writes the CLI's frames. Every
 // notification the adapter sends is collected until `until` frames of
@@ -703,11 +897,11 @@ func claudeSession(t *testing.T, script func(e *json.Encoder), until int) []Fram
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
@@ -1104,11 +1298,11 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s",
@@ -1143,9 +1337,18 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 			switch f.Method {
 			case "thread/started":
 				threads = append(threads, Map(f.Params["thread"]))
-			case "thread/compacted":
-				compacted = f.Params
 			case "item/started", "item/completed":
+				// The boundary is a compaction item (item 8); nothing else
+				// streams.
+				if item := Map(f.Params["item"]); item["type"] == "compaction" {
+					if f.Method == "item/completed" {
+						compacted = item
+					}
+					if String(f.Params["turnId"]) != turnID {
+						t.Fatalf("compaction outside the turn: %+v", f.Params)
+					}
+					continue
+				}
 				items++
 			case "turn/completed":
 				if len(threads) != 2 {
@@ -1159,7 +1362,7 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 				if first["id"] != "s" || fmt.Sprint(names) != "[code-review compact init probe-cmd]" || first["model"] != "claude-opus-5[1m]" || first["permissionMode"] != "default" || first["outputStyle"] != "default" {
 					t.Fatalf("thread %+v", first)
 				}
-				if compacted == nil || compacted["threadId"] != "s" || compacted["turnId"] != turnID || compacted["trigger"] != "manual" || compacted["preTokens"] != 27230.0 || compacted["postTokens"] != 1850.0 {
+				if compacted == nil || compacted["trigger"] != "manual" || compacted["preTokens"] != 27230.0 || compacted["postTokens"] != 1850.0 || compacted["status"] != "completed" {
 					t.Fatalf("compacted %+v", compacted)
 				}
 				// The summary and the local command's stdout are the CLI's
@@ -1172,5 +1375,168 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("translation timed out")
 		}
+	}
+}
+
+// A /compact turn, as CLI 2.1.272 emits it: a compaction item runs from
+// the "compacting" status to the compact_boundary, which completes it
+// with the trigger and the token counts; the synthetic user frame that
+// follows completes it again with the summary. The context is reported
+// per model call from the assistant frame's usage (input plus cache read
+// and written), re-estimated at the boundary from post_tokens and the
+// fixed prefix, with the window from the result's modelUsage. A failed
+// auto-compaction completes the item as failed.
+func TestClaudeCompactionAndContext(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	raw, fake := net.Pipe()
+	defer fake.Close()
+	done := make(chan Frame, 60)
+	go func() {
+		d := json.NewDecoder(fake)
+		e := json.NewEncoder(fake)
+		var v map[string]any
+		if !claudeNext(d, &v) {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
+		if !claudeNext(d, &v) {
+			return
+		}
+		usage := map[string]any{"input_tokens": 2.0, "cache_creation_input_tokens": 11788.0, "cache_read_input_tokens": 28803.0, "output_tokens": 2.0}
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "model": "claude-sonnet-5"})
+		_ = e.Encode(map[string]any{"type": "assistant", "message": map[string]any{"model": "claude-sonnet-5", "usage": usage, "content": []any{map[string]any{"type": "thinking", "thinking": ""}}}})
+		_ = e.Encode(map[string]any{"type": "assistant", "message": map[string]any{"model": "claude-sonnet-5", "usage": usage, "content": []any{map[string]any{"type": "text", "text": "ok"}}}})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": "compacting", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": nil, "compact_result": "success", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "model": "claude-sonnet-5"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "compact_boundary", "session_id": "s", "compact_metadata": map[string]any{"trigger": "manual", "pre_tokens": 171238.0, "post_tokens": 2194.0, "cumulative_dropped_tokens": 169044.0, "duration_ms": 22526.0}})
+		_ = e.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. Files read: a.txt (lima)"}, "isSynthetic": true, "isReplay": false})
+		_ = e.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "<local-command-stdout>Compacted </local-command-stdout>"}, "isReplay": true})
+		_ = e.Encode(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": "", "num_turns": 0.0, "usage": map[string]any{"input_tokens": 0.0, "cache_creation_input_tokens": 0.0, "cache_read_input_tokens": 0.0, "output_tokens": 0.0}, "total_cost_usd": 0.78, "modelUsage": map[string]any{"claude-sonnet-5": map[string]any{"contextWindow": 200000.0, "maxOutputTokens": 64000.0}}})
+		// After the turn the adapter asks the CLI for its own account of
+		// the context (the boundary's request and the result's both arrive;
+		// the first is answered, as CLI 2.1.272 answers get_context_usage).
+		for i := 0; i < 2; i++ {
+			if d.Decode(&v) != nil || v["type"] != "control_request" || Map(v["request"])["subtype"] != "get_context_usage" {
+				return
+			}
+			if i == 0 {
+				_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{"totalTokens": 41113.0, "maxTokens": 200000.0, "rawMaxTokens": 200000.0, "autocompactSource": "model-default", "percentage": 21.0, "categories": []any{map[string]any{"name": "System prompt", "tokens": 8516.0, "kind": "used"}, map[string]any{"name": "Autocompact buffer", "tokens": 33000.0, "kind": "buffer"}, map[string]any{"name": "Free space", "tokens": 125887.0, "kind": "free"}}}}})
+			}
+		}
+		// The next turn: an automatic compaction that fails.
+		if !claudeNext(d, &v) {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "model": "claude-sonnet-5"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": "compacting", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": nil, "compact_result": "failed", "compact_error": "API Error: refused", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "assistant", "message": map[string]any{"model": "<synthetic>", "usage": map[string]any{"input_tokens": 0.0, "output_tokens": 0.0}, "content": []any{map[string]any{"type": "text", "text": "Prompt is too long · automatic compaction failed: API Error: refused"}}}})
+		_ = e.Encode(map[string]any{"type": "result", "subtype": "success", "is_error": true, "result": "Prompt is too long · automatic compaction failed: API Error: refused", "usage": map[string]any{"input_tokens": 0.0, "output_tokens": 0.0}, "total_cost_usd": 0.78})
+	}()
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(_ *Client, f Frame) { done <- f })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err = c.Call(ctx, "thread/start", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "/compact keep the file list"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var items []map[string]any
+	var contexts []map[string]any
+	collect := func() {
+		for {
+			select {
+			case f := <-done:
+				switch f.Method {
+				case "item/started", "item/completed":
+					if item := Map(f.Params["item"]); item["type"] == "compaction" {
+						items = append(items, item)
+					}
+				case "thread/context/updated":
+					contexts = append(contexts, Map(f.Params["context"]))
+				case "turn/completed":
+					return
+				}
+			case <-ctx.Done():
+				t.Fatal("translation timed out")
+			}
+		}
+	}
+	collect()
+	if len(items) != 3 || items[0]["status"] != "running" || items[1]["status"] != "completed" || items[2]["status"] != "completed" || items[0]["id"] != items[2]["id"] {
+		t.Fatalf("compaction items %+v", items)
+	}
+	if items[1]["trigger"] != "manual" || items[1]["preTokens"] != 171238.0 || items[1]["postTokens"] != 2194.0 || items[1]["summary"] != nil {
+		t.Fatalf("boundary item %+v", items[1])
+	}
+	if items[2]["trigger"] != "manual" || items[2]["preTokens"] != 171238.0 || !strings.HasPrefix(String(items[2]["summary"]), "This session is being continued") {
+		t.Fatalf("summary item %+v", items[2])
+	}
+	// One report per change: the call (the table's window before any
+	// result), the boundary's estimate (the summary plus the prefix, the
+	// smallest context seen); the result's window is the same 200k.
+	if len(contexts) != 2 || contexts[0]["used"] != 40593.0 || contexts[0]["window"] != 200000.0 || contexts[0]["model"] != "claude-sonnet-5" || contexts[0]["threshold"] != nil || contexts[1]["used"] != 2194.0+40593 || contexts[1]["window"] != 200000.0 {
+		t.Fatalf("contexts %+v", contexts)
+	}
+	// The CLI's own account then corrects the estimate and adds where it
+	// compacts on its own: the window less its buffer.
+	select {
+	case f := <-done:
+		if f.Method != "thread/context/updated" {
+			t.Fatalf("after the turn: %s %+v", f.Method, f.Params)
+		}
+		if c := Map(f.Params["context"]); c["used"] != 41113.0 || c["window"] != 200000.0 || c["threshold"] != 167000.0 {
+			t.Fatalf("accounted context %+v", c)
+		}
+	case <-ctx.Done():
+		t.Fatal("no context account")
+	}
+	items, contexts = nil, nil
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "go on"}}}); err != nil {
+		t.Fatal(err)
+	}
+	collect()
+	if len(items) != 2 || items[0]["status"] != "running" || items[1]["status"] != "failed" || items[1]["error"] != "API Error: refused" || len(contexts) != 0 {
+		t.Fatalf("failed compaction %+v, contexts %+v", items, contexts)
+	}
+}
+
+func TestClaudeContextWindowTable(t *testing.T) {
+	for model, want := range map[string]int64{"claude-sonnet-5": 200000, "claude-sonnet-5[1m]": 1000000, "claude-opus-4-5": 200000, "claude-opus-4-6": 1000000, "claude-opus-5": 1000000, "claude-haiku-4-5-20251001": 200000, "claude-sonnet-4-6": 1000000, "claude-fable-5": 1000000, "": 200000} {
+		if got := claudeContextWindow(model); got != want {
+			t.Errorf("%s: %d, want %d", model, got, want)
+		}
+	}
+	// The result's modelUsage overrides the table (a [1m] session on a
+	// model the table calls 200k, or the other way round).
+	c := claudeContext{}
+	c.model("claude-sonnet-5")
+	c.result(map[string]any{"modelUsage": map[string]any{"claude-sonnet-5": map[string]any{"contextWindow": 1000000.0}}})
+	if c.window != 1000000 {
+		t.Fatalf("window %d", c.window)
+	}
+	c.result(map[string]any{"modelUsage": map[string]any{"other": map[string]any{"contextWindow": 500000.0}}})
+	if c.window != 500000 {
+		t.Fatalf("lone entry: window %d", c.window)
+	}
+}
+
+// claudeNext reads the adapter's next frame for a fake CLI, skipping the
+// context requests the adapter sends on its own after a turn (a real CLI
+// answers them; the fakes here need not).
+func claudeNext(d *json.Decoder, v *map[string]any) bool {
+	for {
+		if d.Decode(v) != nil {
+			return false
+		}
+		if (*v)["type"] == "control_request" && Map((*v)["request"])["subtype"] == "get_context_usage" {
+			continue
+		}
+		return true
 	}
 }

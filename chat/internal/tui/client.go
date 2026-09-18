@@ -37,7 +37,10 @@ type Entry struct {
 	// ParentID names the subagent's card (an Agent call) this entry
 	// belongs to; "" for the conversation's own entries.
 	ParentID string `json:"parentID,omitempty"`
-	Sender   *struct {
+	// Compaction is what a compaction entry records (conversation.Compaction):
+	// the agent compacted its context here; Detail is the summary.
+	Compaction *Compaction `json:"compaction,omitempty"`
+	Sender     *struct {
 		PrincipalID string `json:"principalID"`
 		Email       string `json:"email"`
 		Name        string `json:"name"`
@@ -52,6 +55,33 @@ type Attachment struct {
 	Path string `json:"path"`
 	Kind string `json:"kind"`
 	Size int64  `json:"size"`
+}
+
+// Compaction mirrors conversation.Compaction: how the agent's context was
+// compacted (manual for /compact, auto), the context before and the
+// summary after in tokens, and whether it is running, completed or failed.
+type Compaction struct {
+	Trigger    string `json:"trigger"`
+	PreTokens  int64  `json:"preTokens"`
+	PostTokens int64  `json:"postTokens"`
+	Status     string `json:"status"`
+	Error      string `json:"error"`
+}
+
+// Context mirrors conversation.Context: what the agent's latest model call
+// was given against the model's window, in tokens.
+type Context struct {
+	Used      int64  `json:"used"`
+	Window    int64  `json:"window"`
+	Threshold int64  `json:"threshold"` // where the agent compacts on its own; 0 when unknown
+	Model     string `json:"model"`
+}
+
+// AgentCommand is one slash command the agent's session offers
+// (chats.Command): sent as text, the agent expands it.
+type AgentCommand struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // Turn and Usage mirror conversation.Turn: what one agent turn took.
@@ -79,6 +109,7 @@ type Conversation struct {
 	ActiveTurnID *string           `json:"activeTurnID,omitempty"`
 	Entries      []Entry           `json:"entries"`
 	Turns        []Turn            `json:"turns,omitempty"`
+	Context      *Context          `json:"context,omitempty"`
 	Raw          []json.RawMessage `json:"-"`
 }
 
@@ -88,11 +119,12 @@ func (c *Conversation) UnmarshalJSON(b []byte) error {
 		ActiveTurnID *string           `json:"activeTurnID"`
 		Entries      []json.RawMessage `json:"entries"`
 		Turns        []Turn            `json:"turns"`
+		Context      *Context          `json:"context"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
-	c.ThreadID, c.ActiveTurnID, c.Turns, c.Raw = raw.ThreadID, raw.ActiveTurnID, raw.Turns, raw.Entries
+	c.ThreadID, c.ActiveTurnID, c.Turns, c.Context, c.Raw = raw.ThreadID, raw.ActiveTurnID, raw.Turns, raw.Context, raw.Entries
 	c.Entries = make([]Entry, 0, len(raw.Entries))
 	for _, r := range raw.Entries {
 		var e Entry
@@ -139,10 +171,13 @@ func (a Approval) Questions() []Question {
 }
 
 type Chat struct {
-	ID           string       `json:"id"`
-	Title        string       `json:"title"`
-	Provider     string       `json:"provider"`
-	Model        string       `json:"model"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	// Mode is a Claude chat's permission mode: auto (also when empty),
+	// ask or plan (chats/permissions.go).
+	Mode         string       `json:"mode"`
 	SandboxID    string       `json:"sandboxID"`
 	Repository   string       `json:"repository,omitempty"`
 	Status       string       `json:"status"`
@@ -150,6 +185,9 @@ type Chat struct {
 	Archived     bool         `json:"archived"`
 	Conversation Conversation `json:"conversation"`
 	Approvals    []Approval   `json:"approvals"`
+	// Commands are the slash commands the agent's session offers (Claude
+	// Code's built-ins and the workspace's own), for the / menu.
+	Commands []AgentCommand `json:"commands"`
 	// Startup is where the chat's start is while its message waits for the
 	// agent: the stage and the runtime's detail.
 	Startup *struct {
@@ -157,6 +195,37 @@ type Chat struct {
 		Detail string `json:"detail"`
 	} `json:"startup"`
 }
+
+// Permission is a tool ask of a Claude chat in ask or plan mode (method
+// item/tool/requestPermission): the tool, the CLI's description, the
+// call as a transcript entry (a command, a diff), what "allow always"
+// remembers, and the plan when the tool is ExitPlanMode.
+type Permission struct {
+	Tool        string `json:"tool"`
+	Description string `json:"description"`
+	Always      string `json:"always"`
+	Plan        string `json:"plan"`
+	Entry       *Entry `json:"entry"`
+}
+
+// Permission decodes the ask when the approval is one, else nil.
+func (a Approval) Permission() *Permission {
+	if a.Method != "item/tool/requestPermission" {
+		return nil
+	}
+	b, err := json.Marshal(a.Params)
+	if err != nil {
+		return nil
+	}
+	var p Permission
+	if json.Unmarshal(b, &p) != nil || p.Tool == "" {
+		return nil
+	}
+	return &p
+}
+
+// IsPlan reports whether the ask is the model's plan.
+func (p *Permission) IsPlan() bool { return p != nil && p.Tool == "ExitPlanMode" }
 
 // Pending returns the approvals still waiting for the owner.
 func (c *Chat) Pending() []Approval {
@@ -409,6 +478,19 @@ func (c *Client) Resolve(ctx context.Context, chatID, approvalID string, allow b
 		answers = map[string][]string{}
 	}
 	return c.do(ctx, "POST", "chats/"+chatID+"/approvals/"+approvalID, map[string]any{"allow": allow, "answers": answers}, nil)
+}
+
+// Answer resolves a tool permission ask: allow, allow always (the call's
+// rule is remembered for the chat), or deny with a message the model
+// reads; for a plan, allow with the mode the chat moves to (auto or ask)
+// or deny with feedback.
+func (c *Client) Answer(ctx context.Context, chatID, approvalID string, allow, always bool, message, mode string) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/approvals/"+approvalID, map[string]any{"allow": allow, "always": always, "message": message, "mode": mode, "answers": map[string][]string{}}, nil)
+}
+
+// Mode sets a Claude chat's permission mode (auto, ask or plan).
+func (c *Client) Mode(ctx context.Context, chatID, mode string) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/mode", map[string]any{"mode": mode}, nil)
 }
 
 func (c *Client) RevokePort(ctx context.Context, id string) error {

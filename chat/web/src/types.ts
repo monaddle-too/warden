@@ -22,6 +22,32 @@ export type Entry = {
      Agent tool call) whose subagent produced it, so the transcript nests
      it under that card. Absent on the conversation's own entries. */
   parentID?: string;
+  /* What a compaction entry records: the agent compacted its context
+     here; `detail` is the summary it continues from, when given. */
+  compaction?: Compaction;
+};
+/* One compaction of the agent's context (conversation.Compaction):
+   `trigger` is "manual" (the owner's /compact) or "auto" (the agent near
+   its window), `preTokens` the context before it and `postTokens` the
+   summary it came down to (absent when not reported); `status` running,
+   completed or failed with `error`. */
+export type Compaction = {
+  trigger?: string;
+  preTokens?: number;
+  postTokens?: number;
+  status: string;
+  error?: string;
+};
+/* How full the agent's context is (conversation.Context): `used` is what
+   its latest model call was given (or the agent's own account of it),
+   `window` the model's context window, `threshold` where the agent
+   compacts on its own (Claude Code keeps a buffer free below the window;
+   absent when not reported), in tokens. */
+export type Context = {
+  used: number;
+  window: number;
+  threshold?: number;
+  model?: string;
 };
 /* One agent tool call as the service records it (conversation.Tool):
    `kind` is what the card renders by, `name` the tool as the agent names
@@ -92,6 +118,17 @@ export type Question = {
   question: string;
   options?: { label: string; description?: string }[];
 };
+/* A tool permission ask (method item/tool/requestPermission): the tool,
+   its input, the call as a transcript entry (a command, a diff), what
+   "Allow always" would remember, and, for ExitPlanMode, the plan. */
+export type PermissionParams = {
+  tool: string;
+  input?: Record<string, unknown>;
+  entry?: Entry;
+  always?: string;
+  description?: string;
+  plan?: string;
+};
 export type Approval = {
   id: string;
   method: string;
@@ -112,6 +149,11 @@ export type ResourceLimits = {
 export type Chat = {
   provider?: string;
   model?: string;
+  /* A Claude chat's permission mode (auto when absent) and its
+     allow-always rules: the tool (Bash, edit for any file tool, or a
+     tool's name) and, for Bash, the command prefix. */
+  mode?: string;
+  allowed?: { tool: string; command?: string }[];
   id: string;
   title: string;
   sandboxID: string;
@@ -125,6 +167,7 @@ export type Chat = {
     activeTurnID?: string;
     entries: Entry[];
     turns?: Turn[];
+    context?: Context;
   };
   approvals: Approval[];
   /* Slash commands the agent's session offers (Claude Code's built-ins and

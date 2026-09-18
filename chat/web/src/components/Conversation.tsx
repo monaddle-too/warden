@@ -21,6 +21,7 @@ import {
   File as FileIcon,
   Folder,
   Paperclip,
+  ShieldCheck,
   Slash,
   Square,
   Terminal,
@@ -81,6 +82,7 @@ import {
 import { sameFooter, turnFooters, type TurnFooter } from "../turns";
 import type { Chat, Entry } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
+import { ContextMeter } from "./ContextMeter";
 import { chatStatusLabel, startupLine } from "../stages";
 import { pendingReply } from "../thinking";
 import { ActivityGroup, EntryView } from "./EntryView";
@@ -88,6 +90,7 @@ import { ApprovalCard } from "./Approvals";
 import { FindBar, isFindKey, type FindRequest } from "./FindBar";
 import { HistorySearch } from "./HistorySearch";
 import { ModelSelect, modelOptions } from "./ModelSelect";
+import { ModeSelect } from "./ModeSelect";
 import { ComposerPastes } from "./Pastes";
 import { Suggest, usePathCompletion, type Suggestion } from "./Suggest";
 import { PendingReply } from "./Thinking";
@@ -147,6 +150,8 @@ const commandIcon = (name: string) =>
     <Square size={15} />
   ) : name === "model" ? (
     <Cpu size={15} />
+  ) : name === "mode" ? (
+    <ShieldCheck size={15} />
   ) : name === "export" ? (
     <Download size={15} />
   ) : (
@@ -158,6 +163,7 @@ export function Conversation({
   requests = [],
   find,
   onModel,
+  onMode,
   onExport,
 }: {
   chat: Chat;
@@ -168,6 +174,8 @@ export function Conversation({
      one made before a switch does not follow the reader. */
   find?: FindRequest;
   onModel: (model: string) => Promise<unknown>;
+  /* The permission mode selector and /mode (Claude chats). */
+  onMode?: (mode: string) => Promise<unknown>;
   /* The /export command; the chat menu's dialog lives in the shell. */
   onExport?: () => void;
 }) {
@@ -489,6 +497,9 @@ export function Conversation({
     () => modelOptions(chat.provider || "codex"),
     [chat.provider],
   );
+  // Permission modes are a Claude chat's (the service refuses them for
+  // Codex); the mode can change at any time, a running turn included.
+  const modes = chat.provider === "claude" && !!onMode;
   // The agent's own commands (Claude Code's built-ins and the workspace's)
   // join the list after the chat's; "/name …" goes to the agent as text.
   const agentCommands = useMemo(() => chat.commands ?? [], [chat.commands]);
@@ -524,23 +535,33 @@ export function Conversation({
                     ? !running || chat.status === "stopping"
                     : item.command.name === "model"
                       ? running
-                      : false,
+                      : item.command.name === "mode"
+                        ? !modes
+                        : false,
               }
-            : item.kind === "model"
+            : item.kind === "mode"
               ? {
-                  id: "model:" + item.model.value,
-                  label: item.model.label,
-                  hint: item.model.value,
-                  icon: <Cpu size={15} />,
-                  disabled: running,
+                  id: "mode:" + item.mode.value,
+                  label: item.mode.label,
+                  hint: item.mode.hint,
+                  icon: <ShieldCheck size={15} />,
+                  disabled: !modes || chat.archived,
                 }
-              : {
-                  id: "agent:" + item.command.name,
-                  label: "/" + item.command.name,
-                  hint: agentHint(item.command),
-                  icon: <Slash size={15} />,
-                  group: agentGroup,
-                },
+              : item.kind === "model"
+                ? {
+                    id: "model:" + item.model.value,
+                    label: item.model.label,
+                    hint: item.model.value,
+                    icon: <Cpu size={15} />,
+                    disabled: running,
+                  }
+                : {
+                    id: "agent:" + item.command.name,
+                    label: "/" + item.command.name,
+                    hint: agentHint(item.command),
+                    icon: <Slash size={15} />,
+                    group: agentGroup,
+                  },
       );
       if (items.length) return { items };
       // An agent command with its argument typed: nothing to pick, the
@@ -581,6 +602,8 @@ export function Conversation({
     pathError,
     running,
     chat.status,
+    chat.archived,
+    modes,
   ]);
   // The row the keys act on: never a disabled one, so Enter on a fresh
   // list runs something. -1 when every row is disabled.
@@ -711,6 +734,12 @@ export function Conversation({
   // A command picked from the list, or sent as exactly "/name": the
   // command line leaves the composer and `rest` of the draft stays.
   function runCommand(item: CommandItem, rest: string) {
+    if (item.kind === "mode") {
+      setError(modes ? "" : "permission modes apply to Claude chats");
+      if (modes) void onMode(item.mode.value).catch((e) => setError(String(e)));
+      place({ text: rest, caret: 0 });
+      return;
+    }
     if (item.kind === "agent") {
       // Filled in, not sent: the person adds an argument or sends it as
       // it is, and the agent expands it.
@@ -736,6 +765,9 @@ export function Conversation({
         // The list then shows the models.
         place({ text: "/model " + rest, caret: 7 });
         break;
+      case "mode":
+        place({ text: "/mode " + rest, caret: 6 });
+        break;
       case "export":
         onExport?.();
         place({ text: rest, caret: 0 });
@@ -758,9 +790,11 @@ export function Conversation({
       (c) =>
         (c.kind === "command"
           ? "command:" + c.command.name
-          : c.kind === "model"
-            ? "model:" + c.model.value
-            : "agent:" + c.command.name) === item.id,
+          : c.kind === "mode"
+            ? "mode:" + c.mode.value
+            : c.kind === "model"
+              ? "model:" + c.model.value
+              : "agent:" + c.command.name) === item.id,
     );
     if (chosen) runCommand(chosen, withoutCommand(text, trigger));
   }
@@ -1197,6 +1231,21 @@ export function Conversation({
                   label="Model for the next turn"
                 />
               </span>
+              {modes && (
+                <span className="composer-mode">
+                  <ModeSelect
+                    value={chat.mode || "auto"}
+                    disabled={chat.archived}
+                    onChange={(mode) => {
+                      setError("");
+                      void onMode(mode).catch((e) => setError(String(e)));
+                    }}
+                  />
+                </span>
+              )}
+              {chat.conversation.context && (
+                <ContextMeter context={chat.conversation.context} />
+              )}
               <span
                 className={`status-dot ${chat.startup && running ? "starting" : chat.status}`}
               />

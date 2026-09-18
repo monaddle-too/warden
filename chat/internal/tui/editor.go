@@ -44,10 +44,10 @@ const (
 	KeyCtrlO
 	KeyCtrlR
 	KeyCtrlG
-	KeyShiftTab
-	KeyNewline // Alt+Enter or Ctrl+J: a line break inside the composer
-	KeyPaste   // bracketed paste; Text holds the pasted text
-	KeyEOF     // the input ended
+	KeyShiftTab // CSI Z: cycles the permission mode
+	KeyNewline  // Alt+Enter or Ctrl+J: a line break inside the composer
+	KeyPaste    // bracketed paste; Text holds the pasted text
+	KeyEOF      // the input ended
 	KeyUnknown
 )
 

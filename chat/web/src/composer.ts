@@ -32,6 +32,11 @@ export type Command = { name: string; label: string; hint: string };
 export const COMMANDS: Command[] = [
   { name: "stop", label: "Stop", hint: "Interrupt the agent's turn" },
   { name: "model", label: "Model", hint: "Choose the model for the next turn" },
+  {
+    name: "mode",
+    label: "Permission mode",
+    hint: "auto, ask before commands and edits, or plan first",
+  },
   { name: "export", label: "Export…", hint: "Download this chat as a file" },
   {
     name: "clear",
@@ -42,9 +47,28 @@ export const COMMANDS: Command[] = [
 
 export type ModelOption = { value: string; label: string };
 
+/* The permission modes of a Claude chat (chats/permissions.go), in the
+   order the surfaces cycle through them; the selector and /mode list the
+   same. */
+export type ModeOption = { value: string; label: string; hint: string };
+export const MODES: ModeOption[] = [
+  { value: "auto", label: "Auto", hint: "Every tool call is allowed" },
+  {
+    value: "ask",
+    label: "Ask",
+    hint: "Claude asks before commands that write and before file edits",
+  },
+  {
+    value: "plan",
+    label: "Plan",
+    hint: "Claude explores and proposes a plan; edits wait for its approval",
+  },
+];
+
 export type CommandItem =
   | { kind: "command"; command: Command }
   | { kind: "model"; model: ModelOption }
+  | { kind: "mode"; mode: ModeOption }
   | { kind: "agent"; command: AgentCommand };
 
 /* What the agent's built-in commands do, for the list's hint column: the
@@ -96,8 +120,9 @@ function split(query: string): { name: string; rest?: string } {
 /* The rows for a command query: the local commands whose name starts with
    the word typed, then the agent's (a local name shadows the agent's, so
    "/model" is always the chat's own); or, once "model" has its argument,
-   the models whose value or label contains it ("5.5" finds GPT-5.5). An
-   agent command with an argument has no rows: the text is sent as it is. */
+   the models whose value or label contains it ("5.5" finds GPT-5.5), and
+   once "mode" has its argument, the permission modes it begins. An agent
+   command with an argument has no rows: the text is sent as it is. */
 export function commandItems(
   query: string,
   models: ModelOption[],
@@ -117,8 +142,13 @@ export function commandItems(
     }
     return rows;
   }
-  if (name !== "model") return [];
   const arg = rest.trim().toLowerCase();
+  if (name === "mode")
+    return MODES.filter((m) => m.value.startsWith(arg)).map((mode) => ({
+      kind: "mode",
+      mode,
+    }));
+  if (name !== "model") return [];
   return models
     .filter(
       (m) =>
@@ -159,9 +189,10 @@ export function exactCommand(
   const arg = rest.join(" ").toLowerCase();
   const hit = items.find(
     (item) =>
-      item.kind === "model" &&
-      (item.model.value.toLowerCase() === arg ||
-        item.model.label.toLowerCase() === arg),
+      (item.kind === "model" &&
+        (item.model.value.toLowerCase() === arg ||
+          item.model.label.toLowerCase() === arg)) ||
+      (item.kind === "mode" && item.mode.value === arg),
   );
   return hit;
 }

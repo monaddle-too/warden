@@ -17,8 +17,8 @@ import (
 )
 
 func TestDecodeKeys(t *testing.T) {
-	keys, rest := DecodeKeys([]byte("hi\r\x7f\x1b[A\x1b[3~\x1b[5~\x03\x04\x1b"))
-	kinds := []KeyKind{KeyRune, KeyRune, KeyEnter, KeyBackspace, KeyUp, KeyDelete, KeyPageUp, KeyCtrlC, KeyCtrlD}
+	keys, rest := DecodeKeys([]byte("hi\r\x7f\x1b[A\x1b[3~\x1b[5~\x1b[Z\x03\x04\x1b"))
+	kinds := []KeyKind{KeyRune, KeyRune, KeyEnter, KeyBackspace, KeyUp, KeyDelete, KeyPageUp, KeyShiftTab, KeyCtrlC, KeyCtrlD}
 	if len(keys) != len(kinds) {
 		t.Fatalf("got %d keys: %+v", len(keys), keys)
 	}
@@ -362,6 +362,11 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 					c.Approvals[i].State = "declined"
 				}
 				c.Approvals[i].Params["answers"] = body["answers"]
+				for _, k := range []string{"always", "message", "mode"} {
+					if v, ok := body[k]; ok {
+						c.Approvals[i].Params[k] = v
+					}
+				}
 			}
 		}
 		f.mu.Unlock()
@@ -405,6 +410,20 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		f.notes = append(f.notes, body["text"].(string))
 		c := f.state.Chat(id)
 		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "note", Role: "system", Text: "Added to CLAUDE.md: “" + body["text"].(string) + "”."})
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/mode"):
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/mode")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		if c.Provider != "claude" {
+			f.mu.Unlock()
+			http.Error(w, `{"error":"permission modes apply to Claude chats"}`, 409)
+			return
+		}
+		c.Mode = body["mode"].(string)
 		f.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/agent"), strings.HasSuffix(path, "/revoke"):
@@ -867,11 +886,12 @@ func TestSlashMenuCompletesAndRuns(t *testing.T) {
 	app.editor.Clear()
 	app.menu = nil
 	typeText(app, ctx, "/")
-	if app.menu == nil || len(app.menu.Items) != len(Commands) {
+	// chat2 is a Claude chat, so the agent's /compact joins the built-ins.
+	if app.menu == nil || len(app.menu.Items) != len(Commands)+1 || app.menu.Items[len(Commands)].Label != "/compact [INSTRUCTIONS]" {
 		t.Fatalf("all commands: %+v", app.menu)
 	}
 	app.handleKey(ctx, Key{Kind: KeyUp})
-	if app.menu.Selected != len(Commands)-1 {
+	if app.menu.Selected != len(Commands) {
 		t.Fatalf("up wraps to the last item: %d", app.menu.Selected)
 	}
 	// Commands the chat offers join the menu after the built-ins.
@@ -1613,6 +1633,122 @@ func TestRenderToolEntries(t *testing.T) {
 	}
 }
 
+func permissionAsk(id, tool string, entry *Entry, extra map[string]any) Approval {
+	params := map[string]any{"tool": tool}
+	if entry != nil {
+		params["entry"] = entry
+	}
+	for k, v := range extra {
+		params[k] = v
+	}
+	return Approval{ID: id, Method: "item/tool/requestPermission", State: "pending", Params: params}
+}
+
+// A tool ask renders as the call (a command, a diff, a plan) with the keys
+// that answer it; typed answers reach the service as allow, allow always
+// with the remembered rule, or deny with the message; a plan's answers
+// carry the mode.
+func TestPermissionCardsAndAnswers(t *testing.T) {
+	c := &Chat{ID: "chat1", Title: "Claude", Provider: "claude", Status: "running", Mode: "ask"}
+	command := &Entry{ID: "toolu_1", Role: "activity", Text: "touch x", Tool: &Tool{Kind: "command", Name: "Bash", Status: "running"}}
+	edit := &Entry{ID: "toolu_2", Role: "activity", Text: "Write notes.md", Detail: "notes.md\ndiff --git a/notes.md b/notes.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes.md\n@@ -0,0 +1,1 @@\n+hello\n", Tool: &Tool{Kind: "edit", Name: "Write", Status: "running", Paths: []string{"notes.md"}}}
+	c.Approvals = []Approval{
+		permissionAsk("p1", "Bash", command, map[string]any{"always": "`touch` commands", "description": "Create x"}),
+		permissionAsk("p2", "Write", edit, map[string]any{"always": "file edits"}),
+		permissionAsk("p3", "ExitPlanMode", nil, map[string]any{"plan": "# Plan\n\n1. Write notes.md"}),
+	}
+	joined := plain(strings.Join(RenderApprovals(c, 80), "\n"))
+	for _, want := range []string{"run a command: Create x", "y = allow · a = allow always (`touch` commands) · n [message] = deny", "$ touch x", "Write notes.md", "+1 −0", "+hello", "Claude has a plan", "1. Write notes.md"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "diff --git") {
+		t.Fatalf("git header shown:\n%s", joined)
+	}
+	status := plain(StatusLine(c, nil, true, time.Unix(0, 0)))
+	if !strings.Contains(status, "claude · default · ask") {
+		t.Fatalf("status without the mode: %q", status)
+	}
+	if strings.Contains(plain(StatusLine(sampleChat(), nil, true, time.Unix(0, 0))), "auto") {
+		t.Fatal("a Codex chat shows no mode")
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard}
+	ctx := context.Background()
+	refresh := func() { s, _ := app.Client.State(ctx); app.state = s }
+	refresh()
+	app.submit(ctx, "a")
+	refresh()
+	s := app.state
+	if got := s.Chats[0].Approvals[0]; got.State != "allowed" || got.Params["always"] != true || !strings.Contains(app.notice, "allowed always: `touch` commands") {
+		t.Fatalf("allow always: %+v %q", got, app.notice)
+	}
+	app.submit(ctx, "n keep the notes in docs/")
+	refresh()
+	if got := app.state.Chats[0].Approvals[1]; got.State != "declined" || got.Params["message"] != "keep the notes in docs/" || got.Params["always"] != false {
+		t.Fatalf("deny with message: %+v", got)
+	}
+	app.submit(ctx, "a")
+	refresh()
+	if got := app.state.Chats[0].Approvals[2]; got.State != "allowed" || got.Params["mode"] != "ask" || got.Params["always"] != false {
+		t.Fatalf("plan approved into ask: %+v", got)
+	}
+	// With nothing pending, "a" is a message again.
+	app.submit(ctx, "a")
+	time.Sleep(100 * time.Millisecond)
+	refresh()
+	entries := app.state.Chats[0].Conversation.Entries
+	if entries[len(entries)-1].Text != "echo: a" {
+		t.Fatalf("message not sent: %+v", entries[len(entries)-1])
+	}
+}
+
+// Shift+Tab cycles a Claude chat's mode auto → ask → plan → auto; /mode
+// sets one by name; a Codex chat has none.
+func TestShiftTabCyclesMode(t *testing.T) {
+	claude := &Chat{ID: "c1", Title: "Claude", Provider: "claude", Status: "idle"}
+	codex := &Chat{ID: "c2", Title: "Codex", Provider: "codex", Status: "idle"}
+	f := newFakeServer(t, State{Chats: []*Chat{claude, codex}})
+	app := &App{Client: f.client(), ChatID: "c1", Output: io.Discard}
+	ctx := context.Background()
+	refresh := func() { s, _ := app.Client.State(ctx); app.state = s }
+	refresh()
+	for _, want := range []string{"ask", "plan", "auto"} {
+		app.handleKey(ctx, Key{Kind: KeyShiftTab})
+		refresh()
+		if got := app.state.Chats[0].Mode; got != want || !strings.Contains(app.notice, "permission mode "+want) {
+			t.Fatalf("cycle: mode %q notice %q, want %s", got, app.notice, want)
+		}
+	}
+	app.submit(ctx, "/mode plan")
+	refresh()
+	if app.state.Chats[0].Mode != "plan" {
+		t.Fatal(app.state.Chats[0].Mode)
+	}
+	app.submit(ctx, "/mode")
+	if !strings.Contains(app.notice, "permission mode plan") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/mode bypass")
+	if !strings.Contains(app.notice, "/mode auto|ask|plan") {
+		t.Fatal(app.notice)
+	}
+	if !strings.Contains(plain(StatusLine(app.state.Chats[0], nil, true, time.Unix(0, 0))), "· plan") {
+		t.Fatal("status line without the mode")
+	}
+	app.ChatID = "c2"
+	app.handleKey(ctx, Key{Kind: KeyShiftTab})
+	if !strings.Contains(app.notice, "Claude chats") {
+		t.Fatal(app.notice)
+	}
+	// The summary a watcher prints for a tool ask and a plan.
+	ask := permissionAsk("p", "Bash", &Entry{Text: "touch x", Tool: &Tool{Kind: "command"}}, nil)
+	if ask.Summary() != "run command: touch x" || permissionAsk("q", "ExitPlanMode", nil, nil).Summary() != "plan ready for review" {
+		t.Fatal(ask.Summary())
+	}
+}
+
 // A subagent's entries render under its card: a count line until
 // expanded, then indented with the subagent's type as the speaker; the
 // card shows how long the subagent took and its final text. A background
@@ -1753,5 +1889,151 @@ func TestLongPasteCollapsesToAPlaceholder(t *testing.T) {
 	}
 	if !LongPaste(strings.Repeat("a\n", 9)) || LongPaste(strings.Repeat("a\n", 8)) || !LongPaste(strings.Repeat("b", 1001)) || LongPaste(strings.Repeat("b", 1000)) {
 		t.Fatal("thresholds")
+	}
+}
+
+// A compaction entry is a divider: the trigger and the token counts, the
+// summary only when expanded, yellow while it runs and red when it
+// failed. The status line shows the context against the window, yellow
+// from 80 % and red from 95 %. /compact, with or without instructions,
+// goes to a Claude chat as the message; a Codex chat does not offer it.
+func TestCompactionDividerContextAndPassthrough(t *testing.T) {
+	c := &Chat{ID: "c", Title: "t", Provider: "claude", Status: "idle"}
+	c.Conversation.Entries = []Entry{
+		{ID: "k1", Role: "compaction", Text: "Compacting context…", IsStreaming: true, Compaction: &Compaction{Status: "running"}},
+		{ID: "k2", Role: "compaction", Text: "Context compacted", Detail: "Summary:\n1. Files read: a.txt (lima)", Compaction: &Compaction{Status: "completed", Trigger: "manual", PreTokens: 171238, PostTokens: 2194}},
+		{ID: "k3", Role: "compaction", Text: "Context compacted", Compaction: &Compaction{Status: "completed", Trigger: "auto", PreTokens: 184293}},
+		{ID: "k4", Role: "compaction", Text: "Compaction failed", Compaction: &Compaction{Status: "failed", Error: "API Error: refused"}},
+		{ID: "k5", Role: "compaction", Text: "Context compacted"},
+	}
+	collapsed := plain(strings.Join(RenderTranscript(c, 70, false), "\n"))
+	for _, want := range []string{"── Compacting context… ──", "── Context compacted · manual · 171k → 2.2k tokens ──", "── Context compacted · automatic · from 184k tokens ──", "── Compaction failed: API Error: refused ──", "── Context compacted ──"} {
+		if !strings.Contains(collapsed, want) {
+			t.Fatalf("missing %q in:\n%s", want, collapsed)
+		}
+	}
+	if strings.Contains(collapsed, "Files read") {
+		t.Fatalf("summary shown collapsed:\n%s", collapsed)
+	}
+	styled := strings.Join(RenderTranscript(c, 70, false), "\n")
+	if !strings.Contains(styled, yellow+"  ── Compacting") || !strings.Contains(styled, red+"  ── Compaction failed") {
+		t.Fatalf("colours:\n%s", styled)
+	}
+	if expanded := plain(strings.Join(RenderTranscript(c, 70, true), "\n")); !strings.Contains(expanded, "     1. Files read: a.txt (lima)") {
+		t.Fatalf("summary not expanded:\n%s", expanded)
+	}
+	md := ExportMarkdown(c, false, time.Unix(0, 0), func(float64) string { return "t" })
+	if !strings.Contains(md, "### Context compacted · manual · 171k → 2.2k tokens\n\n> Summary:\n> 1. Files read: a.txt (lima)") || !strings.Contains(md, "### Compaction failed: API Error: refused") {
+		t.Fatalf("export:\n%s", md)
+	}
+	// The context indicator.
+	now := time.Unix(1000, 0)
+	if s := plain(StatusLine(c, nil, true, now)); strings.Contains(s, "ctx") {
+		t.Fatalf("indicator without a context: %q", s)
+	}
+	c.Conversation.Context = &Context{Used: 42787, Window: 200000, Model: "claude-sonnet-5"}
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, "  ctx 43k/200k (21%)") || strings.Contains(s, yellow+"ctx") {
+		t.Fatalf("indicator: %q", s)
+	}
+	c.Conversation.Context.Used = 171238
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, yellow+"ctx 171k/200k (86%)"+reset) {
+		t.Fatalf("yellow indicator: %q", s)
+	}
+	c.Conversation.Context.Used = 191000
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, red+"ctx 191k/200k (96%)"+reset) {
+		t.Fatalf("red indicator: %q", s)
+	}
+	// With the agent's own threshold (the window less its buffer), the
+	// colours follow the way to that: 142k is 71 % of the window but 85 %
+	// of the way to a compaction at 167k.
+	c.Conversation.Context = &Context{Used: 142000, Window: 200000, Threshold: 167000}
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, yellow+"ctx 142k/200k (71%)"+reset) {
+		t.Fatalf("threshold indicator: %q", s)
+	}
+	c.Conversation.Context.Used = 160000
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, red+"ctx 160k/200k (80%)"+reset) {
+		t.Fatalf("threshold red indicator: %q", s)
+	}
+	c.Conversation.Context = &Context{Used: 42787}
+	if s := plain(StatusLine(c, nil, true, now)); !strings.Contains(s, "ctx 43k") || strings.Contains(s, "/") {
+		t.Fatalf("windowless indicator: %q", s)
+	}
+	// A /compact turn reports no tokens, only the compaction's cost.
+	c.Conversation.Turns = []Turn{{ID: "t", StartedAt: 990, EndedAt: 1017, Usage: &Usage{CostUSD: 0.16}}}
+	c.Conversation.Entries[1].TurnID = &c.Conversation.Turns[0].ID
+	if s := plain(StatusLine(c, nil, true, now)); strings.Contains(s, "0 tokens") || !strings.Contains(s, "27s · $0.16") {
+		t.Fatalf("compaction turn stats: %q", s)
+	}
+	var out bytes.Buffer
+	printEntry(&out, c, c.Conversation.Entries[1])
+	if out.String() != "  ── Context compacted · manual · 171k → 2.2k tokens ──\n" {
+		t.Fatalf("follow line: %q", out.String())
+	}
+	// /compact is sent as text to a Claude chat.
+	codex := sampleChat()
+	codex.Status = "idle"
+	f := newFakeServer(t, State{Chats: []*Chat{c, codex}})
+	app := &App{Client: f.client(), ChatID: "c", Output: io.Discard, Now: func() time.Time { return now }}
+	ctx := context.Background()
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/comp")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Label != "/compact [INSTRUCTIONS]" || !app.menu.Items[0].Run {
+		t.Fatalf("menu: %+v", app.menu)
+	}
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	time.Sleep(100 * time.Millisecond)
+	s, _ := app.Client.State(ctx)
+	entries := s.Chats[0].Conversation.Entries
+	if got := entries[len(entries)-1].Text; got != "echo: /compact" {
+		t.Fatalf("enter on /compact: %q (notice %q)", got, app.notice)
+	}
+	app.submit(ctx, "/compact keep the file list")
+	time.Sleep(100 * time.Millisecond)
+	s, _ = app.Client.State(ctx)
+	entries = s.Chats[0].Conversation.Entries
+	if got := entries[len(entries)-1].Text; got != "echo: /compact keep the file list" {
+		t.Fatalf("/compact with instructions: %q", got)
+	}
+	// Once the chat reports its list, the menu is that list, with the
+	// known argument and hint for /compact and the reported description
+	// for the workspace's own.
+	c.Commands = []AgentCommand{{Name: "compact"}, {Name: "probe-cmd", Description: "From the workspace"}}
+	app.state, _ = app.Client.State(ctx)
+	f.mu.Lock()
+	f.state.Chats[0].Commands = c.Commands
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	app.editor.Clear()
+	app.menu = nil
+	typeText(app, ctx, "/")
+	labels := []string{}
+	for _, it := range app.menu.Items {
+		labels = append(labels, it.Label+"|"+it.Hint)
+	}
+	if got := strings.Join(labels, "\n"); !strings.Contains(got, "/compact [INSTRUCTIONS]|replace the history with a summary; say what to keep") || !strings.Contains(got, "/probe-cmd|From the workspace") {
+		t.Fatalf("reported list: %s", got)
+	}
+	app.editor.Clear()
+	app.menu = nil
+	app.submit(ctx, "/probe-cmd now")
+	time.Sleep(100 * time.Millisecond)
+	s, _ = app.Client.State(ctx)
+	entries = s.Chats[0].Conversation.Entries
+	if got := entries[len(entries)-1].Text; got != "echo: /probe-cmd now" {
+		t.Fatalf("a reported command is sent as text: %q", got)
+	}
+	// A Codex chat has no /compact: the menu leaves it out and typing it
+	// is an unknown command.
+	app.ChatID = "chat1"
+	app.editor.Clear()
+	app.menu = nil
+	typeText(app, ctx, "/comp")
+	if app.menu != nil && len(app.menu.Items) > 0 {
+		t.Fatalf("codex menu offers: %+v", app.menu.Items)
+	}
+	app.editor.Clear()
+	app.submit(ctx, "/compact")
+	if !strings.Contains(app.notice, "unknown command /compact") {
+		t.Fatalf("codex notice: %q", app.notice)
 	}
 }

@@ -866,6 +866,12 @@ func TestTurnTimingAndTokenUsage(t *testing.T) {
 	if u := usage(); u.Input != 2500 || u.Cached != 1500 || u.Output != 700 {
 		t.Fatalf("usage %+v", u)
 	}
+	// The agent's context report is kept on the conversation as it stands.
+	w.send(agent.Frame{Method: "thread/context/updated", Params: map[string]any{"threadId": "thread-one", "turnId": "turn-one", "context": map[string]any{"used": 42787.0, "window": 200000.0, "model": "claude-sonnet-5"}}})
+	until(t, func() bool { c := e.Store.Snapshot().chat(id).Conversation.Context; return c != nil && c.Used == 42787 })
+	if c := e.Store.Snapshot().chat(id).Conversation.Context; c.Window != 200000 || c.Model != "claude-sonnet-5" {
+		t.Fatalf("context %+v", c)
+	}
 	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
 	c = e.Store.Snapshot().chat(id)
@@ -899,8 +905,8 @@ func TestTurnTimingAndTokenUsage(t *testing.T) {
 // settings (Claude's system/init); they are on the chat, in GET state as
 // chat.commands and chat.session, survive a restart, and follow the
 // next thread/started. A thread/started without them (Codex) leaves them
-// alone. A thread/compacted notification is a system line in the
-// transcript.
+// alone. A compaction item (item 8) is a compaction entry in the
+// transcript, its running state included.
 func TestSessionCommandsInStateAndCompactionNote(t *testing.T) {
 	e, w, _ := setup(t)
 	// The fake worker speaks the Codex protocol; the frames below are what
@@ -936,16 +942,21 @@ func TestSessionCommandsInStateAndCompactionNote(t *testing.T) {
 	if got.Session == nil || *got.Session != (Session{Model: "claude-opus-5[1m]", PermissionMode: "default", OutputStyle: "default"}) {
 		t.Fatalf("session %+v", got.Session)
 	}
-	w.send(agent.Frame{Method: "thread/compacted", Params: map[string]any{"threadId": "thread-one", "turnId": "turn-one", "trigger": "manual", "preTokens": 27230.0, "postTokens": 1850.0}})
+	w.send(agent.Frame{Method: "item/started", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "k1", "type": "compaction", "status": "running"}}})
 	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 2 })
-	if note := e.Store.Snapshot().chat(id).Conversation.Entries[1]; note.Role != "system" || note.Text != "Context compacted: 27k → 1.9k tokens." {
-		t.Fatalf("note %+v", note)
+	if note := e.Store.Snapshot().chat(id).Conversation.Entries[1]; note.Role != "compaction" || note.Text != "Compacting context…" || !note.IsStreaming {
+		t.Fatalf("running compaction %+v", note)
+	}
+	w.send(agent.Frame{Method: "item/completed", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "k1", "type": "compaction", "status": "completed", "trigger": "manual", "preTokens": 27230.0, "postTokens": 1850.0, "summary": "This session is being continued…"}}})
+	until(t, func() bool { return !e.Store.Snapshot().chat(id).Conversation.Entries[1].IsStreaming })
+	if note := e.Store.Snapshot().chat(id).Conversation.Entries[1]; note.Role != "compaction" || note.Text != "Context compacted" || note.Detail != "This session is being continued…" || note.Compaction == nil || note.Compaction.Trigger != "manual" || note.Compaction.PreTokens != 27230 || note.Compaction.PostTokens != 1850 {
+		t.Fatalf("note %+v %+v", note, note.Compaction)
 	}
 	// Codex's thread/started, and a later Claude init with fewer commands.
 	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one"}}})
-	w.send(agent.Frame{Method: "thread/compacted", Params: map[string]any{"threadId": "thread-one", "turnId": "turn-one", "trigger": "auto"}})
+	w.send(agent.Frame{Method: "item/completed", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "k2", "type": "compaction", "status": "completed", "trigger": "auto"}}})
 	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 3 })
-	if c := e.Store.Snapshot().chat(id); len(c.Commands) != 2 || c.Session == nil || c.Conversation.Entries[2].Text != "Context compacted automatically." {
+	if c := e.Store.Snapshot().chat(id); len(c.Commands) != 2 || c.Session == nil || c.Conversation.Entries[2].Role != "compaction" || c.Conversation.Entries[2].Compaction.Trigger != "auto" {
 		t.Fatalf("unchanged by a bare thread/started: %+v", c)
 	}
 	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one", "commands": []any{map[string]any{"name": "init"}}}}})

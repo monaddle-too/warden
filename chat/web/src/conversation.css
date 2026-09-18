@@ -536,6 +536,40 @@
   justify-content: flex-end;
   gap: 8px;
 }
+/* A tool permission ask: the command or diff as the transcript shows it,
+   an optional message to the model, and its answers; a plan renders as
+   markdown. */
+.permission-card .permission-command {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.permission-card .permission-diff {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.permission-card .plan-body {
+  max-height: 480px;
+  overflow: auto;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 14px;
+}
+.permission-card .permission-message input {
+  width: 100%;
+}
+.permission-card .approval-actions {
+  flex-wrap: wrap;
+}
+.notice-entry {
+  font-style: italic;
+}
 .approval-card [role="alert"] {
   margin: 0;
 }
@@ -604,6 +638,28 @@
   color: var(--text);
 }
 .composer-model select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* The permission mode picker sits beside the model on Claude chats. */
+.composer-mode select {
+  width: auto;
+  height: 30px;
+  min-height: 0;
+  padding: 0 26px 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background-color: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.composer-mode select:hover:not(:disabled) {
+  background-color: var(--surface-3);
+  color: var(--text);
+}
+.composer-mode select:disabled {
   opacity: 0.6;
   cursor: default;
 }
@@ -1155,4 +1211,96 @@ button.attachment-chip {
 }
 .todo-active {
   font-size: 12px;
+/* The context meter in the composer footer: a small bar and "42k / 200k",
+   amber from 80 % of the window, red from 95 %. */
+.context-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: default;
+}
+.context-bar {
+  display: inline-block;
+  width: 40px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.context-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--muted);
+  transition: width 0.3s;
+}
+.context-meter.warn {
+  color: var(--accent-text);
+}
+.context-meter.warn .context-bar > span {
+  background: var(--accent);
+}
+.context-meter.high {
+  color: var(--danger);
+}
+.context-meter.high .context-bar > span {
+  background: var(--danger);
+}
+
+/* The divider where the agent compacted its context. */
+.compaction-entry {
+  align-self: stretch;
+  font-size: 12px;
+  color: var(--muted);
+}
+.compaction-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.compaction-line::before,
+.compaction-line::after {
+  content: "";
+  flex: 1;
+  border-top: 1px dashed var(--line-strong);
+}
+.compaction-entry.running .compaction-line span {
+  color: var(--accent-text);
+}
+.compaction-entry.failed .compaction-line span {
+  color: var(--danger);
+}
+.compaction-summary {
+  max-width: 720px;
+  margin: 6px auto 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.compaction-summary > summary {
+  cursor: pointer;
+  text-align: center;
+  color: var(--muted);
+}
+.compaction-summary > summary:hover {
+  color: var(--text);
+}
+.compaction-summary[open] > summary {
+  margin-bottom: 6px;
+}
+.compaction-entry + .turn-stats.block {
+  margin-top: -4px;
+  align-self: center;
+}
+.context-bar {
+  position: relative;
+}
+.context-threshold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-strong);
 }

@@ -226,6 +226,13 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 			}
 		case "system":
 			out = append(out, wrap(text, width, red+"  ! "+reset, "    ")...)
+		case "notice":
+			out = append(out, wrap(dim+text+reset, width, dim+"  · ", "    ")...)
+		case "compaction":
+			// The agent compacted its context here: a divider with the
+			// trigger and the token counts, the summary it continues from
+			// when expanded; the error when it failed.
+			out = append(out, renderCompaction(e, width, expanded)...)
 		default:
 			out = append(out, wrap(text, width, dim+"  "+e.Role+": "+reset, "    ")...)
 		}
@@ -589,6 +596,10 @@ func RenderApprovals(c *Chat, width int) []string {
 	}
 	var out []string
 	for i, a := range pending {
+		if p := a.Permission(); p != nil {
+			out = append(out, renderPermission(a, p, width, i > 0)...)
+			continue
+		}
 		head := "approval"
 		body := ""
 		switch {
@@ -641,6 +652,73 @@ func RenderApprovals(c *Chat, width int) []string {
 	return out
 }
 
+// renderPermission lays out a tool ask: the call as the transcript shows
+// it (a command, a diff's lines, a read's path) or the plan, and the keys
+// that answer it.
+func renderPermission(a Approval, p *Permission, width int, later bool) []string {
+	head, hint := "", ""
+	var body []string
+	e := p.Entry
+	switch {
+	case p.IsPlan():
+		head = "Claude has a plan"
+		hint = "y = approve (auto) · a = approve, ask before edits · n [feedback] = keep planning"
+		body = renderMarkdown(p.Plan, width-4, "", "")
+	case e != nil && e.Tool != nil && e.Tool.Kind == "command":
+		head = "run a command"
+		if p.Description != "" {
+			head += ": " + p.Description
+		}
+		for _, l := range strings.Split(strings.TrimRight(e.Text, "\n"), "\n") {
+			body = append(body, "$ "+l)
+		}
+	case e != nil && e.Tool != nil && e.Tool.Kind == "edit":
+		head = e.Text
+		lines, adds, dels := diffLines(e.Detail)
+		if len(lines) > 0 {
+			body = append(body, fmt.Sprintf("+%d −%d", adds, dels))
+			body = append(body, lines...)
+		}
+	case e != nil:
+		head = e.Text
+		if e.Tool != nil && len(e.Tool.Input) > 0 {
+			body = inputLines(e.Tool.Input)
+		}
+	default:
+		head = "use " + p.Tool
+	}
+	if hint == "" {
+		hint = "y = allow · a = allow always"
+		if p.Always != "" {
+			hint += " (" + p.Always + ")"
+		}
+		hint += " · n [message] = deny"
+	}
+	if later {
+		hint = "answered after the one above"
+	}
+	out := []string{bold + yellow + "⚠ " + sanitize(head) + reset + dim + "   " + hint + reset}
+	for _, l := range body {
+		l = sanitize(l)
+		if l == "" {
+			continue
+		}
+		color := ""
+		switch {
+		case strings.HasPrefix(l, "+"):
+			color = green
+		case strings.HasPrefix(l, "-"):
+			color = red
+		case strings.HasPrefix(l, "@@"):
+			color = cyan
+		}
+		for _, w := range wrap(l, width, color+"    │ ", color+"    │ ") {
+			out = append(out, w+reset)
+		}
+	}
+	return out
+}
+
 // ChatLine is one row of a chat listing.
 func ChatLine(i int, c *Chat) string {
 	status := c.Status
@@ -655,4 +733,68 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string([]rune(s)[:n-1]) + "…"
+}
+
+// CompactionText is the divider's line: "Context compacted · manual ·
+// 171k → 2.2k tokens", "Compacting context…" while it runs, or the
+// failure with its error (context.ts says the same on the web).
+func CompactionText(e Entry) string {
+	c := e.Compaction
+	if c == nil {
+		if e.Text != "" {
+			return e.Text
+		}
+		return "Context compacted"
+	}
+	switch c.Status {
+	case "running":
+		return "Compacting context…"
+	case "failed":
+		if c.Error != "" {
+			return "Compaction failed: " + c.Error
+		}
+		return "Compaction failed"
+	}
+	var parts []string
+	switch c.Trigger {
+	case "manual":
+		parts = append(parts, "manual")
+	case "auto":
+		parts = append(parts, "automatic")
+	case "":
+	default:
+		parts = append(parts, c.Trigger)
+	}
+	switch {
+	case c.PreTokens > 0 && c.PostTokens > 0:
+		parts = append(parts, FormatTokens(c.PreTokens)+" → "+FormatTokens(c.PostTokens)+" tokens")
+	case c.PreTokens > 0:
+		parts = append(parts, "from "+FormatTokens(c.PreTokens)+" tokens")
+	}
+	if len(parts) == 0 {
+		return "Context compacted"
+	}
+	return "Context compacted · " + strings.Join(parts, " · ")
+}
+
+func renderCompaction(e Entry, width int, expanded bool) []string {
+	text := sanitize(CompactionText(e))
+	colour := dim
+	if e.Compaction != nil {
+		switch e.Compaction.Status {
+		case "running":
+			colour = yellow
+		case "failed":
+			colour = red
+		}
+	} else if e.IsStreaming {
+		colour = yellow
+	}
+	rule := "──"
+	out := wrap(text, width, colour+"  "+rule+" ", "     ")
+	out[len(out)-1] += " " + rule + reset
+	if expanded && strings.TrimSpace(e.Detail) != "" && (e.Compaction == nil || e.Compaction.Status == "completed") {
+		out = append(out, wrap(dim+sanitize(e.Detail)+reset, width, "     ", "     ")...)
+	}
+	return out
 }

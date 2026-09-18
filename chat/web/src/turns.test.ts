@@ -136,5 +136,15 @@ describe("turn figures", () => {
         usage: { ...usage, costUSD: 0 },
       }),
     ).toBe("13k tokens (10k in, 3.2k out)");
+    // A /compact turn reports no tokens, only the compaction's cost.
+    expect(
+      footerText({
+        turnID: "x",
+        active: false,
+        start: 0,
+        end: 27,
+        usage: { input: 0, cached: 0, output: 0, total: 0, costUSD: 0.16 },
+      }),
+    ).toBe("27s · $0.16");
   });
 });
