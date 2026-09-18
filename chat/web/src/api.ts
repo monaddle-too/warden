@@ -7,6 +7,7 @@ import type {
   SessionChanges,
   UndoResult,
 } from "./rewind";
+import { failureMessage } from "./failure";
 import type { Attachment, Entry, State } from "./types";
 const key = "warden-chat-session";
 let token = "";
@@ -42,12 +43,9 @@ const credentials = () => ({
   ...(remoteCSRF ? { "X-Warden-CSRF": remoteCSRF } : {}),
 });
 async function failure(response: Response) {
-  const text = await response.text();
-  try {
-    return new Error(JSON.parse(text).error || text);
-  } catch {
-    return new Error(text);
-  }
+  return new Error(
+    failureMessage(response.status, response.statusText, await response.text()),
+  );
 }
 export async function api<T = unknown>(
   path: string,

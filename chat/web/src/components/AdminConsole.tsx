@@ -162,7 +162,12 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
           : "Sandboxes are back to the restricted destination list.",
       );
     } catch (e) {
-      setError(String(e));
+      // The request may have failed on its way in (a redeploy, say): the
+      // policy service's own mode is the truth, not the choice just made.
+      setError(
+        `Network access was not changed: ${e instanceof Error ? e.message : String(e)}. Try again.`,
+      );
+      await api<Egress>("sharing/egress").then(setEgress, () => undefined);
     } finally {
       setBusy(false);
     }
