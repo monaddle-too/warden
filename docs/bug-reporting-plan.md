@@ -261,5 +261,24 @@ Client track (`.local/warden-bugs-client`):
   and edge (handler, run loop); `POST chats/{id}/bug` and `POST bug-test`
   (owner-only at the edge); composer `/bug`, `/test bugreporting` with a
   notice line; TUI `/bug`, `/test bugreporting`, `/help`. Verified: `go
-  test ./...` (kube alone), `pnpm build && pnpm test`. Next: live test on
-  a cloned home with a local receiver, merge, deploy-local.
+  test ./...` (kube alone), `pnpm build && pnpm test`.
+- 2026-09-18 (client, live on a cloned home `~/.warden-bugs` with a
+  loopback receiver answering `202 {"id"}`): `warden install
+  --bug-reports=no` writes `reporting.enabled=false`; on a pty the question
+  is asked once, `y` turns it on, a re-run keeps it without asking;
+  `warden bugs status|on|off`, a non-loopback http URL refused. `/test
+  bugreporting` from the web composer → notice in the composer → the
+  detached launcher presented the page (URL in `warden.log`, browser
+  opened, desktop notified): every section present; Send with an edited
+  description → the receiver logged the JSON (2.5 KiB, `<email>`,
+  `token=<token>`, home as `~`, both log tails) and the page showed the
+  id; a second one with Don't send → draft deleted, nothing received.
+  `/bug` and `/test bugreporting` from the TUI → drafts with ids only
+  (no title, no message), presented one after the other. `kill -9` of
+  the runner → `service-exit` draft (signal: killed, the runner's log
+  tail + the launcher's) presented before the launcher exited; a seeded
+  log line came out as `contact <email>, Authorization: <token>, bare
+  <secret>` (the owner capability). `warden bugs test` with Warden
+  stopped → in-process; SIGTERM → "interrupted; the draft stays";
+  `warden bugs pending` listed and re-offered it → sent. Home torn down.
+  Next: merge, deploy-local.
