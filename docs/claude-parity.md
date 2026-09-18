@@ -436,6 +436,123 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [ ] 14 Project MCP, OAuth, plugins.
 - [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
 
+### Round 2 C: live activity, nesting-aware search and export, TUI search across chats
+
+Branch `feat/parity-r2-c-activity-search`, worktree
+`.local/warden-parity-r2-c-activity-search`, from main adbf4f5
+(2026-09-18). Live-tested on a cloned home (`~/.warden-p15`) against the
+guest's CLI 2.1.272.
+
+What the CLI gives for a subagent's progress (2.1.272, live): one
+`system/task_progress` frame per step of a foreground subagent,
+`{task_id, tool_use_id, description, subagent_type, usage: {total_tokens,
+tool_uses, duration_ms}, last_tool_name}` — the counts sit under `usage`
+(item 2's note had them at the top level, from 2.1.275's docs), and
+`description` is the subagent's current step in the CLI's own words
+("Reading hello.txt", "Running Search current directory for
+zebrafish-quokka"). A `task_updated` (`patch.status`, `end_time`) precedes
+the notification; ignored. Foreground Bash gets `task_started` /
+`task_notification` too (no progress).
+
+Decisions:
+
+1. **R2.7** The status is a pure derivation from the entries, the same on
+   both surfaces: `activity.ts` (`activityLabel`) and `tui/activity.go`
+   (`ActivityLabel`) read the newest entry still running — a command
+   ("Running go test ./...", first line, 48 chars), a file change
+   ("Editing engine.go" / "Writing hello.txt" / "Editing 3 files"), a read,
+   a search ("Searching for x", "Listing dir"), a web search, a fetch
+   (its host), an MCP call ("Calling name"), a subagent ("Explore agent:
+   3 tool calls · Reading hello.txt": type, the larger of its child steps
+   and the CLI's count, the CLI's step), any other tool by its title; the
+   model's thinking and a compaction as before; "" → "Agent is working"
+   (was "Agent is running"). A subagent's running child names the
+   outermost running Agent card. A `!` command (a sender) and a
+   background command are skipped: not what the agent does now. The
+   thirty shared cases live in `tui/testdata/activity.json`, run by
+   `activity.test.ts` and `tui/activity_test.go`. `chatStatusLabel`
+   (`stages.ts`) serves the web status line and the sidebar dot's title;
+   `StatusLine` (`tui/status.go`) puts the words in place of "running".
+2. `task_progress` rides on the Agent call's item as `progress`
+   (`conversation.Progress`: `activity`, `toolCalls`, `lastTool`,
+   `durationMS`, `tokens`), re-sent as `item/started` so `Upsert` updates
+   the card in place; the card's summary and the nested transcript's
+   header show the step while the subagent runs, and the count when it
+   runs ahead of the child entries.
+3. **R2.8** The web find bar keeps searching the rendered text (the
+   highlights need real ranges) but first opens what hides a match:
+   `search.ts` `entryHits` says which entries match (text, or a step's /
+   aside's detail — nested and `!` cards included) and `FindBar.tsx`
+   `revealHits` opens their `<details>` ancestors (group, card, subagent
+   transcript) and, when the entry's visible text still has no match,
+   clicks its own "+N lines" fold (never a nested entry's, never the
+   prompt/input folds), once per entry per query; a palette landing waits
+   for that pass. This is what browsers do for `<details>` on
+   find-in-page. The palette's rows say "Tool output · in Explore agent"
+   (`Hit.parent`) and "Command by You".
+4. Export (`export.ts` `exportTree`, `tui/export.go` `exportTree`): a
+   subagent's entries go under its card — quoted (`> `) in markdown, a
+   nested subagent quoted twice, before the card's result; `children` in
+   JSON (the TUI splices `children` into the service's raw record so
+   unknown fields survive); a card left out (no steps) takes its subagent
+   with it; a `!` card is "### Command by You — cmd" and stays in the
+   messages-only export (it is the person's, not the agent's working).
+5. TUI `/find` searches the rendered lines as before; when they lack the
+   term but the entries have it, it shows the steps (Ctrl+O) and/or
+   expands the transcript (Tab), says so in the notice, and scrolls.
+6. **R2.9** `GET chats/search?q=&limit=` (`chats/search.go`) searches the
+   store: every chat (archived too), titles first then entries newest
+   chat and newest entry first, one hit per entry, case-insensitive with
+   whitespace folded (no accent folding server-side; the web palette
+   keeps its own client-side search), default 40 hits, at most 200, with
+   `more`; hits carry the entry's role, sender, `parentID` and a snippet
+   (`before`/`match`/`after`, as `search.ts`'s). The TUI's `/search TEXT`
+   lists the hits as a numbered menu (`Insert: /search N`, Enter runs
+   it); `/search N` opens the chat and scrolls to the entry's card
+   (`entryOffset` renders the transcript up to it), expanding when the
+   entry is nested or the match is in a fold.
+7. While the view is scrolled the TUI's notice goes above the status line
+   (`extraLines`) instead of under the transcript's tail, where `/find`
+   and `/search` jumps used to hide their own message; `find` and the
+   jumps measure the transcript without the notice (`layout`) and size
+   the scroll by the next frame's rows (`viewSize`, `scrollTo`).
+
+Verified: `go vet`, `gofmt -l`, `go test ./...`, `pnpm build`, `pnpm test`
+(228 tests); live on `~/.warden-p15` with a Claude chat: a turn running
+`sleep`, Write/Edit, Read and a foreground Explore subagent — the web
+status line and sidebar title went "Sending your message" → "Waiting for
+the first reply" → "Running sleep 20 && echo slept" → "Agent is working"
+→ "Explore agent: starting" → "Explore agent: 1 tool call · Running Sleep
+for 15 seconds" → "… 2 tool calls · Running Search current directory for
+zebrafish-…" → "… 3 tool calls · Reading notes.txt" → "Agent is idle"
+(the edit and read are sub-second on this workspace and were not caught
+by a 250 ms poll), the Agent card "1 tool call · 4s · Running Sleep for
+15 seconds"; the TUI status "⠼ 6s Running sleep 25 && echo slept", "30s
+Explore agent: 1 tool call · Running sleep 12", "43s Explore agent: 2
+tool calls · Reading notes.txt". ⌘F "quokka" (only in the subagents'
+transcripts and the prompts) opened the three Explore cards that held it
+and left the fourth closed, 16 matches, match 5 the nested grep step;
+⌘F "axolotl" (only past a `!` card's fold) unfolded that card alone; ⌘K
+"zebrafish" listed "Agent step · in Explore agent" rows and opening one
+landed on it (14 of 16). TUI in a pty: `/find quokka` found it 107 lines
+up, `/find grep exit` (a subagent's child only) reported "(output
+expanded)" with the child's line heading the view; `/export md all`
+wrote the Agent cards with their steps quoted under them and two
+"### Command by You" cards; `/search zebrafish` listed 9 numbered hits
+("agent step in a subagent · 06:26 · grep -r …"), ↓ Enter put the card
+at the top with the notice above the status, `/search first message fix`
+then `/search 1` opened the other chat.
+
+Left: the web's ⌘K palette still searches the browser's state rather
+than the new route (it has every transcript and folds accents; a
+deployment with many chats would want the route); a `!` card's output in
+the web export is the same fence as a tool step's (no attribution inside
+the fence); `activity` shows nothing for a streaming reply beyond
+"Agent is working".
+
+Progress: started 2026-09-18; implemented and live-verified 2026-09-18
+(c661a58); merge sha recorded under "## Round 2" once landed.
+
 ### Item 15: the long tail
 
 Branch `feat/parity-15-long-tail`, worktree `.local/warden-parity-15-long-tail`,
