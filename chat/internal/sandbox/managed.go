@@ -112,7 +112,7 @@ func (w *Worker) defaultsLocked() {
 		w.Runtime = &sbxRuntime{w}
 	}
 	if w.IdleTimeout <= 0 {
-		w.IdleTimeout = 15 * time.Minute
+		w.IdleTimeout = 30 * time.Minute
 	}
 	if w.MaxResident <= 0 {
 		w.MaxResident = 3
@@ -731,7 +731,16 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	case "cancel":
 		return Response{}, w.cancelLocked(r)
 	case "activity":
-		s.LastActivity = w.now()
+		// The chat's own report of activity (a turn's end as the chat
+		// service sees it, the person's "Keep workspace running"): the idle
+		// window counts from it. The clock never moves back.
+		at := w.now()
+		if !r.At.IsZero() && r.At.Before(at) {
+			at = r.At
+		}
+		if at.After(s.LastActivity) {
+			s.LastActivity = at
+		}
 		return w.statusLocked(r), w.saveManagedLocked()
 	case "stop":
 		if s.Active != nil {
@@ -1346,7 +1355,10 @@ func (w *Worker) finishManagedRun(r Request, grant GrantContext, enforcementFail
 	}
 	explicitCancel := w.wasExplicitlyCancelled(r)
 	s.Active = nil
-	s.LastActivity = w.now()
+	// The stream's end is not activity: a resident session is released
+	// after sitting idle, and the idle window counts from the last turn's
+	// end the chat service reported (the activity op) or the last user
+	// action, not from the release.
 	if explicitCancel || endErr != nil || enforcementFailed {
 		// A failed/expired broker request cannot consume the VM-stop deadline.
 		stopCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)

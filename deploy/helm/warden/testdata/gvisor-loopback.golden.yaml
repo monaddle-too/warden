@@ -645,7 +645,7 @@ data:
         "maxMemoryMB": 8192,
         "maxRunning": 2,
         "memoryMB": 1536,
-        "stopAfterIdleMinutes": 15,
+        "stopAfterIdleMinutes": 30,
         "warmSpares": 1
       },
       "services": {
@@ -1274,7 +1274,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: policy
       annotations:
-        checksum/config: 293d056871fe6aacc2620e895fcc74d67b55c29388ab58e90dd8bf3d105734c0
+        checksum/config: eb85df125db2966870c9d917005fbbd4056b35591d1a252e80045f6ce6739fe4
     spec:
       serviceAccountName: warden-policy
       automountServiceAccountToken: true
@@ -1409,7 +1409,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: runner
       annotations:
-        checksum/config: 293d056871fe6aacc2620e895fcc74d67b55c29388ab58e90dd8bf3d105734c0
+        checksum/config: eb85df125db2966870c9d917005fbbd4056b35591d1a252e80045f6ce6739fe4
     spec:
       serviceAccountName: warden-runner
       automountServiceAccountToken: true
@@ -1544,7 +1544,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: chat
       annotations:
-        checksum/config: 293d056871fe6aacc2620e895fcc74d67b55c29388ab58e90dd8bf3d105734c0
+        checksum/config: eb85df125db2966870c9d917005fbbd4056b35591d1a252e80045f6ce6739fe4
     spec:
       serviceAccountName: warden-chat
       automountServiceAccountToken: false
@@ -1676,7 +1676,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: edge
       annotations:
-        checksum/config: 293d056871fe6aacc2620e895fcc74d67b55c29388ab58e90dd8bf3d105734c0
+        checksum/config: eb85df125db2966870c9d917005fbbd4056b35591d1a252e80045f6ce6739fe4
     spec:
       serviceAccountName: warden-edge
       automountServiceAccountToken: false

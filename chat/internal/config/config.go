@@ -384,7 +384,7 @@ func Defaults(state string) Config {
 	c.Paths.State = state
 	c.SBX.PrivateHome = filepath.Join(state, "sbx")
 	c.SBX.InspectionCertMaxAgeDays = 365
-	c.Sandboxes = Sandboxes{MemoryMB: 1536, CPUs: 1, MaxRunning: 2, WarmSpares: 1, StopAfterIdleMinutes: 15, KeepStopped: 32, Egress: EgressRestricted}
+	c.Sandboxes = Sandboxes{MemoryMB: 1536, CPUs: 1, MaxRunning: 2, WarmSpares: 1, StopAfterIdleMinutes: 30, KeepStopped: 32, Egress: EgressRestricted}
 	c.Chat.Listen = "127.0.0.1:18780"
 	c.Previews = Previews{Mode: PreviewLoopback, HostSuffix: "localhost", EdgeListen: "127.0.0.1:18781"}
 	c.Auth = Auth{Mode: AuthOwner, PublicURL: "http://" + c.Previews.EdgeListen}

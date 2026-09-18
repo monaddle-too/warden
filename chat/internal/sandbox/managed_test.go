@@ -905,7 +905,7 @@ func TestUnpublishedPreviewAllowsIdleStop(t *testing.T) {
 	if _, err := w.dispatch(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(16 * time.Minute)
+	now = now.Add(31 * time.Minute) // past the default idle window
 	if err := w.SweepIdle(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -962,6 +962,91 @@ func TestResidentSessionSurvivesAgentFinishAndReleasesOnStop(t *testing.T) {
 	}
 	if !released {
 		t.Fatal("residency session leaked")
+	}
+}
+
+// The idle window counts from the last chat activity: an activity report
+// carries the time of the turn's end it reports (never moving the clock
+// back, never ahead of now), and the run's stream ending — a resident
+// session released after sitting idle — is not activity, so the sweep
+// stops the sandbox IdleTimeout after the last reported turn's end, not
+// after the release.
+func TestIdleWindowCountsFromReportedActivityNotTheStreamEnd(t *testing.T) {
+	w, _, _, r := managedFixture(t)
+	w.IdleTimeout = 30 * time.Minute
+	start := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	now := start
+	w.Now = func() time.Time { return now }
+	prepareFixture(t, w, r)
+	activity := func() time.Time {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.managed.Sandboxes[r.SandboxID].LastActivity
+	}
+	if !activity().Equal(start) {
+		t.Fatalf("activity after prepare: %v", activity())
+	}
+	now = start.Add(20 * time.Minute)
+	report := func(at time.Time) {
+		t.Helper()
+		q := r
+		q.Operation = "activity"
+		q.At = at
+		if _, err := w.dispatch(context.Background(), q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report(start.Add(5 * time.Minute)) // the turn ended at +5, reported late
+	if !activity().Equal(start.Add(5 * time.Minute)) {
+		t.Fatalf("activity after a late report: %v", activity())
+	}
+	report(start.Add(2 * time.Minute)) // an older report never moves the clock back
+	if !activity().Equal(start.Add(5 * time.Minute)) {
+		t.Fatalf("activity moved back: %v", activity())
+	}
+	report(start.Add(time.Hour)) // a report from the future counts as now
+	if !activity().Equal(now) {
+		t.Fatalf("activity ahead of now: %v", activity())
+	}
+	report(time.Time{}) // no time: now (the chat menu's "Keep workspace running")
+	now = start.Add(21 * time.Minute)
+	report(time.Time{})
+	if !activity().Equal(now) {
+		t.Fatalf("activity without a time: %v", activity())
+	}
+	// The session is released ten minutes later: the stream ends, the run
+	// with it, and the clock stays at the last report.
+	w.mu.Lock()
+	grant := w.managed.Sandboxes[r.SandboxID].Grant
+	w.mu.Unlock()
+	now = start.Add(31 * time.Minute)
+	w.finishManagedRun(r, grant, false)
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	state, active := s.State, s.Active
+	w.mu.Unlock()
+	if state != "running" || active != nil || !activity().Equal(start.Add(21*time.Minute)) {
+		t.Fatalf("after the stream end: state=%s active=%v activity=%v", state, active != nil, activity())
+	}
+	now = start.Add(50 * time.Minute)
+	if err := w.SweepIdle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	state = w.managed.Sandboxes[r.SandboxID].State
+	w.mu.Unlock()
+	if state != "running" {
+		t.Fatalf("stopped before the window from the last turn passed: %s", state)
+	}
+	now = start.Add(52 * time.Minute)
+	if err := w.SweepIdle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	state = w.managed.Sandboxes[r.SandboxID].State
+	w.mu.Unlock()
+	if state != "stopped" {
+		t.Fatalf("not stopped after the window: %s", state)
 	}
 }
 

@@ -327,9 +327,11 @@ chats the Claude executable to `/tmp/warden-claude` (once per guest, again
 only if the host file changes). It also installs the gateway CA and applies
 the sandbox's deny-all policy. Expect the first turn of a new sandbox to
 take noticeably longer than later ones; the live run did not time it.
-Sandboxes stop after 15 minutes without user activity
-(`sandboxes.stopAfterIdleMinutes`) unless they hold a published preview;
-files and chat history survive a stop, and the next message resumes.
+Sandboxes stop 30 minutes after the last chat activity — the agent's
+last reply, a message, a command, a preview — (`sandboxes.stopAfterIdleMinutes`)
+unless they hold a published preview; the idle agent session's release
+after ten minutes does not count. Files and chat history survive a stop,
+and the next message resumes.
 
 ## 7. Previews
 
@@ -546,7 +548,7 @@ deleted.
   2.1.272, the template digests. A new Warden release moves them; the
   installer never floats versions and refuses another release's state
   directory without `--upgrade`.
-- Idle sandboxes stop after 15 minutes; the sizing in `warden.json`
+- Idle sandboxes stop 30 minutes after the last chat activity; the sizing in `warden.json`
   (`sandboxes.*`, validated on load: memoryMB 512–65536,
   cpus 0.25–64, maxRunning ≥ 1; `maxMemoryMB`/`maxCPUs` cap what any one
   workspace may be given, 0 derives them from the host; see "Workspace

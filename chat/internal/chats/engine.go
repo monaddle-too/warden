@@ -1147,6 +1147,7 @@ func (e *Engine) run(parent context.Context, id string) {
 			if !a.resident {
 				// The run ends with the turn; a chat still at the default
 				// title is named from the transcript alone (title.go).
+				e.reportActivity(parent, id)
 				e.autoTitle(parent, id, nil)
 				return
 			}
@@ -1294,6 +1295,7 @@ func (e *Engine) settleTurn(parent context.Context, id string, a *activeRun) {
 	for _, requestID := range sharingResults {
 		_, _ = e.sharingCall(parent, "ack", map[string]any{"id": requestID})
 	}
+	e.reportActivity(parent, id)
 	_ = e.Store.update(func(st *State) error {
 		c := st.chat(id)
 		if c == nil || c.RunID != a.runID {
@@ -1321,6 +1323,29 @@ func (e *Engine) settleTurn(parent context.Context, id string, a *activeRun) {
 		}
 		return nil
 	})
+}
+
+// reportActivity tells the runner the chat was active now: a turn just
+// ended. The workspace's idle window counts from the last such report or
+// the last user action (a message's checkpoint, a command, a preview), not
+// from the moment the idle session is released (sandbox/managed.go
+// SweepIdle), so a workspace stays up for the configured time after the
+// agent's last reply. The report carries its time and goes in the
+// background: the runner serialises it behind a creation in flight, which
+// can take minutes on a cluster, and the run must not wait for that.
+func (e *Engine) reportActivity(ctx context.Context, id string) {
+	c := e.Store.Snapshot().chat(id)
+	if c == nil {
+		return
+	}
+	r := request(c, "activity")
+	r.At = e.now()
+	go func() {
+		defer e.Bugs.Recover("activity report")
+		callCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		_, _ = e.Worker.Call(callCtx, r)
+	}()
 }
 
 // awaitMessage keeps a resident session open until the chat's next message

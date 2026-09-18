@@ -109,6 +109,11 @@ type Request struct {
 	// person, assembled by the chat service); "" appends nothing. On a
 	// oneshot it is the system prompt the one-shot CLI runs with.
 	Instructions string `json:"instructions,omitempty"`
+	// At, on an activity report, is when the chat activity it reports
+	// happened (the chat service reports a turn's end as it happens); zero
+	// means now. The workspace's idle window counts from the latest
+	// activity the runner knows of (managed.go SweepIdle).
+	At time.Time `json:"at,omitzero"`
 	// Scope says which memory location a memory-write's Directory names:
 	// "workspace" (CLAUDE.md, AGENTS.md, .claude/rules) or "auto" (the
 	// CLI's auto-memory directory); memory-list takes the auto-memory
