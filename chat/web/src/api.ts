@@ -4,6 +4,7 @@ import type {
   RewindResult,
   RewindWhat,
   SessionChanges,
+  UndoResult,
 } from "./rewind";
 import type { Attachment, Entry, State } from "./types";
 const key = "warden-chat-session";
@@ -240,6 +241,34 @@ export function withdrawMessage(chatID: string, id: string): Promise<Entry> {
 /* Lets a held queue go: the queued messages send in order. */
 export function sendQueued(chatID: string): Promise<unknown> {
   return api(`chats/${encodeURIComponent(chatID)}/send-queued`, {});
+}
+
+/* A queued message's text (and, when given, attachment set) replaced in
+   place: it keeps its slot in the queue and its ID. Refused once the
+   agent has it (queue.ts). */
+export function editQueued(
+  chatID: string,
+  id: string,
+  text: string,
+  attachments?: string[],
+): Promise<Entry> {
+  return api<Entry>(
+    `chats/${encodeURIComponent(chatID)}/queued/${encodeURIComponent(id)}/edit`,
+    attachments ? { text, attachments } : { text },
+  );
+}
+
+/* What the rewind marked by `id` removed, back in place; `code` restores
+   the workspace as it was before the rewind too (rewind.ts). */
+export function undoRewind(
+  chatID: string,
+  id: string,
+  code: boolean,
+): Promise<UndoResult> {
+  return api<UndoResult>(`chats/${encodeURIComponent(chatID)}/undo-rewind`, {
+    id,
+    code,
+  });
 }
 
 /* A sibling chat copied from this one up to `turnID` (a user message, or

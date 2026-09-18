@@ -423,7 +423,11 @@ func (e *Engine) UndoRewind(ctx context.Context, id, markerID string, restoreCod
 
 // undoNotice is the transcript line an undo leaves.
 func undoNotice(r UndoResult) string {
-	parts := []string{fmt.Sprintf("Rewind undone: %s restored", count(r.Entries, "entry"))}
+	entries := fmt.Sprintf("%d entries", r.Entries)
+	if r.Entries == 1 {
+		entries = "1 entry"
+	}
+	parts := []string{"Rewind undone: " + entries + " restored"}
 	if r.Requeued > 0 {
 		parts = append(parts, fmt.Sprintf("%s queued again and held", count(r.Requeued, "message")))
 	}

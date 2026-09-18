@@ -2,7 +2,16 @@
    the workspace as it was before one user message (the runner records it
    under the message's ID); a rewind goes back to before a message — its
    code, the conversation, or both — and the session diff is the workspace
-   now against the chat's first checkpoint (or its last code rewind). */
+   now against the chat's first checkpoint (or its last code rewind).
+
+   A conversation (or both) rewind can be undone until the next turn
+   starts or another rewind happens: the service keeps what it removed
+   and `chat.undoRewind` names the marker whose Undo puts it back. The
+   session follows as far as it can (a pending rewind is cancelled, a
+   dropped thread resumed, a session that rewound starts fresh with the
+   restored transcript as context); the workspace stays as the rewind
+   left it unless the checkpoint the rewind recorded of it is restored
+   (`entry.rewind.before`, a both-rewind's). */
 
 import type { Chat, Entry } from "./types";
 
@@ -26,6 +35,18 @@ export type RewindResult = {
   conversation?: "rewound" | "pending" | "fresh" | "";
   /* How many queued messages a conversation rewind withdrew (queue.ts). */
   withdrawn?: number;
+};
+
+/* What undoing a rewind did (chats.UndoResult). */
+export type UndoResult = {
+  messageID: string;
+  what: RewindWhat;
+  entries: number;
+  requeued?: number;
+  session: "cancelled" | "resumed" | "fresh" | "";
+  code?: "restored" | "kept" | "";
+  restored?: string[];
+  removed?: string[];
 };
 
 export type ChangedFile = {
@@ -163,6 +184,58 @@ export function rewindOutcome(result: RewindResult): string {
     );
   if (result.withdrawn)
     parts.push(`${plural(result.withdrawn, "queued message")} withdrawn`);
+  return parts.join("; ");
+}
+
+/* Whether a rewind marker's rewind can be undone now: the service still
+   keeps what it removed (`chat.undoRewind` names this marker) and the
+   chat is idle. */
+export function canUndoRewind(
+  entry: Pick<Entry, "id" | "role">,
+  chat: Pick<Chat, "status" | "archived" | "undoRewind">,
+): boolean {
+  return (
+    entry.role === "rewind" && chat.undoRewind === entry.id && canRewind(chat)
+  );
+}
+
+/* Whether an undo may restore the workspace too: the rewind moved the
+   code and recorded the workspace as it was first. */
+export function undoOffersCode(entry: Pick<Entry, "rewind">): boolean {
+  return entry.rewind?.what === "both" && !!entry.rewind.before;
+}
+
+/* The undo's hint on the marker: what happens to the workspace. */
+export function undoHint(entry: Pick<Entry, "rewind">): string {
+  const base = "Undo puts the removed messages back (until the next turn)";
+  if (entry.rewind?.what !== "both") return base;
+  return undoOffersCode(entry)
+    ? base + "; the files can come back too"
+    : base + "; the workspace stays as it is";
+}
+
+/* The line an undo's result shows: what came back and how the session
+   and the workspace followed. */
+export function undoOutcome(result: UndoResult): string {
+  const parts = [
+    `${result.entries === 1 ? "1 entry" : `${result.entries} entries`} restored`,
+  ];
+  if (result.requeued)
+    parts.push(`${plural(result.requeued, "message")} queued again and held`);
+  if (result.session === "cancelled")
+    parts.push("the agent's session never saw the rewind");
+  if (result.session === "resumed")
+    parts.push("the agent's session continues where it was");
+  if (result.session === "fresh")
+    parts.push(
+      "the agent's session cannot take the messages back; the next message starts a new one with the conversation so far as context",
+    );
+  if (result.code === "restored")
+    parts.push(
+      `the workspace is back as it was before the rewind (${plural(result.restored?.length || 0, "file")} restored, ${plural(result.removed?.length || 0, "file")} removed)`,
+    );
+  if (result.code === "kept")
+    parts.push("the workspace stays as the rewind left it");
   return parts.join("; ");
 }
 
