@@ -44,6 +44,8 @@ var Commands = []Command{
 	{"attachments", "", "list the files waiting to be sent"},
 	{"detach", "N", "drop a waiting file"},
 	{"export", "[md|json] [all] [FILE]", "write the transcript to a file"},
+	{"instructions", "[edit|clear]", "your standing instructions for the agent, in every chat"},
+	{"memory", "[FILE | edit FILE]", "the workspace's CLAUDE.md, rules and auto-memory files"},
 	{"copy", "", "put the agent's last reply on the clipboard"},
 	{"find", "TEXT", "scroll to the previous line containing TEXT"},
 	{"expand", "", "toggle full tool output and diffs (Tab)"},

@@ -217,6 +217,12 @@ type fakeServer struct {
 	srv     *httptest.Server
 	token   string
 	notes   []string // "#" notes the memory route received
+	// instructions is the person's text (me/instructions); memory the
+	// listing chats/{id}/memory answers; writes what memory/write received
+	// as scope:path=text.
+	instructions string
+	memory       MemoryView
+	writes       []string
 }
 
 func newFakeServer(t *testing.T, initial State) *fakeServer {
@@ -402,6 +408,33 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		c.Conversation.Entries = append(c.Conversation.Entries, entry)
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]any{"id": entry.ID, "exitCode": code, "output": entry.Detail})
+	case path == "me/instructions":
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if r.Method == "POST" {
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			f.instructions = strings.TrimSpace(body["text"].(string))
+		}
+		json.NewEncoder(w).Encode(Instructions{Text: f.instructions, Name: "the owner"})
+	case strings.HasSuffix(path, "/memory") && r.Method == "GET":
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		json.NewEncoder(w).Encode(f.memory)
+	case strings.HasSuffix(path, "/memory/write"):
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		scope, _ := body["scope"].(string)
+		file, _ := body["path"].(string)
+		text, _ := body["text"].(string)
+		if file == "README.md" {
+			http.Error(w, `{"error":"a workspace memory file is CLAUDE.md, CLAUDE.local.md, AGENTS.md, .claude/CLAUDE.md or a .md file under .claude/rules"}`, 409)
+			return
+		}
+		f.mu.Lock()
+		f.writes = append(f.writes, scope+":"+file+"="+text)
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/memory"):
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -2035,5 +2068,145 @@ func TestCompactionDividerContextAndPassthrough(t *testing.T) {
 	app.submit(ctx, "/compact")
 	if !strings.Contains(app.notice, "unknown command /compact") {
 		t.Fatalf("codex notice: %q", app.notice)
+	}
+}
+
+// /instructions shows and edits the person's standing instructions in the
+// composer (Enter saves as typed, Esc cancels, a failed save keeps the
+// draft); /memory lists the workspace's files, shows one by number or
+// label, and edits one in the composer, a new workspace file included.
+func TestInstructionsAndMemoryCommands(t *testing.T) {
+	c := sampleChat()
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	f.memory = MemoryView{Root: "/home/agent/workspace", AutoDir: "/home/agent/.claude/projects/-home-agent-workspace/memory", Exists: true, Files: []MemoryFile{
+		{Scope: "workspace", Path: "CLAUDE.md", Size: 12, Text: "# Project\n\n- use tabs\n"},
+		{Scope: "workspace", Path: ".claude/rules/style.md", Size: 5, Text: "style"},
+		{Scope: "auto", Path: "MEMORY.md", Size: 5, Text: "index"},
+	}, Hint: "Claude reads these only once the workspace's settings are loaded, which the current launch does not do yet."}
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+
+	app.submit(ctx, "/instructions")
+	if !strings.Contains(app.notice, "no standing instructions") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.submit(ctx, "/instructions edit")
+	if app.editing == nil || app.editing.label != "your instructions" || app.editor.Text() != "" {
+		t.Fatalf("editing %+v text %q", app.editing, app.editor.Text())
+	}
+	typeText(app, ctx, "Answer in haiku form.")
+	app.handleKey(ctx, Key{Kind: KeyNewline})
+	typeText(app, ctx, "Be brief.")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.editing != nil || app.editor.Text() != "" || app.notice != "saved your instructions" {
+		t.Fatalf("after save: editing %v text %q notice %q", app.editing != nil, app.editor.Text(), app.notice)
+	}
+	f.mu.Lock()
+	saved := f.instructions
+	f.mu.Unlock()
+	if saved != "Answer in haiku form.\nBe brief." {
+		t.Fatalf("saved %q", saved)
+	}
+	if h := app.editor.History(); len(h) != 0 {
+		t.Fatalf("a file edit went into the prompt history: %v", h)
+	}
+	app.submit(ctx, "/instructions")
+	if !strings.Contains(app.notice, "Answer in haiku form.") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	// Editing loads the current text; Esc cancels without saving.
+	app.submit(ctx, "/instructions edit")
+	if app.editor.Text() != "Answer in haiku form.\nBe brief." {
+		t.Fatalf("loaded %q", app.editor.Text())
+	}
+	typeText(app, ctx, " NOT")
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if app.editing != nil || app.editor.Text() != "" || !strings.Contains(app.notice, "cancelled") {
+		t.Fatalf("after Esc: %v %q %q", app.editing != nil, app.editor.Text(), app.notice)
+	}
+	f.mu.Lock()
+	saved = f.instructions
+	f.mu.Unlock()
+	if saved != "Answer in haiku form.\nBe brief." {
+		t.Fatalf("Esc saved: %q", saved)
+	}
+	frame := app.frame(80, 24)
+	if strings.Contains(strings.Join(frame.Extra, "\n"), "editing") {
+		t.Fatalf("banner after cancel: %v", frame.Extra)
+	}
+	app.submit(ctx, "/instructions clear")
+	f.mu.Lock()
+	saved = f.instructions
+	f.mu.Unlock()
+	if saved != "" || app.notice != "instructions cleared" {
+		t.Fatalf("clear: %q %q", saved, app.notice)
+	}
+
+	// /memory lists; N or a label shows; edit loads.
+	app.submit(ctx, "/memory")
+	for _, want := range []string{" 1  CLAUDE.md", " 2  .claude/rules/style.md", " 3  auto:MEMORY.md", "auto-memory: /home/agent/.claude/projects/-home-agent-workspace/memory", "Claude reads these only"} {
+		if !strings.Contains(app.notice, want) {
+			t.Fatalf("listing lacks %q:\n%s", want, app.notice)
+		}
+	}
+	app.submit(ctx, "/memory 1")
+	if !strings.Contains(app.notice, "CLAUDE.md (12 B):\n# Project\n\n- use tabs") {
+		t.Fatalf("show: %q", app.notice)
+	}
+	app.submit(ctx, "/memory auto:MEMORY.md")
+	if !strings.HasPrefix(app.notice, "auto:MEMORY.md (5 B):\nindex") {
+		t.Fatalf("show by label: %q", app.notice)
+	}
+	app.submit(ctx, "/memory 9")
+	if !strings.Contains(app.notice, "no such memory file") {
+		t.Fatalf("%q", app.notice)
+	}
+	app.submit(ctx, "/memory edit 2")
+	if app.editing == nil || app.editing.label != ".claude/rules/style.md" || app.editor.Text() != "style" {
+		t.Fatalf("edit: %+v %q", app.editing, app.editor.Text())
+	}
+	frame = app.frame(80, 24)
+	if !strings.Contains(plain(strings.Join(frame.Extra, "\n")), "editing .claude/rules/style.md · Enter saves") {
+		t.Fatalf("banner: %v", frame.Extra)
+	}
+	typeText(app, ctx, " guide")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.editing != nil || app.notice != "saved .claude/rules/style.md" {
+		t.Fatalf("after save: %v %q", app.editing != nil, app.notice)
+	}
+	// An auto-memory file edits under its scope; a new workspace path is
+	// created; a path the service refuses keeps the draft.
+	app.submit(ctx, "/memory edit auto:MEMORY.md")
+	typeText(app, ctx, "!")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	app.submit(ctx, "/memory edit .claude/rules/new.md")
+	if app.editing == nil || app.editor.Text() != "" {
+		t.Fatalf("new file: %+v %q", app.editing, app.editor.Text())
+	}
+	typeText(app, ctx, "fresh")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	app.submit(ctx, "/memory edit README.md")
+	typeText(app, ctx, "nope")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.editing == nil || app.editor.Text() != "nope" || !strings.Contains(app.notice, "a workspace memory file is") {
+		t.Fatalf("refused save: %v %q %q", app.editing != nil, app.editor.Text(), app.notice)
+	}
+	app.handleKey(ctx, Key{Kind: KeyCtrlC})
+	if app.editing != nil || app.editor.Text() != "" {
+		t.Fatal("Ctrl+C did not cancel the edit")
+	}
+	f.mu.Lock()
+	writes := strings.Join(f.writes, "|")
+	f.mu.Unlock()
+	if writes != "workspace:.claude/rules/style.md=style guide|auto:MEMORY.md=index!|workspace:.claude/rules/new.md=fresh" {
+		t.Fatalf("writes %q", writes)
+	}
+	// The commands are in the menu.
+	app.editor.Set("/mem")
+	app.refreshMenu(ctx)
+	if app.menu == nil || len(app.menu.Items) != 1 || !strings.HasPrefix(app.menu.Items[0].Label, "/memory ") {
+		t.Fatalf("menu %+v", app.menu)
 	}
 }

@@ -489,6 +489,68 @@ func (c *Client) Answer(ctx context.Context, chatID, approvalID string, allow, a
 }
 
 // Mode sets a Claude chat's permission mode (auto, ask or plan).
+// Instructions is a person's standing instructions for the agent, as
+// me/instructions answers.
+type Instructions struct {
+	Text      string  `json:"text"`
+	UpdatedAt float64 `json:"updatedAt,omitempty"`
+	Name      string  `json:"name,omitempty"`
+}
+
+func (c *Client) Instructions(ctx context.Context) (Instructions, error) {
+	var v Instructions
+	err := c.do(ctx, "GET", "me/instructions", nil, &v)
+	return v, err
+}
+
+// SetInstructions replaces the person's text; blank removes it.
+func (c *Client) SetInstructions(ctx context.Context, text string) error {
+	return c.do(ctx, "POST", "me/instructions", map[string]any{"text": text}, nil)
+}
+
+// MemoryFile is one of the workspace's instruction or memory files, as
+// chats/{id}/memory lists them: Scope "workspace" (under the workspace
+// root) or "auto" (under the CLI's auto-memory directory).
+type MemoryFile struct {
+	Scope     string `json:"scope"`
+	Path      string `json:"path"`
+	Size      int64  `json:"size"`
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// Label is how the file is named in the listing and addressed by /memory:
+// the path, prefixed "auto:" for an auto-memory file.
+func (f MemoryFile) Label() string {
+	if f.Scope == "auto" {
+		return "auto:" + f.Path
+	}
+	return f.Path
+}
+
+// MemoryView is chats/{id}/memory: the files, where they are, and whether
+// the agent's launch reads them (Hint says).
+type MemoryView struct {
+	Root    string       `json:"root"`
+	AutoDir string       `json:"autoDir"`
+	Exists  bool         `json:"autoDirExists"`
+	Files   []MemoryFile `json:"files"`
+	Read    bool         `json:"read"`
+	Hint    string       `json:"hint,omitempty"`
+}
+
+// MemoryFiles lists the workspace's memory files with their contents.
+func (c *Client) MemoryFiles(ctx context.Context, chatID string) (MemoryView, error) {
+	var v MemoryView
+	err := c.do(ctx, "GET", "chats/"+chatID+"/memory", nil, &v)
+	return v, err
+}
+
+// WriteMemory replaces one memory file's contents.
+func (c *Client) WriteMemory(ctx context.Context, chatID, scope, path, text string) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/memory/write", map[string]any{"scope": scope, "path": path, "text": text}, nil)
+}
+
 func (c *Client) Mode(ctx context.Context, chatID, mode string) error {
 	return c.do(ctx, "POST", "chats/"+chatID+"/mode", map[string]any{"mode": mode}, nil)
 }
