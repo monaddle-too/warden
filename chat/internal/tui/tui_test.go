@@ -15,8 +15,8 @@ import (
 )
 
 func TestDecodeKeys(t *testing.T) {
-	keys, rest := DecodeKeys([]byte("hi\r\x7f\x1b[A\x1b[3~\x1b[5~\x03\x04\x1b"))
-	kinds := []KeyKind{KeyRune, KeyRune, KeyEnter, KeyBackspace, KeyUp, KeyDelete, KeyPageUp, KeyCtrlC, KeyCtrlD}
+	keys, rest := DecodeKeys([]byte("hi\r\x7f\x1b[A\x1b[3~\x1b[5~\x1b[Z\x03\x04\x1b"))
+	kinds := []KeyKind{KeyRune, KeyRune, KeyEnter, KeyBackspace, KeyUp, KeyDelete, KeyPageUp, KeyShiftTab, KeyCtrlC, KeyCtrlD}
 	if len(keys) != len(kinds) {
 		t.Fatalf("got %d keys: %+v", len(keys), keys)
 	}
@@ -297,6 +297,11 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 					c.Approvals[i].State = "declined"
 				}
 				c.Approvals[i].Params["answers"] = body["answers"]
+				for _, k := range []string{"always", "message", "mode"} {
+					if v, ok := body[k]; ok {
+						c.Approvals[i].Params[k] = v
+					}
+				}
 			}
 		}
 		f.mu.Unlock()
@@ -305,6 +310,20 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/stop")
 		f.mu.Lock()
 		f.state.Chat(id).Status = "idle"
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/mode"):
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/mode")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		if c.Provider != "claude" {
+			f.mu.Unlock()
+			http.Error(w, `{"error":"permission modes apply to Claude chats"}`, 409)
+			return
+		}
+		c.Mode = body["mode"].(string)
 		f.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/agent"), strings.HasSuffix(path, "/revoke"):
@@ -648,5 +667,121 @@ func TestRenderToolEntries(t *testing.T) {
 	// A removed line that itself starts with "-- " is a change, not a header.
 	if lines, _, dels = diffLines("a\ndiff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1,1 +0,0 @@\n---- rule\n"); dels != 1 || lines[len(lines)-1] != "---- rule" {
 		t.Fatalf("header ambiguity: %q", lines)
+	}
+}
+
+func permissionAsk(id, tool string, entry *Entry, extra map[string]any) Approval {
+	params := map[string]any{"tool": tool}
+	if entry != nil {
+		params["entry"] = entry
+	}
+	for k, v := range extra {
+		params[k] = v
+	}
+	return Approval{ID: id, Method: "item/tool/requestPermission", State: "pending", Params: params}
+}
+
+// A tool ask renders as the call (a command, a diff, a plan) with the keys
+// that answer it; typed answers reach the service as allow, allow always
+// with the remembered rule, or deny with the message; a plan's answers
+// carry the mode.
+func TestPermissionCardsAndAnswers(t *testing.T) {
+	c := &Chat{ID: "chat1", Title: "Claude", Provider: "claude", Status: "running", Mode: "ask"}
+	command := &Entry{ID: "toolu_1", Role: "activity", Text: "touch x", Tool: &Tool{Kind: "command", Name: "Bash", Status: "running"}}
+	edit := &Entry{ID: "toolu_2", Role: "activity", Text: "Write notes.md", Detail: "notes.md\ndiff --git a/notes.md b/notes.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes.md\n@@ -0,0 +1,1 @@\n+hello\n", Tool: &Tool{Kind: "edit", Name: "Write", Status: "running", Paths: []string{"notes.md"}}}
+	c.Approvals = []Approval{
+		permissionAsk("p1", "Bash", command, map[string]any{"always": "`touch` commands", "description": "Create x"}),
+		permissionAsk("p2", "Write", edit, map[string]any{"always": "file edits"}),
+		permissionAsk("p3", "ExitPlanMode", nil, map[string]any{"plan": "# Plan\n\n1. Write notes.md"}),
+	}
+	joined := plain(strings.Join(RenderApprovals(c, 80), "\n"))
+	for _, want := range []string{"run a command: Create x", "y = allow · a = allow always (`touch` commands) · n [message] = deny", "$ touch x", "Write notes.md", "+1 −0", "+hello", "Claude has a plan", "1. Write notes.md"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "diff --git") {
+		t.Fatalf("git header shown:\n%s", joined)
+	}
+	status := plain(RenderStatus(c, nil, true, 80))
+	if !strings.Contains(status, "claude · default · ask") {
+		t.Fatalf("status without the mode: %q", status)
+	}
+	if plain(RenderStatus(sampleChat(), nil, true, 80)) != plain(RenderStatus(sampleChat(), nil, true, 80)) || strings.Contains(plain(RenderStatus(sampleChat(), nil, true, 80)), "auto") {
+		t.Fatal("a Codex chat shows no mode")
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard}
+	ctx := context.Background()
+	refresh := func() { s, _ := app.Client.State(ctx); app.state = s }
+	refresh()
+	app.submit(ctx, "a")
+	refresh()
+	s := app.state
+	if got := s.Chats[0].Approvals[0]; got.State != "allowed" || got.Params["always"] != true || !strings.Contains(app.notice, "allowed always: `touch` commands") {
+		t.Fatalf("allow always: %+v %q", got, app.notice)
+	}
+	app.submit(ctx, "n keep the notes in docs/")
+	refresh()
+	if got := app.state.Chats[0].Approvals[1]; got.State != "declined" || got.Params["message"] != "keep the notes in docs/" || got.Params["always"] != false {
+		t.Fatalf("deny with message: %+v", got)
+	}
+	app.submit(ctx, "a")
+	refresh()
+	if got := app.state.Chats[0].Approvals[2]; got.State != "allowed" || got.Params["mode"] != "ask" || got.Params["always"] != false {
+		t.Fatalf("plan approved into ask: %+v", got)
+	}
+	// With nothing pending, "a" is a message again.
+	app.submit(ctx, "a")
+	time.Sleep(100 * time.Millisecond)
+	refresh()
+	entries := app.state.Chats[0].Conversation.Entries
+	if entries[len(entries)-1].Text != "echo: a" {
+		t.Fatalf("message not sent: %+v", entries[len(entries)-1])
+	}
+}
+
+// Shift+Tab cycles a Claude chat's mode auto → ask → plan → auto; /mode
+// sets one by name; a Codex chat has none.
+func TestShiftTabCyclesMode(t *testing.T) {
+	claude := &Chat{ID: "c1", Title: "Claude", Provider: "claude", Status: "idle"}
+	codex := &Chat{ID: "c2", Title: "Codex", Provider: "codex", Status: "idle"}
+	f := newFakeServer(t, State{Chats: []*Chat{claude, codex}})
+	app := &App{Client: f.client(), ChatID: "c1", Output: io.Discard}
+	ctx := context.Background()
+	refresh := func() { s, _ := app.Client.State(ctx); app.state = s }
+	refresh()
+	for _, want := range []string{"ask", "plan", "auto"} {
+		app.handleKey(ctx, Key{Kind: KeyShiftTab})
+		refresh()
+		if got := app.state.Chats[0].Mode; got != want || !strings.Contains(app.notice, "permission mode "+want) {
+			t.Fatalf("cycle: mode %q notice %q, want %s", got, app.notice, want)
+		}
+	}
+	app.submit(ctx, "/mode plan")
+	refresh()
+	if app.state.Chats[0].Mode != "plan" {
+		t.Fatal(app.state.Chats[0].Mode)
+	}
+	app.submit(ctx, "/mode")
+	if !strings.Contains(app.notice, "permission mode plan") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/mode bypass")
+	if !strings.Contains(app.notice, "/mode auto|ask|plan") {
+		t.Fatal(app.notice)
+	}
+	if !strings.Contains(plain(RenderStatus(app.state.Chats[0], nil, true, 80)), "· plan") {
+		t.Fatal("status line without the mode")
+	}
+	app.ChatID = "c2"
+	app.handleKey(ctx, Key{Kind: KeyShiftTab})
+	if !strings.Contains(app.notice, "Claude chats") {
+		t.Fatal(app.notice)
+	}
+	// The summary a watcher prints for a tool ask and a plan.
+	ask := permissionAsk("p", "Bash", &Entry{Text: "touch x", Tool: &Tool{Kind: "command"}}, nil)
+	if ask.Summary() != "run command: touch x" || permissionAsk("q", "ExitPlanMode", nil, nil).Summary() != "plan ready for review" {
+		t.Fatal(ask.Summary())
 	}
 }

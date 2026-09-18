@@ -197,6 +197,8 @@ func RenderTranscript(c *Chat, width int, expanded bool) []string {
 			}
 		case "system":
 			out = append(out, wrap(text, width, red+"  ! "+reset, "    ")...)
+		case "notice":
+			out = append(out, wrap(dim+text+reset, width, dim+"  · ", "    ")...)
 		default:
 			out = append(out, wrap(text, width, dim+"  "+e.Role+": "+reset, "    ")...)
 		}
@@ -428,6 +430,10 @@ func RenderApprovals(c *Chat, width int) []string {
 	}
 	var out []string
 	for i, a := range pending {
+		if p := a.Permission(); p != nil {
+			out = append(out, renderPermission(a, p, width, i > 0)...)
+			continue
+		}
 		head := "approval"
 		body := ""
 		switch {
@@ -480,6 +486,73 @@ func RenderApprovals(c *Chat, width int) []string {
 	return out
 }
 
+// renderPermission lays out a tool ask: the call as the transcript shows
+// it (a command, a diff's lines, a read's path) or the plan, and the keys
+// that answer it.
+func renderPermission(a Approval, p *Permission, width int, later bool) []string {
+	head, hint := "", ""
+	var body []string
+	e := p.Entry
+	switch {
+	case p.IsPlan():
+		head = "Claude has a plan"
+		hint = "y = approve (auto) · a = approve, ask before edits · n [feedback] = keep planning"
+		body = renderMarkdown(p.Plan, width-4, "", "")
+	case e != nil && e.Tool != nil && e.Tool.Kind == "command":
+		head = "run a command"
+		if p.Description != "" {
+			head += ": " + p.Description
+		}
+		for _, l := range strings.Split(strings.TrimRight(e.Text, "\n"), "\n") {
+			body = append(body, "$ "+l)
+		}
+	case e != nil && e.Tool != nil && e.Tool.Kind == "edit":
+		head = e.Text
+		lines, adds, dels := diffLines(e.Detail)
+		if len(lines) > 0 {
+			body = append(body, fmt.Sprintf("+%d −%d", adds, dels))
+			body = append(body, lines...)
+		}
+	case e != nil:
+		head = e.Text
+		if e.Tool != nil && len(e.Tool.Input) > 0 {
+			body = inputLines(e.Tool.Input)
+		}
+	default:
+		head = "use " + p.Tool
+	}
+	if hint == "" {
+		hint = "y = allow · a = allow always"
+		if p.Always != "" {
+			hint += " (" + p.Always + ")"
+		}
+		hint += " · n [message] = deny"
+	}
+	if later {
+		hint = "answered after the one above"
+	}
+	out := []string{bold + yellow + "⚠ " + sanitize(head) + reset + dim + "   " + hint + reset}
+	for _, l := range body {
+		l = sanitize(l)
+		if l == "" {
+			continue
+		}
+		color := ""
+		switch {
+		case strings.HasPrefix(l, "+"):
+			color = green
+		case strings.HasPrefix(l, "-"):
+			color = red
+		case strings.HasPrefix(l, "@@"):
+			color = cyan
+		}
+		for _, w := range wrap(l, width, color+"    │ ", color+"    │ ") {
+			out = append(out, w+reset)
+		}
+	}
+	return out
+}
+
 // RenderStatus is the one-line status bar.
 func RenderStatus(c *Chat, ports []Port, live bool, width int) string {
 	link := green + "●" + reset
@@ -518,7 +591,16 @@ func RenderStatus(c *Chat, ports []Port, live bool, width int) string {
 	if model == "" {
 		model = "default"
 	}
-	line := fmt.Sprintf("%s %s%s%s  %s · %s  %s%s  %s/help%s", link, bold, sanitize(c.Title), reset, c.Provider, model, status, extra, dim, reset)
+	agent := c.Provider + " · " + model
+	if c.Provider == "claude" {
+		// The permission mode (Shift+Tab cycles it) beside the model.
+		mode := c.Mode
+		if mode == "" {
+			mode = "auto"
+		}
+		agent += " · " + mode
+	}
+	line := fmt.Sprintf("%s %s%s%s  %s  %s%s  %s/help%s", link, bold, sanitize(c.Title), reset, agent, status, extra, dim, reset)
 	return line
 }
 

@@ -32,6 +32,7 @@ const (
 	KeyCtrlL
 	KeyEscape
 	KeyTab
+	KeyShiftTab // CSI Z: cycles the permission mode
 	KeyPageUp
 	KeyPageDown
 	KeyWheelUp
@@ -117,6 +118,8 @@ func DecodeKeys(buf []byte) (keys []Key, rest []byte) {
 					keys = append(keys, Key{Kind: KeyHome})
 				case "F", "4~", "8~":
 					keys = append(keys, Key{Kind: KeyEnd})
+				case "Z":
+					keys = append(keys, Key{Kind: KeyShiftTab})
 				case "3~":
 					keys = append(keys, Key{Kind: KeyDelete})
 				case "5~":

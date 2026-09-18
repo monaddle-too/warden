@@ -25,6 +25,17 @@ func (a Approval) Summary() string {
 	case len(a.Questions()) > 0:
 		qs := a.Questions()
 		return "question: " + qs[0].Question
+	case a.Permission() != nil:
+		p := a.Permission()
+		switch {
+		case p.IsPlan():
+			return "plan ready for review"
+		case p.Entry != nil && p.Entry.Tool != nil && p.Entry.Tool.Kind == "command":
+			return "run command: " + p.Entry.Text
+		case p.Entry != nil && p.Entry.Text != "":
+			return "allow " + p.Entry.Text
+		}
+		return "allow " + p.Tool
 	case a.Method == "item/commandExecution/requestApproval":
 		if cmd, ok := a.Params["command"].(string); ok && cmd != "" {
 			return "run command: " + cmd
