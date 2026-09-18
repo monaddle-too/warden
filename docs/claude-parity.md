@@ -292,7 +292,7 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 ## Progress
 
 - [x] Design discussion, inventory and priority order (this document).
-- [ ] 1 Typed tool cards and diffs.
+- [x] 1 Typed tool cards and diffs — merged to main 5715a02 (2026-09-17); verified as the Item 1 section says.
 
 ### Item 1: typed tool cards and diffs
 
