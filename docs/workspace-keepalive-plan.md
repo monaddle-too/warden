@@ -133,3 +133,5 @@ session release not counting.
   the owner's request; main merged in twice, no conflicts; full Go suite,
   web and chart checks pass — `sandbox/kube` hit the package timeout once
   under the full parallel run and passed alone). GKE deploy of main follows.
+- 2026-09-18: deployed to GKE as image `v0.1.0-alpha.13-32-g1b24571`
+  (main 1b24571); step 5's live check still to be done there.
