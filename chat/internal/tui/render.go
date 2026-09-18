@@ -180,13 +180,21 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 		case "user":
 			label := senderLabel(e)
 			out = append(out, wrap(text, width, bold+cyan+label+" › "+reset, strings.Repeat(" ", len(label)+3))...)
-			switch {
-			case e.Delivery == "queued":
+			switch e.Delivery {
+			case "queued":
 				// Held by Warden until the agent's turn ends (queue.go).
 				out = append(out, yellow+"      ("+queueMarker(c)+")"+reset)
-			case e.Delivery != "" && e.Delivery != "delivered" && e.Delivery != "confirmed":
-				out = append(out, dim+"      ("+sanitize(e.Delivery)+")"+reset)
+			case "failed":
+				// Never reached the agent, or the run ended before the
+				// agent confirmed it; the detail says which.
+				msg := "not delivered"
+				if d := strings.TrimSpace(e.Detail); d != "" {
+					msg += ": " + sanitize(d)
+				}
+				out = append(out, wrap(red+msg+reset, width, red+"      ! "+reset, "        ")...)
 			}
+			// "sending" (handed over, the turn not yet confirmed) and "sent"
+			// need no mark: the status line shows the hand-over.
 		case "assistant":
 			name := label
 			if name == "" {

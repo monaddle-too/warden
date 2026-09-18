@@ -205,7 +205,7 @@ func Open(root string) (*Store, error) {
 		for i := range c.Conversation.Entries {
 			e := &c.Conversation.Entries[i]
 			e.IsStreaming = false
-			if e.Delivery == "queued" {
+			if e.Delivery == "queued" || e.Delivery == "sending" {
 				e.Delivery = "failed"
 				e.Detail = "Interrupted before confirmed delivery"
 			}

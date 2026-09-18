@@ -7,6 +7,10 @@ export type Entry = {
   /* When a thinking entry stopped streaming; unset for other entries. */
   endedAt?: number;
   isStreaming: boolean;
+  /* A user message's way to the agent: "queued" (held until the turn
+     ends), "sending" (handed over, the turn not yet confirmed), "sent",
+     "failed" (never delivered, or unconfirmed when the run ended: detail
+     says which). Empty for everything else. */
   delivery: string;
   /* The agent turn this entry belongs to; a user message gets it once the
      agent accepts the message. */

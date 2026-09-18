@@ -878,6 +878,12 @@ func (e *Engine) run(parent context.Context, id string) {
 					v.Delivery = "failed"
 					v.Detail = "Not delivered"
 				}
+				if v.Delivery == "sending" {
+					// Handed over but never confirmed by the agent: the run
+					// ended in between, so whether it was read is unknown.
+					v.Delivery = "failed"
+					v.Detail = deliveryUnconfirmed
+				}
 			}
 			if held {
 				return nil
@@ -1204,6 +1210,8 @@ func (e *Engine) turn(ctx context.Context, id string, current *Chat, a *activeRu
 					if err = e.confirm(id, message.ID, turnID); err != nil {
 						return err
 					}
+				} else {
+					e.unconfirmed(id, message.ID)
 				}
 			}
 		}
@@ -1330,7 +1338,8 @@ func (e *Engine) beginAgentTurn(id, turn string) error {
 }
 
 // resume moves a queued chat with a live resident session back to running and
-// hands over its first undelivered message. It fails when the chat is being
+// hands over its first undelivered message, which is "sending" until the
+// agent's turn confirms it (confirm) or the run ends without (unconfirmed). It fails when the chat is being
 // stopped or archived, which ends the session. A chat whose turn Stop
 // interrupted keeps its session: the next message resumes it.
 func (e *Engine) resume(id string) (*cv.Entry, error) {
@@ -1346,8 +1355,8 @@ func (e *Engine) resume(id string) (*cv.Entry, error) {
 		for i := range c.Conversation.Entries {
 			v := &c.Conversation.Entries[i]
 			if v.Delivery == "queued" {
-				v.Delivery = "failed"
-				v.Detail = "Delivery unconfirmed. Check the agent response before retrying."
+				v.Delivery = "sending"
+				v.Detail = ""
 				copy := *v
 				message = &copy
 				break
@@ -1373,8 +1382,8 @@ func (e *Engine) attempt(id, turn string) (*cv.Entry, error) {
 		for i := range c.Conversation.Entries {
 			v := &c.Conversation.Entries[i]
 			if v.Delivery == "queued" {
-				v.Delivery = "failed"
-				v.Detail = "Delivery unconfirmed. Check the agent response before retrying."
+				v.Delivery = "sending"
+				v.Detail = ""
 				if turn != "" {
 					v.TurnID = cv.Ptr(turn)
 				}
@@ -1386,6 +1395,30 @@ func (e *Engine) attempt(id, turn string) (*cv.Entry, error) {
 		return nil
 	})
 	return message, err
+}
+
+// deliveryUnconfirmed is the detail of a message the agent may or may not
+// have read: it was handed over (Delivery "sending") but the turn that
+// would confirm it never started.
+const deliveryUnconfirmed = "Delivery unconfirmed. Check the agent response before retrying."
+
+// unconfirmed fails message `message` of chat `id` as unconfirmed if it is
+// still in flight: for a hand-over the agent did not acknowledge while the
+// run goes on (a steer it refused), where the run's end will not do it.
+func (e *Engine) unconfirmed(id, message string) {
+	_ = e.Store.update(func(st *State) error {
+		c := st.chat(id)
+		if c == nil {
+			return nil
+		}
+		for i := range c.Conversation.Entries {
+			if v := &c.Conversation.Entries[i]; v.ID == message && v.Delivery == "sending" {
+				v.Delivery = "failed"
+				v.Detail = deliveryUnconfirmed
+			}
+		}
+		return nil
+	})
 }
 func (e *Engine) confirm(id, message, turn string) error {
 	return e.Store.update(func(st *State) error {

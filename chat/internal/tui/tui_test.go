@@ -2972,3 +2972,27 @@ func TestTitleAndBellEvents(t *testing.T) {
 		t.Fatal("the bell rang while off")
 	}
 }
+
+// A message's delivery shows only when there is something to say: the
+// queue marker while held, a red not-delivered line with the reason when
+// it failed, nothing while it is being handed over or once it is sent.
+func TestDeliveryMarks(t *testing.T) {
+	c := &Chat{Provider: "claude", Status: "running"}
+	render := func(delivery, detail string) string {
+		return plain(strings.Join(renderEntry(c, Entry{ID: "u", Role: "user", Text: "hi", Delivery: delivery, Detail: detail}, 80, false, nil, ""), "\n"))
+	}
+	for _, d := range []string{"", "sending", "sent"} {
+		if got := render(d, ""); got != "you › hi" {
+			t.Fatalf("%q: %q", d, got)
+		}
+	}
+	if got := render("queued", ""); !strings.Contains(got, "queued") {
+		t.Fatalf("queued: %q", got)
+	}
+	if got := render("failed", "Delivery unconfirmed. Check the agent response before retrying."); got != "you › hi\n      ! not delivered: Delivery unconfirmed. Check the agent\n        response before retrying." {
+		t.Fatalf("failed: %q", got)
+	}
+	if got := render("failed", ""); got != "you › hi\n      ! not delivered" {
+		t.Fatalf("failed without detail: %q", got)
+	}
+}
