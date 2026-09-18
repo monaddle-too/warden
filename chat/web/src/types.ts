@@ -84,6 +84,17 @@ export type Question = {
   question: string;
   options?: { label: string; description?: string }[];
 };
+/* A tool permission ask (method item/tool/requestPermission): the tool,
+   its input, the call as a transcript entry (a command, a diff), what
+   "Allow always" would remember, and, for ExitPlanMode, the plan. */
+export type PermissionParams = {
+  tool: string;
+  input?: Record<string, unknown>;
+  entry?: Entry;
+  always?: string;
+  description?: string;
+  plan?: string;
+};
 export type Approval = {
   id: string;
   method: string;
@@ -104,6 +115,11 @@ export type ResourceLimits = {
 export type Chat = {
   provider?: string;
   model?: string;
+  /* A Claude chat's permission mode (auto when absent) and its
+     allow-always rules: the tool (Bash, edit for any file tool, or a
+     tool's name) and, for Bash, the command prefix. */
+  mode?: string;
+  allowed?: { tool: string; command?: string }[];
   id: string;
   title: string;
   sandboxID: string;

@@ -536,6 +536,40 @@
   justify-content: flex-end;
   gap: 8px;
 }
+/* A tool permission ask: the command or diff as the transcript shows it,
+   an optional message to the model, and its answers; a plan renders as
+   markdown. */
+.permission-card .permission-command {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.permission-card .permission-diff {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.permission-card .plan-body {
+  max-height: 480px;
+  overflow: auto;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 14px;
+}
+.permission-card .permission-message input {
+  width: 100%;
+}
+.permission-card .approval-actions {
+  flex-wrap: wrap;
+}
+.notice-entry {
+  font-style: italic;
+}
 .approval-card [role="alert"] {
   margin: 0;
 }
@@ -604,6 +638,28 @@
   color: var(--text);
 }
 .composer-model select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* The permission mode picker sits beside the model on Claude chats. */
+.composer-mode select {
+  width: auto;
+  height: 30px;
+  min-height: 0;
+  padding: 0 26px 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background-color: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.composer-mode select:hover:not(:disabled) {
+  background-color: var(--surface-3);
+  color: var(--text);
+}
+.composer-mode select:disabled {
   opacity: 0.6;
   cursor: default;
 }

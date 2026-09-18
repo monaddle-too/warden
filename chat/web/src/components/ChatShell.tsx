@@ -729,6 +729,7 @@ export function ChatShell({
                     model: next,
                   })
                 }
+                onMode={(mode) => api(`chats/${chat.id}/mode`, { mode })}
               />
               <Previews
                 key={chat.id + "preview"}

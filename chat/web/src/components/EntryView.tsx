@@ -226,9 +226,9 @@ export const EntryView = memo(function EntryView({
         onFile={onFile}
       />
     );
-  if (entry.role === "system")
+  if (entry.role === "system" || entry.role === "notice")
     return (
-      <div className="system-entry" data-entry={entry.id}>
+      <div className={`system-entry ${entry.role}-entry`} data-entry={entry.id}>
         {entry.text}
       </div>
     );

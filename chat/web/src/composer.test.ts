@@ -15,6 +15,34 @@ const models = [
   { value: "gpt-6-astra", label: "GPT-6 Astra" },
 ];
 
+describe("permission mode command", () => {
+  it("lists the modes after /mode and runs an exact one", () => {
+    // "mode" is a prefix of "model" too; both commands are offered.
+    expect(
+      commandItems("mode", models).map((i) =>
+        i.kind === "command" ? i.command.name : i.kind,
+      ),
+    ).toEqual(["model", "mode"]);
+    expect(
+      commandItems("mode ", models).map((i) =>
+        i.kind === "mode" ? i.mode.value : i.kind,
+      ),
+    ).toEqual(["auto", "ask", "plan"]);
+    expect(
+      commandItems("mode p", models).map((i) =>
+        i.kind === "mode" ? i.mode.value : i.kind,
+      ),
+    ).toEqual(["plan"]);
+    const hit = exactCommand("/mode ask", models);
+    expect(hit?.kind === "mode" && hit.mode.value).toBe("ask");
+    expect(exactCommand("/mode bypass", models)).toBeUndefined();
+    expect(exactCommand("/mode", models)).toEqual({
+      kind: "command",
+      command: COMMANDS.find((c) => c.name === "mode"),
+    });
+  });
+});
+
 describe("composer triggers", () => {
   it("reads a leading slash as a command up to the caret on the first line", () => {
     expect(triggerAt("/", 1)).toEqual({

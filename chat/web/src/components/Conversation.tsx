@@ -21,6 +21,7 @@ import {
   File as FileIcon,
   Folder,
   Paperclip,
+  ShieldCheck,
   Square,
 } from "lucide-react";
 import {
@@ -62,6 +63,7 @@ import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
 import { FindBar, isFindKey, type FindRequest } from "./FindBar";
 import { ModelSelect, modelOptions } from "./ModelSelect";
+import { ModeSelect } from "./ModeSelect";
 import { Suggest, usePathCompletion, type Suggestion } from "./Suggest";
 import { PendingReply } from "./Thinking";
 import { TurnStats } from "./TurnStats";
@@ -113,6 +115,8 @@ const commandIcon = (name: string) =>
     <Square size={15} />
   ) : name === "model" ? (
     <Cpu size={15} />
+  ) : name === "mode" ? (
+    <ShieldCheck size={15} />
   ) : name === "export" ? (
     <Download size={15} />
   ) : (
@@ -124,6 +128,7 @@ export function Conversation({
   requests = [],
   find,
   onModel,
+  onMode,
   onExport,
 }: {
   chat: Chat;
@@ -134,6 +139,8 @@ export function Conversation({
      one made before a switch does not follow the reader. */
   find?: FindRequest;
   onModel: (model: string) => Promise<unknown>;
+  /* The permission mode selector and /mode (Claude chats). */
+  onMode?: (mode: string) => Promise<unknown>;
   /* The /export command; the chat menu's dialog lives in the shell. */
   onExport?: () => void;
 }) {
@@ -441,6 +448,9 @@ export function Conversation({
     () => modelOptions(chat.provider || "codex"),
     [chat.provider],
   );
+  // Permission modes are a Claude chat's (the service refuses them for
+  // Codex); the mode can change at any time, a running turn included.
+  const modes = chat.provider === "claude" && !!onMode;
   const commands = useMemo(
     () =>
       open && trigger.kind === "command"
@@ -471,15 +481,25 @@ export function Conversation({
                     ? !running || chat.status === "stopping"
                     : item.command.name === "model"
                       ? running
-                      : false,
+                      : item.command.name === "mode"
+                        ? !modes
+                        : false,
               }
-            : {
-                id: "model:" + item.model.value,
-                label: item.model.label,
-                hint: item.model.value,
-                icon: <Cpu size={15} />,
-                disabled: running,
-              },
+            : item.kind === "mode"
+              ? {
+                  id: "mode:" + item.mode.value,
+                  label: item.mode.label,
+                  hint: item.mode.hint,
+                  icon: <ShieldCheck size={15} />,
+                  disabled: !modes || chat.archived,
+                }
+              : {
+                  id: "model:" + item.model.value,
+                  label: item.model.label,
+                  hint: item.model.value,
+                  icon: <Cpu size={15} />,
+                  disabled: running,
+                },
       );
       return { items, note: items.length ? undefined : "No such command" };
     }
@@ -505,7 +525,17 @@ export function Conversation({
           ? "Keep typing to narrow the list"
           : undefined,
     };
-  }, [open, trigger, commands, paths, pathError, running, chat.status]);
+  }, [
+    open,
+    trigger,
+    commands,
+    paths,
+    pathError,
+    running,
+    chat.status,
+    chat.archived,
+    modes,
+  ]);
   // The row the keys act on: never a disabled one, so Enter on a fresh
   // list runs something. -1 when every row is disabled.
   const selected = active < 0 ? -1 : Math.min(active, items.length - 1);
@@ -607,6 +637,12 @@ export function Conversation({
   // A command picked from the list, or sent as exactly "/name": the
   // command line leaves the composer and `rest` of the draft stays.
   function runCommand(item: CommandItem, rest: string) {
+    if (item.kind === "mode") {
+      setError(modes ? "" : "permission modes apply to Claude chats");
+      if (modes) void onMode(item.mode.value).catch((e) => setError(String(e)));
+      place({ text: rest, caret: 0 });
+      return;
+    }
     if (item.kind === "model") {
       // The list disables models while the agent runs; "/model x" typed in
       // full and sent gets the same answer the service would give.
@@ -624,6 +660,9 @@ export function Conversation({
       case "model":
         // The list then shows the models.
         place({ text: "/model " + rest, caret: 7 });
+        break;
+      case "mode":
+        place({ text: "/mode " + rest, caret: 6 });
         break;
       case "export":
         onExport?.();
@@ -647,7 +686,9 @@ export function Conversation({
       (c) =>
         (c.kind === "command"
           ? "command:" + c.command.name
-          : "model:" + c.model.value) === item.id,
+          : c.kind === "mode"
+            ? "mode:" + c.mode.value
+            : "model:" + c.model.value) === item.id,
     );
     if (chosen) runCommand(chosen, withoutCommand(text, trigger));
   }
@@ -960,6 +1001,18 @@ export function Conversation({
                   label="Model for the next turn"
                 />
               </span>
+              {modes && (
+                <span className="composer-mode">
+                  <ModeSelect
+                    value={chat.mode || "auto"}
+                    disabled={chat.archived}
+                    onChange={(mode) => {
+                      setError("");
+                      void onMode(mode).catch((e) => setError(String(e)));
+                    }}
+                  />
+                </span>
+              )}
               <span
                 className={`status-dot ${chat.startup && running ? "starting" : chat.status}`}
               />
