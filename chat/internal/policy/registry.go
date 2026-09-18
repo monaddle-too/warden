@@ -150,7 +150,11 @@ type Registry struct {
 	StorageFailed bool
 	Retired       map[string][]string
 	options       RegistryOptions
-	mu            sync.Mutex
+	// egressOverrides holds the sandboxes with an egress mode of their own
+	// (the workspace's choice, by sandbox ID), which wins over the
+	// install's mode; persisted as egressOverridesFile.
+	egressOverrides map[string]string
+	mu              sync.Mutex
 }
 
 // egressFile persists an egress mode chosen from the console under the
@@ -177,15 +181,16 @@ func (r *Registry) EgressMode() (mode, source string) {
 // SetEgressMode applies an egress mode to every live sandbox engine and to
 // the ones created later, and persists it so the choice survives restarts
 // (it then overrides sandboxes.egress in warden.json until cleared with
-// ClearEgressMode).
+// ClearEgressMode). A sandbox with a mode of its own (SetSandboxEgress)
+// keeps it.
 func (r *Registry) SetEgressMode(mode string) error {
 	if mode != "restricted" && mode != "public" {
 		return errors.New("egress mode must be restricted or public")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, b := range r.Bindings {
-		if b.Engine != nil {
+	for sandbox, b := range r.Bindings {
+		if b.Engine != nil && r.egressOverrides[sandbox] == "" {
 			if err := b.Engine.SetEgressMode(mode); err != nil {
 				return err
 			}
@@ -230,6 +235,110 @@ func LoadEgressMode(state string) (string, error) {
 		return "", errors.New(egressFile + ": mode must be restricted or public")
 	}
 	return mode, nil
+}
+
+// egressOverridesFile persists the sandboxes' own egress modes under the
+// registry state: {"<sandboxID>": "restricted" | "public"}.
+const egressOverridesFile = "egress-overrides.json"
+
+func loadEgressOverrides(state string) (map[string]string, error) {
+	out := map[string]string{}
+	raw, err := os.ReadFile(filepath.Join(state, egressOverridesFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return out, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := StrictJSON(raw)
+	if err != nil {
+		return nil, err
+	}
+	m, ok := parsed.(map[string]any)
+	if !ok {
+		return nil, errors.New(egressOverridesFile + ": invalid")
+	}
+	for sandbox, value := range m {
+		mode, _ := value.(string)
+		if !validIdentifier(sandbox) || (mode != "restricted" && mode != "public") {
+			return nil, errors.New(egressOverridesFile + ": mode must be restricted or public")
+		}
+		out[sandbox] = mode
+	}
+	return out, nil
+}
+
+func (r *Registry) saveEgressOverridesLocked() error {
+	body := map[string]any{}
+	for sandbox, mode := range r.egressOverrides {
+		body[sandbox] = mode
+	}
+	tmp := filepath.Join(r.State, egressOverridesFile+".tmp")
+	if err := os.WriteFile(tmp, []byte(Dumps(body)+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(r.State, egressOverridesFile))
+}
+
+// effectiveEgressLocked is the mode a sandbox's engine gets: its own when
+// it has one, else the install's (options.EgressMode; "" leaves the
+// template's, which the engine reads as restricted).
+func (r *Registry) effectiveEgressLocked(sandbox string) string {
+	if mode := r.egressOverrides[sandbox]; mode != "" {
+		return mode
+	}
+	return r.options.EgressMode
+}
+
+// SandboxEgress reports a sandbox's own egress mode ("" when it follows
+// the install) and the mode in effect for it.
+func (r *Registry) SandboxEgress(sandbox string) (own, effective string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	own = r.egressOverrides[sandbox]
+	effective = r.effectiveEgressLocked(sandbox)
+	if effective == "" {
+		effective = "restricted"
+	}
+	return own, effective
+}
+
+// SetSandboxEgress gives one sandbox an egress mode of its own ("restricted"
+// or "public"), or with "" returns it to the install's mode. The sandbox
+// need not be registered yet: the choice is keyed by sandbox ID, applied
+// to its live engine now and to every engine created for it later, and
+// persisted so it survives the sandbox's regeneration and a restart.
+func (r *Registry) SetSandboxEgress(sandbox, mode string) error {
+	if !validIdentifier(sandbox) {
+		return errors.New("invalid sandbox")
+	}
+	if mode != "" && mode != "restricted" && mode != "public" {
+		return errors.New("egress mode must be restricted, public or empty")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if mode == "" {
+		delete(r.egressOverrides, sandbox)
+	} else {
+		r.egressOverrides[sandbox] = mode
+	}
+	if b := r.Bindings[sandbox]; b != nil && b.Engine != nil {
+		effective := r.effectiveEgressLocked(sandbox)
+		if effective == "" {
+			effective = "restricted"
+		}
+		if err := b.Engine.SetEgressMode(effective); err != nil {
+			return err
+		}
+	}
+	return r.saveEgressOverridesLocked()
+}
+
+// EgressOverrides counts the sandboxes with a mode of their own.
+func (r *Registry) EgressOverrides() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.egressOverrides)
 }
 
 // ValidateContext checks a worker-supplied run context.
@@ -327,6 +436,11 @@ func NewRegistry(state string, options RegistryOptions) (*Registry, error) {
 	if r.Clock == nil {
 		r.Clock = monotonicClock
 	}
+	overrides, err := loadEgressOverrides(state)
+	if err != nil {
+		return nil, err
+	}
+	r.egressOverrides = overrides
 	manifest := filepath.Join(state, "bindings.json")
 	saved := map[string]any{"active": []any{}, "retired": map[string]any{}}
 	if raw, err := os.ReadFile(manifest); err == nil {
@@ -468,7 +582,7 @@ func (r *Registry) load(identity map[string]string) (*Binding, error) {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, err
 	}
-	engineOptions := EngineOptions{Operations: r.options.Operations, PolicyTemplate: r.options.PolicyTemplate, EgressMode: r.options.EgressMode}
+	engineOptions := EngineOptions{Operations: r.options.Operations, PolicyTemplate: r.options.PolicyTemplate, EgressMode: r.effectiveEgressLocked(sandbox)}
 	engine, err := NewEngine(directory, engineOptions)
 	if err != nil {
 		return nil, err

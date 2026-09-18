@@ -453,7 +453,8 @@ type Sharing struct {
 	PullRequests *PullRequests
 	Documents    *DocumentProposals
 	// Egress, when set, is the registry's runtime egress switch exposed to
-	// the console (the "egress" and "egress_set" operations).
+	// the console and the workspace panel (the "egress" and "egress_set"
+	// operations, install-wide or for one sandbox).
 	Egress EgressSwitch
 	// Network, when set, applies owner-approved temporary host grants to a
 	// sandbox's engine (the "network_allow" operation).
@@ -470,11 +471,16 @@ type NetworkGrants interface {
 	AllowHost(sandbox, host string, until float64) error
 }
 
-// EgressSwitch is the registry as the console sees it: the current mode
-// and where it came from, and a setter that applies everywhere.
+// EgressSwitch is the registry as the console and the workspace panel see
+// it: the install's mode and where it came from, a setter that applies to
+// every sandbox without a mode of its own, and one sandbox's own mode
+// (its choice, "" when it follows the install, and the mode in effect).
 type EgressSwitch interface {
 	EgressMode() (mode, source string)
 	SetEgressMode(mode string) error
+	SandboxEgress(sandbox string) (own, effective string)
+	SetSandboxEgress(sandbox, mode string) error
+	EgressOverrides() int
 }
 
 // Egress mode names as the console and warden.json use them, mapped to the
@@ -816,25 +822,43 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		return map[string]any{"host": host, "expires_at": until}, nil
 	case "github_write":
 		return s.githubWrite(data)
-	case "egress":
+	case "egress", "egress_set":
+		// The install's switch, or with a sandboxID one workspace's own
+		// mode: "" (egress_set clears it) means it follows the install.
 		if s.Egress == nil {
 			return nil, errors.New("egress switch unavailable")
 		}
+		sandbox := stringField(data, "sandboxID")
+		if sandbox != "" && !validIdentifier(sandbox) {
+			return nil, errors.New("invalid sandbox")
+		}
+		if op == "egress_set" {
+			name := stringField(data, "mode")
+			mode, ok := egressModes[name]
+			switch {
+			case sandbox != "" && name == "":
+				mode = ""
+			case !ok && sandbox != "":
+				return nil, errors.New("mode must be restricted, open or empty")
+			case !ok:
+				return nil, errors.New("mode must be restricted or open")
+			}
+			var err error
+			if sandbox != "" {
+				err = s.Egress.SetSandboxEgress(sandbox, mode)
+			} else {
+				err = s.Egress.SetEgressMode(mode)
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
 		mode, source := s.Egress.EgressMode()
-		return map[string]any{"mode": egressNames[mode], "source": source}, nil
-	case "egress_set":
-		if s.Egress == nil {
-			return nil, errors.New("egress switch unavailable")
+		if sandbox == "" {
+			return map[string]any{"mode": egressNames[mode], "source": source, "overrides": s.Egress.EgressOverrides()}, nil
 		}
-		mode, ok := egressModes[stringField(data, "mode")]
-		if !ok {
-			return nil, errors.New("mode must be restricted or open")
-		}
-		if err := s.Egress.SetEgressMode(mode); err != nil {
-			return nil, err
-		}
-		mode, source := s.Egress.EgressMode()
-		return map[string]any{"mode": egressNames[mode], "source": source}, nil
+		own, effective := s.Egress.SandboxEgress(sandbox)
+		return map[string]any{"mode": egressNames[own], "effective": egressNames[effective], "install": egressNames[mode], "source": source}, nil
 	case "disconnect":
 		// Forget one provider's sign-in. Everything that credential backed
 		// is revoked with it: Google document grants, GitHub repository
