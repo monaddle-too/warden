@@ -69,8 +69,8 @@ rows came and went with the chats' status.
    normal result finds the turn closed and does nothing. Test
    `TestClaudeRedeliveredMessageEndsTurn`. ✔
 2. Deploy to `~/.warden/release`, watch the two chats settle to `idle`
-   and the poller ack the notices (`sbx.run` audit, `warden-chat.log`).
-3. Feature map: the Claude agent stream row names the lifecycle frame.
+   and the poller ack the notices (`sbx.run` audit, `warden-chat.log`). ✔
+3. Feature map: the Claude agent stream row names the lifecycle frame. ✔
 
 ## Key decisions
 
@@ -93,3 +93,16 @@ rows came and went with the chats' status.
 - 2026-09-18: diagnosed as above; step 1 done, adapter tests pass
   (`go -C chat test ./internal/agent/`), the new test fails on the
   unfixed adapter.
+- 2026-09-18 14:31: deployed as v0.0.0-dev.fe4475e63d14 to
+  `~/.warden/release` (the launchd service). The restart interrupted the
+  two looping runs; the poller redelivered both notices at 14:31:50 and
+  the turns ended in 6 s (`firstResponse 0.0s`); both chats idle since,
+  no further runs in five minutes, the web chat back to its composer.
+  Left as is: the pending review cards and the agent's open question in
+  "docs test" are real and wait for the owner. Not done here: the
+  `~/.warden-p20` stack (feat/web-attach-from-disk's clone) still runs a
+  second `sbx daemon` against the same Docker Hub credential; and
+  `~/.warden/release` no longer has the `menu` command (the menu bar was
+  deployed from the unmerged feat/menu-bar build bb1cf87 and overwritten
+  by later deploys; the feed process started at 11:51 keeps working on
+  the old binary until the menu agent restarts).
