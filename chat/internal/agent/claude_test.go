@@ -247,8 +247,8 @@ func TestClaudeTurnInputImages(t *testing.T) {
 
 func TestClaudeTurnUsageIsGrowthOfTheRunningCost(t *testing.T) {
 	sofar := claudeUsage{input: 10, cost: 0.01}
-	u, ok := claudeTurnUsage(map[string]any{"usage": map[string]any{"input_tokens": 100.0, "cache_read_input_tokens": 900.0, "output_tokens": 40.0}, "total_cost_usd": 0.03}, sofar)
-	if !ok || u.input != 1000 || u.cached != 900 || u.cacheWrite != 0 || u.output != 40 || u.cost < 0.0199 || u.cost > 0.0201 {
+	u, ok := claudeTurnUsage(map[string]any{"usage": map[string]any{"input_tokens": 100.0, "cache_read_input_tokens": 900.0, "output_tokens": 40.0, "output_tokens_details": map[string]any{"thinking_tokens": 15.0}}, "total_cost_usd": 0.03}, sofar)
+	if !ok || u.input != 1000 || u.cached != 900 || u.cacheWrite != 0 || u.output != 40 || u.reasoning != 15 || u.cost < 0.0199 || u.cost > 0.0201 {
 		t.Fatalf("usage %+v", u)
 	}
 	// A crash result carries no usage; a cost that did not grow adds none.

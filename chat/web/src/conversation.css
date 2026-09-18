@@ -706,6 +706,15 @@ button.attachment-chip {
 .thinking > summary::-webkit-details-marker {
   display: none;
 }
+/* Thinking without text to unfold (Claude's, which its CLI withholds). */
+.thinking-bare {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  margin: 0;
+  padding: 2px 4px 2px 20px;
+  color: var(--muted);
+}
 .thinking > summary:hover {
   color: var(--text);
 }

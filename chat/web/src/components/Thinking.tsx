@@ -29,9 +29,26 @@ export const ThinkingBlock = memo(function ThinkingBlock({
   const [chosen, setChosen] = useState<boolean>();
   const open = chosen ?? thinkingOpen(kind, entry.isStreaming);
   const label = thinkingLabel(kind, entry);
+  const className = `thinking thinking-${kind}${entry.isStreaming ? " streaming" : ""}`;
+  const heading = (
+    <span className={entry.isStreaming ? "shimmer" : ""}>{label}</span>
+  );
+  // Claude Code keeps the thinking itself to itself (its stream carries
+  // the blocks with their text withheld), so there is nothing to unfold:
+  // the row says that the model thought, and for how long.
+  if (!entry.text)
+    return (
+      <p
+        className={`${className} thinking-bare`}
+        data-entry={entry.id}
+        aria-label={`${label}, the model's thinking`}
+      >
+        {heading}
+      </p>
+    );
   return (
     <details
-      className={`thinking thinking-${kind}${entry.isStreaming ? " streaming" : ""}`}
+      className={className}
       open={open}
       data-entry={entry.id}
       onToggle={(event) => {
@@ -41,21 +58,17 @@ export const ThinkingBlock = memo(function ThinkingBlock({
     >
       <summary aria-label={`${label}, the model's thinking`}>
         <ChevronRight size={14} className="chevron" />
-        <span className={entry.isStreaming ? "shimmer" : ""}>{label}</span>
+        {heading}
       </summary>
       <div className="thinking-body">
-        {entry.text ? (
-          <RichText
-            text={entry.text}
-            streaming={entry.isStreaming}
-            chatID={chatID}
-            entryID={entry.id}
-            onFile={onFile}
-            agent
-          />
-        ) : (
-          <p className="muted">{entry.isStreaming ? "…" : "No summary."}</p>
-        )}
+        <RichText
+          text={entry.text}
+          streaming={entry.isStreaming}
+          chatID={chatID}
+          entryID={entry.id}
+          onFile={onFile}
+          agent
+        />
       </div>
     </details>
   );

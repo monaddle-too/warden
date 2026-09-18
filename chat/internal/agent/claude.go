@@ -357,15 +357,15 @@ func claudeResultError(v map[string]any) string {
 // claudeUsage is a token count in the shape of Codex's TokenUsageBreakdown
 // plus the cost, which Claude Code estimates and Codex does not.
 type claudeUsage struct {
-	input, cached, cacheWrite, output int64
-	cost                              float64
+	input, cached, cacheWrite, output, reasoning int64
+	cost                                         float64
 }
 
 func (u claudeUsage) add(v claudeUsage) claudeUsage {
-	return claudeUsage{u.input + v.input, u.cached + v.cached, u.cacheWrite + v.cacheWrite, u.output + v.output, u.cost + v.cost}
+	return claudeUsage{u.input + v.input, u.cached + v.cached, u.cacheWrite + v.cacheWrite, u.output + v.output, u.reasoning + v.reasoning, u.cost + v.cost}
 }
 func (u claudeUsage) params() map[string]any {
-	return map[string]any{"inputTokens": u.input, "cachedInputTokens": u.cached, "cacheWriteInputTokens": u.cacheWrite, "outputTokens": u.output, "reasoningOutputTokens": int64(0), "totalTokens": u.input + u.output, "costUSD": u.cost}
+	return map[string]any{"inputTokens": u.input, "cachedInputTokens": u.cached, "cacheWriteInputTokens": u.cacheWrite, "outputTokens": u.output, "reasoningOutputTokens": u.reasoning, "totalTokens": u.input + u.output, "costUSD": u.cost}
 }
 
 // claudeTurnUsage reads what a turn cost from Claude Code's `result`: with
@@ -382,6 +382,10 @@ func claudeTurnUsage(v map[string]any, sofar claudeUsage) (claudeUsage, bool) {
 	n := func(k string) int64 { f, _ := usage[k].(float64); return int64(f) }
 	u := claudeUsage{cached: n("cache_read_input_tokens"), cacheWrite: n("cache_creation_input_tokens"), output: n("output_tokens")}
 	u.input = n("input_tokens") + u.cached + u.cacheWrite
+	// The thinking tokens are part of the output, as Codex counts them.
+	if f, ok := Map(usage["output_tokens_details"])["thinking_tokens"].(float64); ok {
+		u.reasoning = int64(f)
+	}
 	if cost, ok := v["total_cost_usd"].(float64); ok && cost > sofar.cost {
 		u.cost = cost - sofar.cost
 	}
