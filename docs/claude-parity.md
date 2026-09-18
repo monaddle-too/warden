@@ -297,7 +297,7 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 - [ ] 3 Permission model.
 - [ ] 4 Plan mode.
 - [ ] 5 Slash-command pass-through.
-- [ ] 6 TUI catch-up.
+- [x] 6 TUI catch-up — merged to main c60d938 (2026-09-17); verified as the Item 6 section says.
 - [ ] 7 Workspace `.claude/` loading and policy.
 - [ ] 8 Compaction and context.
 - [ ] 9 Mid-session model, effort, thinking.
@@ -433,4 +433,5 @@ Left: long commands (`/delete` stops the sandbox first) block the redraw
 for a few seconds; `/attach` accepts one file per command; vim mode.
 
 Progress: started 2026-09-17; implemented and live-verified 2026-09-17
-(66c3e37); merge pending.
+(66c3e37); merged to main c60d938 (2026-09-17) after merging item 1's
+typed tool cards in (tui_test.go's append-append conflict kept both).
