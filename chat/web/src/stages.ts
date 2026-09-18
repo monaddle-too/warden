@@ -48,6 +48,8 @@ export function chatStatusLabel(
       const last = entries[entries.length - 1];
       if (last?.role === "thinking" && last.isStreaming)
         return "Agent is thinking";
+      if (last?.role === "compaction" && last.isStreaming)
+        return "Compacting context";
       return "Agent is running";
     }
     case "queued":

@@ -14,6 +14,34 @@ type Conversation struct {
 	// and the tokens the provider reported for it. Entries name their turn
 	// in TurnID; a turn from before this record was kept has no row.
 	Turns []Turn `json:"turns,omitempty"`
+	// Context is how full the agent's context is, as it last reported:
+	// what its latest model call was given against the model's window.
+	// Nil until a provider reports one (Claude does; Codex does not yet).
+	Context *Context `json:"context,omitempty"`
+}
+
+// Context is the agent's context length against its window, in tokens:
+// Used is the prompt of the latest model call (its input, cache-read and
+// cache-written tokens), or the agent's own account of it; Window is the
+// model's context window; Threshold is where the agent compacts on its
+// own (Claude Code keeps a buffer free below the window), 0 when not
+// reported; Model the model the agent reported it for.
+type Context struct {
+	Used      int64  `json:"used"`
+	Window    int64  `json:"window"`
+	Threshold int64  `json:"threshold,omitempty"`
+	Model     string `json:"model,omitempty"`
+}
+
+// ContextFrom reads a `thread/context/updated` notification's context.
+func ContextFrom(m map[string]any) *Context {
+	n := func(k string) int64 { f, _ := m[k].(float64); return int64(f) }
+	c := Context{Used: n("used"), Window: n("window"), Threshold: n("threshold")}
+	c.Model, _ = m["model"].(string)
+	if c.Used == 0 && c.Window == 0 {
+		return nil
+	}
+	return &c
 }
 
 // Turn is the service's record of one agent turn. StartedAt is when the
@@ -104,6 +132,23 @@ type Entry struct {
 	// card. Empty for the conversation's own entries. A subagent's own
 	// subagent chains by the same rule.
 	ParentID string `json:"parentID,omitempty"`
+	// Compaction is what a compaction entry records: the agent compacted
+	// its context here (Text says so; Detail is the summary it continues
+	// from, when the agent gives one).
+	Compaction *Compaction `json:"compaction,omitempty"`
+}
+
+// Compaction describes one compaction of the agent's context: Trigger is
+// "manual" (the owner's /compact) or "auto" (the agent near its window),
+// PreTokens the context before it and PostTokens the summary it came down
+// to, in tokens (0 when not reported); Status is running while it is under
+// way, completed, or failed with Error saying why.
+type Compaction struct {
+	Trigger    string `json:"trigger,omitempty"`
+	PreTokens  int64  `json:"preTokens,omitempty"`
+	PostTokens int64  `json:"postTokens,omitempty"`
+	Status     string `json:"status"`
+	Error      string `json:"error,omitempty"`
 }
 
 // Tool describes one agent tool call: Kind is what a surface renders by

@@ -130,6 +130,7 @@ describe("new messages since the reader left the bottom", () => {
     expect(newSince(entries, "u2")).toBe(1);
     expect(newSince(entries, "m2")).toBe(0);
     expect(newSince([...entries, entry("t1", "thinking", 23)], "m2")).toBe(0);
+    expect(newSince([...entries, entry("k1", "compaction", 23)], "m2")).toBe(0);
   });
   it("counts everything after an empty transcript and nothing after a lost entry", () => {
     expect(newSince(entries, "")).toBe(4);
@@ -189,5 +190,22 @@ describe("subagent nesting", () => {
     const { top } = nestEntries(list);
     expect(newSince(top, "agent")).toBe(1);
     expect(groupEntries(top).length).toBe(2);
+  });
+});
+
+describe("a person's own command", () => {
+  it("stands on its own, never in the agent's step group", () => {
+    const you = { principalID: "owner" };
+    const entries = [
+      { id: "a", role: "activity", createdAt: 1, turnID: "t1" },
+      { id: "b", role: "activity", createdAt: 2, turnID: "t1" },
+      { id: "c", role: "activity", createdAt: 3, sender: you },
+      { id: "d", role: "activity", createdAt: 4, sender: you },
+      { id: "e", role: "activity", createdAt: 5 },
+    ];
+    const items = groupEntries(entries).map((item) =>
+      "group" in item ? item.group.map((e) => e.id).join("+") : item.entry.id,
+    );
+    expect(items).toEqual(["a+b", "c", "d", "e"]);
   });
 });

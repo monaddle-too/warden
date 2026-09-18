@@ -42,6 +42,7 @@ import {
   toolRunning,
   toolTitle,
 } from "../tools";
+import { senderLabel } from "../export";
 import type { Entry, ToolKind } from "../types";
 import { DiffView } from "./DiffView";
 
@@ -114,6 +115,12 @@ export const ToolSummary = memo(function ToolSummary({
   }, [entry, tool, running, failed, steps, now]);
   return (
     <>
+      {entry.sender && (
+        // A command the person ran themselves ("!cmd"), not the agent's.
+        <span className="tool-by" title="Run by this person, not the agent">
+          {senderLabel(entry.sender)}
+        </span>
+      )}
       <Icon size={13} className="tool-icon" aria-hidden="true" />
       <span className={`tool-title${tool.kind === "command" ? " mono" : ""}`}>
         {toolTitle(entry)}

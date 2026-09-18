@@ -39,6 +39,7 @@ var Commands = []Command{
 	{"stop", "", "interrupt the agent's turn (Esc)"},
 	{"model", "MODEL", "set the model for the next turn"},
 	{"provider", "codex|claude", "set the provider for the next turn"},
+	{"mode", "auto|ask|plan", "permission mode of a Claude chat (Shift+Tab cycles)"},
 	{"attach", "PATH", "send a local file with the next message"},
 	{"attachments", "", "list the files waiting to be sent"},
 	{"detach", "N", "drop a waiting file"},

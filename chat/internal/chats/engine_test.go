@@ -34,6 +34,8 @@ type fakeWorker struct {
 	inputs      [][]any  // the input items of every turn/start and turn/steer
 	turnID      string   // the ID of the next turn/start's turn; "turn-one" when empty
 	paths       []string // what a "paths" completion answers
+	// exec is what an "exec" answers (nil: a plain success with no output).
+	exec *sandbox.ExecResult
 	// prepareGate, when set, holds prepare until it is closed; progress is
 	// what the progress operation answers meanwhile (startup_test.go).
 	prepareGate chan struct{}
@@ -96,6 +98,16 @@ func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 			}
 		}
 		return sandbox.Response{}, errors.New("no checkpoint was recorded at this message")
+	}
+	if r.Operation == "exec" {
+		result := f.exec
+		if result == nil {
+			result = &sandbox.ExecResult{}
+		}
+		return sandbox.Response{Version: 2, Exec: result}, nil
+	}
+	if r.Operation == "memory-append" {
+		return sandbox.Response{Version: 2, Directory: "CLAUDE.md"}, nil
 	}
 	return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: id, ProjectID: r.ProjectID}}, nil
 }
@@ -884,6 +896,12 @@ func TestTurnTimingAndTokenUsage(t *testing.T) {
 	if u := usage(); u.Input != 2500 || u.Cached != 1500 || u.Output != 700 {
 		t.Fatalf("usage %+v", u)
 	}
+	// The agent's context report is kept on the conversation as it stands.
+	w.send(agent.Frame{Method: "thread/context/updated", Params: map[string]any{"threadId": "thread-one", "turnId": "turn-one", "context": map[string]any{"used": 42787.0, "window": 200000.0, "model": "claude-sonnet-5"}}})
+	until(t, func() bool { c := e.Store.Snapshot().chat(id).Conversation.Context; return c != nil && c.Used == 42787 })
+	if c := e.Store.Snapshot().chat(id).Conversation.Context; c.Window != 200000 || c.Model != "claude-sonnet-5" {
+		t.Fatalf("context %+v", c)
+	}
 	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
 	c = e.Store.Snapshot().chat(id)
@@ -910,5 +928,88 @@ func TestTurnTimingAndTokenUsage(t *testing.T) {
 	turns := e.Store.Snapshot().chat(id).Conversation.Turns
 	if turns[0].EndedAt != first.EndedAt || turns[1].EndedAt < turns[1].StartedAt || turns[1].Usage.Input != 800 {
 		t.Fatalf("stopped run left the turn wrong: %+v", turns)
+	}
+}
+
+// The agent's thread/started names the session's slash commands and
+// settings (Claude's system/init); they are on the chat, in GET state as
+// chat.commands and chat.session, survive a restart, and follow the
+// next thread/started. A thread/started without them (Codex) leaves them
+// alone. A compaction item (item 8) is a compaction entry in the
+// transcript, its running state included.
+func TestSessionCommandsInStateAndCompactionNote(t *testing.T) {
+	e, w, _ := setup(t)
+	// The fake worker speaks the Codex protocol; the frames below are what
+	// the Claude adapter emits into it.
+	id, _ := e.Create("Commands", "", "", nil)
+	_ = e.Message(id, "/compact", cv.ID())
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Conversation.Entries[0].Delivery == "sent" })
+	if c := e.Store.Snapshot().chat(id); len(c.Commands) != 0 || c.Session != nil {
+		t.Fatalf("commands before the session reported any: %+v", c)
+	}
+	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one",
+		"commands": []any{map[string]any{"name": "compact"}, map[string]any{"name": "probe-cmd", "description": "From the workspace"}, map[string]any{"name": ""}},
+		"model":    "claude-opus-5[1m]", "permissionMode": "default", "outputStyle": "default"}}})
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Commands) == 2 })
+	h := &HTTP{Engine: e, Token: "private", Host: "127.0.0.1:18780", Origin: "http://127.0.0.1:18780", WebDir: t.TempDir()}
+	r := httptest.NewRequest("GET", "http://"+h.Host+"/api/state", nil)
+	r.Header.Set("Authorization", "Bearer private")
+	out := httptest.NewRecorder()
+	h.ServeHTTP(out, r)
+	var state struct {
+		Chats []struct {
+			Commands []Command `json:"commands"`
+			Session  *Session  `json:"session"`
+		} `json:"chats"`
+	}
+	if err := json.Unmarshal(out.Body.Bytes(), &state); err != nil || len(state.Chats) != 1 {
+		t.Fatal(err, out.Body.String())
+	}
+	got := state.Chats[0]
+	if len(got.Commands) != 2 || got.Commands[0] != (Command{Name: "compact"}) || got.Commands[1] != (Command{Name: "probe-cmd", Description: "From the workspace"}) {
+		t.Fatalf("commands %+v", got.Commands)
+	}
+	if got.Session == nil || *got.Session != (Session{Model: "claude-opus-5[1m]", PermissionMode: "default", OutputStyle: "default"}) {
+		t.Fatalf("session %+v", got.Session)
+	}
+	w.send(agent.Frame{Method: "item/started", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "k1", "type": "compaction", "status": "running"}}})
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 2 })
+	if note := e.Store.Snapshot().chat(id).Conversation.Entries[1]; note.Role != "compaction" || note.Text != "Compacting context…" || !note.IsStreaming {
+		t.Fatalf("running compaction %+v", note)
+	}
+	w.send(agent.Frame{Method: "item/completed", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "k1", "type": "compaction", "status": "completed", "trigger": "manual", "preTokens": 27230.0, "postTokens": 1850.0, "summary": "This session is being continued…"}}})
+	until(t, func() bool { return !e.Store.Snapshot().chat(id).Conversation.Entries[1].IsStreaming })
+	if note := e.Store.Snapshot().chat(id).Conversation.Entries[1]; note.Role != "compaction" || note.Text != "Context compacted" || note.Detail != "This session is being continued…" || note.Compaction == nil || note.Compaction.Trigger != "manual" || note.Compaction.PreTokens != 27230 || note.Compaction.PostTokens != 1850 {
+		t.Fatalf("note %+v %+v", note, note.Compaction)
+	}
+	// Codex's thread/started, and a later Claude init with fewer commands.
+	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one"}}})
+	w.send(agent.Frame{Method: "item/completed", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "k2", "type": "compaction", "status": "completed", "trigger": "auto"}}})
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 3 })
+	if c := e.Store.Snapshot().chat(id); len(c.Commands) != 2 || c.Session == nil || c.Conversation.Entries[2].Role != "compaction" || c.Conversation.Entries[2].Compaction.Trigger != "auto" {
+		t.Fatalf("unchanged by a bare thread/started: %+v", c)
+	}
+	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one", "commands": []any{map[string]any{"name": "init"}}}}})
+	until(t, func() bool {
+		c := e.Store.Snapshot().chat(id)
+		return len(c.Commands) == 1 && c.Commands[0].Name == "init"
+	})
+	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
+	if c := e.Store.Snapshot().chat(id); c.Session == nil || len(c.Commands) != 1 {
+		t.Fatalf("session lost with the turn: %+v", c)
+	}
+	// The commands belong to the provider: choosing the other one drops them
+	// (only possible before the chat has history).
+	fresh, _ := e.Create("Fresh", "", "", nil, "claude", "")
+	_ = e.Store.update(func(st *State) error {
+		st.chat(fresh).sessionStarted(map[string]any{"commands": []any{map[string]any{"name": "compact"}}, "model": "m"})
+		return nil
+	})
+	if err := e.ConfigureAgent(fresh, "codex", ""); err != nil {
+		t.Fatal(err)
+	}
+	if c := e.Store.Snapshot().chat(fresh); len(c.Commands) != 0 || c.Session != nil {
+		t.Fatalf("commands survived the provider change: %+v", c)
 	}
 }

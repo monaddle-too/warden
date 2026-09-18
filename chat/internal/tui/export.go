@@ -238,6 +238,11 @@ func entryMarkdown(e Entry, provider string, at func(float64) string) []string {
 			caption = ": " + e.Text
 		}
 		lines = append(lines, "_Image"+caption+"_", "")
+	case "compaction":
+		lines = append(lines, "### "+CompactionText(e), "")
+		if e.Detail != "" {
+			lines = append(lines, quote(e.Detail), "")
+		}
 	default:
 		lines = append(lines, quote(e.Text), "")
 	}

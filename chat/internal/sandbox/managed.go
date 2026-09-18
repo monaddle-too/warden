@@ -652,6 +652,13 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 		// The pod read is a cluster call; it never holds the registry.
 		return w.snapshotOp(ctx, r)
 	}
+	switch r.Operation {
+	case "exec":
+		// A person's own command: resolved under the lock, run without it.
+		return w.execCommand(ctx, r)
+	case "memory-append":
+		return w.appendMemory(ctx, r)
+	}
 	if r.Operation == "status" {
 		// The read the workspace panel polls: never behind a creation.
 		if !w.mu.TryLock() {
@@ -795,6 +802,11 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	slots := w.ordinarySlots
 	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" {
 		slots = w.controlSlots
+	}
+	if r.Operation == "exec" {
+		// A person's command may run for a minute; it never takes a slot
+		// from the sandbox operations.
+		slots = w.execSlots
 	}
 	select {
 	case slots <- struct{}{}:

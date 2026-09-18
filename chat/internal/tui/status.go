@@ -98,7 +98,10 @@ func TurnStats(c *Chat) string {
 		parts = append(parts, FormatDuration(t.EndedAt-start))
 	}
 	if t.Usage != nil {
-		parts = append(parts, UsageSummary(*t.Usage))
+		// A /compact turn reports no tokens, only the compaction's cost.
+		if t.Usage.Total > 0 {
+			parts = append(parts, UsageSummary(*t.Usage))
+		}
 		if t.Usage.CostUSD != 0 {
 			parts = append(parts, FormatCost(t.Usage.CostUSD))
 		}
@@ -106,10 +109,38 @@ func TurnStats(c *Chat) string {
 	return strings.Join(parts, " · ")
 }
 
+// ContextIndicator is how full the agent's context is, "ctx 43k/200k
+// (21%)": plain until 80 % of the way to where the agent compacts on its
+// own (its threshold when it reports one, else the window), yellow from
+// there, red from 95 % (a compaction is imminent). Empty when the agent
+// has reported none.
+func ContextIndicator(c *Chat) string {
+	ctx := c.Conversation.Context
+	if ctx == nil || ctx.Used == 0 {
+		return ""
+	}
+	if ctx.Window <= 0 {
+		return "ctx " + FormatTokens(ctx.Used)
+	}
+	limit := ctx.Window
+	if ctx.Threshold > 0 && ctx.Threshold < limit {
+		limit = ctx.Threshold
+	}
+	fraction := float64(ctx.Used) / float64(limit)
+	text := fmt.Sprintf("ctx %s/%s (%d%%)", FormatTokens(ctx.Used), FormatTokens(ctx.Window), int(math.Round(math.Min(1, float64(ctx.Used)/float64(ctx.Window))*100)))
+	switch {
+	case fraction >= 0.95:
+		return red + text + reset
+	case fraction >= 0.8:
+		return yellow + text + reset
+	}
+	return text
+}
+
 // StatusLine is the one-line status bar: the connection, the chat's title,
 // provider and model, what the agent is doing (with the startup stage or
 // the run's elapsed time), pending approvals, the turn's tokens and cost,
-// previews and the chat's error.
+// the context, previews and the chat's error.
 func StatusLine(c *Chat, ports []Port, live bool, now time.Time) string {
 	link := green + "●" + reset
 	if !live {
@@ -137,7 +168,12 @@ func StatusLine(c *Chat, ports []Port, live bool, now time.Time) string {
 	if model == "" {
 		model = "default"
 	}
-	parts := []string{fmt.Sprintf("%s %s%s%s", link, bold, sanitize(c.Title), reset), c.Provider + " · " + model, status}
+	agent := c.Provider + " · " + model
+	if c.Provider == "claude" {
+		// The permission mode (Shift+Tab cycles it) beside the model.
+		agent += " · " + orMode(c.Mode)
+	}
+	parts := []string{fmt.Sprintf("%s %s%s%s", link, bold, sanitize(c.Title), reset), agent, status}
 	if n := len(c.Pending()); n > 0 {
 		word := "approvals"
 		if n == 1 {
@@ -147,6 +183,9 @@ func StatusLine(c *Chat, ports []Port, live bool, now time.Time) string {
 	}
 	if stats := TurnStats(c); stats != "" {
 		parts = append(parts, dim+stats+reset)
+	}
+	if ind := ContextIndicator(c); ind != "" {
+		parts = append(parts, ind)
 	}
 	published := 0
 	for _, p := range ports {

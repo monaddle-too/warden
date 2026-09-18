@@ -62,6 +62,10 @@ type App struct {
 	menuOff     string // the draft the menu was dismissed for (Esc)
 	pathSeq     atomic.Int64
 	pathResults chan pathResult
+	// later carries what a background request (a "!" command, which may
+	// run for a minute) has to apply on the main loop: a notice, a state
+	// refresh.
+	later       chan func(context.Context)
 	search      *searchState
 	confirm     *confirmation
 	attachments map[string][]Attachment // uploads waiting for the next message, per chat
@@ -121,14 +125,21 @@ func (a *App) page() int {
 const helpText = `commands   type / for the menu (Tab or Enter completes); /help lists them
            /new [title] /chats /switch N · /rename TITLE /archive /restore /delete
            /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
-           /stop /model M /provider P · /open /previews /preview N /unpublish N
+           /stop /model M /provider P /mode M · /open /previews /preview N /unpublish N
            /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
            /find TEXT /copy /expand /verbose /clear /quit
+           /compact [what to keep] asks Claude to replace the history with a summary
 composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
+           a long paste becomes [Pasted text #N — M lines] and is sent in full
+           !cmd runs a shell command in the workspace as you (not the agent)
+           #note appends a bullet to the workspace's CLAUDE.md
            @path completes a workspace path (Tab or Enter accepts)
            Up/Down recall prompts (or move between lines) · Ctrl+R searches them
            Ctrl+A/E line start/end · Ctrl+U/K delete to line start/end · Ctrl+W a word
 keys       y / n answer the first pending approval; typed text answers a question
+           tool asks: y allow · a allow always · n [message] deny
+           plans: y approve (auto) · a approve, ask before edits · n [feedback] keep planning
+           Shift+Tab cycles a Claude chat's permission mode (auto → ask → plan)
            Esc interrupts the agent · Ctrl+C clears the draft (twice quits) · Ctrl+D quits
            Ctrl+O shows or hides tool steps and thinking · Tab (empty draft) expands output
            Ctrl+L redraws · scroll: mouse wheel, PgUp/PgDn, Home/End with an empty draft`
@@ -243,6 +254,9 @@ func (a *App) Run(ctx context.Context) error {
 	if a.pathResults == nil {
 		a.pathResults = make(chan pathResult, 4)
 	}
+	if a.later == nil {
+		a.later = make(chan func(context.Context), 8)
+	}
 	if s, err := a.Client.State(ctx); err == nil {
 		a.state, a.live = s, true
 	} else {
@@ -278,6 +292,9 @@ func (a *App) Run(ctx context.Context) error {
 			a.draw()
 		case r := <-a.pathResults:
 			a.applyPaths(r)
+			a.draw()
+		case f := <-a.later:
+			f(ctx)
 			a.draw()
 		case <-a.Resize:
 			a.draw()
@@ -431,6 +448,8 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 			return
 		}
 		a.editor.Handle(k)
+	case KeyShiftTab:
+		a.cycleMode(ctx)
 	case KeyTab:
 		if a.editor.Text() == "" {
 			a.expanded = !a.expanded
@@ -446,8 +465,6 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 		if a.menu != nil && len(a.menu.Items) == 1 {
 			a.acceptMenu(ctx, false)
 		}
-	case KeyShiftTab:
-		// Permission modes (parity item 3) will take this key.
 	case KeyEnter:
 		a.send(ctx)
 	default:
@@ -551,11 +568,7 @@ func (a *App) refreshMenu(ctx context.Context) {
 	c := a.chat()
 	switch t.Kind {
 	case "command":
-		var extra []Command
-		if a.ChatCommands != nil && c != nil {
-			extra = a.ChatCommands(c)
-		}
-		for _, cmd := range commandItems(t.Query, extra) {
+		for _, cmd := range commandItems(t.Query, a.chatCommands(c)) {
 			insert := "/" + cmd.Name
 			if cmd.Arg != "" {
 				insert += " "
@@ -676,9 +689,30 @@ func (a *App) submit(ctx context.Context, text string) {
 		a.setNotice("no chat selected; /new or /chats")
 		return
 	}
+	if cmd, ok := strings.CutPrefix(text, "!"); ok && strings.TrimSpace(cmd) != "" {
+		// A shell command by the person, not the agent: the card arrives
+		// over the stream; the request runs off the loop since a command
+		// may take up to a minute.
+		a.shell(ctx, c.ID, strings.TrimSpace(cmd))
+		return
+	}
+	if note, ok := strings.CutPrefix(text, "#"); ok && strings.TrimSpace(note) != "" {
+		if err := a.Client.Memory(ctx, c.ID, strings.TrimSpace(note)); err != nil {
+			a.setNotice(err.Error())
+			a.editor.Set(text)
+			return
+		}
+		a.setNotice("added to CLAUDE.md")
+		return
+	}
 	pending := c.Pending()
 	if len(pending) > 0 {
 		first := pending[0]
+		if p := first.Permission(); p != nil {
+			if a.answerPermission(ctx, c.ID, first, p, text) {
+				return
+			}
+		}
 		switch strings.ToLower(text) {
 		case "y", "yes", "allow":
 			a.resolve(ctx, c.ID, first, true, nil)
@@ -696,6 +730,12 @@ func (a *App) submit(ctx context.Context, text string) {
 			return
 		}
 	}
+	a.sendMessage(ctx, c, text)
+}
+
+// sendMessage sends text to chat c with the files waiting to go with it;
+// the draft comes back if the service refuses.
+func (a *App) sendMessage(ctx context.Context, c *Chat, text string) {
 	var ids []string
 	for _, at := range a.attachments[c.ID] {
 		ids = append(ids, at.ID)
@@ -706,6 +746,125 @@ func (a *App) submit(ctx context.Context, text string) {
 		return
 	}
 	delete(a.attachments, c.ID)
+}
+
+// shell runs a "!" command in the chat's workspace in the background and
+// reports how it ended when it does; the command card itself arrives with
+// the state stream (running, then with its output).
+func (a *App) shell(ctx context.Context, chatID, command string) {
+	a.setNotice("running in the workspace: " + truncate(command, 60))
+	go func() {
+		result, err := a.Client.Exec(ctx, chatID, command)
+		report := func(context.Context) {
+			switch {
+			case err != nil:
+				a.setNotice(err.Error())
+			case result.TimedOut:
+				a.setNotice("command timed out after 60s")
+			case result.ExitCode != 0:
+				a.setNotice(fmt.Sprintf("command exited %d", result.ExitCode))
+			default:
+				a.setNotice("command finished")
+			}
+		}
+		select {
+		case a.later <- report:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+// answerPermission reads a typed answer to a tool ask: y allows, a allows
+// always, n denies with the rest of the line as the message to the model;
+// for a plan, y approves into auto, a approves into ask, n keeps planning
+// with the rest of the line as feedback. Other text is not an answer.
+func (a *App) answerPermission(ctx context.Context, chatID string, ap Approval, p *Permission, text string) bool {
+	word, rest, _ := strings.Cut(strings.TrimSpace(text), " ")
+	rest = strings.TrimSpace(rest)
+	var allow, always bool
+	message, mode, said := "", "", ""
+	switch strings.ToLower(word) {
+	case "y", "yes", "allow", "approve":
+		allow = true
+		if p.IsPlan() {
+			mode, said = "auto", "plan approved; mode auto"
+		} else {
+			said = "allowed"
+		}
+	case "a", "always":
+		allow = true
+		if p.IsPlan() {
+			mode, said = "ask", "plan approved; mode ask"
+		} else {
+			always, said = true, "allowed always: "+p.Always
+		}
+	case "n", "no", "deny", "decline":
+		message = rest
+		if p.IsPlan() {
+			said = "kept planning"
+		} else {
+			said = "denied"
+		}
+		if message != "" {
+			said += " with a message"
+		}
+	default:
+		return false
+	}
+	if err := a.Client.Answer(ctx, chatID, ap.ID, allow, always, message, mode); err != nil {
+		a.setNotice(err.Error())
+	} else {
+		a.setNotice(said)
+	}
+	return true
+}
+
+// modes are the permission modes in the order Shift+Tab cycles them.
+var modes = []string{"auto", "ask", "plan"}
+
+// cycleMode moves a Claude chat to the next permission mode.
+func (a *App) cycleMode(ctx context.Context) {
+	c := a.chat()
+	if c == nil {
+		a.setNotice("no chat selected")
+		return
+	}
+	if c.Provider != "claude" {
+		a.setNotice("permission modes apply to Claude chats")
+		return
+	}
+	next := modes[0]
+	for i, m := range modes {
+		if m == orMode(c.Mode) {
+			next = modes[(i+1)%len(modes)]
+		}
+	}
+	a.setMode(ctx, c, next)
+}
+
+func (a *App) setMode(ctx context.Context, c *Chat, mode string) {
+	if err := a.Client.Mode(ctx, c.ID, mode); err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	a.setNotice("permission mode " + mode + ": " + modeHint(mode))
+}
+
+func orMode(mode string) string {
+	if mode == "" {
+		return "auto"
+	}
+	return mode
+}
+
+func modeHint(mode string) string {
+	switch mode {
+	case "ask":
+		return "Claude asks before commands that write and before file edits"
+	case "plan":
+		return "Claude explores and proposes a plan; edits wait for its approval"
+	}
+	return "every tool call is allowed"
 }
 
 func (a *App) resolve(ctx context.Context, chatID string, ap Approval, allow bool, answers map[string][]string) {
@@ -741,6 +900,44 @@ func (a *App) refreshState(ctx context.Context) {
 	if s, err := a.Client.State(ctx); err == nil {
 		a.state = s
 	}
+}
+
+// providerCommands are the agent's own slash commands the menu knows for
+// a chat's provider: their argument and hint (the chat's reported list
+// carries only a description for the workspace's own), and the menu until
+// the chat has reported its list. Sent as text, the agent expands them.
+var providerCommands = map[string][]Command{
+	"claude": {{"compact", "[INSTRUCTIONS]", "replace the history with a summary; say what to keep"}},
+}
+
+// chatCommands lists the commands the chat itself offers: what ChatCommands
+// says when set, else the chat's reported list (with the provider's
+// argument and hint where known), else the provider's known ones.
+func (a *App) chatCommands(c *Chat) []Command {
+	if c == nil {
+		return nil
+	}
+	if a.ChatCommands != nil {
+		return a.ChatCommands(c)
+	}
+	known := providerCommands[c.Provider]
+	if len(c.Commands) == 0 {
+		return known
+	}
+	var out []Command
+	for _, ac := range c.Commands {
+		cmd := Command{Name: ac.Name, Hint: ac.Description}
+		for _, k := range known {
+			if k.Name == ac.Name {
+				cmd.Arg = k.Arg
+				if cmd.Hint == "" {
+					cmd.Hint = k.Hint
+				}
+			}
+		}
+		out = append(out, cmd)
+	}
+	return out
 }
 
 func (a *App) command(ctx context.Context, line string) {
@@ -890,6 +1087,19 @@ func (a *App) command(ctx context.Context, line string) {
 		} else {
 			a.setNotice(fmt.Sprintf("next run uses %s · %s", provider, orDefault(model)))
 		}
+	case "mode":
+		if c == nil {
+			a.setNotice("no chat selected")
+			return
+		}
+		switch arg {
+		case "":
+			a.setNotice("permission mode " + orMode(c.Mode) + ": " + modeHint(orMode(c.Mode)) + " · /mode auto|ask|plan, Shift+Tab cycles")
+		case "auto", "ask", "plan":
+			a.setMode(ctx, c, arg)
+		default:
+			a.setNotice("/mode auto|ask|plan")
+		}
 	case "attach":
 		a.attach(ctx, c, arg)
 	case "attachments":
@@ -1032,6 +1242,14 @@ func (a *App) command(ctx context.Context, line string) {
 			a.setNotice("unpublished; the URL now answers 410")
 		}
 	default:
+		// A command the chat itself offers (/compact and the agent's
+		// others) goes to the agent as the message, verbatim.
+		for _, cmd := range a.chatCommands(c) {
+			if cmd.Name == name {
+				a.sendMessage(ctx, c, line)
+				return
+			}
+		}
 		a.setNotice("unknown command /" + name + "; /help")
 	}
 }

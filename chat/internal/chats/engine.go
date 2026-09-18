@@ -1008,6 +1008,7 @@ func (e *Engine) run(parent context.Context, id string) {
 		return
 	}
 	items = e.beforeTurn(ctx, id, &current, message.ID, items)
+	e.applyMode(ctx, id, &current, client)
 	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 	if err != nil {
 		return
@@ -1055,6 +1056,7 @@ func (e *Engine) run(parent context.Context, id string) {
 			return
 		}
 		items = e.beforeTurn(ctx, id, &current, message.ID, items)
+		e.applyMode(ctx, id, &current, client)
 		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 		if err != nil {
 			return
@@ -1371,7 +1373,12 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 		usageTurn, usage = e.turnUsage(id, f.Params)
 	}
 	return e.Store.update(func(st *State) error {
-		c := &st.chat(id).Conversation
+		chat := st.chat(id)
+		if f.Method == "permissions/modeChanged" {
+			chat.applyMode(agent.String(f.Params["mode"]))
+			return nil
+		}
+		c := &chat.Conversation
 		p := f.Params
 		turn := agent.String(p["turnId"])
 		if turn == "" {
@@ -1379,7 +1386,9 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 		}
 		switch f.Method {
 		case "thread/started":
-			c.ThreadID = cv.Ptr(agent.String(agent.Map(p["thread"])["id"]))
+			thread := agent.Map(p["thread"])
+			c.ThreadID = cv.Ptr(agent.String(thread["id"]))
+			chat.sessionStarted(thread)
 		case "turn/started":
 			c.ActiveTurnID = cv.Ptr(turn)
 		case "item/started", "item/completed":
@@ -1401,6 +1410,12 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 			if usage != nil {
 				c.Report(usageTurn, *usage)
 			}
+		case "thread/context/updated":
+			// How full the agent's context is (the Claude adapter reports
+			// it per model call and after a compaction).
+			if context := cv.ContextFrom(agent.Map(p["context"])); context != nil {
+				c.Context = context
+			}
 		case "error":
 			if p["willRetry"] != true {
 				c.Entries = append(c.Entries, cv.NewEntry("system", agent.String(agent.Map(p["error"])["message"])))
@@ -1420,6 +1435,36 @@ func (e *Engine) request(ctx context.Context, c *Chat, client *agent.Client, f a
 			chat.Approvals = append(chat.Approvals, Approval{ID: cv.ID(), RunID: c.RunID, RPCID: append(json.RawMessage(nil), f.ID...), Method: f.Method, Params: f.Params, State: "pending"})
 			return nil
 		})
+	case methodPermission:
+		// A Claude tool ask: the chat's mode and rules answer it, or the
+		// owner does from a card that shows the call as its transcript
+		// card and, for a plan, the plan (permissions.go).
+		tool, input := agent.String(f.Params["tool"]), agent.Map(f.Params["input"])
+		decision := ""
+		err := e.Store.update(func(st *State) error {
+			chat := st.chat(c.ID)
+			if decision = chat.decide(tool, input); decision != "" {
+				return nil
+			}
+			params := map[string]any{"tool": tool, "input": input}
+			if tool != "ExitPlanMode" {
+				params["always"] = RuleFor(tool, input).Label() // a plan is never remembered
+			}
+			if entry := permissionEntry(f.Params); entry != nil {
+				params["entry"] = entry
+			}
+			for _, k := range []string{"description", "plan"} {
+				if v := agent.String(f.Params[k]); v != "" {
+					params[k] = v
+				}
+			}
+			chat.Approvals = append(chat.Approvals, Approval{ID: cv.ID(), RunID: c.RunID, RPCID: append(json.RawMessage(nil), f.ID...), Method: f.Method, Params: params, State: "pending"})
+			return nil
+		})
+		if err != nil || decision == "" {
+			return err
+		}
+		return client.Reply(f.ID, map[string]any{"decision": decision})
 	default:
 		return client.Send(agent.Frame{ID: f.ID, Error: &agent.RPCError{Code: -32601, Message: "Unsupported Warden agent request"}})
 	}
@@ -1431,6 +1476,25 @@ func (e *Engine) Resolve(chatID, approvalID string, allow bool, answers map[stri
 // ResolveAs answers an approval on behalf of actor, the person the edge
 // identified (grants record who approved them).
 func (e *Engine) ResolveAs(chatID, approvalID string, allow bool, answers map[string][]string, actor cv.Actor) error {
+	return e.Answer(chatID, approvalID, Answer{Allow: allow, Answers: answers}, actor)
+}
+
+// Answer is what the person says to an approval. Allow and Answers (a
+// question's) serve every kind; a tool permission ask also takes Always
+// (allow, and remember the call's rule for the chat), Message (why it is
+// denied, read by the model) and, for a plan, Mode (the permission mode
+// the chat moves to on approval: auto or ask).
+type Answer struct {
+	Allow   bool
+	Answers map[string][]string
+	Always  bool
+	Message string
+	Mode    string
+}
+
+// Answer resolves an approval with the given answer on behalf of actor.
+func (e *Engine) Answer(chatID, approvalID string, answer Answer, actor cv.Actor) error {
+	allow, answers := answer.Allow || answer.Always, answer.Answers
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	a := e.active[chatID]
@@ -1477,6 +1541,47 @@ func (e *Engine) ResolveAs(chatID, approvalID string, allow bool, answers map[st
 			out[qid] = map[string]any{"answers": answers[qid]}
 		}
 		result = map[string]any{"answers": out}
+	case methodPermission:
+		decision := map[string]any{"decision": "decline"}
+		if allow {
+			decision["decision"] = "accept"
+		} else if answer.Message != "" {
+			decision["message"] = answer.Message
+		}
+		tool, input := agent.String(approval.Params["tool"]), agent.Map(approval.Params["input"])
+		plan := tool == "ExitPlanMode"
+		if plan && allow {
+			// An approved plan moves the chat out of plan mode, into auto
+			// unless the answer asks to keep asking; the CLI's mode moves
+			// with the answer (adapter: updatedPermissions setMode).
+			mode := ModeAuto
+			if answer.Mode == ModeAsk {
+				mode = ModeAsk
+			}
+			decision["mode"] = mode
+		}
+		err = e.Store.update(func(st *State) error {
+			c := st.chat(chatID)
+			switch {
+			case plan && allow:
+				mode := agent.String(decision["mode"])
+				c.Mode = mode
+				c.Conversation.Entries = append(c.Conversation.Entries, cv.NewEntry("notice", "Plan approved — "+strings.TrimPrefix(modeNotice(mode), "Permission mode: ")))
+			case answer.Always && !plan:
+				rule := RuleFor(tool, input)
+				for _, r := range c.Allowed {
+					if r == rule {
+						return nil
+					}
+				}
+				c.Allowed = append(c.Allowed, rule)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		result = decision
 	default:
 		decision := "decline"
 		if allow {
@@ -1526,6 +1631,9 @@ func (e *Engine) ConfigureAgent(id, provider, model string) error {
 		}
 		if provider != old && len(c.Conversation.Entries) > 0 {
 			return errors.New("start a new conversation to change providers")
+		}
+		if provider != old {
+			c.Commands, c.Session = nil, nil
 		}
 		c.Provider = provider
 		c.Model = model
