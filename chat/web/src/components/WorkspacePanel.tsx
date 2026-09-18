@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Archive,
   ExternalLink,
@@ -22,6 +22,13 @@ import { api } from "../api";
 import type { PullRequestProposal } from "./PullRequestReview";
 import { resourcesLabel } from "./Approvals";
 import { SizeSelect, sameSize } from "./SizeSelect";
+import { NetworkSelect } from "./NetworkSelect";
+import {
+  effectiveNetwork,
+  networkTitle,
+  type InstallNetwork,
+  type NetworkMode,
+} from "../network";
 import type { DocumentProposal } from "./DocumentReview";
 import { MemorySection } from "./MemorySection";
 import { PermissionsSection } from "./PermissionsSection";
@@ -198,6 +205,7 @@ export function WorkspacePanel({
   onChanged,
   onChanges,
   limits,
+  owner = false,
 }: {
   chat: Chat;
   workspace?: Environment;
@@ -205,6 +213,8 @@ export function WorkspacePanel({
   pullRequests: PullRequestProposal[];
   // The runner's size offer; absent while the runner is unreachable.
   limits?: ResourceLimits;
+  // The owner may change the workspace's network access.
+  owner?: boolean;
   documentReviews?: DocumentProposal[];
   onSelectChat: (id: string) => void;
   onShareDocuments: () => void;
@@ -222,6 +232,13 @@ export function WorkspacePanel({
   const [historyError, setHistoryError] = useState("");
   // The size being edited, or null when the row shows the current size.
   const [sizing, setSizing] = useState<Resources | null>(null);
+  // The network access being edited (network.ts), or null when the row
+  // shows the current one; the install's setting is what "" means.
+  const [networking, setNetworking] = useState<NetworkMode | null>(null);
+  const [installNetwork, setInstallNetwork] = useState<InstallNetwork>();
+  useEffect(() => {
+    api<InstallNetwork>("sharing/egress").then(setInstallNetwork, () => {});
+  }, [chat.sandboxID]);
   const ws = workspace;
   async function loadHistory() {
     if (!ws) return;
@@ -257,6 +274,8 @@ export function WorkspacePanel({
     ["running", "queued", "stopping"].includes(c.status),
   );
   const state = ws?.deleted ? "deleted" : ws?.runtime?.state || "";
+  // The workspace's own network access; "" follows the install.
+  const network: NetworkMode = ws?.network ?? chat.network ?? "";
   // The size in force: the runner's record, else what the first chat asked
   // for, else the runner's default.
   const current: Resources = ws?.resources ??
@@ -398,9 +417,8 @@ export function WorkspacePanel({
           >
             {ws.copiedFrom.name || "another workspace"}
           </a>{" "}
-          at {when(ws.copiedFrom.at)}. Its files came along; shared
-          documents, repositories and network stay with the original until
-          shared here.
+          at {when(ws.copiedFrom.at)}. Its files came along; shared documents,
+          repositories and network stay with the original until shared here.
         </p>
       )}
       {!ws?.deleted && (limits || ws?.usage) && (
@@ -489,6 +507,72 @@ export function WorkspacePanel({
                   disabled={busy === "resize" || sameSize(sizing, current)}
                 >
                   {busy === "resize" ? "Resizing…" : "Resize"}
+                </button>
+              </div>
+            </form>
+          )}
+        </section>
+      )}
+      {!ws?.deleted && (
+        <section className="workspace-section">
+          <h2>
+            Network access
+            {owner && networking === null && (
+              <button
+                className="ghost"
+                disabled={!!busy}
+                title="Choose what this workspace's sandbox may reach"
+                onClick={() => setNetworking(network)}
+              >
+                Change…
+              </button>
+            )}
+          </h2>
+          {networking === null && (
+            <p>
+              {effectiveNetwork(network, installNetwork)
+                ? networkTitle(effectiveNetwork(network, installNetwork)!)
+                : "Install setting"}
+              {!network && (
+                <span className="muted"> · the install's setting</span>
+              )}
+            </p>
+          )}
+          {networking !== null && (
+            <form
+              className="size-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void act("network", `environments/${chat.sandboxID}/network`, {
+                  network: networking,
+                }).then(() => setNetworking(null));
+              }}
+            >
+              <NetworkSelect
+                value={networking}
+                install={installNetwork}
+                onChange={setNetworking}
+                disabled={busy === "network"}
+              />
+              <p className="muted">
+                Applies to every chat in this workspace at once, running ones
+                included. Credentials are still injected only for approved
+                requests.
+              </p>
+              <div className="button-row">
+                <button
+                  type="button"
+                  onClick={() => setNetworking(null)}
+                  disabled={busy === "network"}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="primary"
+                  disabled={busy === "network" || networking === network}
+                >
+                  {busy === "network" ? "Applying…" : "Apply"}
                 </button>
               </div>
             </form>

@@ -42,7 +42,13 @@ type Status = {
 type File = { id: string; name: string; blocked: boolean };
 type Repo = { id: number; full_name: string; private?: boolean };
 type Blocked = { id: string; name: string; blocked_at: number };
-type Egress = { mode: "restricted" | "open"; source: "config" | "console" };
+type Egress = {
+  mode: "restricted" | "open";
+  source: "config" | "console";
+  // Workspaces with a network access of their own (the workspace panel),
+  // which this switch leaves alone.
+  overrides?: number;
+};
 
 const when = (value: string | number) =>
   new Date(typeof value === "number" ? value * 1000 : value).toLocaleString();
@@ -448,6 +454,11 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
                 ? "was last set here, overriding warden.json"
                 : "currently comes from warden.json"}
               .
+              {egress.overrides === 1 &&
+                " One workspace has a network access of its own, chosen from its workspace panel; this switch leaves it alone."}
+              {!!egress.overrides &&
+                egress.overrides > 1 &&
+                ` ${egress.overrides} workspaces have a network access of their own, chosen from their workspace panels; this switch leaves them alone.`}
             </p>
             <div
               className="admin-choices"

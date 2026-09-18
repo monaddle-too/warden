@@ -60,6 +60,8 @@ import { Previews } from "./Previews";
 import { Conversation, type RequestCard } from "./Conversation";
 import { chatModel, modelOptions } from "../models";
 import { SizeSelect, sameSize } from "./SizeSelect";
+import { NetworkSelect } from "./NetworkSelect";
+import type { InstallNetwork, NetworkMode } from "../network";
 import { AdminConsole } from "./AdminConsole";
 import { chatStatusLabel } from "../stages";
 import { WorkspacePanel } from "./WorkspacePanel";
@@ -102,6 +104,14 @@ export function ChatShell({
   const [repository, setRepository] = useState("");
   // The fresh workspace's size; null means the runner's default.
   const [size, setSize] = useState<Resources | null>(null);
+  // The fresh workspace's network access (network.ts), the owner's choice;
+  // "" follows the install's setting, read when the form opens.
+  const [network, setNetwork] = useState<NetworkMode>("");
+  const [installNetwork, setInstallNetwork] = useState<InstallNetwork>();
+  useEffect(() => {
+    if (!creating || !admin) return;
+    api<InstallNetwork>("sharing/egress").then(setInstallNetwork, () => {});
+  }, [creating, admin]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [workspaceState, setWorkspaceState] = useState("");
@@ -225,6 +235,7 @@ export function ChatShell({
         provider,
         model,
         ...(resources ? { resources } : {}),
+        ...(!shared && network ? { network } : {}),
       });
       setSelected(result.id);
       setArchived(false);
@@ -233,6 +244,7 @@ export function ChatShell({
       setShared("");
       setRepository("");
       setSize(null);
+      setNetwork("");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -922,6 +934,7 @@ export function ChatShell({
                   onChanged={refresh}
                   onChanges={() => setChangesOpen(true)}
                   limits={state.sandboxes}
+                  owner={admin}
                 />
               )}
             </div>
@@ -1083,6 +1096,16 @@ export function ChatShell({
                         : "The agent can ask for more later; you can change it any time from the workspace panel."
                       : "The default. The agent can ask for more later; you can change it any time from the workspace panel."}
                   </p>
+                </fieldset>
+              )}
+              {!shared && admin && (
+                <fieldset className="size-fieldset">
+                  <legend>Network access</legend>
+                  <NetworkSelect
+                    value={network}
+                    install={installNetwork}
+                    onChange={setNetwork}
+                  />
                 </fieldset>
               )}
               <p className="muted">
