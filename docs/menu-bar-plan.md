@@ -192,7 +192,9 @@ activity, eight at most.
   2; the owner's home was not changed. A screenshot could not be taken
   from the session (no screen-recording permission), so the dropdown's
   look is verified by the owner, not here.
-- Remaining: deploy to the owner's `~/.warden` (`deploy-local.sh` then
-  `warden menu install`, since deploy-local does not run install);
-  later: notifications from the feed (Go, `osascript`), a bundle if
+- 2026-09-18: deployed to `~/.warden/release` (bb1cf87) and the item
+  registered on the owner's home (`com.monaddle.warden.menu`, running
+  under launchd beside the service). The full Go suite passed before the
+  deploy.
+- Remaining: the owner's look at the dropdown; merge to main. Later: notifications from the feed (Go, `osascript`), a bundle if
   Login Items' name (`warden-menu`) bothers.
