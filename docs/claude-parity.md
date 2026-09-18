@@ -214,8 +214,8 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
-| `/rewind` (code, conversation, both) | ✗ | ✗ | `rewind_files` or sandbox snapshot |
-| Whole-session diff | ✗ | ✗ | |
+| `/rewind` (code, conversation, both) | ✅ | ✅ | item 11: Warden's git checkpoints for code, the CLI's `rewind_conversation` for the conversation |
+| Whole-session diff | ✅ | ✅ | item 11: `chats/{id}/diff`, `SessionDiff.tsx`, `/diff` |
 | Open / view a file | ✅ | ✅ | |
 | Read renders images, PDFs, notebooks | ✅ | — | |
 | Commit attribution | ✅ | ✅ | the CLI's |
@@ -270,7 +270,9 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 - What `--setting-sources=` still loads from the workspace (commands,
   skills, agents, rules).
-- `rewind_files` / file checkpointing availability in stream-json mode.
+- ~~`rewind_files` / file checkpointing availability in stream-json mode.~~
+  Item 11: present, gated on `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`,
+  covers only tool-edited files; `rewind_conversation` works and is used.
 - Whether a user message during a running turn is queued or rejected.
 - `system/init` contents (`slash_commands`, `mcp_servers`, `agents`).
 - What `/compact` returns in stream-json mode.
@@ -302,7 +304,7 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 - [ ] 8 Compaction and context.
 - [ ] 9 Mid-session model, effort, thinking.
 - [ ] 10 Queueing and rewind.
-- [ ] 11 Checkpoints and session diff.
+- [x] 11 Checkpoints and session diff — merged to main (sha below); verified as the Item 11 section says.
 - [ ] 12 Composer polish.
 - [ ] 13 Per-user instructions and memory.
 - [ ] 14 Project MCP, OAuth, plugins.
@@ -398,6 +400,42 @@ Decisions:
    workspace panel opens `SessionDiff.tsx` over `DiffView`. TUI:
    `/rewind` lists the user messages, `/rewind N code|conv|both`,
    `/diff` shows the changed files folded, Tab expands.
+7. Seen on the way: the SBX exec API refuses an empty argument (`cmd
+   element N is empty`), so the scripts take `-` for "none"; the test
+   harness refuses empty arguments too. `Stop` on an idle chat keeps its
+   resident session (the engine's comment; the map's "released" is the
+   idle timeout), so a rewind right after it still goes to the live
+   session.
+
+Verified: `go vet`, `gofmt -l`, `go test ./...`, `pnpm build`, `pnpm test`
+(135 tests; `rewind.test.ts` new); live on a cloned home (`~/.warden-p7`)
+with a Claude chat whose workspace is not a repository (private store):
+two messages (Write, then Edit plus a Bash-made file) recorded two
+checkpoints; `GET chats/{id}/diff` listed both files with git's hunks;
+rewind code to before the second message restored `notes.txt` and removed
+the Bash-made `extra.txt` (checked in the guest), moved the diff base and
+emptied the diff; rewind conversation on the live session answered
+`rewound`, cut the transcript and the agent then listed only the first
+file; with the workspace stopped the rewind was `pending` and the next
+message resumed the session, applied it first and the agent had forgotten
+the codeword; on a chat from the previous build (messages the CLI had no
+uuid for) the rewind fell back to `fresh`: the next message launched
+without `--resume` and the agent called it the first message. Web: the
+chat menu's Changes… (two files as folded `DiffView`s with counts), the
+hover action and Esc-Esc opening the chooser on the last message, a code
+and conversation rewind from it (the dialog's stopped-sandbox refusal
+first, then "1 file restored, 1 file removed; … when its session
+resumes"), the ↶ markers in the transcript, the panel's Changes section.
+TUI in a pty: `/rewind` listing with • marks, `/diff` folded then Tab
+expanded, `/rewind 2 conv` confirmed with `y` and rewound.
+
+Left: nested repositories inside a non-repository workspace are recorded
+as gitlinks (their working trees are outside the snapshot); a checkpoint
+does not carry the agent's index or HEAD, so a rewind after the agent
+committed leaves its commits in place and moves the working tree only;
+the marker is not an undo (the removed transcript stays only in the
+CLI's own session file); Codex sessions always take the fresh-session
+fallback for a conversation rewind.
 
 ### Item 1: typed tool cards and diffs
 

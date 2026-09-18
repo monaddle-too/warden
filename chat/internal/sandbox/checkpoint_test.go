@@ -20,6 +20,12 @@ type localCheckpointRuntime struct {
 
 func (r *localCheckpointRuntime) Exec(ctx context.Context, name, dir string, args ...string) (string, error) {
 	if len(args) > 3 && args[0] == "python3" && strings.HasPrefix(args[2], checkpointCommon) {
+		for i, a := range args {
+			if a == "" {
+				// The SBX exec API refuses an empty argument.
+				return "", fmt.Errorf("cmd element %d is empty", i)
+			}
+		}
 		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 		cmd.Dir = r.directory
 		cmd.Env = publicGitEnvironment()

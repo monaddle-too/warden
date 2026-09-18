@@ -117,12 +117,13 @@ def snapshot():
 `
 
 // checkpointScript snapshots the workspace for checkpoint ID (argv[2]);
-// argv[3] and argv[4] are the previous checkpoint's tree and commit ("" for
-// none): an equal tree reuses that commit. The ref is written last.
+// argv[3] and argv[4] are the previous checkpoint's tree and commit ("-"
+// for none: the SBX exec API refuses an empty argument): an equal tree
+// reuses that commit. The ref is written last.
 const checkpointScript = checkpointCommon + `cid,prev_tree,prev_commit=sys.argv[2:5]
 try:
  tree=snapshot()
- changed=tree!=prev_tree or not prev_commit
+ changed=tree!=prev_tree or prev_commit=='-'
  commit=git('commit-tree',tree,'-m','Warden checkpoint '+cid).decode().strip() if changed else prev_commit
  git('update-ref','refs/warden/checkpoints/'+cid,commit)
  print(json.dumps({'store':store,'commit':commit,'tree':tree,'changed':changed}))
@@ -230,7 +231,7 @@ func (w *Worker) checkpointOp(ctx context.Context, s *managedSandbox, r Request)
 	switch r.Operation {
 	case "checkpoint":
 		previous := w.lastCheckpoint(s)
-		result, err := exec(checkpointScript, r.CallID, previous.Tree, previous.Commit)
+		result, err := exec(checkpointScript, r.CallID, orDash(previous.Tree), orDash(previous.Commit))
 		if err != nil {
 			return Response{}, errors.New("could not checkpoint the workspace: " + checkpointReason(err))
 		}
@@ -279,6 +280,14 @@ func (w *Worker) checkpointOp(ctx context.Context, s *managedSandbox, r Request)
 		return Response{Changes: &changes}, nil
 	}
 	return Response{}, errors.New("unsupported checkpoint operation")
+}
+
+// orDash is s, or "-" for none: an exec argument is never empty.
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // checkpointReason keeps the guest's failure short: an assertion in the

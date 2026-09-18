@@ -36,9 +36,15 @@ export function RewindDialog({
   const [what, setWhat] = useState<RewindWhat>("both");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<RewindResult>();
+  // The outcome, with the message's text as it was: the transcript is cut
+  // by the rewind, so the target cannot be looked up afterwards.
+  const [result, setResult] = useState<{ done: RewindResult; text: string }>();
   useEffect(() => {
     dialog.current?.showModal();
+    // The chosen message in view: the list is scrolled to it once.
+    dialog.current
+      ?.querySelector(".rewind-target.selected")
+      ?.scrollIntoView({ block: "nearest" });
   }, []);
   useEffect(() => {
     let cancelled = false;
@@ -67,8 +73,9 @@ export function RewindDialog({
     setBusy(true);
     setError("");
     try {
+      const text = target.entry.text;
       const done = await rewindChat(chat.id, target.entry.id, what);
-      setResult(done);
+      setResult({ done, text });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -81,7 +88,7 @@ export function RewindDialog({
       ref={dialog}
       className="modal rewind-dialog"
       aria-labelledby="rewind-title"
-      onClose={() => onClose(result)}
+      onClose={() => onClose(result?.done)}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.stopPropagation();
@@ -93,11 +100,11 @@ export function RewindDialog({
         <div>
           <h2 id="rewind-title">Rewound</h2>
           <p>
-            Back to before “{excerpt(target?.entry.text || "")}” (
-            {WHAT_LABELS[result.what].label.toLowerCase()}).
+            Back to before “{excerpt(result.text)}” (
+            {WHAT_LABELS[result.done.what].label.toLowerCase()}).
           </p>
-          {rewindOutcome(result) && (
-            <p className="muted">{rewindOutcome(result)}</p>
+          {rewindOutcome(result.done) && (
+            <p className="muted">{rewindOutcome(result.done)}</p>
           )}
           <div className="button-row">
             <button type="button" className="primary" onClick={close}>

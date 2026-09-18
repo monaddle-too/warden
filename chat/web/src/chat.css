@@ -1616,10 +1616,13 @@ button.danger:hover {
 }
 .rewind-target {
   display: flex;
+  flex-direction: row;
   align-items: flex-start;
   gap: 10px;
+  margin: 0;
   padding: 8px 10px;
   cursor: pointer;
+  font-weight: 400;
   border-bottom: 1px solid var(--line);
 }
 .rewind-targets li:last-child .rewind-target {
@@ -1697,4 +1700,7 @@ button.danger:hover {
 }
 .session-diff-files .diff-view {
   border-top: 1px solid var(--line);
+}
+.session-diff-files .diff-head {
+  display: none; /* the summary row names the file and its counts */
 }
