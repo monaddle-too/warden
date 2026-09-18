@@ -1031,11 +1031,11 @@ func TestClaudeSubagentProgress(t *testing.T) {
 	frames := claudeSession(t, func(e *json.Encoder) {
 		_ = e.Encode(claudeToolUse("", "agent_1", "Agent", map[string]any{"description": "List files", "subagent_type": "Explore", "prompt": "List the files."}))
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_started", "task_id": "a1", "tool_use_id": "agent_1", "description": "List files", "is_backgrounded": false, "task_type": "local_agent"})
-		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_progress", "task_id": "a1", "tool_use_id": "agent_1", "description": "List files", "usage": map[string]any{"total_tokens": 0.0}, "tool_uses": 0.0, "duration_ms": 0.0})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_progress", "task_id": "a1", "tool_use_id": "agent_1", "description": "", "usage": map[string]any{"total_tokens": 0.0, "tool_uses": 0.0, "duration_ms": 0.0}})
 		_ = e.Encode(claudeToolUse("agent_1", "bash_1", "Bash", map[string]any{"command": "ls"}))
 		_ = e.Encode(claudeToolResult("agent_1", "bash_1", "a.txt", nil))
-		// By task id alone, as the notification may name it.
-		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_progress", "task_id": "a1", "usage": map[string]any{"total_tokens": 1234.0}, "tool_uses": 1.0, "duration_ms": 900.0, "last_tool_name": "Bash"})
+		// As 2.1.272 writes it (the counts under usage), by task id alone.
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_progress", "task_id": "a1", "description": "Running List files", "subagent_type": "Explore", "usage": map[string]any{"total_tokens": 1234.0, "tool_uses": 1.0, "duration_ms": 900.0}, "last_tool_name": "Bash"})
 		_ = e.Encode(claudeToolResult("", "agent_1", "a.txt", map[string]any{"status": "completed", "totalToolUseCount": 1.0}))
 		_ = e.Encode(claudeResult(""))
 	}, 1)
@@ -1055,7 +1055,7 @@ func TestClaudeSubagentProgress(t *testing.T) {
 	if len(progress) != 3 || progress[0] != nil || progress[1] == nil || progress[2] == nil {
 		t.Fatalf("agent card frames: %v%s", progress, claudeFrameLog(frames))
 	}
-	want := map[string]any{"toolCalls": 1, "lastTool": "Bash", "durationMS": 900, "tokens": 1234}
+	want := map[string]any{"toolCalls": 1, "lastTool": "Bash", "durationMS": 900, "tokens": 1234, "activity": "Running List files"}
 	for _, p := range progress[1:] {
 		for k, v := range want {
 			if fmt.Sprint(p[k]) != fmt.Sprint(v) {

@@ -30,27 +30,32 @@ type claudeTool struct {
 }
 
 // claudeTaskProgress reads a task_progress frame into the item's
-// `progress` (conversation.Progress): the tool calls made, the last tool
-// used, the time and tokens spent. Nil when the frame says nothing the
-// card shows.
+// `progress` (conversation.Progress): what the subagent is doing now in
+// the CLI's words (`description`: "Reading hello.txt"), the tool calls
+// made, the last tool used, the time and tokens spent. On 2.1.272 the
+// counts sit under `usage` ({total_tokens, tool_uses, duration_ms});
+// the frame's own top level is read too for a CLI that puts them there.
+// Nil when the frame says nothing the card shows.
 func claudeTaskProgress(v map[string]any) map[string]any {
-	// The counts sit on the frame itself (2.1.275), or under a `progress`
-	// object should a CLI nest them.
-	src := v
-	if p := Map(v["progress"]); p != nil {
-		src = p
+	usage := Map(v["usage"])
+	pick := func(k string) int {
+		if n := claudeInt(usage[k]); n != 0 {
+			return n
+		}
+		return claudeInt(v[k])
 	}
-	calls := claudeInt(src["tool_uses"])
-	if calls == 0 {
-		calls = claudeInt(src["tool_use_count"])
-	}
-	last := claudeOr(String(src["last_tool_name"]), String(src["last_tool"]))
-	duration := claudeInt(src["duration_ms"])
-	tokens := claudeInt(Map(src["usage"])["total_tokens"])
-	if calls == 0 && last == "" && duration == 0 && tokens == 0 {
+	calls := pick("tool_uses")
+	duration := pick("duration_ms")
+	tokens := pick("total_tokens")
+	last := String(v["last_tool_name"])
+	activity := claudeCut(strings.SplitN(strings.TrimSpace(String(v["description"])), "\n", 2)[0], 120)
+	if calls == 0 && last == "" && duration == 0 && tokens == 0 && activity == "" {
 		return nil
 	}
 	out := map[string]any{"toolCalls": calls}
+	if activity != "" {
+		out["activity"] = activity
+	}
 	if last != "" {
 		out["lastTool"] = last
 	}

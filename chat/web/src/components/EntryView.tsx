@@ -100,7 +100,7 @@ function SubagentTranscript({
   entries: Entry[];
   ctx: StepContext;
 }) {
-  const { steps, running, lastTool } = subagentProgress(
+  const { steps, running, step } = subagentProgress(
     entries,
     parent.tool?.progress,
   );
@@ -109,7 +109,7 @@ function SubagentTranscript({
   const parts = [];
   if (steps) parts.push(`${steps} tool call${steps === 1 ? "" : "s"}`);
   if (messages) parts.push(`${messages} message${messages === 1 ? "" : "s"}`);
-  if (running && lastTool) parts.push(`using ${lastTool}`);
+  if (running && step) parts.push(step);
   return (
     <details className="subagent">
       <summary>

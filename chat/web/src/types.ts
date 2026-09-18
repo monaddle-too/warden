@@ -87,9 +87,11 @@ export type Tool = {
   background?: boolean;
   progress?: Progress;
 };
-/* What a running subagent has done so far (conversation.Progress): the
-   tool calls it made, the tool it used last, its time and tokens. */
+/* What a running subagent has done so far (conversation.Progress): what
+   it is doing now in the agent's words, the tool calls it made, the tool
+   it used last, its time and tokens. */
 export type Progress = {
+  activity?: string;
   toolCalls: number;
   lastTool?: string;
   durationMS?: number;

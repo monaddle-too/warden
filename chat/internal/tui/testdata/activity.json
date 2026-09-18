@@ -559,7 +559,8 @@
      },
      "progress": {
       "toolCalls": 5,
-      "lastTool": "Grep"
+      "lastTool": "Grep",
+      "activity": "Running Search current directory for zebrafish-quokka"
      }
     }
    },
@@ -579,7 +580,7 @@
     "parentID": "ag1"
    }
   ],
-  "want": "Explore agent: 5 tool calls"
+  "want": "Explore agent: 5 tool calls · Running Search current directory for zebrafish-…"
  },
  {
   "name": "a subagent starting",
@@ -825,5 +826,68 @@
    }
   ],
   "want": "Running make"
+ },
+ {
+  "name": "what the subagent is doing, in its agent's words (2.1.272 task_progress)",
+  "entries": [
+   {
+    "id": "ag1",
+    "role": "activity",
+    "text": "Agent: Read hello.txt and grep for word (Explore)",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "task",
+     "name": "Agent",
+     "status": "running",
+     "input": {
+      "subagent_type": "Explore"
+     },
+     "progress": {
+      "activity": "Reading hello.txt",
+      "toolCalls": 2,
+      "lastTool": "Read",
+      "durationMS": 3384,
+      "tokens": 25500
+     }
+    }
+   },
+   {
+    "id": "k1",
+    "role": "activity",
+    "text": "ls -la",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": false,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "completed"
+    },
+    "parentID": "ag1"
+   },
+   {
+    "id": "k2",
+    "role": "activity",
+    "text": "Read /home/agent/workspace/hello.txt",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "read",
+     "name": "Read",
+     "status": "running",
+     "paths": [
+      "/home/agent/workspace/hello.txt"
+     ]
+    },
+    "parentID": "ag1"
+   }
+  ],
+  "want": "Explore agent: 2 tool calls · Reading hello.txt"
  }
 ]

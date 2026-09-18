@@ -49,8 +49,9 @@ function childCalls(parent: string, entries: ActivityEntry[]): number {
   return calls;
 }
 
-/* "Explore agent: 3 tool calls" — the subagent's type and how far it is,
-   from its entries or the agent's own count, whichever is further. */
+/* "Explore agent: 3 tool calls · Reading hello.txt" — the subagent's
+   type, how far it is (from its entries or the agent's own count,
+   whichever is further) and what it is doing now when the agent says. */
 export function subagentLabel(
   card: ActivityEntry,
   entries: ActivityEntry[],
@@ -61,8 +62,12 @@ export function subagentLabel(
     childCalls(card.id, entries),
     card.tool?.progress?.toolCalls ?? 0,
   );
-  if (!calls) return `${label}: starting`;
-  return `${label}: ${calls} tool call${calls === 1 ? "" : "s"}`;
+  let out = calls
+    ? `${label}: ${calls} tool call${calls === 1 ? "" : "s"}`
+    : `${label}: starting`;
+  const activity = card.tool?.progress?.activity;
+  if (activity) out += ` · ${trimCommand(activity, 48)}`;
+  return out;
 }
 
 /* The words for one running step, by its tool's kind. */

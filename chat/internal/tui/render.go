@@ -338,10 +338,25 @@ type Tool struct {
 // Progress mirrors conversation.Progress: what a running subagent has
 // done so far as its agent reports it.
 type Progress struct {
+	Activity   string `json:"activity"`
 	ToolCalls  int64  `json:"toolCalls"`
 	LastTool   string `json:"lastTool"`
 	DurationMS int64  `json:"durationMS"`
 	Tokens     int64  `json:"tokens"`
+}
+
+// progressStep is what a running subagent is doing, in its agent's own
+// words when it gives them, else by the tool it used last; "" for none.
+func progressStep(p *Progress) string {
+	switch {
+	case p == nil:
+		return ""
+	case p.Activity != "":
+		return p.Activity
+	case p.LastTool != "":
+		return "using " + p.LastTool
+	}
+	return ""
 }
 
 // foldedLines is how many lines of a tool's output or diff show before
@@ -401,9 +416,9 @@ func renderTool(e Entry, width int, expanded bool) []string {
 		if secs := taskSeconds(e); secs > 0 {
 			head += fmt.Sprintf("  %s%s%s", dim, formatSeconds(secs), reset)
 		}
-		if p := t.Progress; p != nil && p.LastTool != "" && (e.IsStreaming || t.Status == "running") {
+		if step := progressStep(t.Progress); step != "" && (e.IsStreaming || t.Status == "running") {
 			// The agent's own account of the subagent's work while it runs.
-			head += fmt.Sprintf("  %susing %s%s", dim, sanitize(p.LastTool), reset)
+			head += fmt.Sprintf("  %s%s%s", dim, sanitize(trimCommand(step, 60)), reset)
 		}
 		if t.Input != nil {
 			if p, ok := t.Input["prompt"].(string); ok && strings.TrimSpace(p) != "" && t.Description == "" {

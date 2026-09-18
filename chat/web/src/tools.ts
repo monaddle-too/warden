@@ -170,14 +170,15 @@ export function toolTitle(entry: Entry): string {
 
 /* What a subagent's card says about its work: how many tool calls its
    entries record (or the agent's own count when it runs ahead), whether
-   any still runs, and the tool the agent says the subagent used last. */
+   any still runs, and what the agent says the subagent is doing now (its
+   own words, else the tool it used last). */
 export function subagentProgress(
   children: Entry[],
   progress?: Progress,
 ): {
   steps: number;
   running: boolean;
-  lastTool: string;
+  step: string;
 } {
   let steps = 0;
   let running = false;
@@ -186,7 +187,10 @@ export function subagentProgress(
     if (e.isStreaming || e.tool?.status === "running") running = true;
   }
   if (progress && progress.toolCalls > steps) steps = progress.toolCalls;
-  return { steps, running, lastTool: progress?.lastTool ?? "" };
+  const step =
+    progress?.activity ||
+    (progress?.lastTool ? `using ${progress.lastTool}` : "");
+  return { steps, running, step };
 }
 
 /* How long a subagent (a task entry) has been at work, in seconds: from

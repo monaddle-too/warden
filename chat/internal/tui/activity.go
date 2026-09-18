@@ -57,9 +57,10 @@ func entryRunning(e Entry) bool {
 	return e.IsStreaming || (e.Tool != nil && e.Tool.Status == "running")
 }
 
-// subagentLabel is "Explore agent: 3 tool calls": the subagent's type and
-// how far it is, from its entries or the agent's own count, whichever is
-// further.
+// subagentLabel is "Explore agent: 3 tool calls · Reading hello.txt": the
+// subagent's type, how far it is (from its entries or the agent's own
+// count, whichever is further) and what it is doing now when the agent
+// says.
 func subagentLabel(card Entry, entries []Entry) string {
 	label := "Subagent"
 	if card.Tool != nil {
@@ -76,13 +77,17 @@ func subagentLabel(card Entry, entries []Entry) string {
 	if card.Tool != nil && card.Tool.Progress != nil && int(card.Tool.Progress.ToolCalls) > calls {
 		calls = int(card.Tool.Progress.ToolCalls)
 	}
-	if calls == 0 {
-		return label + ": starting"
-	}
+	out := label + ": starting"
 	if calls == 1 {
-		return label + ": 1 tool call"
+		out = label + ": 1 tool call"
+	} else if calls > 1 {
+		out = fmt.Sprintf("%s: %d tool calls", label, calls)
 	}
-	return fmt.Sprintf("%s: %d tool calls", label, calls)
+	// What the subagent is doing now, in its agent's words when given.
+	if card.Tool != nil && card.Tool.Progress != nil && card.Tool.Progress.Activity != "" {
+		out += " · " + trimCommand(card.Tool.Progress.Activity, 48)
+	}
+	return out
 }
 
 // stepLabel is the words for one running step, by its tool's kind.
