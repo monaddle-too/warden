@@ -1,14 +1,18 @@
 package policy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"warden/chat/internal/login"
 )
 
 // GitHubCredentials is the credential source behind approved GitHub
@@ -262,17 +266,54 @@ func (c *GitHubUserCredentials) Details() map[string]any {
 	return map[string]any{"mode": "user", "login": f.Login, "scopes": scopes, "obtained": f.Obtained}
 }
 
-// Disconnect deletes the sign-in file. GitHub OAuth tokens can only be
-// revoked with the App's client secret, which a release does not ship, so
-// the token stays valid at GitHub until the person revokes it under
-// Settings, Applications; the UI says so. Every later use fails closed.
+// Disconnect forgets the sign-in: the file is deleted, a Secret's key is
+// emptied (the store cannot delete a key, and an empty record fails closed
+// exactly like a missing one). GitHub OAuth tokens can only be revoked with
+// the App's client secret, which a release does not ship, so the token
+// stays valid at GitHub until the person revokes it under Settings,
+// Applications; the UI says so. Every later use fails closed.
 func (c *GitHubUserCredentials) Disconnect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.Store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return c.Store.Store(ctx, c.Name, []byte("{}\n"))
+	}
 	if err := os.Remove(c.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
+}
+
+// Save stores a new sign-in where read looks, in the shape `warden login
+// github` writes: through the store (a Kubernetes Secret) or as the
+// private 0600 file, replaced atomically so a concurrent read sees the old
+// or the new sign-in. The next use picks it up; nothing restarts.
+func (c *GitHubUserCredentials) Save(record login.GitHubFile) error {
+	if !userTokenShape.MatchString(record.Token) || !ownerShape.MatchString(record.Login) {
+		return errors.New("GitHub returned an unexpected sign-in")
+	}
+	if record.Scopes == nil {
+		record.Scopes = []string{}
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Redactor.Register(record.Token)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if c.Store != nil {
+		return c.Store.Store(ctx, c.Name, data)
+	}
+	if err := os.MkdirAll(filepath.Dir(c.Path), 0o700); err != nil {
+		return err
+	}
+	return FileCredentials{Limit: 65536, Description: "GitHub credential file"}.Store(ctx, c.Path, data)
 }
 
 // Snapshot describes the source without the token.

@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import { ClusterView } from "./ClusterView";
+import { GitHubSignIn } from "./GitHubSignIn";
 
 type LoginRecord = {
   email: string;
@@ -338,23 +339,43 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
                   </button>
                 )}
               </div>
+              {github.mode === "user" && (
+                // A rejected or expired token fails closed ("Refresh the
+                // GitHub sign-in…"); a fresh device-flow sign-in replaces it.
+                <GitHubSignIn
+                  connected
+                  disabled={!!busy}
+                  onSignedIn={() => void load()}
+                />
+              )}
+            </>
+          ) : status.github.mode === "user" || !status.github.appSlug ? (
+            <>
+              <p className="muted">
+                Sign in with the GitHub account whose repositories conversations
+                may share. Warden asks for the classic <code>repo</code> and{" "}
+                <code>read:org</code> scopes and keeps the token on this
+                machine.
+              </p>
+              <GitHubSignIn
+                connected={false}
+                disabled={!!busy}
+                onSignedIn={() => void load()}
+              />
+              <p className="muted">
+                Or from a terminal: <code>warden login github</code>
+              </p>
             </>
           ) : (
             <p className="muted">
-              {status.github.mode === "user" || !status.github.appSlug
-                ? "Sign in from a terminal: "
-                : "Install the GitHub App to connect: "}
-              {status.github.mode === "user" || !status.github.appSlug ? (
-                <code>warden login github</code>
-              ) : (
-                <a
-                  href={`https://github.com/apps/${status.github.appSlug}/installations/new`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  github.com/apps/{status.github.appSlug}
-                </a>
-              )}
+              Install the GitHub App to connect:{" "}
+              <a
+                href={`https://github.com/apps/${status.github.appSlug}/installations/new`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                github.com/apps/{status.github.appSlug}
+              </a>
             </p>
           )}
         </details>

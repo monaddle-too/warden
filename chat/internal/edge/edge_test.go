@@ -261,6 +261,7 @@ func TestDemoSharesWorkspaceAndGrantsButCannotConnectGoogle(t *testing.T) {
 		{"GET", "/api/sharing/files", 204}, {"POST", "/api/sharing/select", 204},
 		{"POST", "/api/sharing/resolve", 204}, {"POST", "/api/sharing/revoke", 204},
 		{"POST", "/api/sharing/connect", 403}, {"POST", "/api/sharing/connect/", 403}, {"POST", "/api/sharing/disconnect", 403},
+		{"POST", "/api/sharing/github_login_start", 403}, {"GET", "/api/sharing/github_login_status", 403}, {"POST", "/api/sharing/github_login_cancel", 403},
 		{"GET", "/oauth/google_docs/callback?state=test&code=test", 403},
 	} {
 		before := count

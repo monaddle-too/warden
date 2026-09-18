@@ -298,7 +298,7 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 	op := strings.TrimPrefix(path, "sharing/")
 	data := map[string]any{}
 	if r.Method == "GET" {
-		if op != "state" && op != "status" && op != "files" && op != "blocked" && op != "github_repositories" && op != "github_list" && op != "pr_state" && op != "pr_preview" && op != "doc_state" && op != "doc_preview" && op != "egress" && op != "history" {
+		if op != "state" && op != "status" && op != "files" && op != "blocked" && op != "github_repositories" && op != "github_list" && op != "github_login_status" && op != "pr_state" && op != "pr_preview" && op != "doc_state" && op != "doc_preview" && op != "egress" && op != "history" {
 			http.Error(w, "not found", 404)
 			return
 		}
@@ -327,7 +327,7 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 			data["page"] = r.URL.Query().Get("page")
 		}
 	} else if r.Method == "POST" {
-		if op != "select" && op != "connect" && op != "disconnect" && op != "egress_set" && op != "resolve" && op != "revoke" && op != "block" && op != "unblock" && op != "github_select" && op != "pr_resolve" && op != "doc_draft" && op != "doc_decide" && op != "doc_resolve" && op != "doc_return" && op != "doc_rebase" {
+		if op != "select" && op != "connect" && op != "disconnect" && op != "github_login_start" && op != "github_login_cancel" && op != "egress_set" && op != "resolve" && op != "revoke" && op != "block" && op != "unblock" && op != "github_select" && op != "pr_resolve" && op != "doc_draft" && op != "doc_decide" && op != "doc_resolve" && op != "doc_return" && op != "doc_rebase" {
 			http.Error(w, "not found", 404)
 			return
 		}

@@ -772,6 +772,7 @@ export function ChatShell({
               key={chat.id + "repositories"}
               chatID={chat.id}
               trigger={null}
+              admin={admin}
             />
             <PullRequestReview
               ref={pullRequestsRef}

@@ -1217,6 +1217,49 @@ button.danger:hover {
   margin: 0;
   flex: 1 1 240px;
 }
+/* The GitHub device-flow sign-in: the code to type at GitHub, a link to
+   the verification page styled as the primary action, and the wait. */
+.github-signin-code {
+  font-family: var(--mono);
+  font-size: 18px;
+  letter-spacing: 0.08em;
+  margin: 0 6px 0 2px;
+}
+.github-signin-pending > p {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0;
+}
+.github-signin-pending .ghost {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+.github-signin a.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.github-signin a.button:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+.github-signin .error,
+.github-signin .admin-notice {
+  margin: 8px 0 0;
+}
 .admin-actions button.danger {
   margin-left: auto;
   color: var(--danger, #b3261e);

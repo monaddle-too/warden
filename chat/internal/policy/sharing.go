@@ -445,7 +445,10 @@ type Sharing struct {
 	GitHubConfigured bool
 	GitHubAppSlug    string
 	GitHub           GitHubCredentials
-	DB               *sql.DB
+	// SignIn is the console's GitHub device-flow sign-in for the user-token
+	// source ("github_login_start" and friends).
+	SignIn GitHubSignIn
+	DB     *sql.DB
 	Images           *Images
 	PullRequests     *PullRequests
 	Documents        *DocumentProposals
@@ -503,6 +506,7 @@ func NewSharing(root string, google GoogleSharing, clock Clock, github GitHubCre
 	if s.Clock == nil {
 		s.Clock = wallClock
 	}
+	s.SignIn.Clock = s.Clock
 	for _, statement := range []string{
 		`CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, chat TEXT, sandbox TEXT, reason TEXT, status TEXT, created REAL, expires REAL, documents TEXT, delivered INTEGER DEFAULT 0)`,
 		`CREATE TABLE IF NOT EXISTS repositories (chat TEXT, sandbox TEXT, owner TEXT, app INTEGER, name TEXT, id INTEGER, grant_id TEXT, PRIMARY KEY(chat,sandbox,name))`,
@@ -594,6 +598,7 @@ func ensureTextColumns(db *sql.DB, table string, columns [][2]string) error {
 }
 
 func (s *Sharing) Close() {
+	s.SignIn.Cancel()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.DB != nil {
@@ -745,6 +750,13 @@ func (s *Sharing) Dispatch(op string, data map[string]any) (map[string]any, erro
 		return s.Documents.Dispatch(op, data)
 	case op == "github_write":
 		return s.githubWrite(data)
+	case strings.HasPrefix(op, "github_login_"):
+		// The console's sign-in works without a current identity: it is
+		// how one is obtained.
+		if s.GitHub == nil {
+			return nil, errors.New("GitHub is not configured")
+		}
+		return s.githubSignIn(op, data)
 	case strings.HasPrefix(op, "github_"):
 		return s.githubDispatch(op, data)
 	}
