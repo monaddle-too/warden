@@ -1309,8 +1309,9 @@ const ASIDE_RELEASE_MS = 1500;
     if (chosen) runCommand(chosen, withoutCommand(text, trigger));
   }
   // "/attach PATH…": the files the paths name on this computer join the
-  // pending uploads; what could not be attached is said by name and the
-  // command line stays for a correction.
+  // pending uploads and the command line goes (so a second send does not
+  // attach them again); what could not be attached is said by name, and
+  // a line that attached nothing stays for a correction.
   async function attachTyped(paths: string[]) {
     if (!localFiles) {
       setError(
@@ -1338,7 +1339,7 @@ const ASIDE_RELEASE_MS = 1500;
           ),
         ]);
       setError(result.errors.join("\n"));
-      if (!result.errors.length) place({ text: "", caret: 0 });
+      if (result.attached.length) place({ text: "", caret: 0 });
     } catch (e) {
       setError(String(e));
     } finally {
