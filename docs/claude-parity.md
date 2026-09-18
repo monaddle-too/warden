@@ -308,6 +308,102 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
 
+### Item 8: compaction and context
+
+Branch `feat/parity-8-compaction`, worktree `.local/warden-parity-8-compaction`,
+from main d648409 (2026-09-17).
+
+What the pinned CLI (2.1.272) emits, probed on a cloned home (`~/.warden-p6`)
+with a second CLI run inside the chat's sandbox under the resident process's
+environment and Warden's launch flags (`scratchpad/probe.py`: one `user`
+frame per turn, the next sent after the `result`), on a session that read
+three 1500-line files (~171k tokens of context), then `/compact keep the
+list of files read and their last words`, a question, `/compact`, and on a
+fresh session that read seven such files:
+
+- **Context length.** Every `assistant` frame (one per content block) and
+  the `message_start` stream event carry the API call's `message.usage`:
+  `input_tokens` (the uncached part, 2), `cache_creation_input_tokens`,
+  `cache_read_input_tokens`. Their sum is the prompt size of that call —
+  the context length: 40.6k → 109k → 171k over one turn's three calls.
+  The `result`'s `usage` is **summed over the turn's calls** (142127
+  cache-creation = 11788 + 68398 + 61941), so it cannot give the context;
+  the last call's usage does.
+- **Context window.** `result.modelUsage[<model>].contextWindow` reports
+  it (200000 for `claude-sonnet-5` here; also `maxOutputTokens`,
+  `canonicalModel`, running per-model totals and cost). The binary's model
+  table agrees: 200k for haiku 4.5, sonnet 4.0/4.5, opus 4.0/4.1/4.5
+  (`[1m]` suffix → 1M where `supports_1m_suffix`); native 1M for sonnet
+  4.6, opus 4.6/4.7/4.8, opus 5, fable 5. The CLI's own auto-compact
+  window can be set below the model's (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
+  `autoCompactWindow`); Warden does not set it.
+- **`/compact` and `/compact <instructions>`** (both `trigger: manual`;
+  the instructions shaped the summary, which kept the file list and last
+  words): `system/status` `{status: "compacting"}` → after 11–23 s
+  `system/status` `{status: null, compact_result: "success"}` →
+  `system/init` (same `session_id`) → `system/compact_boundary` with
+  `compact_metadata` `{trigger, pre_tokens: 171238, post_tokens: 2194,
+  cumulative_dropped_tokens, duration_ms, preserved_segment,
+  preserved_messages}` → a `user` frame with the summary as **string**
+  content (`isSynthetic: true`, `isReplay: false`; "This session is being
+  continued from a previous conversation that ran out of context. The
+  summary below…", 4–6k chars) → a `user` frame `isReplay: true` with
+  `<local-command-stdout>Compacted </local-command-stdout>` → `result`
+  (`num_turns: 0`, empty `result`, all-zero `usage`, `total_cost_usd`
+  grown by the compaction's own call, `duration_api_ms: 0`).
+  `pre_tokens` is the whole context (system prompt and tools included:
+  last call 170932 + its output); `post_tokens` is the summary alone —
+  the next call's context was 41.1k (37.2k cache read of the fixed
+  prefix + 3.9k summary).
+- **Auto-compaction** (fresh session, seven files; the context reached
+  171k, the seventh read pushed it past the threshold): mid-turn
+  `status: "compacting"` → 24 s → `status: null, compact_result:
+  "failed", compact_error: "API Error: …"` (the summary request was
+  refused: an AUP classifier false positive on the random word lists) →
+  a synthetic `assistant` frame (`model: "<synthetic>"`,
+  `is_api_error_message: true`, text "Prompt is too long · automatic
+  compaction failed: …") → `result` `is_error: true` with that text. The
+  next turn retried before its API call: `status: "compacting"` (re-sent
+  once after 30 s) → `compact_result: "success"` → `compact_boundary`
+  `{trigger: "auto", pre_tokens: 184293, post_tokens: 2484}` → the
+  summary as a `user` frame whose content is a **list** of text blocks
+  (`isSynthetic: true`) → the turn's normal API call at 41.1k. No
+  `system/init` between (it had come at the turn's start).
+- Also: `system/status {status: "requesting"}` precedes every API call;
+  `system/init` carries no window (`model`, `tools`, `slash_commands`,
+  … as item 5 records).
+
+Design:
+
+1. Adapter (`claude.go`, the `system` non-init subtypes, the synthetic
+   `user` frame and the `assistant`/`result` usage): a compaction is a
+   transcript item of type `compaction` — `item/started` at `status:
+   compacting` (so the 10–30 s show as "Compacting context…" in the
+   transcript and the status line), `item/completed` at the boundary with
+   `trigger`, `preTokens`, `postTokens`, and again with `summary` when the
+   synthetic user frame follows; `compact_result: failed` completes it as
+   `failed` with the error (the CLI's own error result still ends the
+   turn). The context is a `thread/context/updated` notification `{used,
+   window, model}`: `used` from each `assistant` frame's usage (input +
+   cache creation + cache read), `window` from `result.modelUsage` once
+   seen (a table by model id before that: 1M for the `[1m]` suffix and
+   the native-1M ids above, 200k otherwise), re-estimated at a boundary
+   as `post_tokens` + the smallest context the process has seen (the
+   fixed prefix) until the next call reports the truth.
+2. Conversation: entry role `compaction` with `Compaction{Trigger,
+   PreTokens, PostTokens}` and the summary in `Detail`; `Conversation.
+   Context{Used, Window, Model}` kept by the engine from the notification
+   (in `GET state` / `events` as `conversation.context`). Codex reports
+   no window today; the field stays nil.
+3. Web: the divider "Context compacted · manual · 171k → 2.2k tokens"
+   with "Show summary"; a context meter beside the model in the composer
+   footer ("42k / 200k", amber from 80 %, red from 95 %, with the
+   auto-compact note in its title); "Compacting context…" while it runs.
+   `/compact` in the local `/` menu as a passthrough until item 5's list
+   arrives. TUI: `ctx 42k/200k (21%)` in the status line (yellow/red at
+   the same thresholds), the divider, `/compact [instructions]` sent as
+   text.
+
 ### Item 1: typed tool cards and diffs
 
 Branch `feat/parity-1-tool-cards`, worktree `.local/warden-parity-1-tool-cards`,
