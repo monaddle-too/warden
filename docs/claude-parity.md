@@ -158,10 +158,10 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Long paste collapsed | ✅ | ✅ | item 12: `[Pasted text #N — M lines]`, sent in full |
 | Image paste, drop, picker | ✅ | ✗ | |
 | File attachments into the workspace | ✅ | ✗ | |
-| Queue a message during a turn | ◐ | ◐ | the CLI queues it (item 7); Warden's engine serialises turns itself; Codex steers |
-| Edit a queued message | ✗ | ✗ | |
+| Queue a message during a turn | ✅ | ✅ | item 10: Warden's queue (`queue.ts`, `tui/queue.go`), held by Stop; Codex steers |
+| Edit a queued message | ✅ | ✅ | item 10: edit withdraws it into the composer, ↑ the last one, withdraw drops it |
 | Esc to interrupt | ✅ | ✅ | `turn/interrupt` |
-| Esc-Esc / edit-and-resend | ◐ | ✗ | resident-session semantics to check |
+| Esc-Esc / edit-and-resend | ✅ | ✅ | item 10: rewind the conversation (and the code if asked) then send; Esc-Esc on the chooser, which prefills |
 | `!` shell command | ✅ | ✅ | item 12: by the person, transcript-only, `chats/{id}/exec` |
 | `#` append to `CLAUDE.md` | ✅ | ✅ | item 12: `chats/{id}/memory`; read by the agent only once item 7's flag change lands |
 | Prompt suggestions | ✗ | ✗ | |
@@ -386,7 +386,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 7 Workspace `.claude/` loading — verified on CLI 2.1.272, merged to main 32138ea (2026-09-17); the launch-flag change (`--setting-sources=project` + `disableAllHooks`) is recommended under "Decisions needed", not made.
 - [x] 8 Compaction and context — merged to main e84a7bc (2026-09-17); verified as the Item 8 section says.
 - [ ] 9 Mid-session model, effort, thinking.
-- [ ] 10 Queueing and rewind.
+- [ ] 10 Queueing and edit-and-resend — implemented and live-verified 2026-09-18 (cd4a51e); merge pending.
 - [x] 11 Checkpoints and session diff — merged to main 4d0a05e (2026-09-17); verified as the Item 11 section says.
 - [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
 - [ ] 13 Per-user instructions and memory.
@@ -472,7 +472,58 @@ Design:
    send` releases a held queue, ↑ on an empty draft edits the last
    queued message.
 
-Progress: started 2026-09-18.
+Also decided while building: a queued entry sits where it was sent, so
+the earlier turn's reply used to land after it; `confirm` now moves the
+entry to the end of the transcript when the agent gets it, and both
+surfaces render still-queued entries last (`queuedLast`), so the
+transcript reads in the order things happened. The web's ↑ and the TUI's
+take the last queued message *this person* may withdraw (the sender or
+the owner; the TUI is always the owner).
+
+Verified (2026-09-18): `gofmt -l`, `go vet ./...`, `go test ./...`
+(`chats/queue_test.go`: order, one turn each, withdraw by sender/owner and
+refusals, attachments kept through a withdraw and re-send, Stop holding
+the queue with SendQueued and a new message releasing it in order, a
+conversation rewind withdrawing the queue and a code rewind leaving it,
+the routes; `tui/tui_test.go`: markers, `/queue`, `/withdraw`, ↑, the
+held marker, `/queue send`, `/edit` confirm/rewind/prefill, Esc Esc; the
+old Stop and truncate tests updated), `pnpm build`, `pnpm test` (169;
+`queue.test.ts`, `stages.test.ts`). Live on a cloned home (`~/.warden-p11`,
+CLI 2.1.272) through the API: two messages queued behind a `sleep 30`
+turn, the second withdrawn and re-sent edited, the first withdrawn — the
+edited one and a third went in order as their own turns (34.9 s, 2.3 s,
+2.1 s) and the withdrawn ones never reached the agent; Stop mid-turn
+held two queued messages for 10 s+ with the runner seeing no stop or
+cancel (session resident), `send-queued` and a new message each released
+the queue in order (HELD-A, HELD-B, NEW-AFTER-HELD); Stop on a chat
+still starting held them too; a conversation rewind answered
+`withdrawn: 1` and its marker says "1 queued message withdrawn"; an
+edit-and-resend (rewind then message) made the agent name HELD-B as its
+previous reply, the edited message forgotten. In the browser: the dashed
+queued cards with "Queued · will send when the agent finishes", pencil
+and X, "Agent is running · 2 queued" and the hint; ↑ in the empty
+composer pulled the last queued message in; X withdrew one, the pencil
+pulled the other into the composer; after Stop the card read "Held · the
+agent was stopped; send or withdraw it" with Send, the status
+"interrupted · 1 message held", and Send released it; the pencil on a
+sent message opened the editing bar, sending rewound (marker) and the
+agent's answer showed the edited message forgotten; the "also rewind the
+code" checkbox gave "(code and conversation)"; Esc-Esc opened the
+chooser and a conversation rewind prefilled the composer. TUI in a pty
+(`scratchpad/tui_queue.py`): two `(queued · sends when the agent
+finishes)` markers, `/queue`, `/withdraw 1`, ↑ editing the last queued
+message and Enter re-queueing it edited, Esc → "the queued messages are
+held", the held marker, `/queue send` and the answer, `/edit` asking,
+`y` rewinding and prefilling, Esc Esc asking, `n` cancelling.
+
+Left: a queued message's card cannot be edited in place (the edit goes
+through the composer and to the end of the queue); a held queue is not
+released by a `!` command or a `#` note; `warden chat send --wait` on a
+queued message waits for the whole queue; the CLI's own queue is never
+used, so nothing here exercises `commands_queued`.
+
+Progress: started 2026-09-18; implemented and live-verified 2026-09-18
+(cd4a51e).
 
 ### Item 11: checkpoints, rewind and the session diff
 
