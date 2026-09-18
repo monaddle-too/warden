@@ -295,7 +295,7 @@ E–G after.
 
 ### F. TUI: vim mode, attachments, unread (`feat/parity-r2-f-tui`)
 - [x] R2.16 **Vim mode**: `/vim on|off` persisted; normal/insert, motions, operators, `u`, `:` commands. Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says.
-- [x] R2.17 **Attachments and paste**: `/attach a b c`, a local `@file` path attaches, a paste-preview chip (items 6 and 12's leftovers). Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says.
+- [x] R2.17 **Attachments and paste**: `/attach a b c`, a local `@file` path attaches, a paste-preview chip (items 6 and 12's leftovers). Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says. The web composer got the same `/attach PATH…` and local `@` mentions (path completion from this computer, a local install only) on 2026-09-18: [web-attach-from-disk-plan](web-attach-from-disk-plan.md).
 - [x] R2.18 **Unread and jump**: unread markers per chat in `/chats` and the sidebar, an unread divider on switch, `G`/End jumps to the bottom. Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says (the TUI's status bar is the sidebar's equivalent; on the scrollback TUI the jump is a reprint).
 
 ### G. Asides and shortcuts (`feat/parity-r2-g-asides-keys`)

@@ -68,7 +68,33 @@ single-owner install that is not the Kubernetes shape). Elsewhere
 2. The count limit is the client's to state (`limit` in the body): the
    service knows nothing of a draft's pending uploads, and globs expand
    on the host, so the check happens there.
+3. Enter in the `/attach` list takes the highlighted path, `⌘Enter`
+   attaches (the composer's send key; plain Enter is a newline or a
+   pick, as everywhere in it). The command line clears once anything
+   was attached, so a second send does not attach the files again; a
+   line that attached nothing stays for a correction.
+4. A mention that names no file, a directory or a glob matching nothing
+   is sent as written (the TUI's rule, `missing` in the result); an
+   empty or oversized file or the count limit keeps the draft.
+5. Picking "Attach files…" from the `/` menu fills `/attach ` for paths
+   on a local install; a bare `/attach` sent opens the picker, and so
+   does the pick where typed paths are unavailable.
 
 ## Progress log
 
 - 2026-09-18: worktree opened, plan written.
+- 2026-09-18: steps 1–3 done (259a743, 2fc9ec4). Live-tested on the
+  cloned home `~/.warden-p20` (build 2fc9ec4) in the browser: `/att` → Tab
+  fills `/attach `; typing `~/warden-att` lists the directory, Tab takes
+  it, the listing shows `sub/` first then the files; picking `my notes.md`
+  inserts it quoted; `⌘Enter` on `/attach "~/…/my notes.md" ~/…/*.log
+  ~/…/empty.txt` attached three chips and said `empty.txt: is empty`;
+  a message with `@~/warden-attach-test/rep` completed to `report.txt`,
+  was sent with the mention rewritten to `@.warden/attachments/<id>.txt`
+  and `report.txt` as a fourth attachment, `@~/…/nowhere.txt` sent as
+  written; Claude read all four from the workspace. A second `/attach`
+  with a directory and a file attached the file, named the directory
+  and cleared the line. Not verified in the browser: a bare `/attach`
+  opening the picker (the paperclip's code path) and the off-install
+  notes (`localFiles` false), both unit-level.
+- Step 4: feature map and parity note done; merge next.
