@@ -329,7 +329,7 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
                     Load more repositories
                   </button>
                 )}
-                {github.disconnectable && (
+                {github.disconnectable && github.mode !== "user" && (
                   <button
                     className="danger"
                     disabled={!!busy}
@@ -346,7 +346,17 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
                   connected
                   disabled={!!busy}
                   onSignedIn={() => void load()}
-                />
+                >
+                  {github.disconnectable && (
+                    <button
+                      className="danger"
+                      disabled={!!busy}
+                      onClick={() => void disconnect("github")}
+                    >
+                      Disconnect GitHub
+                    </button>
+                  )}
+                </GitHubSignIn>
               )}
             </>
           ) : status.github.mode === "user" || !status.github.appSlug ? (

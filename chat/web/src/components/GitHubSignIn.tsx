@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, Copy, ExternalLink, GitBranch } from "lucide-react";
 import { api } from "../api";
 
@@ -20,11 +20,15 @@ export function GitHubSignIn({
   connected,
   disabled,
   onSignedIn,
+  children,
 }: {
   // A stored sign-in exists: the button refreshes it instead of starting one.
   connected: boolean;
   disabled?: boolean;
   onSignedIn?: (login: string) => void;
+  // Rendered beside the sign-in button while no attempt is pending (the
+  // console's Disconnect button).
+  children?: ReactNode;
 }) {
   const [signIn, setSignIn] = useState<SignIn>({ status: "none" });
   const [error, setError] = useState("");
@@ -156,6 +160,7 @@ export function GitHubSignIn({
             <GitBranch size={14} />
             {connected ? "Refresh sign-in" : "Sign in with GitHub"}
           </button>
+          {children}
         </div>
       )}
       {signIn.status === "done" && (
