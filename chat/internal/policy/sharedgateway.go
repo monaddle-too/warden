@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"warden/chat/internal/bugreport"
 )
 
 // SharedGateway is one listener serving every binding's gateway
@@ -71,7 +73,7 @@ func NewSharedGateway(registry *Registry, networks []*net.IPNet, listener net.Li
 	}
 	s := &SharedGateway{registry: registry, networks: networks, Factory: NewBindingGateway, host: strings.ToLower(host), port: addr.Port,
 		probe: "http://" + net.JoinHostPort(probe, strconv.Itoa(addr.Port)), entries: map[string]*sharedEntry{}}
-	s.server = &http.Server{Handler: s, ReadHeaderTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20, ErrorLog: silentLogger(), TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){}}
+	s.server = &http.Server{Handler: bugreport.Handler(s), ReadHeaderTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20, ErrorLog: silentLogger(), TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){}}
 	go func() { _ = s.server.Serve(listener) }()
 	return s, nil
 }

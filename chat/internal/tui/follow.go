@@ -86,6 +86,12 @@ func Follow(ctx context.Context, client *Client, chatID string, out io.Writer, s
 				fmt.Fprintf(out, "approval pending (%s): answer it in the Warden app or with `warden chat approve %s`\n", a.Method, chatID)
 			}
 		}
+		for _, r := range c.Reviews {
+			if !announced[r.ID] {
+				announced[r.ID] = true
+				fmt.Fprintf(out, "review pending: %s — review it in the Warden app\n", r.Summary(c.Provider))
+			}
+		}
 		active := c.Status == "running" || c.Status == "queued" || c.Status == "stopping" || streaming
 		if active {
 			settled = 0

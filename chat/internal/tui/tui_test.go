@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -479,11 +480,16 @@ type fakeServer struct {
 	instructions string
 	memory       MemoryView
 	writes       []string
+	searches     []string // the query strings /search sent
 	// rules is what environments|chats/{id}/rules answer (the workspace's
 	// then the chats'); adds and removes edit it; events is the chat's
 	// permission history.
 	rules  RulesView
 	events []PermissionEvent
+	// bugs are the /bug texts and bug-test calls received; bugsOff makes
+	// the fake answer as a Warden with reporting off.
+	bugs    []string
+	bugsOff bool
 }
 
 func newFakeServer(t *testing.T, initial State) *fakeServer {
@@ -536,6 +542,39 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		f.state.Chats = append(f.state.Chats, &Chat{ID: id, Title: body["title"].(string), Provider: body["provider"].(string), Status: "idle"})
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]string{"id": id})
+	case path == "chats/search" && r.Method == "GET":
+		// A plain version of chats/search.go: titles then entries, newest
+		// entry first, case-insensitive, one hit per entry.
+		q := strings.ToLower(r.URL.Query().Get("q"))
+		res := SearchResult{Hits: []SearchHit{}}
+		f.mu.Lock()
+		f.searches = append(f.searches, r.URL.RawQuery)
+		for _, c := range f.state.Chats {
+			if q != "" && strings.Contains(strings.ToLower(c.Title), q) {
+				h := SearchHit{ChatID: c.ID, Title: c.Title, Archived: c.Archived, Provider: c.Provider, Field: "title"}
+				h.Snippet.Match = q
+				res.Hits = append(res.Hits, h)
+			}
+		}
+		for _, c := range f.state.Chats {
+			for i := len(c.Conversation.Entries) - 1; i >= 0 && q != ""; i-- {
+				e := c.Conversation.Entries[i]
+				field := ""
+				if strings.Contains(strings.ToLower(e.Text), q) {
+					field = "text"
+				} else if e.Role == "activity" && strings.Contains(strings.ToLower(e.Detail), q) {
+					field = "detail"
+				}
+				if field == "" {
+					continue
+				}
+				h := SearchHit{ChatID: c.ID, Title: c.Title, Provider: c.Provider, EntryID: e.ID, Field: field, Role: e.Role, ParentID: e.ParentID, CreatedAt: e.CreatedAt, Sender: e.Sender}
+				h.Snippet.Match = q
+				res.Hits = append(res.Hits, h)
+			}
+		}
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(res)
 	case strings.HasSuffix(path, "/paths") && r.Method == "GET":
 		q := r.URL.Query().Get("q")
 		var paths []string
@@ -905,6 +944,23 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(PromoteResult{MessageID: "promoted-" + parts[2], Text: text})
+	case strings.HasSuffix(path, "/bug"):
+		var body struct{ Text string }
+		json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.bugs = append(f.bugs, strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/bug")+": "+body.Text)
+		off := f.bugsOff
+		f.mu.Unlock()
+		if off {
+			json.NewEncoder(w).Encode(BugResult{Notice: "Bug reporting is off — `warden bugs on` to enable it"})
+			return
+		}
+		json.NewEncoder(w).Encode(BugResult{Drafted: true, ID: strings.Repeat("b", 32), Notice: "Bug report drafted — review it in the window that opened (or `warden bugs pending`)"})
+	case path == "bug-test":
+		f.mu.Lock()
+		f.bugs = append(f.bugs, "test")
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(BugResult{Drafted: true, ID: strings.Repeat("c", 32), Notice: "Bug report drafted — review it in the window that opened (or `warden bugs pending`)"})
 	case strings.HasSuffix(path, "/style"):
 		var body struct{ Style string }
 		json.NewDecoder(r.Body).Decode(&body)
@@ -1235,25 +1291,160 @@ func TestWatchReportsEachPendingApprovalOnce(t *testing.T) {
 	var got []string
 	done := make(chan struct{})
 	go func() {
-		Watch(ctx, f.client(), func(ch *Chat, a Approval) {
-			mu.Lock()
-			got = append(got, ch.Title+": "+a.Summary())
-			if len(got) == 2 {
-				cancel()
-			}
-			mu.Unlock()
+		Watch(ctx, f.client(), Watcher{
+			Approval: func(ch *Chat, a Approval) {
+				mu.Lock()
+				got = append(got, ch.Title+": "+a.Summary())
+				if len(got) == 3 {
+					cancel()
+				}
+				mu.Unlock()
+			},
+			Review: func(ch *Chat, r Review) {
+				mu.Lock()
+				got = append(got, ch.Title+": review "+r.Summary(ch.Provider))
+				if len(got) == 3 {
+					cancel()
+				}
+				mu.Unlock()
+			},
 		})
 		close(done)
 	}()
 	time.Sleep(150 * time.Millisecond)
 	f.mu.Lock()
 	f.state.Chats[0].Approvals = append(f.state.Chats[0].Approvals, Approval{ID: "q", Method: "item/tool/requestUserInput", State: "pending", Params: map[string]any{"questions": []any{map[string]any{"id": "q1", "question": "Deploy?"}}}})
+	f.state.Chats[0].Reviews = []Review{{ID: "pr1", Kind: "pull_request", Status: "pending", Title: "Fix the README", Repository: "owner/repo"}}
 	f.mu.Unlock()
 	<-done
 	mu.Lock()
 	defer mu.Unlock()
-	if len(got) != 2 || got[0] != "Local preview test: bind sandbox port 8000 (Counter)" || got[1] != "Local preview test: question: Deploy?" {
+	if len(got) != 3 || got[0] != "Local preview test: bind sandbox port 8000 (Counter)" || got[1] != "Local preview test: question: Deploy?" || got[2] != "Local preview test: review Codex proposed a pull request “Fix the README” to owner/repo" {
 		t.Fatalf("notifications: %v", got)
+	}
+}
+
+// A review is a request only the app can settle: the card names it above
+// the approvals and points at /review, which opens the app on the chat
+// (or shows the URL when it cannot); the status line, the title and the
+// bell count it with the approvals; nothing answers it from here.
+func TestReviewCardAndCommand(t *testing.T) {
+	c := sampleChat()
+	c.Provider = "claude"
+	c.Reviews = []Review{
+		{ID: "pr1", Kind: "pull_request", Status: "pending", Title: "Fix the README", Repository: "owner/repo"},
+		{ID: "d1", Kind: "document_edit", Status: "pending", Title: "Tighten the intro\x1b[31m", Document: "Roadmap", Changes: 3},
+		{ID: "a1", Kind: "document_access", Status: "pending", Title: "read the brief"},
+		{ID: "c1", Kind: "document_create", Status: "pending", Title: "a report", Document: "Q3 report"},
+	}
+	lines := plain(strings.Join(RenderReviews(c, 80), "\n"))
+	for _, want := range []string{
+		"⚑ Claude proposed a pull request “Fix the README” to owner/repo   review it in the app: /review 1",
+		"⚑ Claude suggested 3 changes to “Roadmap”   review it in the app: /review 2",
+		"  Tighten the intro",
+		"⚑ Claude asked to choose documents   review it in the app: /review 3",
+		"  read the brief",
+		"⚑ Claude asked to create a document “Q3 report”   review it in the app: /review 4",
+	} {
+		if !strings.Contains(lines, want) {
+			t.Fatalf("missing %q in:\n%s", want, lines)
+		}
+	}
+	if strings.Contains(strings.Join(RenderReviews(c, 80), ""), "\x1b[31m") {
+		t.Fatal("agent text leaked an escape sequence")
+	}
+	one := &Chat{Provider: "claude", Reviews: c.Reviews[:1]}
+	if got := plain(strings.Join(RenderReviews(one, 80), "\n")); !strings.Contains(got, "review it in the app: /review\n") && !strings.HasSuffix(got, "review it in the app: /review") {
+		t.Fatalf("single review hint: %q", got)
+	}
+	applying := &Chat{Provider: "claude", Reviews: []Review{{ID: "d1", Kind: "document_edit", Status: "applying", Document: "Roadmap"}}}
+	if got := plain(strings.Join(RenderReviews(applying, 80), "\n")); !strings.Contains(got, "Writing the suggested edits to “Roadmap”   the app is writing it") {
+		t.Fatalf("applying: %q", got)
+	}
+	// The status line counts reviews with the approvals; the title and
+	// the bell treat a new review as an approval.
+	if got := WaitingLabel(c); got != "1 approval · 4 reviews" {
+		t.Fatalf("waiting: %q", got)
+	}
+	if got := WaitingLabel(&Chat{Reviews: c.Reviews[:1]}); got != "1 review" {
+		t.Fatalf("waiting: %q", got)
+	}
+	if got := plain(strings.Join(StatusParts(c, nil, true, time.Unix(0, 0)), " | ")); !strings.Contains(got, "⚠ 1 approval · 4 reviews") {
+		t.Fatalf("status: %q", got)
+	}
+	quiet := &Chat{ID: "c", Title: "Docs", Status: "running"}
+	reviewing := &Chat{ID: "c", Title: "Docs", Status: "running", Reviews: c.Reviews[:1]}
+	if got := TitleFor(reviewing); got != "Warden · Docs · approval" {
+		t.Fatalf("title: %q", got)
+	}
+	if got := BellEvents(quiet, reviewing); len(got) != 1 || got[0] != "approval" {
+		t.Fatalf("bell: %v", got)
+	}
+	if got := BellEvents(reviewing, reviewing); len(got) != 0 {
+		t.Fatalf("a known review rang again: %v", got)
+	}
+	// /review opens the app on this chat; N picks one; without a browser
+	// the URL is shown; with none pending it says so.
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	var opened []string
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, AppURL: "http://127.0.0.1:18781/?launch=5#session=abc", OpenURL: func(u string) error { opened = append(opened, u); return nil }}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+	app.submit(ctx, "/review")
+	if len(opened) != 1 || opened[0] != "http://127.0.0.1:18781/?launch=5&chat=chat1#session=abc" || !strings.Contains(app.notice, "opened the app on this chat: Claude proposed a pull request “Fix the README” to owner/repo") {
+		t.Fatalf("/review: %v %q", opened, app.notice)
+	}
+	app.submit(ctx, "/review 2")
+	if len(opened) != 2 || !strings.Contains(app.notice, "Claude suggested 3 changes to “Roadmap”") {
+		t.Fatalf("/review 2: %v %q", opened, app.notice)
+	}
+	app.submit(ctx, "/review 9")
+	if len(opened) != 2 || app.notice != "/review N with N from 1 to 4" {
+		t.Fatalf("/review 9: %v %q", opened, app.notice)
+	}
+	app.OpenURL = func(string) error { return errors.New("no display") }
+	app.submit(ctx, "/review")
+	if !strings.Contains(app.notice, "could not open the browser (no display); review it in the app: http://127.0.0.1:18781/?launch=5&chat=chat1#session=abc") {
+		t.Fatalf("failed open: %q", app.notice)
+	}
+	app.OpenURL = nil
+	app.submit(ctx, "/review")
+	if app.notice != "review it in the app: http://127.0.0.1:18781/?launch=5&chat=chat1#session=abc" {
+		t.Fatalf("no opener: %q", app.notice)
+	}
+	app.AppURL = ""
+	app.submit(ctx, "/review")
+	if !strings.Contains(app.notice, "open the Warden app on this chat to review it") {
+		t.Fatalf("no URL: %q", app.notice)
+	}
+	f.mu.Lock()
+	f.state.Chats[0].Reviews = nil
+	f.mu.Unlock()
+	s, _ = app.Client.State(ctx)
+	app.state = s
+	app.submit(ctx, "/review")
+	if !strings.Contains(app.notice, "nothing to review") {
+		t.Fatalf("none: %q", app.notice)
+	}
+	// A pending review is not an approval: "y" is a message, not an answer.
+	if len(app.state.Chats[0].Pending()) != 1 {
+		t.Fatal("the port approval should still be pending")
+	}
+}
+
+// `warden chat send --wait` announces a review once, pointing at the app.
+func TestFollowAnnouncesReviews(t *testing.T) {
+	c := &Chat{ID: "c1", Title: "one", Provider: "claude", Status: "idle", Reviews: []Review{{ID: "pr1", Kind: "pull_request", Status: "pending", Title: "Fix the README", Repository: "owner/repo"}}}
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	if _, err := Follow(ctx, f.client(), "c1", &out, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out.String(), "review pending: Claude proposed a pull request “Fix the README” to owner/repo — review it in the Warden app\n") != 1 {
+		t.Fatalf("output:\n%s", out.String())
 	}
 }
 
@@ -1379,6 +1570,146 @@ func TestMultilineComposerAndPaste(t *testing.T) {
 	f := app.frame(80, 24)
 	if len(f.PromptLines) != 4 || f.CursorRow != 3 || f.CursorCol != 5 || !strings.HasPrefix(f.PromptLines[0], "› a") || !strings.HasPrefix(f.PromptLines[1], "  b") {
 		t.Fatalf("prompt %q row %d col %d", f.PromptLines, f.CursorRow, f.CursorCol)
+	}
+}
+
+// /find reaches what the rendered transcript hides: a subagent's entries
+// under its collapsed card, a person's command output past the fold, and
+// steps Ctrl+O hid, by expanding (Tab) or showing the steps first, then
+// prints the matching lines as it does for any match.
+func TestFindReachesNestedAndFoldedEntries(t *testing.T) {
+	c := sampleChat()
+	c.Status = "idle"
+	c.Conversation.Entries[2].IsStreaming = false
+	c.Conversation.Entries = append(c.Conversation.Entries,
+		Entry{ID: "agent", Role: "activity", Text: "Agent: look around (Explore)", Detail: "It is in lex.go.", Tool: &Tool{Kind: "task", Name: "Agent", Status: "completed", Input: map[string]any{"subagent_type": "Explore"}}},
+		Entry{ID: "grep", Role: "activity", Text: "Grep \"tokenizer\" in .", Detail: "lex.go:12: func tokenizer()\n", ParentID: "agent", Tool: &Tool{Kind: "search", Name: "Grep", Status: "completed", Query: "tokenizer"}},
+		Entry{ID: "said", Role: "assistant", Text: "The tokenizer is in lex.go, under the lexer heading.", ParentID: "agent"},
+		Entry{ID: "mine", Role: "activity", Text: "git status", Detail: "?? scratch-marker.txt\n" + strings.Repeat("modified: x.go\n", 20), Sender: &struct {
+			PrincipalID string `json:"principalID"`
+			Email       string `json:"email"`
+			Name        string `json:"name"`
+		}{PrincipalID: "owner"}, Tool: &Tool{Kind: "command", Name: "Bash", Status: "completed"}},
+	)
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Size: func() (int, int) { return 80, 30 }}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+	app.frame(80, 30)
+	// The subagent's message, collapsed behind the card's count line.
+	app.submit(ctx, "/find lexer heading")
+	if !app.expanded || !strings.HasPrefix(app.notice, `1 line(s) contain "lexer heading" (output expanded)`) || !strings.Contains(app.notice, "Explore › The tokenizer is in lex.go") {
+		t.Fatalf("nested find: expanded %v notice %q", app.expanded, app.notice)
+	}
+	// The person's command output past the fold (a command shows its last
+	// lines; the marker is on its first).
+	app.expanded = false
+	app.submit(ctx, "/find scratch-marker")
+	if !app.expanded || !strings.Contains(app.notice, "(output expanded)") || !strings.Contains(app.notice, "?? scratch-marker.txt") {
+		t.Fatalf("folded find: expanded %v notice %q", app.expanded, app.notice)
+	}
+	// A step hidden by Ctrl+O.
+	app.expanded, app.quiet = false, true
+	app.submit(ctx, "/find func tokenizer")
+	if app.quiet || !app.expanded || !strings.Contains(app.notice, "(steps shown, output expanded)") {
+		t.Fatalf("quiet find: quiet %v expanded %v notice %q", app.quiet, app.expanded, app.notice)
+	}
+	// Still nothing for a term the chat does not have; nothing expands.
+	app.expanded = false
+	app.submit(ctx, "/find zzzz-not-there")
+	if app.expanded || app.notice != `"zzzz-not-there" is not in the transcript` {
+		t.Fatalf("missing: expanded %v notice %q", app.expanded, app.notice)
+	}
+}
+
+// /search lists the hits of every chat as a numbered menu (Enter or
+// /search N opens one); a jump opens the chat and prints the entry's
+// lines — its card's for a subagent's entry, expanding the transcript.
+func TestSearchAcrossChatsListsAndJumps(t *testing.T) {
+	first := sampleChat()
+	first.Status, first.Conversation.Entries[2].IsStreaming = "idle", false
+	second := &Chat{ID: "chat2", Title: "Second chat", Provider: "claude", Status: "idle"}
+	second.Conversation.Entries = []Entry{
+		{ID: "u2", Role: "user", Text: "Find the tokenizer", CreatedAt: 1, Delivery: "sent"},
+		{ID: "agent", Role: "activity", Text: "Agent: look (Explore)", Detail: "lex.go", CreatedAt: 2, Tool: &Tool{Kind: "task", Name: "Agent", Status: "completed", Input: map[string]any{"subagent_type": "Explore"}}},
+		{ID: "child", Role: "assistant", Text: "The tokenizer-marker is in lex.go.", ParentID: "agent", CreatedAt: 3},
+		{ID: "tail2", Role: "assistant", Text: "later", CreatedAt: 4},
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{first, second}})
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Size: func() (int, int) { return 80, 30 }}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+	app.frame(80, 30)
+	app.submit(ctx, "/search")
+	if !strings.Contains(app.notice, "/search TEXT") {
+		t.Fatalf("usage: %q", app.notice)
+	}
+	app.submit(ctx, "/search tokenizer")
+	if len(f.searches) != 1 || f.searches[0] != "q=tokenizer&limit=40" {
+		t.Fatalf("request: %v", f.searches)
+	}
+	if app.menu == nil || app.menu.Trigger.Kind != "hit" || len(app.menu.Items) != 2 || !strings.Contains(app.notice, "2 hits for \"tokenizer\"") {
+		t.Fatalf("menu: %+v notice %q", app.menu, app.notice)
+	}
+	if it := app.menu.Items[0]; it.Insert != "/search 1" || !it.Run || !strings.HasPrefix(it.Label, "1  Second chat") || !strings.Contains(it.Hint, "claude in a subagent") {
+		t.Fatalf("first row: %+v", it)
+	}
+	if it := app.menu.Items[1]; !strings.Contains(it.Hint, "you ·") {
+		t.Fatalf("second row: %+v", it)
+	}
+	// Down, then Enter: the second hit (the user's message) opens chat 2
+	// and prints the message.
+	app.handleKey(ctx, Key{Kind: KeyDown})
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.ChatID != "chat2" || app.menu != nil || app.expanded || !strings.HasPrefix(app.notice, "Second chat · you · ") || !strings.Contains(app.notice, "\nyou › Find the tokenizer") {
+		t.Fatalf("jump: chat %s expanded %v notice %q", app.ChatID, app.expanded, app.notice)
+	}
+	// /search N: the subagent's message needs the transcript expanded;
+	// its card is printed with the message under it.
+	app.submit(ctx, "/search 1")
+	if !app.expanded || !strings.Contains(app.notice, "(output expanded):\n") || !strings.Contains(app.notice, "Agent: look (Explore)") || !strings.Contains(app.notice, "Explore › The tokenizer-marker is in lex.go.") {
+		t.Fatalf("nested jump: expanded %v notice %q", app.expanded, app.notice)
+	}
+	app.submit(ctx, "/search 9")
+	if !strings.Contains(app.notice, "N from the last search") {
+		t.Fatalf("out of range: %q", app.notice)
+	}
+	app.submit(ctx, "/search zzzz-nothing")
+	if app.menu != nil || !strings.Contains(app.notice, "no chat mentions") {
+		t.Fatalf("no hits: %q", app.notice)
+	}
+	// A title hit just opens the chat.
+	app.submit(ctx, "/search preview")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.ChatID != "chat1" || !strings.Contains(app.notice, "opened Local preview test") {
+		t.Fatalf("title jump: chat %s notice %q", app.ChatID, app.notice)
+	}
+}
+
+// entryLines is an entry as the transcript renders it: a subagent's entry
+// comes with its card; a long block is cut around the match.
+func TestEntryLines(t *testing.T) {
+	c := &Chat{ID: "c", Provider: "claude"}
+	c.Conversation.Entries = []Entry{
+		{ID: "u", Role: "user", Text: "one\ntwo"},
+		{ID: "agent", Role: "activity", Text: "Agent: look", Tool: &Tool{Kind: "task", Status: "completed"}},
+		{ID: "child", Role: "assistant", Text: "inside", ParentID: "agent"},
+		{ID: "r", Role: "assistant", Text: strings.Repeat("filler\n\n", 30) + "needle here\n\n" + strings.Repeat("after\n\n", 10)},
+	}
+	if got := entryLines(c, 80, true, "u", ""); len(got) != 2 || !strings.Contains(got[0], "you › one") {
+		t.Fatalf("first: %q", got)
+	}
+	if got := entryLines(c, 80, true, "child", ""); len(got) < 2 || !strings.Contains(got[0], "Agent: look") || !strings.Contains(strings.Join(got, "\n"), "inside") {
+		t.Fatalf("nested: %q", got)
+	}
+	got := entryLines(c, 80, true, "r", "needle")
+	if len(got) > findLimit+2 || !strings.Contains(got[0], "…") || !strings.Contains(strings.Join(got, "\n"), "needle here") || !strings.Contains(got[len(got)-1], "more lines") {
+		t.Fatalf("long: %q", got)
+	}
+	if got := entryLines(c, 80, true, "nope", ""); got != nil {
+		t.Fatalf("unknown: %q", got)
 	}
 }
 
@@ -1895,6 +2226,92 @@ func TestExportMatchesTheWeb(t *testing.T) {
 	}
 }
 
+// The export nests a subagent's work under its card (quoted in markdown,
+// `children` in JSON, fields the client does not model kept) and keeps a
+// command the person ran, attributed to them, with or without the steps —
+// the same file export.ts writes.
+func TestExportNestsSubagentsAndKeepsPersonsCommands(t *testing.T) {
+	raw := `{"id":"c9","title":"Nested","provider":"claude","model":"","sandboxID":"s","status":"idle","archived":false,"approvals":[],"conversation":{"entries":[
+	{"id":"u","role":"user","text":"Look","detail":"","createdAt":1789000000,"isStreaming":false,"delivery":""},
+	{"id":"agent","role":"activity","text":"Agent: look around (Explore)","detail":"It is in lex.go.","createdAt":1789000000,"isStreaming":false,"delivery":"","tool":{"kind":"task","name":"Agent","status":"completed"},"future":1},
+	{"id":"grep","role":"activity","text":"Grep \"tokenizer\" in .","detail":"lex.go:12\n","createdAt":1789000000,"isStreaming":false,"delivery":"","parentID":"agent","tool":{"kind":"search","name":"Grep","status":"completed"}},
+	{"id":"inner","role":"activity","text":"Agent: dig (Plan)","detail":"","createdAt":1789000000,"isStreaming":false,"delivery":"","parentID":"agent","tool":{"kind":"task","name":"Agent","status":"completed"}},
+	{"id":"deep","role":"activity","text":"Read lex.go","detail":"` + "```\\nx\\n```" + `","createdAt":1789000000,"isStreaming":false,"delivery":"","parentID":"inner","tool":{"kind":"read","name":"Read","status":"completed"}},
+	{"id":"said","role":"assistant","text":"Found it.","detail":"","createdAt":1789000000,"isStreaming":false,"delivery":"","parentID":"agent"},
+	{"id":"r","role":"assistant","text":"It is in lex.go.","detail":"","createdAt":1789000000,"isStreaming":false,"delivery":""},
+	{"id":"mine","role":"activity","text":"git status","detail":"clean\n","createdAt":1789000000,"isStreaming":false,"delivery":"","sender":{"principalID":"owner"},"tool":{"kind":"command","name":"Bash","status":"completed"}}
+	]}}`
+	var c Chat
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 17, 13, 5, 0, 0, time.UTC)
+	stamp := func(s float64) string { return fmt.Sprintf("T%v", s) }
+	md := ExportMarkdown(&c, true, at, stamp)
+	want := strings.Join([]string{
+		"### Activity — Agent: look around (Explore)", "",
+		"> ### Activity — Grep \"tokenizer\" in .", ">",
+		"> ```", "> lex.go:12", "> ```", ">",
+		"> ### Activity — Agent: dig (Plan)", ">",
+		"> > ### Activity — Read lex.go", "> >",
+		"> > ````", "> > ```", "> > x", "> > ```", "> > ````", "> >",
+		">",
+		"> ## Claude — T1.789e+09", ">",
+		"> Found it.", ">",
+		"",
+		"```", "It is in lex.go.", "```", "",
+		"## Claude — T1.789e+09", "",
+		"It is in lex.go.", "",
+		"### Command by You — git status", "",
+		"```", "clean", "```", "",
+	}, "\n")
+	if !strings.Contains(md, want) {
+		t.Fatalf("markdown:\n%s\nwant:\n%s", md, want)
+	}
+	plain := ExportMarkdown(&c, false, at, stamp)
+	if strings.Contains(plain, "Explore") || !strings.Contains(plain, "### Command by You — git status") {
+		t.Fatalf("without steps:\n%s", plain)
+	}
+	if n := exportCount(exportTree(&c, true)); n != 8 {
+		t.Fatalf("count all: %d", n)
+	}
+	if n := exportCount(exportTree(&c, false)); n != 3 {
+		t.Fatalf("count messages: %d", n)
+	}
+	out, err := ExportJSON(&c, true, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Entries []struct {
+			ID       string `json:"id"`
+			Future   int    `json:"future"`
+			Children []struct {
+				ID       string `json:"id"`
+				ParentID string `json:"parentID"`
+				Children []struct {
+					ID string `json:"id"`
+				} `json:"children"`
+			} `json:"children"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("%v:\n%s", err, out)
+	}
+	if len(parsed.Entries) != 4 || parsed.Entries[1].ID != "agent" || parsed.Entries[1].Future != 1 || len(parsed.Entries[1].Children) != 3 || parsed.Entries[1].Children[0].ParentID != "agent" || len(parsed.Entries[1].Children[1].Children) != 1 || parsed.Entries[1].Children[1].Children[0].ID != "deep" || parsed.Entries[3].ID != "mine" {
+		t.Fatalf("json nesting:\n%s", out)
+	}
+	if !strings.Contains(string(out), "\n      \"children\": [\n") {
+		t.Fatalf("not indented:\n%s", out)
+	}
+	// A chat built by hand (no raw records) nests the same way.
+	c.Conversation.Raw = nil
+	out, err = ExportJSON(&c, false, at)
+	if err != nil || !strings.Contains(string(out), `"id": "mine"`) || strings.Contains(string(out), "children") {
+		t.Fatalf("hand-built: %v\n%s", err, out)
+	}
+}
+
 func TestExportCommandWritesTheFile(t *testing.T) {
 	c := exportChat()
 	f := newFakeServer(t, State{Chats: []*Chat{c}})
@@ -2229,6 +2646,18 @@ func TestStatusLineShowsTheTurn(t *testing.T) {
 	}{Stage: "creating", Detail: "pulling image"}
 	if status = plain(StatusLine(old, nil, true, now)); !strings.Contains(status, "creating: pulling image") {
 		t.Fatalf("startup stage: %q", status)
+	}
+	// Once the turn runs, the status says what the agent is doing
+	// (activity.go), in place of "running".
+	old.Startup = nil
+	old.Conversation.Entries = append(old.Conversation.Entries, Entry{ID: "e1", Role: "activity", Text: "Edit engine.go", IsStreaming: true, Tool: &Tool{Kind: "edit", Name: "Edit", Status: "running", Paths: []string{"/home/agent/workspace/engine.go"}}})
+	if status = plain(StatusLine(old, nil, true, now)); !strings.Contains(status, "12s Editing engine.go") || strings.Contains(status, "running") {
+		t.Fatalf("activity status: %q", status)
+	}
+	old.Conversation.Entries[1].IsStreaming = false
+	old.Conversation.Entries[1].Tool.Status = "completed"
+	if status = plain(StatusLine(old, nil, true, now)); !strings.Contains(status, "12s running") {
+		t.Fatalf("nothing running: %q", status)
 	}
 }
 
@@ -4223,5 +4652,54 @@ func TestDeliveryMarks(t *testing.T) {
 	}
 	if got := render("failed", ""); got != "you › hi ! not delivered" {
 		t.Fatalf("failed without detail: %q", got)
+	}
+}
+
+// /bug and /test bugreporting (docs/bug-reporting-plan.md): the routes
+// are called and their notice shown; a bare /bug explains itself; off,
+// the notice says how to turn reporting on.
+func TestBugAndTestBugreportingCommands(t *testing.T) {
+	c := sampleChat()
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, later: make(chan func(context.Context), 8)}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+	app.command(ctx, "/bug")
+	if !strings.Contains(app.notice, "/bug TEXT reports a bug") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.command(ctx, "/bug the spinner never stops")
+	if !strings.HasPrefix(app.notice, "Bug report drafted — review it in the window that opened") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.command(ctx, "/test")
+	if !strings.Contains(app.notice, "/test bugreporting raises a test exception") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.command(ctx, "/test bugreporting")
+	if !strings.HasPrefix(app.notice, "Bug report drafted") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	f.mu.Lock()
+	f.bugsOff = true
+	got := strings.Join(f.bugs, "|")
+	f.mu.Unlock()
+	if got != "chat1: the spinner never stops|test" {
+		t.Fatalf("calls %q", got)
+	}
+	app.command(ctx, "/bug still broken")
+	if app.notice != "Bug reporting is off — `warden bugs on` to enable it" {
+		t.Fatalf("notice %q", app.notice)
+	}
+	// Both are in the / menu and in /help.
+	var names []string
+	for _, cmd := range Commands {
+		if cmd.Name == "bug" || cmd.Name == "test" {
+			names = append(names, cmd.Name+" "+cmd.Arg)
+		}
+	}
+	if strings.Join(names, ",") != "bug TEXT,test bugreporting" || !strings.Contains(helpText, "/bug TEXT") || !strings.Contains(helpText, "/test bugreporting") {
+		t.Fatalf("%v", names)
 	}
 }

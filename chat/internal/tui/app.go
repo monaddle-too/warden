@@ -79,6 +79,9 @@ type App struct {
 	later   chan func(context.Context)
 	search  *searchState
 	confirm *confirmation
+	// searchHits are the last /search's hits, for /search N (search.go).
+	searchHits  []SearchHit
+	searchQuery string
 	// editing is set while the composer holds a file or the person's
 	// instructions (/memory edit, /instructions edit): Enter saves it
 	// through save, Esc cancels. memoryFiles is the last listing per chat,
@@ -144,12 +147,15 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /new [title] /chats /switch N · /rename TITLE /archive /restore /delete
            /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
            /stop /model M /provider P /mode M · /open /previews /preview N /unpublish N
+           /review [N] opens the app on this chat for a pull request proposal, document suggestions or a document choice
            /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
            /queue (list) /queue send · /withdraw N · /edit [N] [both] (N from /rewind)
            /fork (list) /fork N|all copies the chat into a sibling · /cost totals so far
            /btw QUESTION asks a copy of the session (never sent to the agent) · /btw promote [N] asks it in chat
+           /bug TEXT reports a bug to Monaddle (you review it first) · /test bugreporting
            /style [default|Explanatory|Learning] · /bell [on|off]
-           /find TEXT /copy /expand /verbose /clear /quit
+           /find TEXT (this chat) · /search TEXT (every chat; /search N opens hit N)
+           /copy /expand /verbose /clear /quit
            /instructions [edit|clear] your standing instructions, given to the agent in every chat
            /memory [FILE] [edit FILE] the workspace's CLAUDE.md, rules and auto-memory files
            /rules (list) /rules add allow|deny|ask PATTERN · /rules rm N — permission rules of the workspace
@@ -1409,6 +1415,10 @@ func (a *App) command(ctx context.Context, line string) {
 		a.memory(ctx, c, arg)
 	case "fork":
 		a.fork(ctx, c, arg)
+	case "bug":
+		a.bug(ctx, c, arg)
+	case "test":
+		a.testBugs(ctx, arg)
 	case "btw":
 		a.btw(ctx, c, arg)
 	case "cost":
@@ -1435,6 +1445,8 @@ func (a *App) command(ctx context.Context, line string) {
 		} else {
 			a.setNotice("opened in the browser")
 		}
+	case "review":
+		a.review(c, arg)
 	case "expand":
 		a.expanded = !a.expanded
 		a.setNotice(map[bool]string{true: "showing full tool output and diffs", false: "showing the last lines of tool output"}[a.expanded])
@@ -1444,6 +1456,8 @@ func (a *App) command(ctx context.Context, line string) {
 			return
 		}
 		a.find(arg)
+	case "search":
+		a.searchCommand(ctx, arg)
 	case "copy":
 		if c == nil {
 			a.setNotice("no chat selected")
@@ -1794,12 +1808,7 @@ named:
 		a.setNotice(err.Error())
 		return
 	}
-	n := 0
-	for _, e := range c.Conversation.Entries {
-		if exportable(e.Role, all) {
-			n++
-		}
-	}
+	n := exportCount(exportTree(c, all))
 	what := "messages"
 	if all {
 		what = "entries (tool steps included)"
@@ -1889,7 +1898,7 @@ func (a *App) visible(c *Chat) *Chat {
 }
 
 // compose lays out the body for the given width: the transcript, the
-// pending approvals and the session diff. final is how many leading lines
+// pending reviews and approvals and the session diff. final is how many leading lines
 // belong to entries that are final (render.go's Block) — what the painter
 // may write to the scrollback and never touch again; approvals and the
 // diff are never final.
@@ -1914,6 +1923,8 @@ func (a *App) compose(width int) (body []string, final int) {
 				allFinal = false
 			}
 		}
+		// Reviews and approvals wait for the person: never final.
+		body = append(body, RenderReviews(c, width)...)
 		body = append(body, RenderApprovals(c, width)...)
 		if a.diff != nil {
 			body = append(body, "")
@@ -2256,13 +2267,47 @@ func clip(s string, width int) string {
 
 // find prints the transcript lines containing term (case-insensitive) as
 // they show on the screen, so the person sees where it occurs; the
-// terminal's own search is what jumps to them.
+// terminal's own search is what jumps to them. A match the rendered lines
+// hide — inside a subagent's collapsed card, past a card's folded output,
+// in a step Ctrl+O hides — is reached by showing the steps and expanding
+// the transcript first (which reprints it), when the chat's entries
+// themselves contain the term.
 func (a *App) find(term string) {
 	width, _ := a.size()
-	body, _ := a.compose(width)
 	needle := strings.ToLower(term)
-	var hits []string
-	total := 0
+	hits, total := findLines(a, width, needle)
+	opened := ""
+	if total == 0 {
+		if c := a.chat(); c != nil && entriesContain(c.Conversation.Entries, needle) {
+			var changes []string
+			if a.quiet {
+				a.quiet = false
+				changes = append(changes, "steps shown")
+			}
+			if !a.expanded {
+				a.expanded = true
+				changes = append(changes, "output expanded")
+			}
+			if len(changes) > 0 {
+				hits, total = findLines(a, width, needle)
+				opened = " (" + strings.Join(changes, ", ") + ")"
+			}
+		}
+	}
+	switch {
+	case total == 0:
+		a.setNotice(fmt.Sprintf("%q is not in the transcript", term))
+	case total > len(hits):
+		a.setNotice(fmt.Sprintf("%d lines contain %q%s; the first %d (your terminal's search finds them all):\n%s", total, term, opened, len(hits), strings.Join(hits, "\n")))
+	default:
+		a.setNotice(fmt.Sprintf("%d line(s) contain %q%s (your terminal's search jumps to them):\n%s", total, term, opened, strings.Join(hits, "\n")))
+	}
+}
+
+// findLines is the rendered transcript's lines containing needle
+// (lower-cased), the first findLimit of them, and how many there are.
+func findLines(a *App, width int, needle string) (hits []string, total int) {
+	body, _ := a.compose(width)
 	for _, l := range body {
 		p := plainText(l)
 		if !strings.Contains(strings.ToLower(p), needle) {
@@ -2273,14 +2318,23 @@ func (a *App) find(term string) {
 			hits = append(hits, truncate(strings.TrimRight(p, " "), max(20, width-4)))
 		}
 	}
-	switch {
-	case total == 0:
-		a.setNotice(fmt.Sprintf("%q is not in the transcript", term))
-	case total > len(hits):
-		a.setNotice(fmt.Sprintf("%d lines contain %q; the first %d (your terminal's search finds them all):\n%s", total, term, len(hits), strings.Join(hits, "\n")))
-	default:
-		a.setNotice(fmt.Sprintf("%d line(s) contain %q (your terminal's search jumps to them):\n%s", total, term, strings.Join(hits, "\n")))
+	return hits, total
+}
+
+// entriesContain says whether any entry's text or detail (a step's
+// output, a side question's answer) contains needle, a subagent's nested
+// entries and the person's own commands included — what /find can reach
+// once the transcript shows everything.
+func entriesContain(entries []Entry, needle string) bool {
+	for _, e := range entries {
+		if strings.Contains(strings.ToLower(e.Text), needle) {
+			return true
+		}
+		if (e.Role == "activity" || e.Role == "aside") && strings.Contains(strings.ToLower(e.Detail), needle) {
+			return true
+		}
 	}
+	return false
 }
 
 // findLimit is how many matching lines /find prints.

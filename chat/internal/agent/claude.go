@@ -561,6 +561,22 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 								toolCalls[id] = t
 							}
 						}
+					case "task_progress":
+						// A subagent's account of its work so far: the
+						// Agent call's card carries it while the subagent
+						// runs (the card's own count is its child entries;
+						// this is the CLI's, with the last tool it used).
+						id := String(v["tool_use_id"])
+						if id == "" {
+							id = tasks[String(v["task_id"])]
+						}
+						if t, ok := toolCalls[id]; ok {
+							if p := claudeTaskProgress(v); p != nil {
+								t.progress = p
+								toolCalls[id] = t
+								event("item/started", map[string]any{"turnId": t.turn, "item": claudeToolItem(id, t, nil, nil)})
+							}
+						}
 					case "task_notification":
 						// The task ended: its outcome, and the subagent's
 						// final text or the command's exit line as the

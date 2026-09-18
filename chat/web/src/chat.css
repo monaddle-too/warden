@@ -1330,6 +1330,29 @@ button.danger:hover {
   color: var(--muted);
 }
 
+/* What the composer says back after /bug or /test bugreporting. */
+.composer-notice {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 0 6px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--info-soft);
+  color: var(--info-text);
+  font-size: 13px;
+}
+.composer-notice > button.link {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--info-text);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 /* Startup stage in the composer status line and the workspace panel. */
 .composer-startup {
   color: var(--accent-text);

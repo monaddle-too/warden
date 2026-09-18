@@ -91,7 +91,8 @@ export type Context = {
    `query` a search's pattern or a fetch's URL, `input` the call's input
    where the card shows it as given (a todo list's items), `background`
    a command or subagent the agent runs in the background, whose card
-   stays running until the task reports back. */
+   stays running until the task reports back, `progress` a running
+   subagent's own account of its work as the agent reports it. */
 export type Tool = {
   kind: ToolKind;
   name?: string;
@@ -102,6 +103,17 @@ export type Tool = {
   query?: string;
   input?: Record<string, unknown>;
   background?: boolean;
+  progress?: Progress;
+};
+/* What a running subagent has done so far (conversation.Progress): what
+   it is doing now in the agent's words, the tool calls it made, the tool
+   it used last, its time and tokens. */
+export type Progress = {
+  activity?: string;
+  toolCalls: number;
+  lastTool?: string;
+  durationMS?: number;
+  tokens?: number;
 };
 export type ToolKind =
   | "command"

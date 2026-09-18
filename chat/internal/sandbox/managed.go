@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"warden/chat/internal/bugreport"
 	"warden/chat/internal/release"
 )
 
@@ -815,6 +816,9 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 		send(Response{Error: "invalid or incompatible worker protocol; protocol 2 required"})
 		return
 	}
+	// A panic in an op is drafted as a bug report before it takes the
+	// runner down as it did before (docs/bug-reporting-plan.md).
+	defer bugreport.Recover("runner op " + r.Operation)
 	_ = c.SetReadDeadline(time.Time{})
 	slots := w.ordinarySlots
 	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" {

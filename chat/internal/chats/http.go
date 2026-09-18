@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"warden/chat/internal/conversation"
@@ -98,6 +99,15 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" && path == "state" {
 		json.NewEncoder(w).Encode(h.Engine.View())
+		return
+	}
+	if r.Method == "GET" && path == "chats/search" {
+		// A search across every chat's title and transcript (search.go).
+		limit := 0
+		if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+			limit = n
+		}
+		json.NewEncoder(w).Encode(h.Engine.Search(r.URL.Query().Get("q"), limit))
 		return
 	}
 	if r.Method == "GET" && path == "environments" {
@@ -202,6 +212,13 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != "POST" {
 		http.Error(w, "not found", 404)
+		return
+	}
+	if path == "bug-test" {
+		// /test bugreporting: a deliberate panic, recovered and drafted
+		// (bugs.go). Owner-only at the edge.
+		result, err := h.Engine.BugTest()
+		respond(w, result, err)
 		return
 	}
 	var body struct {
@@ -325,6 +342,9 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "rules":
 			// A permission rule added to the chat (rules.go).
 			result, err = h.Engine.AddRule(parts[1], body.Kind, body.Pattern, requester(r))
+		case "bug":
+			// /bug text: a user bug report with this chat's ids (bugs.go).
+			result, err = h.Engine.Bug(parts[1], body.Text, requester(r))
 		default:
 			http.Error(w, "not found", 404)
 			return

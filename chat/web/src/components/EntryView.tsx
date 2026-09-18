@@ -23,9 +23,14 @@ import { compactionLabel } from "../context";
 import { hasDiff, parseDiff } from "../diff";
 import { senderLabel } from "../export";
 import { undoHint, undoOffersCode } from "../rewind";
-import { subagentInput, subagentProgress } from "../tools";
+import { subagentInput, subagentProgress, toolRunning } from "../tools";
 import { groupEntries } from "../transcript";
-import { formatCost, formatDuration, formatTokens, type TurnFooter } from "../turns";
+import {
+  formatCost,
+  formatDuration,
+  formatTokens,
+  type TurnFooter,
+} from "../turns";
 import type { Entry } from "../types";
 import { EntryAttachments } from "./Attachments";
 import { DiffView } from "./DiffView";
@@ -99,12 +104,18 @@ function SubagentTranscript({
   entries: Entry[];
   ctx: StepContext;
 }) {
-  const { steps, running } = subagentProgress(entries);
+  const { steps, running, step } = subagentProgress(
+    entries,
+    parent.tool?.progress,
+  );
   const label = subagentInput(parent.tool).type || "Subagent";
-  const messages = entries.length - steps;
+  const messages = entries.filter((e) => !e.tool).length;
   const parts = [];
   if (steps) parts.push(`${steps} tool call${steps === 1 ? "" : "s"}`);
   if (messages) parts.push(`${messages} message${messages === 1 ? "" : "s"}`);
+  // The step the agent reports lasts while the subagent itself runs, its
+  // own tool finished or not.
+  if (toolRunning(parent) && step) parts.push(step);
   return (
     <details className="subagent">
       <summary>

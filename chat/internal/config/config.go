@@ -85,6 +85,10 @@ type Config struct {
 	// Edge is what the edge does beyond sign-in and previews (which it
 	// derives from auth.* and previews.*): today the bug-report receiver.
 	Edge Edge `json:"edge,omitzero"`
+	// Reporting is bug reporting (docs/bug-reporting-plan.md): off unless
+	// the person opted in at install or with `warden bugs on`; every report
+	// is shown to them before it is sent to URL.
+	Reporting Reporting `json:"reporting,omitzero"`
 }
 
 // Paths locates Warden's data and release assets.
@@ -356,6 +360,17 @@ type GitHub struct {
 // BuiltinGoogleClient names the shared Warden Docs client.
 const BuiltinGoogleClient = "builtin"
 
+// Reporting is the bug-reporting opt-in and the receiver it sends to
+// (docs/bug-reporting-plan.md). Enabled false means no drafts are written
+// at all; URL is https, or http for a loopback receiver only.
+type Reporting struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url,omitempty"`
+}
+
+// DefaultReportingURL is the cloud Warden's receiver.
+const DefaultReportingURL = "https://cloud.warden.monaddle.com/api/bug-reports"
+
 // Defaults returns the local-mode configuration for a state root with every
 // field computed. Callers that detect host facts overwrite fields afterwards.
 func Defaults(state string) Config {
@@ -375,6 +390,7 @@ func Defaults(state string) Config {
 		Google: &Google{DocsClient: BuiltinGoogleClient},
 		GitHub: &GitHub{AuthFile: filepath.Join(provider, "github.json")},
 	}
+	c.Reporting = Reporting{URL: DefaultReportingURL}
 	return c
 }
 
@@ -712,6 +728,10 @@ func merge(c *Config, file Config) {
 	if file.Providers.GitHub != nil {
 		c.Providers.GitHub = file.Providers.GitHub
 	}
+	if file.Reporting.Enabled {
+		c.Reporting.Enabled = true
+	}
+	setString(&c.Reporting.URL, file.Reporting.URL)
 }
 
 func setString(dst *string, v string) {
@@ -834,7 +854,33 @@ func (c Config) Validate() error {
 	if b := c.Edge.BugReports; b.RetentionDays < 1 || b.RetentionDays > 3650 || b.MaxPerHour < 1 || b.MaxPerDay < 1 {
 		return errors.New("edge.bugReports: retentionDays 1–3650, maxPerHour ≥ 1, maxPerDay ≥ 1")
 	}
+	if err := c.Reporting.validate(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validate admits an https receiver, or http on a loopback address (a
+// local receiver while developing); anything else is refused so a report
+// never travels in the clear to another host.
+func (r Reporting) validate() error {
+	if r.URL == "" {
+		return errors.New("reporting.url is required")
+	}
+	u, err := url.Parse(r.URL)
+	if err != nil || u.Host == "" || u.User != nil {
+		return fmt.Errorf("reporting.url %q must be an absolute https:// URL", r.URL)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if ip := net.ParseIP(u.Hostname()); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+		return fmt.Errorf("reporting.url %q: http is allowed for 127.0.0.1 only", r.URL)
+	}
+	return fmt.Errorf("reporting.url %q must be an absolute https:// URL", r.URL)
 }
 
 // validateKind applies the rules that depend on runtime.kind: the sbx

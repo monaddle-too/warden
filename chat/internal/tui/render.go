@@ -466,6 +466,9 @@ func renderSubagent(c *Chat, e Entry, width int, expanded bool, children map[str
 				messages++
 			}
 		}
+		if p := e.Tool.Progress; p != nil && int(p.ToolCalls) > steps {
+			steps = int(p.ToolCalls) // the agent's count runs ahead of the entries
+		}
 		out = append(out, dim+fmt.Sprintf("    │ … %d tool calls, %d messages (Tab to expand)", steps, messages)+reset)
 	} else if len(kids) > 0 {
 		label := "subagent"
@@ -502,6 +505,33 @@ type Tool struct {
 	Query       string         `json:"query"`
 	Input       map[string]any `json:"input"`
 	Background  bool           `json:"background"`
+	// Progress is a running subagent's own account of its work
+	// (conversation.Progress), nil until the agent reports one.
+	Progress *Progress `json:"progress"`
+}
+
+// Progress mirrors conversation.Progress: what a running subagent has
+// done so far as its agent reports it.
+type Progress struct {
+	Activity   string `json:"activity"`
+	ToolCalls  int64  `json:"toolCalls"`
+	LastTool   string `json:"lastTool"`
+	DurationMS int64  `json:"durationMS"`
+	Tokens     int64  `json:"tokens"`
+}
+
+// progressStep is what a running subagent is doing, in its agent's own
+// words when it gives them, else by the tool it used last; "" for none.
+func progressStep(p *Progress) string {
+	switch {
+	case p == nil:
+		return ""
+	case p.Activity != "":
+		return p.Activity
+	case p.LastTool != "":
+		return "using " + p.LastTool
+	}
+	return ""
 }
 
 // foldedLines is how many lines of a tool's output or diff show before
@@ -560,6 +590,10 @@ func renderTool(e Entry, width int, expanded bool) []string {
 		// final text below.
 		if secs := taskSeconds(e); secs > 0 {
 			head += fmt.Sprintf("  %s%s%s", dim, formatSeconds(secs), reset)
+		}
+		if step := progressStep(t.Progress); step != "" && (e.IsStreaming || t.Status == "running") {
+			// The agent's own account of the subagent's work while it runs.
+			head += fmt.Sprintf("  %s%s%s", dim, sanitize(trimCommand(step, 60)), reset)
 		}
 		if t.Input != nil {
 			if p, ok := t.Input["prompt"].(string); ok && strings.TrimSpace(p) != "" && t.Description == "" {
@@ -778,6 +812,28 @@ func inputLines(input map[string]any) []string {
 			s = fmt.Sprint(v)
 		}
 		out = append(out, k+": "+sanitize(strings.ReplaceAll(s, "\n", " ")))
+	}
+	return out
+}
+
+// RenderReviews lays out the reviews waiting in the app, above the
+// approvals: nothing here answers them, /review opens the app on the chat.
+func RenderReviews(c *Chat, width int) []string {
+	var out []string
+	for i, r := range c.Reviews {
+		hint := "review it in the app: /review"
+		if len(c.Reviews) > 1 {
+			hint = fmt.Sprintf("review it in the app: /review %d", i+1)
+		}
+		if r.Kind == "document_edit" && r.Status == "applying" {
+			hint = "the app is writing it"
+		}
+		out = append(out, bold+yellow+"⚑ "+r.Summary(c.Provider)+reset+dim+"   "+hint+reset)
+		if r.Kind != "pull_request" && r.Title != "" {
+			// A pull request's title is its summary; the others carry the
+			// agent's reason or summary under the headline.
+			out = append(out, wrap(sanitize(strings.ReplaceAll(r.Title, "\n", " ")), width, "  ", "  ")...)
+		}
 	}
 	return out
 }

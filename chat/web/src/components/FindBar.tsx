@@ -7,7 +7,8 @@ import {
 } from "react";
 import { isKey, modifierKey } from "../shortcuts";
 import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
-import { findMatches, locate } from "../search";
+import { entryHits, findMatches, locate } from "../search";
+import type { Entry } from "../types";
 
 /* What opens the find bar: a query (empty for a fresh ⌘F) and, from the
    palette, the entry to land in. Requests are told apart by identity, so
@@ -89,31 +90,87 @@ export function matchRanges(root: Element, query: string): Range[] {
   return ranges;
 }
 
-/* The transcript element for an entry, opened if it sits in a collapsed
-   activity group and scrolled into view. */
-function reveal(root: Element, entryID: string): Element | null {
-  const el = root.querySelector(`[data-entry="${CSS.escape(entryID)}"]`);
-  if (!el) return null;
+/* Opens every <details> from `el` up to the transcript root: the entry's
+   own card, the step group it sits in, a subagent's transcript and the
+   Agent card around it. True when one was closed. */
+function openAncestors(el: Element): boolean {
+  let opened = false;
   for (
     let details: Element | null = el;
     details;
     details = details.parentElement?.closest("details") ?? null
   )
-    if (details instanceof HTMLDetailsElement) details.open = true;
+    if (details instanceof HTMLDetailsElement && !details.open) {
+      details.open = true;
+      opened = true;
+    }
+  return opened;
+}
+
+/* The transcript element for an entry, opened if it sits in a collapsed
+   activity group and scrolled into view. */
+function reveal(root: Element, entryID: string): Element | null {
+  const el = root.querySelector(`[data-entry="${CSS.escape(entryID)}"]`);
+  if (!el) return null;
+  openAncestors(el);
   el.scrollIntoView({ block: "center" });
   return el;
+}
+
+/* Brings the matches the rendered text hides into view: an entry the
+   service says matches (search.ts `entryHits`) but whose visible text
+   does not is inside a closed card (a subagent's step under its Agent
+   card, a step in a collapsed group) or past a card's "+N lines" fold, so
+   the cards are opened and the entry's own fold unfolded, as the reader
+   would. Each entry is handled once per query (`done`); one not rendered
+   yet is tried again next time. True when something changed, which the
+   observer follows with another pass. */
+function revealHits(
+  root: Element,
+  query: string,
+  entries: Entry[],
+  done: Set<string>,
+): boolean {
+  let changed = false;
+  for (const { id, field } of entryHits(entries, query)) {
+    if (done.has(id)) continue;
+    const el = root.querySelector(`[data-entry="${CSS.escape(id)}"]`);
+    if (!el) continue;
+    done.add(id);
+    if (openAncestors(el)) changed = true;
+    if (field !== "detail") continue;
+    const own = visibleText(el)
+      .map((n) => n.data)
+      .join("");
+    if (findMatches(own, query, 1).length) continue;
+    // The entry's own output fold, not a nested entry's and not the
+    // prompt or input a card also folds.
+    for (const button of el.querySelectorAll<HTMLButtonElement>(
+      'button.tool-more[aria-expanded="false"]',
+    ))
+      if (
+        button.closest("[data-entry]") === el &&
+        !button.closest(".tool-prompt, .tool-input")
+      ) {
+        button.click();
+        changed = true;
+      }
+  }
+  return changed;
 }
 
 /* Matches of `query` in the rendered transcript, kept current as it
    changes (a streamed chunk, a diagram replacing its source, a group
    opened) and painted as highlights; `current` is the one scrolled to. A
    new query starts at its first match; a new request with an entry starts
-   at the first match inside that entry. */
+   at the first match inside that entry. What the transcript hides (a
+   subagent's steps, a folded output) is opened first, from `entries`. */
 function useFind(
   root: RefObject<HTMLElement | null>,
   scroller: RefObject<HTMLElement | null>,
   query: string,
   request: FindRequest,
+  entries: Entry[],
 ) {
   const [found, setFound] = useState<{ ranges: Range[]; current: number }>({
     ranges: [],
@@ -121,6 +178,10 @@ function useFind(
   });
   const latest = useRef(found);
   latest.current = found;
+  // The entries as they are now, for a pass the observer starts; the
+  // effect itself must not rerun on every streamed chunk.
+  const known = useRef(entries);
+  known.current = entries;
   const scrollPending = useRef(false);
   const landed = useRef<FindRequest>(undefined);
   useEffect(() => {
@@ -133,18 +194,26 @@ function useFind(
     }
     let fresh = true;
     let frame = 0;
+    const revealed = new Set<string>();
     const compute = () => {
       frame = 0;
+      const opened = revealHits(el, query, known.current, revealed);
       const ranges = matchRanges(el, query);
       let current = Math.min(
         latest.current.current,
         Math.max(0, ranges.length - 1),
       );
       if (fresh) {
-        fresh = false;
         const inside = landing
           ? ranges.findIndex((r) => landing!.contains(r.startContainer))
           : -1;
+        if (landing && inside < 0 && opened) {
+          // The landing's match is in what was just opened; the pass the
+          // change triggers will find it.
+          setFound({ ranges, current });
+          return;
+        }
+        fresh = false;
         current = Math.max(0, inside);
         scrollPending.current = landing ? inside >= 0 : ranges.length > 0;
         landing = null;
@@ -218,11 +287,15 @@ export function FindBar({
   root,
   scroller,
   request,
+  entries,
   onClose,
 }: {
   root: RefObject<HTMLElement | null>;
   scroller: RefObject<HTMLElement | null>;
   request: FindRequest;
+  /* The chat's entries, a subagent's nested ones included: what a match
+     may hide in. */
+  entries: Entry[];
   onClose: () => void;
 }) {
   const [query, setQuery] = useState(request.query);
@@ -257,6 +330,7 @@ export function FindBar({
     scroller,
     query,
     request,
+    entries,
   );
   const asked = query.trim() !== "";
   return (

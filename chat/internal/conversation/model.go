@@ -214,7 +214,9 @@ type Compaction struct {
 // given (a generic tool, an MCP call, a todo list's items), with long
 // strings cut. Background marks a command or a subagent the agent runs in
 // the background: the call returns at once and the entry stays running
-// until the task reports back.
+// until the task reports back. Progress is a subagent's own account of
+// its work while it runs, as the agent reports it (Claude Code's
+// task_progress), nil until it reports one.
 type Tool struct {
 	Kind        string         `json:"kind"`
 	Name        string         `json:"name,omitempty"`
@@ -225,6 +227,37 @@ type Tool struct {
 	Query       string         `json:"query,omitempty"`
 	Input       map[string]any `json:"input,omitempty"`
 	Background  bool           `json:"background,omitempty"`
+	Progress    *Progress      `json:"progress,omitempty"`
+}
+
+// Progress is what a running subagent has done so far, as its agent
+// reports it: Activity what it is doing now in the agent's words
+// ("Reading hello.txt"; "" when not reported), ToolCalls the tool calls
+// it made, LastTool the tool it used last (the agent's own name for it),
+// DurationMS how long it has run and Tokens what it has used (0 when not
+// reported).
+type Progress struct {
+	Activity   string `json:"activity,omitempty"`
+	ToolCalls  int64  `json:"toolCalls"`
+	LastTool   string `json:"lastTool,omitempty"`
+	DurationMS int64  `json:"durationMS,omitempty"`
+	Tokens     int64  `json:"tokens,omitempty"`
+}
+
+// ProgressFrom reads a task item's `progress` field; nil when there is
+// none or it says nothing.
+func ProgressFrom(m map[string]any) *Progress {
+	if m == nil {
+		return nil
+	}
+	n := func(k string) int64 { f, _ := m[k].(float64); return int64(f) }
+	p := Progress{ToolCalls: n("toolCalls"), DurationMS: n("durationMS"), Tokens: n("tokens")}
+	p.LastTool, _ = m["lastTool"].(string)
+	p.Activity, _ = m["activity"].(string)
+	if p.ToolCalls == 0 && p.LastTool == "" && p.DurationMS == 0 && p.Tokens == 0 && p.Activity == "" {
+		return nil
+	}
+	return &p
 }
 
 // Attachment is one file sent with a user message. Kind is "image" for a

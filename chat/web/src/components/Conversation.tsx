@@ -16,9 +16,11 @@ import {
   ArrowUp,
   Bot,
   Brain,
+  Bug,
   Cpu,
   Download,
   Eraser,
+  FlaskConical,
   GitFork,
   MessageCircleQuestion,
   Receipt,
@@ -57,8 +59,10 @@ import {
 import {
   agentCommandNamed,
   agentHint,
+  bugReport,
   commandItems,
   exactCommand,
+  isBugTest,
   mentionFor,
   nextMode,
   prefixed,
@@ -203,6 +207,10 @@ const commandIcon = (name: string) =>
     <MessageCircleQuestion size={15} />
   ) : name === "cost" ? (
     <Receipt size={15} />
+  ) : name === "bug" ? (
+    <Bug size={15} />
+  ) : name === "test" ? (
+    <FlaskConical size={15} />
   ) : name === "style" ? (
     <SlidersHorizontal size={15} />
   ) : (
@@ -264,6 +272,9 @@ export function Conversation({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // A line the composer says back (a bug report drafted, or how to turn
+  // reporting on); cleared by the next send.
+  const [notice, setNotice] = useState("");
   // Files chosen for the next message. Each uploads as soon as it is added
   // and the message names the uploaded IDs; a chip that failed stays until
   // removed so the reason is visible.
@@ -799,6 +810,21 @@ export function Conversation({
                       },
       );
       if (items.length) return { items };
+      if (/^bug(\s|$)/i.test(trigger.query.trimStart()))
+        return {
+          items,
+          note:
+            bugReport(text) === undefined
+              ? "Type what went wrong; sending drafts a bug report you review before it goes to Monaddle"
+              : `${modifierKey}Enter drafts the report; you review it before it is sent`,
+        };
+      if (/^test(\s|$)/i.test(trigger.query.trimStart()))
+        return {
+          items,
+          note: isBugTest(text)
+            ? `${modifierKey}Enter raises a test exception in the chat service; its report opens for review`
+            : "/test bugreporting raises a test exception in the chat service; its report opens for review",
+        };
       if (/^btw(\s|$)/i.test(trigger.query.trimStart()))
         return {
           items,
@@ -1069,6 +1095,13 @@ export function Conversation({
         setFollow(true);
         place({ text: rest, caret: 0 });
         break;
+      case "bug":
+        // The report is typed after it; Enter then drafts it.
+        place({ text: "/bug " + rest, caret: 5 });
+        break;
+      case "test":
+        place({ text: "/test bugreporting", caret: 18 });
+        break;
       case "style":
         place({ text: "/style " + rest, caret: 7 });
         break;
@@ -1131,6 +1164,48 @@ export function Conversation({
       setBusy(false);
     }
   }
+  // A "/bug" report: drafted by the service with this chat's ids, shown
+  // for review by the launcher; the answer is a line, not a card. Off,
+  // the draft stays in the composer beside the way to turn reporting on.
+  async function reportBug(text: string) {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await api<{ drafted: boolean; notice: string }>(
+        `chats/${chat.id}/bug`,
+        { text },
+      );
+      setNotice(result.notice);
+      if (result.drafted) {
+        setText("");
+        setPastes([]);
+        setRecall(NOT_BROWSING);
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  // "/test bugreporting": a test exception in the chat service.
+  async function testBugReporting() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await api<{ drafted: boolean; notice: string }>(
+        "bug-test",
+        {},
+      );
+      setNotice(result.notice);
+      if (result.drafted) setText("");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
   // A "/btw" question: asked of a copy of the agent's session; the card
   // arrives over the event stream (running, then answered).
   async function ask(question: string) {
@@ -1174,6 +1249,15 @@ export function Conversation({
     const asked = sideQuestion(expandPastes(text, pastes));
     if (asked !== undefined && !busy) {
       void ask(asked);
+      return;
+    }
+    const bug = bugReport(expandPastes(text, pastes));
+    if (bug !== undefined && !busy) {
+      void reportBug(bug);
+      return;
+    }
+    if (isBugTest(text) && !busy) {
+      void testBugReporting();
       return;
     }
     if (prefix && !busy) {
@@ -1243,6 +1327,7 @@ export function Conversation({
           root={transcript}
           scroller={scroll}
           request={finding}
+          entries={all}
           onClose={() => {
             setFinding(undefined);
             input.current?.focus();
@@ -1436,6 +1521,19 @@ export function Conversation({
         {error && (
           <p className="error" role="alert">
             {error}
+          </p>
+        )}
+        {notice && !error && (
+          <p className="composer-notice" role="status">
+            {notice}
+            <button
+              type="button"
+              className="link"
+              onClick={() => setNotice("")}
+              aria-label="Dismiss"
+            >
+              Dismiss
+            </button>
           </p>
         )}
         <p className="typing-line" aria-live="polite">
