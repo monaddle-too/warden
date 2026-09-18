@@ -151,6 +151,7 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /queue (list) /queue send · /withdraw N · /edit [N] [both] (N from /rewind)
            /fork (list) /fork N|all copies the chat into a sibling · /cost totals so far
            /btw QUESTION asks a copy of the session (never sent to the agent)
+           /bug TEXT reports a bug to Monaddle (you review it first) · /test bugreporting
            /style [default|Explanatory|Learning] · /bell [on|off]
            /find TEXT /copy /expand /verbose /clear /quit
            /instructions [edit|clear] your standing instructions, given to the agent in every chat
@@ -1338,6 +1339,10 @@ func (a *App) command(ctx context.Context, line string) {
 		a.memory(ctx, c, arg)
 	case "fork":
 		a.fork(ctx, c, arg)
+	case "bug":
+		a.bug(ctx, c, arg)
+	case "test":
+		a.testBugs(ctx, arg)
 	case "btw":
 		a.btw(ctx, c, arg)
 	case "cost":

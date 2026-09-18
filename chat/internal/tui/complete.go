@@ -57,6 +57,8 @@ var Commands = []Command{
 	{"fork", "[N|all]", "copy this chat into a sibling (before message N, or the whole of it)"},
 	{"btw", "QUESTION", "a side question answered from this chat's context, never sent to the agent"},
 	{"cost", "", "this chat's turns, tokens and cost so far"},
+	{"bug", "TEXT", "report a bug to Monaddle; you review the report before it is sent"},
+	{"test", "bugreporting", "raise a test exception in the chat service; the report opens for review"},
 	{"style", "[default|Explanatory|Learning]", "Claude's output style for the next session"},
 	{"bell", "[on|off]", "ring the terminal bell when the agent finishes, asks or fails"},
 	{"copy", "", "put the agent's last reply on the clipboard"},

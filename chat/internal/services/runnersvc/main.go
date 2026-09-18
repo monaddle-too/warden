@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	"warden/chat/internal/bugreport"
 	"warden/chat/internal/config"
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/hostinfo"
@@ -63,6 +64,9 @@ func run(args []string) error {
 	}
 	root, sbx, template, runtimeDir, claudePath = &s.root, &s.sbx, &s.template, &s.runtimeDir, &s.claudePath
 	idle, memoryMB, residents, spares, retained = &s.idle, &s.memoryMB, &s.residents, &s.spares, &s.retained
+	// Bug reports (docs/bug-reporting-plan.md): a recovered panic in a
+	// worker op or the preview server is drafted for the launcher to show.
+	bugreport.SetDefault(bugreport.New(s.cfg, s.configPath, bugreport.ComponentRunner))
 	limits := sizeLimits(s)
 	driver, err := runtimeDriver(s, limits, *kubeconfig)
 	if err != nil {

@@ -362,3 +362,38 @@ func (a *App) setTitle() {
 	a.title = title
 	fmt.Fprint(a.Output, "\x1b]0;"+title+"\a")
 }
+
+// bug drafts a bug report from this chat (docs/bug-reporting-plan.md):
+// the person's text and the chat's ids, never its messages; the launcher
+// opens the review page.
+func (a *App) bug(ctx context.Context, c *Chat, text string) {
+	if text == "" {
+		a.setNotice("/bug TEXT reports a bug to Monaddle: what went wrong, in your words; you review the report before it is sent")
+		return
+	}
+	if c == nil {
+		a.setNotice("no chat selected; `warden bugs send \"…\"` reports from the terminal")
+		return
+	}
+	result, err := a.Client.Bug(ctx, c.ID, text)
+	if err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	a.setNotice(result.Notice)
+}
+
+// testBugs raises the test exception in the chat service so the automatic
+// path can be seen end to end.
+func (a *App) testBugs(ctx context.Context, arg string) {
+	if strings.ToLower(arg) != "bugreporting" {
+		a.setNotice("/test bugreporting raises a test exception in the chat service; its report opens for review")
+		return
+	}
+	result, err := a.Client.BugTest(ctx)
+	if err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	a.setNotice(result.Notice)
+}

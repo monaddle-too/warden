@@ -4,8 +4,10 @@ import {
   sideQuestion,
   agentCommandNamed,
   agentHint,
+  bugReport,
   commandItems,
   exactCommand,
+  isBugTest,
   mentionFor,
   parseThinking,
   prefixed,
@@ -266,6 +268,8 @@ describe("agent commands in the composer", () => {
       "fork",
       "btw",
       "cost",
+      "bug",
+      "test",
       "style",
       "clear",
       "/compact",
@@ -360,6 +364,21 @@ describe("! and # prefixes", () => {
 });
 
 describe("side questions and output styles", () => {
+  it("reads the report after /bug and recognises /test bugreporting", () => {
+    expect(bugReport("/bug the spinner never stops")).toBe(
+      "the spinner never stops",
+    );
+    expect(bugReport("/BUG two\nlines")).toBe("two\nlines");
+    expect(bugReport("/bug")).toBeUndefined();
+    expect(bugReport("/bug   ")).toBeUndefined();
+    expect(bugReport("/bugs no")).toBeUndefined();
+    expect(bugReport("hello /bug inside")).toBeUndefined();
+    expect(isBugTest("/test bugreporting")).toBe(true);
+    expect(isBugTest("  /Test  BugReporting ")).toBe(true);
+    expect(isBugTest("/test")).toBe(false);
+    expect(isBugTest("/test bugreporting now")).toBe(false);
+    expect(isBugTest("/testing bugreporting")).toBe(false);
+  });
   it("reads the question after /btw", () => {
     expect(sideQuestion("/btw what did we decide?")).toBe("what did we decide?");
     expect(sideQuestion("/BTW  two\nlines ")).toBe("two\nlines");
@@ -389,6 +408,12 @@ describe("side questions and output styles", () => {
     expect(exactCommand("/style nope", models)).toBeUndefined();
     // "/btw question" is never an exact local command: the question is asked.
     expect(exactCommand("/btw why?", models)).toBeUndefined();
+    // Nor "/bug text" or "/test bugreporting": the report is drafted, the
+    // exception raised.
+    expect(exactCommand("/bug it broke", models)).toBeUndefined();
+    expect(exactCommand("/test bugreporting", models)).toBeUndefined();
+    expect(exactCommand("/bug", models)?.kind).toBe("command");
+    expect(exactCommand("/test", models)?.kind).toBe("command");
     expect(exactCommand("/cost", models)?.kind).toBe("command");
   });
 });

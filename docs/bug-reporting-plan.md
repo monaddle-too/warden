@@ -200,14 +200,14 @@ Server track (`.local/warden-bugs-server`):
    console.
 
 Client track (`.local/warden-bugs-client`):
-1. `bugreport` package: schema, gather, redact, capture, send; tests
+1. [x] `bugreport` package: schema, gather, redact, capture, send; tests
    (redaction is the one to be thorough about).
-2. Config + `warden install` question/flag + `warden bugs`; tests.
-3. Present: the page and the loopback server; a test drives it with an
+2. [x] Config + `warden install` question/flag + `warden bugs`; tests.
+3. [x] Present: the page and the loopback server; a test drives it with an
    HTTP client.
-4. Triggers: installer, launcher (service exit + pending watcher),
+4. [x] Triggers: installer, launcher (service exit + pending watcher),
    service panics; `/test bugreporting` route; tests with a fake state dir.
-5. `/bug` route + composer + TUI; `warden bugs send/test`; tests.
+5. [x] `/bug` route + composer + TUI; `warden bugs send/test`; tests.
 6. Merge to main; `deploy-local`; end to end against the cloud receiver
    once the server track is live (`/test bugreporting` → page → Send →
    the report in the cloud admin console).
@@ -227,7 +227,39 @@ Client track (`.local/warden-bugs-client`):
    write.
 5. `kind: error` reports are drafted only when reporting is enabled;
    disabled means no files, no page, nothing.
+6. (client) A recovered panic is captured and then raised again, so a
+   process fails exactly as before (net/http logs a handler's, a worker
+   op's or run goroutine's takes the service down); only the deliberate
+   `/test bugreporting` panic is kept in the process. The launcher skips
+   its `service-exit` draft when that service drafted a `panic` within
+   the last 30 s: the panic draft has the stack, the exit would only
+   repeat it.
+7. (client) "Was the question asked?" is the presence of a `reporting`
+   section in `warden.json` (install always writes one, `warden bugs
+   on|off` too), so a re-run keeps the answer without another record;
+   without a terminal and without the flag the answer is no, printed with
+   the way to change it.
+8. (client) The chat's `/bug` notice is a line in the composer (not a
+   transcript entry) and the TUI's status notice; the route answers
+   `{drafted, id, notice}` so both surfaces show the same words.
 
 ## Progress log
 
 - 2026-09-18: plan written; tracks start.
+- 2026-09-18 (client, `.local/warden-bugs-client`, `feat/bug-reports-client`):
+  steps 1–5 implemented and unit-tested. `chat/internal/bugreport` (schema,
+  gatherers, `Redact` with the table test, `Capture` → pending only while
+  `reporting.enabled` — re-read from `warden.json` at each capture so
+  `warden bugs on` reaches running services —, `Recover`/`Trap`/`Handler`
+  guards, `Send` with the contract's 202/404/413/429/400 mapping, `Present`
+  with the embedded `page.html`); `config.Reporting`; `warden install`
+  question/flag/re-run/summary and the install-step trigger; `warden bugs
+  status|on|off|send|test|pending`; the launcher's 3 s watch over the
+  pending directory and the service-exit trigger; guards in the chat
+  (handler, engine loop, run goroutines, sharing delivery), runner
+  (connection/op, preview server), policy (control loop, both gateways)
+  and edge (handler, run loop); `POST chats/{id}/bug` and `POST bug-test`
+  (owner-only at the edge); composer `/bug`, `/test bugreporting` with a
+  notice line; TUI `/bug`, `/test bugreporting`, `/help`. Verified: `go
+  test ./...` (kube alone), `pnpm build && pnpm test`. Next: live test on
+  a cloned home with a local receiver, merge, deploy-local.

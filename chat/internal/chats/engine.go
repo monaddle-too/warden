@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 	"warden/chat/internal/agent"
+	"warden/chat/internal/bugreport"
 	cv "warden/chat/internal/conversation"
 	"warden/chat/internal/sandbox"
 	"warden/chat/internal/transport"
@@ -99,6 +100,8 @@ type Engine struct {
 	// mode as a chat setting, the 1M-context model variants as choices.
 	AllowFastMode    bool
 	AllowLongContext bool
+	// Bugs drafts this service's bug reports (bugs.go); nil reports nothing.
+	Bugs *bugreport.Capturer
 	// Now is the clock (tests replace it); nil means time.Now.
 	Now func() time.Time
 	// limits is the runner's size offer, asked for on demand and kept for
@@ -207,10 +210,11 @@ func (e *Engine) Wake() {
 }
 func (e *Engine) Serve(ctx context.Context) {
 	defer close(e.done)
+	defer e.Bugs.Recover("engine serve loop")
 	if e.PolicyAddress != "" {
 		deliveryCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
-		go func() { defer close(done); e.sharingDelivery(deliveryCtx) }()
+		go func() { defer close(done); defer e.Bugs.Recover("sharing delivery"); e.sharingDelivery(deliveryCtx) }()
 		defer func() { cancel(); <-done }()
 	}
 	running := map[string]string{}
@@ -250,7 +254,7 @@ func (e *Engine) Serve(ctx context.Context) {
 			id := c.ID
 			running[id] = c.SandboxID
 			workers.Add(1)
-			go func() { defer workers.Done(); e.run(ctx, id); finished <- id }()
+			go func() { defer workers.Done(); defer e.Bugs.Recover("chat run " + id); e.run(ctx, id); finished <- id }()
 		}
 		select {
 		case <-ctx.Done():

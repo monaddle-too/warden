@@ -226,6 +226,10 @@ type fakeServer struct {
 	instructions string
 	memory       MemoryView
 	writes       []string
+	// bugs are the /bug texts and bug-test calls received; bugsOff makes
+	// the fake answer as a Warden with reporting off.
+	bugs    []string
+	bugsOff bool
 }
 
 func newFakeServer(t *testing.T, initial State) *fakeServer {
@@ -531,6 +535,23 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "aside1", Role: "aside", Text: body.Text, Detail: "Forty-two.", Aside: &Aside{Status: "completed", CostUSD: 0.03, Input: 1200, Output: 8, DurationMS: 2600}})
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(AsideResult{ID: "aside1", Text: "Forty-two.", CostUSD: 0.03})
+	case strings.HasSuffix(path, "/bug"):
+		var body struct{ Text string }
+		json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.bugs = append(f.bugs, strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/bug")+": "+body.Text)
+		off := f.bugsOff
+		f.mu.Unlock()
+		if off {
+			json.NewEncoder(w).Encode(BugResult{Notice: "Bug reporting is off — `warden bugs on` to enable it"})
+			return
+		}
+		json.NewEncoder(w).Encode(BugResult{Drafted: true, ID: strings.Repeat("b", 32), Notice: "Bug report drafted — review it in the window that opened (or `warden bugs pending`)"})
+	case path == "bug-test":
+		f.mu.Lock()
+		f.bugs = append(f.bugs, "test")
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(BugResult{Drafted: true, ID: strings.Repeat("c", 32), Notice: "Bug report drafted — review it in the window that opened (or `warden bugs pending`)"})
 	case strings.HasSuffix(path, "/style"):
 		var body struct{ Style string }
 		json.NewDecoder(r.Body).Decode(&body)
@@ -3109,5 +3130,54 @@ func TestDeliveryMarks(t *testing.T) {
 	}
 	if got := render("failed", ""); got != "you › hi ! not delivered" {
 		t.Fatalf("failed without detail: %q", got)
+	}
+}
+
+// /bug and /test bugreporting (docs/bug-reporting-plan.md): the routes
+// are called and their notice shown; a bare /bug explains itself; off,
+// the notice says how to turn reporting on.
+func TestBugAndTestBugreportingCommands(t *testing.T) {
+	c := sampleChat()
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, later: make(chan func(context.Context), 8)}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+	app.command(ctx, "/bug")
+	if !strings.Contains(app.notice, "/bug TEXT reports a bug") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.command(ctx, "/bug the spinner never stops")
+	if !strings.HasPrefix(app.notice, "Bug report drafted — review it in the window that opened") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.command(ctx, "/test")
+	if !strings.Contains(app.notice, "/test bugreporting raises a test exception") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.command(ctx, "/test bugreporting")
+	if !strings.HasPrefix(app.notice, "Bug report drafted") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	f.mu.Lock()
+	f.bugsOff = true
+	got := strings.Join(f.bugs, "|")
+	f.mu.Unlock()
+	if got != "chat1: the spinner never stops|test" {
+		t.Fatalf("calls %q", got)
+	}
+	app.command(ctx, "/bug still broken")
+	if app.notice != "Bug reporting is off — `warden bugs on` to enable it" {
+		t.Fatalf("notice %q", app.notice)
+	}
+	// Both are in the / menu and in /help.
+	var names []string
+	for _, cmd := range Commands {
+		if cmd.Name == "bug" || cmd.Name == "test" {
+			names = append(names, cmd.Name+" "+cmd.Arg)
+		}
+	}
+	if strings.Join(names, ",") != "bug TEXT,test bugreporting" || !strings.Contains(helpText, "/bug TEXT") || !strings.Contains(helpText, "/test bugreporting") {
+		t.Fatalf("%v", names)
 	}
 }
