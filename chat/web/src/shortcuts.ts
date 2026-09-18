@@ -101,12 +101,21 @@ export function isKey(
   return shortcut(id).keys.some((c) => matches(event, c));
 }
 
+/* A shifted symbol some senders report as its unshifted key with Shift
+   held ("/" + Shift for "?"): both spellings match. */
+const SHIFTED: Record<string, string> = { "?": "/" };
+
 function matches(
   e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">,
   c: Chord,
 ): boolean {
-  if (c.key.length === 1 ? e.key.toLowerCase() !== c.key.toLowerCase() : e.key !== c.key)
+  if (c.key.length === 1) {
+    const same = e.key.toLowerCase() === c.key.toLowerCase();
+    const shifted = e.shiftKey && SHIFTED[c.key] === e.key;
+    if (!same && !shifted) return false;
+  } else if (e.key !== c.key) {
     return false;
+  }
   const mod = e.metaKey || e.ctrlKey;
   if (!!c.mod !== mod) return false;
   if (c.shift !== "any" && !!c.shift !== e.shiftKey) return false;

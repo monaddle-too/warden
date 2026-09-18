@@ -450,6 +450,166 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 16 Scrollback rendering (Claude-style TUI) — merged to main 2445764 (2026-09-18); verified as the Item 16 section says. Not deployed to `~/.warden`.
 - [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
 
+### Round 2 G: side questions polished, keyboard help
+
+Branch `feat/parity-r2-g-asides-keys`, worktree
+`.local/warden-parity-r2-g-asides-keys`, from main 12e3ac8 (2026-09-18).
+R2.19 `/btw` polish (item 15's leftovers), R2.20 keyboard help.
+
+What the pinned CLI (2.1.272) does, probed 2026-09-18 in a chat's
+sandbox on a cloned home (`~/.warden-p19`, the resident process's
+environment): `claude -p --resume <session> --fork-session
+--no-session-persistence --output-format stream-json --tools ""` answers
+from the resumed context (it gave the chat's codeword), reports a new
+`session_id` in `system/init` and `result`, and writes **no** file under
+`~/.claude/projects/<slug>/`; the same launch without the flag wrote the
+copy (`<new id>.jsonl`, 80 KB) beside the source. So the flag is
+honoured with `--fork-session` and side questions leave nothing behind.
+
+Design (as implemented):
+
+1. **A released session is started for the question** (`chats/aside.go`).
+   A side question on a Claude chat with a session (`ThreadID`; not a
+   `NewSession` owed a recap: "send a message first") whose run is not
+   live marks the aside entry `starting`, queues the chat and wakes the
+   loop, as a message does; the run (`engine.go` `run`) binds, prepares
+   and resumes the session, finds nothing to send and — new — goes
+   straight to `settleTurn`/`awaitMessage` instead of failing with "no
+   pending message" (its startup stages clear; the chat reads idle on a
+   live session; a message withdrawn while its run was starting now
+   ends the same way). `awaitSession` polls (100 ms, `AsideStartTimeout`
+   5 min) until the session is live and idle, or the start failed (the
+   entry fails with the chat's error), the chat was stopped or archived,
+   or the run ended without a session; then the one-shot runs as
+   before, the request's `ThreadID` read afresh (a fork's copy has its
+   own id by then). The chat shows the startup stages meanwhile (its
+   status is queued/running, so `chat.startup` is served), the web card
+   says "Starting the agent's session for the question…", the TUI
+   notice "asking a copy of the session (starting it first, as it was
+   released)". Decisions: a question **during a turn stays refused**
+   ("the agent's turn is running; ask the side question after this
+   turn") rather than queued behind it — a queued aside would either
+   delay the queued messages (the one-shot takes seconds but may take
+   minutes) or answer from a session that has moved on, and the person
+   can ask again in one keystroke; a released session with a **held
+   queue** (messages Stop kept) is refused too, since the start would
+   send them ("N messages held in the queue would go with its start;
+   send or withdraw them first"), as round 2 D kept `!`/`#` from
+   releasing a held queue.
+2. **No copies in the guest** (`sandbox/aside.go`): `AsideCommand` adds
+   `--no-session-persistence` (verified above); the guest script still
+   removes, after the answer is captured, a session file the CLI named
+   in its `system/init`/`result` frames that is not the one `--resume`
+   named (`<config>/projects/*/<id>.jsonl` and a `<id>/` directory), and
+   reports what it removed (`AsideResult.Removed`, logged by the
+   runner), for a CLI that ignores the flag. The title one-shot's
+   launch is unchanged.
+3. **Ask in chat** (`POST chats/{id}/aside/{entryID}/promote` →
+   `{messageID, text}`, `PromoteAside`): a completed aside's question
+   goes through `MessageFrom` as the requester's message — the question,
+   a line saying it was a side question, the answer quoted with `> ` —
+   so the agent can build on the answer; `Aside.Promoted` records the
+   message and a second promotion, a running, starting or failed
+   aside are refused. Web: "Ask in chat" on the card's facts line, then
+   "Asked in chat" jumping to the message (`data-entry`). TUI: `/btw
+   promote [N]` (N from `/btw`, which alone now lists the chat's side
+   questions with their state; the last without N); the card's tail
+   reads "asked in chat".
+4. **Asides in the spend** (`chats/spend.go`): `spendOf` takes the chat
+   and sums answered side questions into the tokens and cost, marked as
+   `Spend.Asides` and `AsideCostUSD`; the report counts them at their
+   `EndedAt` by provider. Web: `spendLine` ends "· 2 side questions
+   ($0.05)", the chip's title says "turns and your side questions
+   summed", the `/cost` card gets "of it, side questions N · $x"
+   (`sessionCost` now takes the entries). TUI: `/cost`'s row and the
+   workspace line ("· 1 side question").
+5. **Keyboard help, web** (`web/src/shortcuts.ts`, `ShortcutsDialog.tsx`):
+   one table of every shortcut — id, area (composer, transcript,
+   approvals and permission mode, navigation and dialogs), chords
+   (`key`, `mod` = ⌘ or Ctrl, `shift`, `alt`), what, when, `native` for
+   rows the element or the browser does (a textarea's Enter, the
+   `/ @ ! #` prefixes). Every handler matches through `isKey(event,
+   id)` — ChatShell (⌘K, `?`), Conversation (⌘F; the composer's ⌘Enter,
+   Ctrl-R, ↑/↓ recall, ↑ edits queued, Esc Esc rewind, Esc cancel, the
+   menu's arrows/Enter/Tab/Esc, and new: **Shift-Tab cycles a Claude
+   chat's permission mode** as in Claude Code and the TUI), FindBar,
+   HistorySearch, SearchPalette, the queued card's editor, every
+   dialog's Esc and the instructions/memory dialogs' ⌘Enter. The `?`
+   overlay (`?` outside an input — `shift+/` reported as `/` with Shift
+   accepted too — or "Keyboard shortcuts" in the chat menu) lists the
+   table by area with the platform's names (⌘K / Ctrl+K, ⇧Enter /
+   Shift+Enter, Esc Esc). `shortcuts.test.ts` reads the components'
+   sources: every `isKey` id is in the table, every non-native row is
+   matched by a handler, and no component compares `event.key` or a
+   modifier itself (the vendored document editor aside).
+6. **Keyboard help, TUI** (`tui/keys.go`): `keyBindings` is the table —
+   kinds, the label `/keys` prints, area, what, when, and who handles
+   it: the app's handler (`run`, one per kind; `handleKey` dispatches
+   through `bindingFor` after the search and menu gates, the switch is
+   gone), the editor (`modeEditor`), the `/ @` menu, the prompt search,
+   a typed answer (`y`/`a`/`A`/`n [message]`, a question's text) or a
+   prefix. `/keys` prints it by area (composer; transcript; approvals
+   and permission mode; menus and search), aligned; `/help` points at
+   it and no longer lists keys itself. `keys_test.go` reads editor.go's
+   kinds and app.go's `menuKey`/`searchKey` switches: every kind (typing
+   and pasting aside) is a row, every kind the editor consumes is an
+   editor row, every kind the menu/search switch on is a row of that
+   mode, the app's handlers are one per kind, `handleKey` has no switch
+   left, `/keys` prints every row. **Hook for round 2 F**: `extraKeys`
+   (a function returning rows) is appended to `/keys` when set — vim
+   mode's normal-mode keys go there when F lands (its own key handling
+   in `vim.go` gates `handleKey` before the table).
+
+Verified (2026-09-18): `gofmt -l`, `go vet ./...`, `go test ./...`
+(`chats/fork_test.go`: `TestAsideStartsAReleasedSession` — the start
+with the entry `starting` and the startup stage on the state, the
+session resumed, no turn made, the next message on the same session,
+a failed start failing the question with the reason, the held-queue
+refusal; `TestPromoteAside` — the message text, sender and delivery,
+`Promoted`, the refusals; the mid-turn wording; the promote route;
+`chats/spend_test.go` with asides on the state and in every period;
+`sandbox/aside_test.go`: the flag on the launch, the guest script
+removing the copy's file and directory and keeping the resumed
+session, a run that forked nothing, `Removed` through the op;
+`tui/keys_test.go`, `tui/tui_test.go`: `/btw` listing and promote,
+the starting card, `/cost` with asides), `pnpm build`, `pnpm test`
+(262; `shortcuts.test.ts`, `spend.test.ts`, `cost.test.ts`). Live on a
+cloned home (`~/.warden-p19`, build c12a017 then the final one, CLI
+2.1.272): a Claude chat given a codeword; with the service restarted
+(every session released) `POST chats/{id}/aside` started the session —
+the state showed `running` with the stages resuming ("booting the
+sandbox VM") → probing → initializing while the entry was `starting`,
+then `idle` with the entry running → completed — and answered
+PELICAN-42 in 5.5 s for $0.046, the log saying "starting the agent
+session for the owner's side question"; the guest's
+`~/.claude/projects/-home-agent-workspace/` held only the source
+session after two side questions; `chat.spend` carried `asides: 1,
+asideCostUSD: 0.046` and `GET spend` today's totals with them; the
+promote route sent the question with the answer quoted as the owner's
+message and the agent answered it on the live session; an aside during
+that turn was refused "after this turn"; a second promote refused.
+Browser (the pane): the aside card with "1.3s · 12k tokens · $0.05 ·
+Asked in chat", the quoted message under it, the spend chip; the `?`
+overlay from the chat menu with its four areas and ⌘/⇧ chips, Esc
+closing it; Shift-Tab in the composer cycling auto → ask → plan → auto
+(the pane sends Shift+/ as `/`, hence the alias); `?` itself after the
+alias's deploy. TUI in a pty (`scratchpad/p19-tui.py`): `/keys` printing
+the table, `/btw QUESTION` answered ($0.02), `/btw` listing, `/btw
+promote 2` sending the quoted message (answered), the card's "asked in
+chat", the listing's ✓ marks. The 10-minute idle release: see the
+progress line.
+
+Left: a queued side question (asked during a turn, run after it) was
+decided against, not built; a released session with a held queue is
+refused rather than started without sending; the web has no approval
+keys (the cards are buttons) and no Esc-to-stop, so its "approvals"
+area is Shift-Tab alone; the TUI's menu and prompt-search switches are
+described by the table and checked against it, not dispatched through
+it; vim mode's rows wait on round 2 F's `extraKeys`.
+
+Progress: started 2026-09-18 on `feat/parity-r2-g-asides-keys` from
+main 12e3ac8; implemented and live-verified 2026-09-18.
+
 ### Round 2 C: live activity, nesting-aware search and export, TUI search across chats
 
 Branch `feat/parity-r2-c-activity-search`, worktree

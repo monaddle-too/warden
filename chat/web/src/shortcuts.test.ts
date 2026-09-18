@@ -122,7 +122,9 @@ describe("isKey", () => {
   it("takes the ? key with or without Shift, and arrows either way", () => {
     expect(isKey(press("?", { shift: true }), "help")).toBe(true);
     expect(isKey(press("?"), "help")).toBe(true);
-    expect(isKey(press("/", { shift: true }), "help")).toBe(false);
+    // Some senders report Shift+/ as "/" with Shift held.
+    expect(isKey(press("/", { shift: true }), "help")).toBe(true);
+    expect(isKey(press("/"), "help")).toBe(false);
     expect(isKey(press("ArrowUp"), "menu-move")).toBe(true);
     expect(isKey(press("ArrowDown"), "menu-move")).toBe(true);
     expect(isKey(press("ArrowDown", { meta: true }), "menu-move")).toBe(false);
