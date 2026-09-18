@@ -49,9 +49,47 @@ export const COMMANDS: Command[] = [
     hint: "What changed in the workspace since this chat began",
   },
   {
+    name: "fork",
+    label: "Fork…",
+    hint: "Copy this chat into a sibling and continue both",
+  },
+  {
+    name: "btw",
+    label: "Side question",
+    hint: "/btw question — answered from this chat's context, never sent to the agent",
+  },
+  {
+    name: "cost",
+    label: "Cost",
+    hint: "This chat's turns, tokens and cost so far",
+  },
+  {
+    name: "style",
+    label: "Output style",
+    hint: "Claude's output style for the next session: default, Explanatory or Learning",
+  },
+  {
     name: "clear",
     label: "Clear draft",
     hint: "Discard the draft and its attachments",
+  },
+];
+
+/* Claude's output styles (chats/style.go; the CLI's built-ins). The
+   style is a launch setting: it applies when the chat's next session
+   starts. */
+export type StyleOption = { value: string; label: string; hint: string };
+export const STYLES: StyleOption[] = [
+  { value: "", label: "Default", hint: "Claude Code's usual answers" },
+  {
+    value: "Explanatory",
+    label: "Explanatory",
+    hint: "Adds insights about the choices it makes as it works",
+  },
+  {
+    value: "Learning",
+    label: "Learning",
+    hint: "Explains and asks you to write small parts yourself",
   },
 ];
 
@@ -79,6 +117,7 @@ export type CommandItem =
   | { kind: "command"; command: Command }
   | { kind: "model"; model: ModelOption }
   | { kind: "mode"; mode: ModeOption }
+  | { kind: "style"; style: StyleOption }
   | { kind: "agent"; command: AgentCommand };
 
 /* What the agent's built-in commands do, for the list's hint column: the
@@ -131,8 +170,10 @@ function split(query: string): { name: string; rest?: string } {
    the word typed, then the agent's (a local name shadows the agent's, so
    "/model" is always the chat's own); or, once "model" has its argument,
    the models whose value or label contains it ("5.5" finds GPT-5.5), and
-   once "mode" has its argument, the permission modes it begins. An agent
-   command with an argument has no rows: the text is sent as it is. */
+   once "mode" has its argument, the permission modes it begins (and
+   "style" the output styles). "/btw" with its question has no rows: the
+   question is asked as typed. An agent command with an argument has no
+   rows: the text is sent as it is. */
 export function commandItems(
   query: string,
   models: ModelOption[],
@@ -158,6 +199,10 @@ export function commandItems(
       kind: "mode",
       mode,
     }));
+  if (name === "style")
+    return STYLES.filter((s) =>
+      (s.value || "default").toLowerCase().startsWith(arg),
+    ).map((style) => ({ kind: "style", style }));
   if (name !== "model") return [];
   return models
     .filter(
@@ -202,9 +247,20 @@ export function exactCommand(
       (item.kind === "model" &&
         (item.model.value.toLowerCase() === arg ||
           item.model.label.toLowerCase() === arg)) ||
-      (item.kind === "mode" && item.mode.value === arg),
+      (item.kind === "mode" && item.mode.value === arg) ||
+      (item.kind === "style" && (item.style.value || "default").toLowerCase() === arg),
   );
   return hit;
+}
+
+/* The question a "/btw …" draft asks: the text after the command, on the
+   first line and any that follow. Undefined for anything else, a bare
+   "/btw" included (that is the command itself, which prompts for one). */
+export function sideQuestion(text: string): string | undefined {
+  const m = /^\/btw(?:\s+|$)([\s\S]*)$/i.exec(text.trim());
+  if (!m) return undefined;
+  const question = m[1].trim();
+  return question || undefined;
 }
 
 /* A draft that starts with "!" runs the rest as a shell command in the

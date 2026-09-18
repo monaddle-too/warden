@@ -25,6 +25,22 @@ export type Entry = {
   /* What a compaction entry records: the agent compacted its context
      here; `detail` is the summary it continues from, when given. */
   compaction?: Compaction;
+  /* What a fork marker records: the chat this one was forked from and
+     the message the copy stops before. */
+  fork?: Fork;
+  /* What an aside entry records: a side question (`text`, by `sender`)
+     answered from a copy of the agent's session (`detail`), its cost,
+     never sent to the session. */
+  aside?: Aside;
+};
+export type Fork = { chatID: string; title?: string; messageID?: string };
+export type Aside = {
+  status: "running" | "completed" | "failed";
+  error?: string;
+  costUSD?: number;
+  input?: number;
+  output?: number;
+  durationMS?: number;
 };
 /* One compaction of the agent's context (conversation.Compaction):
    `trigger` is "manual" (the owner's /compact) or "auto" (the agent near
@@ -176,6 +192,12 @@ export type Chat = {
   commands?: AgentCommand[];
   /* What the agent reported when its session started. */
   session?: { model?: string; permissionMode?: string; outputStyle?: string };
+  /* A Claude chat's output style for its next launch ("" or absent: the
+     CLI's default); `session.outputStyle` is what the running one has. */
+  outputStyle?: string;
+  /* The chat was forked from another and its first run still has to copy
+     the source's session. */
+  forkSession?: boolean;
   typing?: { principalID: string; name: string; until: number }[];
   startup?: Startup;
 };

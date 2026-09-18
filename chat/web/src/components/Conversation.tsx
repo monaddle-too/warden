@@ -18,11 +18,15 @@ import {
   Cpu,
   Download,
   Eraser,
+  GitFork,
+  MessageCircleQuestion,
+  Receipt,
   File as FileIcon,
   Folder,
   Paperclip,
   ShieldCheck,
   Slash,
+  SlidersHorizontal,
   Square,
   Terminal,
 } from "lucide-react";
@@ -33,7 +37,14 @@ import {
   resendAttempt,
   type Attempt,
 } from "../drafts";
-import { api, me, newID, downloadFile, uploadAttachment } from "../api";
+import {
+  api,
+  askAside,
+  me,
+  newID,
+  downloadFile,
+  uploadAttachment,
+} from "../api";
 import {
   agentCommandNamed,
   agentHint,
@@ -43,6 +54,7 @@ import {
   prefixed,
   quoteCommand,
   replaceTrigger,
+  sideQuestion,
   triggerAt,
   withoutCommand,
   type CommandItem,
@@ -92,6 +104,8 @@ import { FindBar, isFindKey, type FindRequest } from "./FindBar";
 import { HistorySearch } from "./HistorySearch";
 import { ModelSelect, modelOptions } from "./ModelSelect";
 import { ModeSelect } from "./ModeSelect";
+import { StyleSelect } from "./StyleSelect";
+import { CostCard } from "./CostCard";
 import { ComposerPastes } from "./Pastes";
 import { Suggest, usePathCompletion, type Suggestion } from "./Suggest";
 import { PendingReply } from "./Thinking";
@@ -155,6 +169,14 @@ const commandIcon = (name: string) =>
     <ShieldCheck size={15} />
   ) : name === "export" ? (
     <Download size={15} />
+  ) : name === "fork" ? (
+    <GitFork size={15} />
+  ) : name === "btw" ? (
+    <MessageCircleQuestion size={15} />
+  ) : name === "cost" ? (
+    <Receipt size={15} />
+  ) : name === "style" ? (
+    <SlidersHorizontal size={15} />
   ) : (
     <Eraser size={15} />
   );
@@ -168,6 +190,8 @@ export function Conversation({
   onExport,
   onRewind,
   onChanges,
+  onFork,
+  onStyle,
 }: {
   chat: Chat;
   live: boolean;
@@ -185,6 +209,11 @@ export function Conversation({
      the session diff (/diff); both dialogs live in the shell. */
   onRewind?: (entryID?: string) => void;
   onChanges?: () => void;
+  /* The fork dialog (a message's hover action, /fork, the chat menu);
+     the dialog lives in the shell. */
+  onFork?: (entryID?: string) => void;
+  /* The output style selector and /style (Claude chats). */
+  onStyle?: (style: string) => Promise<unknown>;
 }) {
   const key = "warden-draft:" + location.origin + ":" + chat.id;
   const [text, setText] = useState(() => draft(key));
@@ -509,6 +538,11 @@ export function Conversation({
   // Permission modes are a Claude chat's (the service refuses them for
   // Codex); the mode can change at any time, a running turn included.
   const modes = chat.provider === "claude" && !!onMode;
+  // Side questions and output styles are a Claude chat's too.
+  const asides = chat.provider === "claude";
+  const styles = chat.provider === "claude" && !!onStyle;
+  // The /cost card, shown until dismissed (local to this reader).
+  const [costOpen, setCostOpen] = useState(false);
   // The agent's own commands (Claude Code's built-ins and the workspace's)
   // join the list after the chat's; "/name …" goes to the agent as text.
   const agentCommands = useMemo(() => chat.commands ?? [], [chat.commands]);
@@ -546,7 +580,13 @@ export function Conversation({
                       ? running
                       : item.command.name === "mode"
                         ? !modes
-                        : false,
+                        : item.command.name === "btw"
+                          ? !asides || running
+                          : item.command.name === "style"
+                            ? !styles
+                            : item.command.name === "fork"
+                              ? !onFork || running
+                              : false,
               }
             : item.kind === "mode"
               ? {
@@ -555,6 +595,14 @@ export function Conversation({
                   hint: item.mode.hint,
                   icon: <ShieldCheck size={15} />,
                   disabled: !modes || chat.archived,
+                }
+            : item.kind === "style"
+              ? {
+                  id: "style:" + (item.style.value || "default"),
+                  label: item.style.label,
+                  hint: item.style.hint,
+                  icon: <SlidersHorizontal size={15} />,
+                  disabled: !styles || chat.archived,
                 }
               : item.kind === "model"
                 ? {
@@ -573,6 +621,15 @@ export function Conversation({
                   },
       );
       if (items.length) return { items };
+      if (sideQuestion(text) !== undefined)
+        return {
+          items,
+          note: asides
+            ? running
+              ? "Side questions wait until the agent's turn is over"
+              : "Enter asks it of a copy of the session; the agent never sees it"
+            : "Side questions are a Claude chat's",
+        };
       // An agent command with its argument typed: nothing to pick, the
       // message goes as it is; its hint stays up while it is written.
       const named = agentCommandNamed(trigger.query, agentCommands);
@@ -613,6 +670,10 @@ export function Conversation({
     chat.status,
     chat.archived,
     modes,
+    asides,
+    styles,
+    onFork,
+    text,
   ]);
   // The row the keys act on: never a disabled one, so Enter on a fresh
   // list runs something. -1 when every row is disabled.
@@ -707,6 +768,7 @@ export function Conversation({
   // What the composer would send or run right now (prefixes are read on
   // the text as typed; the pastes are put back when it is sent).
   const prefix = useMemo(() => prefixed(text), [text]);
+  const question = useMemo(() => sideQuestion(text), [text]);
   // "Send to agent" on a command the person ran: the command and its
   // output go into the draft as a fenced block, for the next message.
   const quote = useCallback((entry: Entry) => {
@@ -756,6 +818,13 @@ export function Conversation({
       place({ text: line + (rest ? "\n" + rest : ""), caret: line.length });
       return;
     }
+    if (item.kind === "style") {
+      setError(styles ? "" : "output styles apply to Claude chats");
+      if (styles)
+        void onStyle(item.style.value).catch((e) => setError(String(e)));
+      place({ text: rest, caret: 0 });
+      return;
+    }
     if (item.kind === "model") {
       // The list disables models while the agent runs; "/model x" typed in
       // full and sent gets the same answer the service would give.
@@ -789,6 +858,22 @@ export function Conversation({
         onChanges?.();
         place({ text: rest, caret: 0 });
         break;
+      case "fork":
+        onFork?.();
+        place({ text: rest, caret: 0 });
+        break;
+      case "btw":
+        // The question is typed after it; Enter then asks it.
+        place({ text: "/btw " + rest, caret: 5 });
+        break;
+      case "cost":
+        setCostOpen(true);
+        setFollow(true);
+        place({ text: rest, caret: 0 });
+        break;
+      case "style":
+        place({ text: "/style " + rest, caret: 7 });
+        break;
       case "clear":
         for (const item of pending) forget(item);
         setPending([]);
@@ -811,7 +896,9 @@ export function Conversation({
             ? "mode:" + c.mode.value
             : c.kind === "model"
               ? "model:" + c.model.value
-              : "agent:" + c.command.name) === item.id,
+              : c.kind === "style"
+                ? "style:" + (c.style.value || "default")
+                : "agent:" + c.command.name) === item.id,
     );
     if (chosen) runCommand(chosen, withoutCommand(text, trigger));
   }
@@ -841,11 +928,37 @@ export function Conversation({
       setBusy(false);
     }
   }
+  // A "/btw" question: asked of a copy of the agent's session; the card
+  // arrives over the event stream (running, then answered).
+  async function ask(question: string) {
+    if (!asides) {
+      setError("side questions are a Claude chat's");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await askAside(chat.id, question);
+      setText("");
+      setPastes([]);
+      setRecall(NOT_BROWSING);
+      setFollow(true);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function send(event: FormEvent) {
     event.preventDefault();
     const command = exactCommand(text, models);
     if (command) {
       runCommand(command, "");
+      return;
+    }
+    const asked = sideQuestion(expandPastes(text, pastes));
+    if (asked !== undefined && !busy) {
+      void ask(asked);
       return;
     }
     if (prefix && !busy) {
@@ -985,6 +1098,7 @@ export function Conversation({
                       onRewind={
                         onRewind ? (entry) => onRewind(entry.id) : undefined
                       }
+                      onFork={onFork ? (entry) => onFork(entry.id) : undefined}
                       onQuote={quote}
                       actions={!busy && canResend(item.entry, chat, live)}
                       rewindable={canRewind(chat)}
@@ -995,6 +1109,14 @@ export function Conversation({
                 </Fragment>
               );
             })}
+            {costOpen && (
+              <CostCard
+                turns={chat.conversation.turns}
+                provider={chat.provider}
+                running={running}
+                onClose={() => setCostOpen(false)}
+              />
+            )}
             {awaited && (
               <PendingReply provider={chat.provider} since={awaited.since} />
             )}
@@ -1276,6 +1398,19 @@ export function Conversation({
                   />
                 </span>
               )}
+              {styles && (
+                <span className="composer-style">
+                  <StyleSelect
+                    value={chat.outputStyle || ""}
+                    running={chat.session?.outputStyle}
+                    disabled={chat.archived}
+                    onChange={(style) => {
+                      setError("");
+                      void onStyle(style).catch((e) => setError(String(e)));
+                    }}
+                  />
+                </span>
+              )}
               {chat.conversation.context && (
                 <ContextMeter context={chat.conversation.context} />
               )}
@@ -1332,7 +1467,9 @@ export function Conversation({
                     ? "Run in the workspace"
                     : prefix?.kind === "memory"
                       ? "Add to CLAUDE.md"
-                      : "Send message"
+                      : question !== undefined
+                        ? "Ask a side question"
+                        : "Send message"
                 }
                 title={
                   prefix?.kind === "shell"
@@ -1347,12 +1484,15 @@ export function Conversation({
                   busy ||
                   !live ||
                   chat.archived ||
+                  (question !== undefined && (!asides || running)) ||
                   (!prefix &&
                     (chat.status === "queued" || chat.status === "stopping"))
                 }
               >
                 {prefix?.kind === "shell" ? (
                   <Terminal size={16} />
+                ) : question !== undefined ? (
+                  <MessageCircleQuestion size={16} />
                 ) : (
                   <ArrowUp size={17} />
                 )}
@@ -1369,11 +1509,15 @@ export function Conversation({
                 ? chat.provider === "codex"
                   ? "Appends a note to CLAUDE.md in the workspace (Codex reads AGENTS.md, not CLAUDE.md)"
                   : "Appends a note to CLAUDE.md in the workspace — the agent reads it only once the workspace's settings are loaded"
-                : chat.status === "running"
-                  ? chat.provider === "claude"
-                    ? "Queued for the next turn"
-                    : "Send to steer the current run"
-                  : "⌘ / Ctrl + Enter to send · / commands · @ file · ! shell · # note · ↑ history · Ctrl+R search"}
+                : question !== undefined
+                  ? asides
+                    ? "Asks a copy of the agent's session, from this chat's context — the agent never sees the question or the answer"
+                    : "Side questions are a Claude chat's"
+                  : chat.status === "running"
+                    ? chat.provider === "claude"
+                      ? "Queued for the next turn"
+                      : "Send to steer the current run"
+                    : "⌘ / Ctrl + Enter to send · / commands · @ file · ! shell · # note · /btw aside · ↑ history · Ctrl+R search"}
         </div>
       </form>
     </div>

@@ -1666,6 +1666,13 @@ button.danger:hover {
 .rewind-entry small {
   color: var(--muted);
 }
+.fork-entry a {
+  color: inherit;
+  font-weight: 600;
+}
+.composer-style select.style-pending {
+  border-color: var(--accent);
+}
 .session-diff {
   width: min(900px, 100%);
   max-height: 90vh;

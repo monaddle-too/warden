@@ -231,6 +231,38 @@ export function rewindChat(
   });
 }
 
+/* A sibling chat copied from this one up to `turnID` (a user message, or
+   its turn); the whole transcript when unset. */
+export function forkChat(chatID: string, turnID?: string): Promise<ForkResult> {
+  return api<ForkResult>(`chats/${encodeURIComponent(chatID)}/fork`, {
+    turnID: turnID || "",
+  });
+}
+export type ForkResult = {
+  id: string;
+  title: string;
+  session: "forked" | "fresh" | "none";
+};
+
+/* A side question answered from a copy of the chat's session; the answer
+   lands as an aside entry over the event stream too. */
+export function askAside(chatID: string, text: string): Promise<AsideResult> {
+  return api<AsideResult>(`chats/${encodeURIComponent(chatID)}/aside`, {
+    text,
+  });
+}
+export type AsideResult = {
+  id: string;
+  text?: string;
+  error?: string;
+  costUSD?: number;
+};
+
+/* The output style a Claude chat launches with next ("" for the default). */
+export function setOutputStyle(chatID: string, style: string) {
+  return api(`chats/${encodeURIComponent(chatID)}/style`, { style });
+}
+
 export function sessionChanges(chatID: string): Promise<SessionChanges> {
   return api<SessionChanges>(`chats/${encodeURIComponent(chatID)}/diff`);
 }

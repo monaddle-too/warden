@@ -12,8 +12,11 @@ import {
   ArchiveRestore,
   Box,
   Download,
+  Bell,
+  BellOff,
   FileDiff,
   FileText,
+  GitFork,
   GitPullRequest,
   History,
   MoreHorizontal,
@@ -28,7 +31,9 @@ import {
   Timer,
 } from "lucide-react";
 import type { Chat, Environment, Resources, State } from "../types";
-import { api, signedIn, subscribe } from "../api";
+import { api, setOutputStyle, signedIn, subscribe } from "../api";
+import { ForkDialog } from "./ForkDialog";
+import { useNotifications } from "./Notifications";
 import { plural, providerName } from "../export";
 import {
   PullRequestReview,
@@ -100,6 +105,8 @@ export function ChatShell({
   // session diff (rewind.ts).
   const [rewinding, setRewinding] = useState<string | null>(null);
   const [changesOpen, setChangesOpen] = useState(false);
+  // The fork dialog (the message it cuts before, "" for the whole chat).
+  const [forking, setForking] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   // The find bar's latest request; a new object each time so the same
   // query can be asked for again.
@@ -172,6 +179,13 @@ export function ChatShell({
   }, []);
   const chats = state.chats.filter((c) => c.archived === archived);
   const chat = chats.find((c) => c.id === selected) || chats[0];
+  // Desktop notifications while the tab is hidden, and the tab's badge
+  // (notify.ts); clicking one opens the chat it is about.
+  const notifications = useNotifications(state.chats, (id) => {
+    setAdminOpen(false);
+    setArchived(false);
+    setSelected(id);
+  });
   // A find request is for one chat; once the reader has moved on it is
   // forgotten, so coming back later does not replay the jump.
   useEffect(() => {
@@ -691,6 +705,16 @@ export function ChatShell({
                   </button>
                   <button
                     role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setForking("");
+                    }}
+                  >
+                    <GitFork size={15} />
+                    Fork…
+                  </button>
+                  <button
+                    role="menuitem"
                     disabled={chatBusy}
                     onClick={() => {
                       setMenuOpen(false);
@@ -728,6 +752,25 @@ export function ChatShell({
                     <Timer size={15} />
                     Keep workspace running
                   </button>
+                  <hr />
+                  <button
+                    role="menuitemcheckbox"
+                    aria-checked={notifications.enabled}
+                    title={notifications.hint}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void notifications.toggle();
+                    }}
+                  >
+                    {notifications.enabled ? (
+                      <Bell size={15} />
+                    ) : (
+                      <BellOff size={15} />
+                    )}
+                    {notifications.enabled
+                      ? "Desktop notifications on"
+                      : "Desktop notifications off"}
+                  </button>
                 </div>
               </details>
             </header>
@@ -758,6 +801,21 @@ export function ChatShell({
                 onClose={() => setChangesOpen(false)}
               />
             )}
+            {forking !== null && (
+              <ForkDialog
+                key={chat.id + "fork"}
+                chat={chat}
+                initial={forking || undefined}
+                onClose={(result, open) => {
+                  setForking(null);
+                  if (result) refresh();
+                  if (result && open) {
+                    setArchived(false);
+                    setSelected(result.id);
+                  }
+                }}
+              />
+            )}
             <div className="warden-chat-content">
               <Conversation
                 key={chat.id}
@@ -768,6 +826,8 @@ export function ChatShell({
                 onExport={() => setExporting(true)}
                 onRewind={(entryID) => setRewinding(entryID || "")}
                 onChanges={() => setChangesOpen(true)}
+                onFork={(entryID) => setForking(entryID || "")}
+                onStyle={(style) => setOutputStyle(chat.id, style)}
                 onModel={(next) =>
                   api(`chats/${chat.id}/agent`, {
                     provider: chat.provider || "codex",

@@ -6,8 +6,10 @@ import {
   ChevronRight,
   Copy,
   FileText,
+  GitFork,
   History,
   LoaderCircle,
+  MessageCircleQuestion,
   Pencil,
   RotateCcw,
   Send,
@@ -18,7 +20,7 @@ import { hasDiff, parseDiff } from "../diff";
 import { senderLabel } from "../export";
 import { subagentInput, subagentProgress } from "../tools";
 import { groupEntries } from "../transcript";
-import type { TurnFooter } from "../turns";
+import { formatCost, formatDuration, formatTokens, type TurnFooter } from "../turns";
 import type { Entry } from "../types";
 import { EntryAttachments } from "./Attachments";
 import { DiffView } from "./DiffView";
@@ -234,6 +236,7 @@ function MessageActions({
   onRetry,
   onRewind,
   rewindable,
+  onFork,
 }: {
   entry: Entry;
   enabled: boolean;
@@ -243,6 +246,8 @@ function MessageActions({
      the chat is busy. */
   onRewind?: (entry: Entry) => void;
   rewindable?: boolean;
+  /* Opens the fork dialog cut before this message; same condition. */
+  onFork?: (entry: Entry) => void;
 }) {
   const { copied, copy } = useCopy(useCallback(() => entry.text, [entry.text]));
   return (
@@ -301,6 +306,18 @@ function MessageActions({
           <History size={14} />
         </button>
       )}
+      {onFork && (
+        <button
+          type="button"
+          className="ghost icon"
+          aria-label="Fork the chat before this message"
+          title="Fork the chat before this message: a sibling chat continues from here"
+          disabled={!rewindable}
+          onClick={() => onFork(entry)}
+        >
+          <GitFork size={14} />
+        </button>
+      )}
     </div>
   );
 }
@@ -313,6 +330,7 @@ export const EntryView = memo(function EntryView({
   onEdit,
   onRetry,
   onRewind,
+  onFork,
   onQuote,
   actions = false,
   rewindable = false,
@@ -327,6 +345,7 @@ export const EntryView = memo(function EntryView({
   onEdit?: (entry: Entry) => void;
   onRetry?: (entry: Entry) => void;
   onRewind?: (entry: Entry) => void;
+  onFork?: (entry: Entry) => void;
   /* For a command the person ran: quote it into the composer. */
   onQuote?: (entry: Entry) => void;
   /* Whether retry and edit would be accepted right now. */
@@ -394,6 +413,37 @@ export const EntryView = memo(function EntryView({
     );
   if (entry.role === "compaction")
     return <CompactionDivider entry={entry} chatID={chatID} onFile={onFile} />;
+  if (entry.role === "fork")
+    // The marker a fork leaves at the top of the copy: which chat it came
+    // from (a link) and where the copy stops.
+    return (
+      <div
+        className="system-entry rewind-entry fork-entry"
+        data-entry={entry.id}
+        role="separator"
+        aria-label={entry.text}
+      >
+        <span>
+          <GitFork size={13} aria-hidden="true" />{" "}
+          {entry.fork?.chatID ? (
+            <>
+              Forked from{" "}
+              <a href={"?chat=" + encodeURIComponent(entry.fork.chatID)}>
+                {entry.fork.title || "another chat"}
+              </a>
+              {entry.fork.messageID
+                ? entry.text.replace(/^Forked from “[^”]*”/, "")
+                : ""}
+            </>
+          ) : (
+            entry.text
+          )}
+        </span>
+        {entry.detail && <small>{entry.detail}</small>}
+      </div>
+    );
+  if (entry.role === "aside")
+    return <AsideCard entry={entry} chatID={chatID} onFile={onFile} />;
   const user = entry.role === "user";
   const header = (
     <header>
@@ -437,6 +487,7 @@ export const EntryView = memo(function EntryView({
           onEdit={onEdit}
           onRetry={onRetry}
           onRewind={onRewind}
+          onFork={onFork}
           rewindable={rewindable}
         />
       </article>
@@ -513,5 +564,65 @@ function CompactionDivider({
         </details>
       )}
     </div>
+  );
+}
+
+/* A side question (/btw) and its answer: asked by a person, answered from
+   a copy of the agent's session, never part of the conversation the agent
+   sees. The card says so, with what the answer cost. */
+function AsideCard({
+  entry,
+  chatID,
+  onFile,
+}: {
+  entry: Entry;
+  chatID: string;
+  onFile: (href: string) => void;
+}) {
+  const a = entry.aside ?? { status: "completed" as const };
+  const running = a.status === "running" || (entry.isStreaming && !entry.detail);
+  const failed = a.status === "failed";
+  const facts: string[] = [];
+  if (a.durationMS) facts.push(formatDuration(a.durationMS / 1000));
+  if (a.input || a.output)
+    facts.push(`${formatTokens((a.input || 0) + (a.output || 0))} tokens`);
+  if (a.costUSD) facts.push(formatCost(a.costUSD));
+  return (
+    <article
+      className={`aside-entry${running ? " running" : failed ? " failed" : ""}`}
+      data-entry={entry.id}
+      aria-label="Side question"
+    >
+      <header>
+        <MessageCircleQuestion size={14} aria-hidden="true" />
+        <strong>Side question</strong>
+        <span className="muted">
+          by {senderLabel(entry.sender)} · {time(entry.createdAt)} · not sent to
+          the agent
+        </span>
+      </header>
+      <p className="aside-question">{entry.text}</p>
+      {running ? (
+        <p className="aside-answer muted">
+          Answering from a copy of the session
+          <span className="typing-dots">…</span>
+        </p>
+      ) : failed ? (
+        <p className="aside-answer danger-text">
+          Could not answer{a.error ? `: ${a.error}` : ""}
+        </p>
+      ) : (
+        <div className="aside-answer">
+          <RichText
+            text={entry.detail}
+            chatID={chatID}
+            entryID={entry.id}
+            onFile={onFile}
+            agent
+          />
+        </div>
+      )}
+      {facts.length > 0 && <p className="aside-facts">{facts.join(" · ")}</p>}
+    </article>
   );
 }

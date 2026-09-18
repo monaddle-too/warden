@@ -259,6 +259,99 @@
   white-space: pre-wrap;
 }
 
+/* A side question (/btw) and its answer: a card set apart from the
+   conversation, since the agent never sees it. */
+.aside-entry {
+  align-self: stretch;
+  border: 1px dashed var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 8px 12px;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.aside-entry header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.aside-entry header strong {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent-text);
+}
+.aside-question {
+  margin: 0;
+  font-weight: 600;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.aside-answer {
+  margin: 0;
+}
+.aside-answer > :first-child {
+  margin-top: 0;
+}
+.aside-answer > :last-child {
+  margin-bottom: 0;
+}
+.aside-entry.failed {
+  border-left-color: var(--danger);
+}
+.aside-facts {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The /cost card: this chat's totals, for the reader who asked. */
+.cost-card {
+  align-self: stretch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.cost-card header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.cost-card header strong {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cost-card header button {
+  margin-left: auto;
+}
+.cost-card table {
+  border-collapse: collapse;
+}
+.cost-card th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-2);
+  padding: 1px 16px 1px 0;
+}
+.cost-card tr.sub th {
+  padding-left: 14px;
+  color: var(--muted);
+}
+.cost-card td {
+  font-variant-numeric: tabular-nums;
+  padding: 1px 0;
+}
+
 /* Tool activity: one collapsed row per run of consecutive steps. */
 .activity-group {
   align-self: flex-start;

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   COMMANDS,
+  sideQuestion,
   agentCommandNamed,
   agentHint,
   commandItems,
@@ -193,6 +194,10 @@ describe("agent commands in the composer", () => {
       "export",
       "rewind",
       "diff",
+      "fork",
+      "btw",
+      "cost",
+      "style",
       "clear",
       "/compact",
       "/init",
@@ -201,13 +206,16 @@ describe("agent commands in the composer", () => {
     ]);
     // The chat's "model" and "clear" shadow the agent's.
     expect(names("mo")).toEqual(["model", "mode"]);
-    expect(names("c")).toEqual(["clear", "/compact"]);
+    expect(names("c")).toEqual(["cost", "clear", "/compact"]);
     expect(names("Pro")).toEqual(["/probe-cmd"]);
     // With an argument there is nothing to pick: the text goes as it is.
     expect(names("compact focus on tests")).toEqual([]);
     expect(names("probe-cmd alpha")).toEqual([]);
     // Without agent commands the list is as before.
-    expect(commandItems("c", models).map((i) => i.kind)).toEqual(["command"]);
+    expect(commandItems("c", models).map((i) => i.kind)).toEqual([
+      "command",
+      "command",
+    ]);
   });
   it("names the agent command a query is for, argument or not", () => {
     expect(agentCommandNamed("compact", agent)?.name).toBe("compact");
@@ -279,5 +287,39 @@ describe("! and # prefixes", () => {
     expect(quoteCommand({ text: "true", detail: "" })).toBe(
       "I ran `true` in the workspace; it printed nothing.\n",
     );
+  });
+});
+
+describe("side questions and output styles", () => {
+  it("reads the question after /btw", () => {
+    expect(sideQuestion("/btw what did we decide?")).toBe("what did we decide?");
+    expect(sideQuestion("/BTW  two\nlines ")).toBe("two\nlines");
+    expect(sideQuestion("/btw")).toBeUndefined();
+    expect(sideQuestion("/btw   ")).toBeUndefined();
+    expect(sideQuestion("/btwx no")).toBeUndefined();
+    expect(sideQuestion("btw no slash")).toBeUndefined();
+    expect(sideQuestion("hello /btw inside")).toBeUndefined();
+  });
+  it("lists the styles once /style has its argument", () => {
+    const kinds = (q: string) => commandItems(q, models).map((i) => i.kind);
+    expect(kinds("style")).toEqual(["command"]);
+    expect(
+      commandItems("style ", models).map((i) =>
+        i.kind === "style" ? i.style.label : i.kind,
+      ),
+    ).toEqual(["Default", "Explanatory", "Learning"]);
+    expect(
+      commandItems("style le", models).map((i) =>
+        i.kind === "style" ? i.style.value : i.kind,
+      ),
+    ).toEqual(["Learning"]);
+    const exact = exactCommand("/style explanatory", models);
+    expect(exact?.kind === "style" && exact.style.value).toBe("Explanatory");
+    const def = exactCommand("/style default", models);
+    expect(def?.kind === "style" && def.style.value).toBe("");
+    expect(exactCommand("/style nope", models)).toBeUndefined();
+    // "/btw question" is never an exact local command: the question is asked.
+    expect(exactCommand("/btw why?", models)).toBeUndefined();
+    expect(exactCommand("/cost", models)?.kind).toBe("command");
   });
 });

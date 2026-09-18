@@ -118,6 +118,21 @@ function entryMarkdown(
       if (entry.detail)
         lines.push(`> ${entry.detail.split("\n").join("\n> ")}`, "");
       break;
+    case "aside": {
+      // A side question and its answer, never part of the conversation.
+      lines.push(
+        `### Side question — ${senderLabel(entry.sender)}, ${time(entry.createdAt)}`,
+        "",
+        entry.text,
+        "",
+      );
+      const a = entry.aside;
+      if (a?.status === "failed")
+        lines.push(`_Could not answer${a.error ? `: ${a.error}` : ""}_`, "");
+      else if (entry.detail)
+        lines.push(`> ${entry.detail.split("\n").join("\n> ")}`, "");
+      break;
+    }
     default:
       lines.push(`> ${entry.text.split("\n").join("\n> ")}`, "");
   }
