@@ -73,7 +73,7 @@ func (c *cli) start(args []string) error {
 		}
 		defer log.Close()
 		stdlog.SetOutput(log)
-		c = &cli{stdin: c.stdin, stdout: log, stderr: log, openFn: c.openFn, notifyFn: c.notifyFn, serviceFn: c.serviceFn}
+		c = &cli{stdin: c.stdin, stdout: log, stderr: log, openFn: c.openFn, notifyFn: c.notifyFn, serviceFn: c.serviceFn, menuFn: c.menuFn}
 		*detachedChild = true
 	}
 	exe, err := os.Executable()

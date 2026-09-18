@@ -68,6 +68,12 @@ func (c *cli) uninstall(args []string) error {
 			return errors.New("cancelled")
 		}
 	}
+	if m := c.registeredMenu(cfg); m != nil {
+		if err := m.uninstall(); err != nil {
+			return err
+		}
+		fmt.Fprintf(c.stdout, "menu bar:    stopped and unregistered the menu bar item (%s removed)\n", m.unitPath())
+	}
 	if svc := c.registeredService(cfg); svc != nil {
 		if err := svc.uninstall(); err != nil {
 			return err

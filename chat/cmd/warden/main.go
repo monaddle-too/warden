@@ -41,6 +41,8 @@ type cli struct {
 	// serviceFn supplies the service manager for a state directory (nil:
 	// the platform's); tests substitute a recording fake.
 	serviceFn func(state string) (serviceManager, string)
+	// menuFn supplies the menu bar item's manager (nil: the platform's).
+	menuFn func(state string) (serviceManager, string)
 }
 
 // openURL opens the browser on url.
@@ -75,7 +77,7 @@ const usageText = `usage: warden COMMAND [flags]
   status    show whether Warden is running and how
   service   install | uninstall: register Warden with launchd / systemd --user (install does this too)
   open      open the running Warden in the browser (--chat ID, --new)
-  menu      feed: the menu bar item's model, one JSON line per change (macOS; warden-menu runs it)
+  menu      install | uninstall the macOS menu bar item (install does this too); feed: its model (warden-menu runs it)
   chat      terminal client: warden chat [CHAT] | list | new | send | approve
   uninstall stop Warden, unregister the service, delete its sandboxes, stop its private sbx daemon and remove the state
   bugs      bug reports: status | on | off | send "text" | test | pending (you review every report before it is sent)

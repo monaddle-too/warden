@@ -133,11 +133,15 @@ func lastActive(c *tui.Chat) float64 {
 	return at
 }
 
-// menuFeed is `warden menu feed`: the model on stdout, one line per
-// change, until stdin closes or a signal arrives.
+// menuCommand: `warden menu feed` writes the model on stdout, one line
+// per change, until stdin closes or a signal arrives; install and
+// uninstall are service.go's menuSubcommand.
 func (c *cli) menuCommand(args []string) error {
+	if len(args) > 0 && (args[0] == "install" || args[0] == "uninstall") {
+		return c.menuSubcommand(args)
+	}
 	if len(args) == 0 || args[0] != "feed" {
-		fmt.Fprintln(c.stderr, "usage: warden menu feed [--config PATH] [--state DIR]")
+		fmt.Fprintln(c.stderr, "usage: warden menu install|uninstall|feed [--config PATH] [--state DIR]")
 		return errUsage
 	}
 	fs, configPath, state := serviceFlags("warden menu feed", c)

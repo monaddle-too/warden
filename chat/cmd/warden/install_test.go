@@ -71,8 +71,10 @@ type fixture struct {
 	unpin   bool
 	out     bytes.Buffer
 	stdinRd *strings.Reader
-	// serviceFn is the service manager the install sees (default: none).
+	// serviceFn is the service manager the install sees (default: none);
+	// menuFn the menu bar item's (default: not on this host).
 	serviceFn func(state string) (serviceManager, string)
+	menuFn    func(state string) (serviceManager, string)
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -153,7 +155,7 @@ func (f *fixture) commands() []string {
 
 func (f *fixture) run(stdin string, args ...string) (int, string) {
 	f.out.Reset()
-	c := &cli{stdin: strings.NewReader(stdin), stdout: &f.out, stderr: &f.out, terminal: true, serviceFn: f.serviceFn}
+	c := &cli{stdin: strings.NewReader(stdin), stdout: &f.out, stderr: &f.out, terminal: true, serviceFn: f.serviceFn, menuFn: f.menuFn}
 	code := c.run(args)
 	return code, f.out.String()
 }

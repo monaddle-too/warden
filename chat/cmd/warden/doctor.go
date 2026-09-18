@@ -31,6 +31,9 @@ func (c *cli) doctor(args []string) error {
 	}
 	checks := doctorChecks(cfg, path)
 	checks = append(checks, c.serviceCheck(cfg, path))
+	if row, ok := c.menuCheck(cfg, path); ok {
+		checks = append(checks, row)
+	}
 	printChecks(c.stdout, checks)
 	if failed(checks) {
 		return errDoctor
@@ -63,6 +66,38 @@ func (c *cli) serviceCheck(cfg config.Config, configPath string) check {
 		return fail("service", svc.kind()+" "+svc.label()+" is registered but not loaded", "run `warden service install`")
 	}
 	return pass("service", svc.kind()+" "+svc.label()+": "+st.String())
+}
+
+// menuCheck (macOS): a registered menu bar item must be this launcher's
+// unit and loaded; not registered, or a build without the item, is a
+// pass with the way to get one. Nothing where the item does not apply.
+func (c *cli) menuCheck(cfg config.Config, configPath string) (check, bool) {
+	m, reason := c.menu(cfg.Paths.State)
+	if m == nil {
+		if reason == "" {
+			return check{}, false
+		}
+		return pass("menu bar", "none ("+reason+")"), true
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return fail("menu bar", err.Error(), "run `warden menu install`"), true
+	}
+	if !m.registered() {
+		if menuExecutable(exe) == "" {
+			return pass("menu bar", "not in this build (no warden-menu beside "+exe+")"), true
+		}
+		return pass("menu bar", "not registered; `warden menu install` registers it"), true
+	}
+	unit, _ := os.ReadFile(m.unitPath())
+	if string(unit) != m.unit(exe, configPath) {
+		return fail("menu bar", m.unitPath()+" does not run this launcher's item ("+exe+") with this config", "run `warden menu install` from the launcher the item should run"), true
+	}
+	st := m.status()
+	if !st.Loaded {
+		return fail("menu bar", m.label()+" is registered but not loaded", "run `warden menu install`"), true
+	}
+	return pass("menu bar", m.label()+": "+st.String()), true
 }
 
 // doctorChecks is the ordered check list for one configuration.
