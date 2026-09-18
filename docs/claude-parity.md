@@ -129,12 +129,12 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Streaming assistant text, markdown, highlighting | ✅ | ✅ | `stream_event` deltas |
 | Thinking: collapsed, expandable, duration | ✅ | ✅ | text withheld by the CLI in `-p` mode |
 | Spinner verbs and elapsed time | ◐ | ✅ | web has the status line |
-| Typed tool cards (Bash, Read, Grep, Glob, Edit, Write, WebFetch…) | ◐ | ◐ | one generic card today (`claude.go` `tool_use` handling) |
-| Edit/Write/MultiEdit as diffs | ✗ | ✗ | `DiffView.tsx` renders Codex `fileChange`; Claude adapter must emit it |
-| Output folding ("+N lines, expand") | ◐ | ✅ | web tails 30k chars; TUI `/expand` |
-| Subagent nesting, child transcript | ✗ | ✗ | `parent_tool_use_id` |
-| Background task cards, task notifications | ✗ | ✗ | |
-| Todo panel (TodoWrite) | ✗ | ✗ | |
+| Typed tool cards (Bash, Read, Grep, Glob, Edit, Write, WebFetch…) | ✅ | ✅ | item 1: `agent/claude_tools.go`, `Entry.Tool`, `ToolCard.tsx`, `tui/render.go` |
+| Edit/Write/MultiEdit as diffs | ✅ | ✅ | item 1: the CLI's `structuredPatch` hunks with line numbers |
+| Output folding ("+N lines, expand") | ✅ | ✅ | item 1: 12 lines on the web, 8 in the TUI (Tab) |
+| Subagent nesting, child transcript | ✅ | ✅ | item 2: `Entry.ParentID`, collapsed under the Agent card |
+| Background task cards, task notifications | ✅ | ✅ | item 2: `Tool.Background`, `TaskOutput` lands the output |
+| Todo panel (TodoWrite) | ◐ | ◐ | item 2: one card updated in place; the pinned CLI offers no todo tool |
 | Compaction boundary marker | ◐ | ◐ | `system/compact_boundary` → a system entry with the token counts (item 5); a real marker is item 8 |
 | Context-left indicator, auto-compact warning | ✗ | ✗ | `result` usage |
 | Per-turn tokens, cost, duration | ✅ | ◐ | `TurnStats.tsx`; TUI elapsed only |
@@ -369,12 +369,12 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 ## Progress
 
 - [x] Design discussion, inventory and priority order (this document).
-- [ ] 1 Typed tool cards and diffs.
-- [ ] 2 Subagents and background tasks.
+- [x] 1 Typed tool cards and diffs — merged to main 5715a02 (2026-09-17); verified as the Item 1 section says.
+- [ ] 2 Subagents and background tasks — in progress on `feat/parity-2-subagents`.
 - [ ] 3 Permission model.
 - [ ] 4 Plan mode.
 - [ ] 5 Slash-command pass-through.
-- [ ] 6 TUI catch-up.
+- [x] 6 TUI catch-up — merged to main c60d938 (2026-09-17); verified as the Item 6 section says.
 - [ ] 7 Workspace `.claude/` loading and policy.
 - [ ] 8 Compaction and context.
 - [ ] 9 Mid-session model, effort, thinking.
@@ -385,9 +385,262 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
 
-## Items
+### Item 1: typed tool cards and diffs
 
-### Item 7 — workspace `.claude/` loading: verified
+Branch `feat/parity-1-tool-cards`, worktree `.local/warden-parity-1-tool-cards`,
+from main 5ff4767 (2026-09-17).
+
+What the CLI gives: every `tool_result` frame carries, beside the text the
+model reads, a structured `tool_use_result` (probed on the pinned 2.1.27x
+with `claude -p --output-format stream-json`): Edit's `structuredPatch` is
+the CLI's own hunks with line numbers; Write says `create` or `update` and
+patches an existing file against its old content; Bash separates stdout
+and stderr; Read gives the file's line range; a tool's error is a string
+and the text form is wrapped in `<tool_use_error>`. The pinned CLI offers
+no Grep, Glob or TodoWrite tools (the model uses Bash); their mapping is
+in place and unit-tested for a CLI that has them.
+
+Decisions:
+
+1. The adapter emits Codex-shaped items where Codex has the kind
+   (`commandExecution`, `fileChange`, `mcpToolCall`, `webSearch`) and a new
+   generic `toolCall` (`tool`, `kind`, `title`, `input`, `output`, `paths`,
+   `query`, `status`) for the rest, so the conversation layer stays one
+   mapping for both providers.
+2. `Entry.Tool` is additive (`kind`, `name`, `server`, `status`,
+   `description`, `paths`, `query`, `input`). With it set, `Detail` is the
+   output or diff alone; entries recorded before it keep their status-line
+   `Detail` and the generic rendering, so `GET state` stays compatible and
+   old transcripts render as before.
+3. An Edit's diff is written twice: at the call's start from `old_string`
+   and `new_string` as a hunk without an `@@` header (the line is not
+   known, and a wrong number would be worse than none; the surfaces colour
+   such a hunk by prefix without numbers), then replaced by the CLI's
+   numbered hunks from `structuredPatch` at the result. A Write is its
+   content as an added file (`new file` once the CLI says `create`; the
+   CLI's patch when it replaced an existing file). MultiEdit and
+   NotebookEdit stay headerless.
+4. Paths inside `/home/agent/workspace` read relative to it on both
+   surfaces; the web's read card links the path to the file route, which
+   accepts either form.
+5. Folding: the web shows the first 12 lines with a "+N lines" control
+   (the last 12 while a command still streams); the TUI shows 8 (the last
+   ones of a command's output, the first of anything else) until Tab.
+   Reads and searches collapse to one line with their line or hit count.
+6. Kept out of item 1: a subagent's own tool calls (`parent_tool_use_id`)
+   render as sibling cards until item 2 nests them; TodoWrite is a generic
+   card until item 2's panel.
+
+Verified: `go vet`, `gofmt -l`, `go test ./...`, `pnpm build`, `pnpm test`
+(120 tests, `tools.test.ts` new); live on a cloned home (`~/.warden-p1`)
+with a Claude chat that ran Bash (with a description and a failing
+command), Read (and a failing read), grep, Edit (numbered hunk from
+`structuredPatch`), Write (`new file`), a Warden MCP tool, WebFetch
+(refused by policy: a failed fetch card) and an Explore subagent —
+inspected through `GET state`, the web UI (diffs with line numbers,
+`+N lines` fold, failed badges, read path link) and the TUI in a pty
+(collapsed and Tab-expanded); a Codex chat's command renders through the
+same model (its file edit could not run: the account's Codex usage limit
+was exhausted; the `fileChange` mapping is unit-tested).
+
+### Item 2: subagents, background tasks, todo list
+
+Branch `feat/parity-2-subagents`, worktree `.local/warden-parity-2-subagents`,
+from main 8f0b720 (2026-09-17).
+
+What the CLI gives (probed on 2.1.275 in Warden's exact launch mode,
+`-p --input-format stream-json --include-partial-messages`; the guest's
+2.1.272 to be confirmed live):
+
+- **Subagents.** The tool is `Agent` (`system/init` lists it as `Task`).
+  A subagent's frames are complete `assistant` and `user` messages with
+  `parent_tool_use_id` set to the Agent call's id; no `stream_event`
+  carries a parent, so a subagent's text never streams. Two shapes:
+  - *Foreground* (`run_in_background: false`, `task_started` with
+    `is_backgrounded: false`): a `user` text frame with the prompt, the
+    child's tool calls and results, then the parent's `tool_result` whose
+    content is the child's final text and whose `tool_use_result` carries
+    `totalDurationMs`, `totalTokens`, `totalToolUseCount`, `usage`,
+    `agentType`. The child's own final text and thinking are not emitted.
+  - *Async* (the default on 2.1.275 when `run_in_background` is unset:
+    `subagent_stats.requested.unset`, `started_in_background: 1`): the
+    parent's `tool_result` comes back at once ("Async agent launched",
+    `tool_use_result.isAsync: true`, `status: "async_launched"`,
+    `agentId`), the parent goes on and its turn ends (`result`) while the
+    child keeps sending frames; the child's final text arrives as a child
+    `assistant` text frame; then `system/task_notification` (`tool_use_id`,
+    `status`, `summary` = the child's final text, `usage`) and the CLI
+    resumes the model by itself: a new `system/init`, a turn with no user
+    message, a second `result` with `origin: {kind: "task-notification"}`.
+- **Background commands.** Bash with `run_in_background: true`:
+  `system/task_started` (`task_id`, `tool_use_id`, `description`,
+  `task_type: local_bash`), the `tool_result` says "Command running in
+  background with ID …" with `tool_use_result.backgroundTaskId`; on exit,
+  `system/task_updated` (`patch.status`, `end_time`) and
+  `system/task_notification` (`status: completed|failed`, `summary`
+  "Background command … completed (exit code 0)" / "failed with exit code
+  3", `output_file` inside the sandbox). The output itself only reaches the
+  transcript when the model reads it: `TaskOutput {task_id, block,
+  timeout}` returns `tool_use_result.task {task_id, task_type, status,
+  description, output, exitCode}`. A notification after the turn ended
+  makes the CLI resume the model as above. Also seen: `task_progress` for
+  agents (`usage.total_tokens`, `tool_uses`, `duration_ms`,
+  `last_tool_name`), `background_tasks_changed`, `task_summary`,
+  `post_turn_summary`, `status`, `thinking_tokens` — all ignored.
+- **Todo list.** 2.1.275 has no `TodoWrite`; the list is `TaskCreate
+  {subject, description, activeForm}` → `{task: {id, subject}}`,
+  `TaskUpdate {taskId, status: pending|in_progress|completed|deleted, …}` →
+  `{statusChange: {from, to}}`, `TaskList {}` → `{tasks: [{id, subject,
+  status, blockedBy}]}`, `TaskGet {taskId}`. `TodoWrite`'s documented
+  shape (`{todos: [{content, status, activeForm}]}`) is mapped for a CLI
+  that has it.
+
+Decisions:
+
+1. Nesting is one additive field, `Entry.ParentID`: the Agent call's
+   entry id (its tool_use id) on every entry the subagent produced; ""
+   at the top level. Nested subagents chain by the same rule. The adapter
+   sets `parentId` on the items; `Upsert` copies it; `Hydrate` and
+   `Finish` need nothing more. A child entry carries the turn its Agent
+   call was made in, even when it arrives after that turn ended.
+2. A subagent's final text is the Agent card's result (`Detail`): the
+   parent's `tool_result` content in the foreground case, the
+   notification's `summary` in the async case. `Entry.EndedAt` is set on
+   the card when the subagent finished, so both surfaces show the elapsed
+   time; the tool-call count is the children's.
+3. `Tool.Background` marks a command or an agent the CLI runs in the
+   background (from `run_in_background`, `backgroundTaskId`, or an async
+   launch); such a card stays running past its `tool_result` (whose
+   boilerplate is dropped) until the task's notification, which sets the
+   status (completed, or failed by status or a non-zero exit code in the
+   summary) and, for a command, the summary line as a placeholder output;
+   a `TaskOutput` result replaces it with the real output and exit code.
+   `TaskOutput`, `TaskStop` and `Monitor` are generic cards titled with
+   the task's description.
+4. A turn the CLI starts by itself (after a task notification) is a turn
+   to Warden too: the adapter opens one (`turn/started`) at the first
+   top-level frame after a `result`, and the engine's idle wait
+   (`awaitMessage`) hands such a turn to the session loop, which drives
+   it like any other (running status, Stop, turn record, usage) without
+   sending a message.
+5. The todo list is one entry per adapter process (`todoList` item,
+   `Tool.Kind: "todo"`, the list as `Tool.Input.todos` in TodoWrite's
+   shape and as text lines in `Detail`), updated in place by every
+   `TodoWrite`/`TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` result; the
+   calls themselves get no card.
+6. Web: child entries are dropped from the top-level list and rendered
+   inside the Agent card (`nestEntries` in `transcript.ts`), collapsed
+   behind "n steps · elapsed"; the card shows the prompt, the child
+   transcript and the result. Turn footers, unread and jump counts skip
+   children. TUI: children indent under the card, Tab expands them.
+7. A `result` whose `origin.kind` is `task-notification` arriving while
+   the turn Warden asked for still runs (seen by item 6: a foreground
+   Bash still streaming) does not end that turn: the answer is a message
+   in it and the turn ends with its own result. Only a turn the CLI
+   started ends on such a result.
+
+On the guest's 2.1.272 (live): the model sees `Agent`, `TaskOutput` and
+`TaskStop` but no `Monitor`, `TodoWrite` or `TaskCreate/TaskUpdate/
+TaskList/TaskGet`, so the todo card is unit-tested only there; the
+subagent runs in the foreground unless asked for `run_in_background`; an
+async subagent's notification after the turn made the CLI start a turn
+of its own, exactly as on 2.1.275; `TaskOutput`'s structured result is the
+same shape.
+
+Verified: `go vet`, `gofmt -l`, `go test ./...`, `pnpm build`, `pnpm test`
+(128 tests; `transcript.test.ts` and `tools.test.ts` extended, the CSS
+brace test now covers `conversation.css`); live on a cloned home
+(`~/.warden-p4`, build 97e22d6) with a Claude chat that ran a background
+Bash (`run_in_background`), a foreground Explore subagent and
+`TaskOutput` in one turn, then an async Explore subagent whose result
+arrived after the turn: through `GET state` (child entries with
+`parentID` and the parent's turn, the Agent card completed at the
+notification with `endedAt` and the child's text, the background card
+with `background: true` and the real output, the CLI-started turn with
+its own record and usage, chat idle after), the web UI (the group's
+cards with the `background` badge and "1 tool call · 4s", the Agent card
+expanded to its prompt, the nested "Explore: 1 tool call, 1 message"
+transcript with the child's command card and message, and the result;
+the CLI-started turn's message with its stats line) and the TUI in a pty
+(collapsed count line, Tab expanding the indented child command and the
+`Explore ›` message before the result, `[background]` mark).
+
+Left: a subagent's entries are not found by the transcript search or
+counted in the export as nested; `task_progress` (the subagent's current
+step) is not shown while it runs beyond the child cards themselves; the
+todo card has no live test until the pinned CLI offers a todo tool.
+
+### Item 6: TUI catch-up
+
+Branch `feat/parity-6-tui`, worktree `.local/warden-parity-6-tui`, from
+main 5ff4767 (2026-09-17). TUI only; `render.go`'s entry rendering is item
+1's and is left alone.
+
+Steps:
+
+1. Composer completion: `@path` from the `paths` route, a `/` menu with
+   hints (fuzzy prefix match as `composer.ts`), Tab/Enter accept.
+2. Attachments: `/attach PATH` uploads through `chats/{id}/attachments`,
+   sent with the next message; `/attachments`, `/detach N`.
+3. `/export [md|json] [all] [FILE]`, the same content as `export.ts`.
+4. `/rename`, `/archive`, `/restore`, `/delete` (confirmed).
+5. Keys: Ctrl-C (clear, twice quits), Ctrl-D (quit on empty), Esc
+   (interrupt), Ctrl-O (verbose), Ctrl-L (redraw), Ctrl-U/K/W/A/E, Ctrl-R,
+   Up/Down history; history persisted per chat under `<state>/tui/`.
+6. Status line: model, provider, running/idle with elapsed, pending
+   approvals, the turn's tokens and cost.
+7. Tests, feature map, live smoke, merge.
+
+Decisions:
+
+- `/delete` deletes the chat's workspace (`environments/{id}/delete`, what
+  the web's Delete does; there is no per-chat delete route) after a typed
+  confirmation.
+- Prompt history lives in `<state>/tui/history/<chatID>` (the CLI kept no
+  client state before; `<state>/app/` is the service's).
+- The JSON export keeps each entry's JSON as the service sent it, so
+  fields the client does not model (item 1's typed cards) survive.
+
+Also decided while building:
+
+- Ctrl+O hides tool steps and thinking altogether ("steps hidden" in the
+  status); the default keeps them, as before, with Tab/`/expand` for full
+  output. `/verbose` is the same toggle.
+- Up/Down move between the draft's lines and recall history from its
+  first/last line (Ctrl+P/N always recall); transcript scrolling is the
+  wheel, PgUp/PgDn and Home/End on an empty draft.
+- A lone Escape is reported after 60 ms (the decoder used to wait for the
+  next key), so Esc interrupts on its own. Shift+Tab is decoded and left
+  for item 3.
+- `ChatCommands` on `tui.App` is the hook for commands the chat offers
+  (item 5's `slash_commands`); nil today.
+
+Verified: `go test ./internal/tui` (`-race` too), `go vet`, `gofmt`;
+live on a cloned home (`~/.warden-p2`, build 66c3e37) driving the real
+TUI under a pty (`scratchpad/tui_smoke.py`): `/att` → menu → Tab →
+`/attach note.txt` uploaded and showed above the status; the message
+carried it (Claude read the file); status line `idle 3.6s · 94k tokens
+(94k in, 226 out) · $0.02`; `see @hel` listed `hello-from-tui.txt` and
+Tab completed it; `/export json all FILE` (format `warden-chat`, the
+attachment in the entry); `/rename` seen by `warden chat list`; Esc on a
+running `sleep 90` turn → "interrupting the agent" → `interrupted 7.9s
+· 46k tokens`; Up recalled the prompt, Ctrl+R found an earlier one,
+Ctrl+O hid the steps, Ctrl+C twice quit; `/delete` asked, `n` cancelled,
+`y` deleted the workspace and archived the chat.
+
+Seen on the way (not this item): Claude Code emits a `result` for a
+background-task notification, so the engine ends the turn (status idle,
+turn record closed) while a foreground Bash of that turn is still
+streaming; item 2 (background tasks) should handle that.
+
+Left: long commands (`/delete` stops the sandbox first) block the redraw
+for a few seconds; `/attach` accepts one file per command; vim mode.
+
+Progress: started 2026-09-17; implemented and live-verified 2026-09-17
+(66c3e37); merged to main c60d938 (2026-09-17) after merging item 1's
+typed tool cards in (tui_test.go's append-append conflict kept both).
+
+### Item 7: workspace `.claude/` loading, verified
 
 Branch `feat/parity-5-slash-commands` (with item 5), 2026-09-17.
 
@@ -420,7 +673,7 @@ above. The launch flags were not changed here; the recommended change is
 (hooks off until the owner says otherwise), which also makes the
 workspace's commands and skills appear in item 5's menu.
 
-### Item 5 — slash-command pass-through
+### Item 5: slash-command pass-through
 
 Design (see the feature map for paths):
 

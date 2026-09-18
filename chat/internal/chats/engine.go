@@ -1028,7 +1028,19 @@ func (e *Engine) run(parent context.Context, id string) {
 		// The turn finished but the session stays open: settle the transcript,
 		// report idle, and wait for the chat's next message.
 		e.settleTurn(parent, id, a)
-		message = e.awaitMessage(ctx, id, &current, a, client, frames)
+		var agentTurn string
+		message, agentTurn = e.awaitMessage(ctx, id, &current, a, client, frames)
+		if agentTurn != "" {
+			// The agent began a turn of its own (Claude Code resumes the
+			// model when a background task it started reports back): drive
+			// it like one asked for, with nothing to send.
+			turnID = agentTurn
+			turn = map[string]any{"id": turnID, "status": "inProgress"}
+			e.mu.Lock()
+			a.turnID = turnID
+			e.mu.Unlock()
+			continue
+		}
 		if message == nil {
 			return // released, timed out, stopped or ended by the worker: a clean end
 		}
@@ -1176,10 +1188,13 @@ func (e *Engine) settleTurn(parent context.Context, id string, a *activeRun) {
 }
 
 // awaitMessage keeps a resident session open until the chat's next message
-// arrives, returning it with the chat marked running. It returns nil when the
-// session should end: released for another chat, idle too long, the run
-// cancelled, the chat stopped, or the agent stream closed by the worker.
-func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *activeRun, client *agent.Client, frames chan agent.Frame) *cv.Entry {
+// arrives, returning it with the chat marked running, or until the agent
+// starts a turn by itself (`turn/started` with no turn asked for), returning
+// that turn's id with the chat marked running and the turn begun. It
+// returns neither when the session should end: released for another chat,
+// idle too long, the run cancelled, the chat stopped, or the agent stream
+// closed by the worker.
+func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *activeRun, client *agent.Client, frames chan agent.Frame) (*cv.Entry, string) {
 	idleCtx, release := context.WithTimeout(ctx, e.residentIdle())
 	defer release()
 	e.mu.Lock()
@@ -1200,25 +1215,49 @@ func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *
 	for {
 		select {
 		case <-idleCtx.Done():
-			return nil
+			return nil, ""
 		case <-client.Done():
-			return nil
+			return nil, ""
 		case f := <-frames:
 			if len(f.ID) > 0 {
 				_ = e.request(ctx, current, client, f)
-			} else {
-				_ = e.notification(id, f)
+				continue
+			}
+			_ = e.notification(id, f)
+			if f.Method == "turn/started" {
+				if turn := agent.String(agent.Map(f.Params["turn"])["id"]); turn != "" {
+					if err := e.beginAgentTurn(id, turn); err != nil {
+						return nil, ""
+					}
+					return nil, turn
+				}
 			}
 		case <-tick.C:
 			message, err := e.resume(id)
 			if err != nil {
-				return nil
+				return nil, ""
 			}
 			if message != nil {
-				return message
+				return message, ""
 			}
 		}
 	}
+}
+
+// beginAgentTurn marks the chat running for a turn the agent started by
+// itself and records the turn's start. It fails when the chat is being
+// stopped or archived, which ends the session.
+func (e *Engine) beginAgentTurn(id, turn string) error {
+	return e.Store.update(func(st *State) error {
+		c := st.chat(id)
+		if c == nil || c.Archived || c.Status == "stopping" {
+			return errors.New("session ended")
+		}
+		c.Status = "running"
+		c.Error = ""
+		c.Conversation.Begin(turn, e.at())
+		return nil
+	})
 }
 
 // resume moves a queued chat with a live resident session back to running and

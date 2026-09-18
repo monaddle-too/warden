@@ -13,7 +13,47 @@ export type Entry = {
   turnID?: string;
   sender?: { email?: string; name?: string; principalID: string };
   attachments?: Attachment[];
+  /* The tool call an activity entry records; with it, `text` is the
+     call's title and `detail` its output alone (a command's output, a
+     search's hits, a unified diff per changed file). Absent on entries
+     from before it was recorded, whose detail starts with a status line. */
+  tool?: Tool;
+  /* The subagent this entry belongs to: the ID of the task entry (the
+     Agent tool call) whose subagent produced it, so the transcript nests
+     it under that card. Absent on the conversation's own entries. */
+  parentID?: string;
 };
+/* One agent tool call as the service records it (conversation.Tool):
+   `kind` is what the card renders by, `name` the tool as the agent names
+   it, `server` an MCP tool's server, `status` running, completed or failed
+   (or an agent's own word, such as Codex's declined), `description` what
+   the agent said the call is for, `paths` the workspace files it names,
+   `query` a search's pattern or a fetch's URL, `input` the call's input
+   where the card shows it as given (a todo list's items), `background`
+   a command or subagent the agent runs in the background, whose card
+   stays running until the task reports back. */
+export type Tool = {
+  kind: ToolKind;
+  name?: string;
+  server?: string;
+  status: string;
+  description?: string;
+  paths?: string[];
+  query?: string;
+  input?: Record<string, unknown>;
+  background?: boolean;
+};
+export type ToolKind =
+  | "command"
+  | "edit"
+  | "read"
+  | "search"
+  | "fetch"
+  | "webSearch"
+  | "mcp"
+  | "task"
+  | "todo"
+  | "other";
 /* The token usage of one turn as the service records it: `input` counts
    every input token (`cached` and `cacheWrite` are parts of it),
    `reasoning` is part of `output`, `costUSD` is the provider's own

@@ -51,6 +51,7 @@ import {
 } from "../attachments";
 import {
   groupEntries,
+  nestEntries,
   newSince,
   readSeen,
   unreadEntry,
@@ -233,7 +234,11 @@ export function Conversation({
   );
   const scroll = useRef<HTMLDivElement>(null);
   const transcript = useRef<HTMLDivElement>(null);
-  const entries = chat.conversation.entries;
+  // The transcript's own entries; a subagent's are keyed by its card
+  // (`nested`) and render inside it, so counts, groups, the unread mark and
+  // the turns' lines see only the flow the reader scrolls.
+  const all = chat.conversation.entries;
+  const { top: entries, nested } = useMemo(() => nestEntries(all), [all]);
   // Following: the transcript keeps its end in view as it grows. Once the
   // reader scrolls up, `away` holds the ID of the last entry they had in
   // view, so the jump button can say how many messages arrived since; the
@@ -807,12 +812,19 @@ export function Conversation({
                     />
                   )}
                   {"group" in item ? (
-                    <ActivityGroup entries={item.group} />
+                    <ActivityGroup
+                      entries={item.group}
+                      nested={nested}
+                      chatID={chat.id}
+                      provider={chat.provider}
+                      onFile={onFile}
+                    />
                   ) : (
                     <EntryView
                       provider={chat.provider}
                       chatID={chat.id}
                       entry={item.entry}
+                      nested={nested}
                       onFile={onFile}
                       onEdit={edit}
                       onRetry={retry}

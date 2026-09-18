@@ -350,6 +350,97 @@
   margin: 4px 0 6px;
 }
 
+/* Typed tool cards (ToolCard.tsx): the summary row names the call in its
+   own terms, the body shows its output folded, its diff, or its input. An
+   open card takes a readable width whatever its title's length. */
+.activity-group.tool-card[open] {
+  min-width: min(100%, 520px);
+}
+.tool-card summary .tool-icon {
+  flex: none;
+  color: var(--muted);
+}
+.tool-card summary .tool-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-card summary .tool-title.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.tool-card summary .tool-count,
+.tool-card summary .tool-failed {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.tool-card summary .tool-failed {
+  color: var(--danger);
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--danger-soft);
+}
+.tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.activity-group > .tool-body {
+  padding: 0 10px 10px;
+}
+.activity-entry > .tool-body {
+  padding: 4px 0 6px;
+}
+.tool-body p {
+  margin: 0;
+}
+.tool-description,
+.tool-meta {
+  font-size: 12px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.tool-meta code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.tool-meta a {
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.tool-output {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+.tool-output pre {
+  align-self: stretch;
+  margin: 0;
+  max-height: none;
+}
+.tool-input pre {
+  color: var(--muted);
+}
+.tool-more {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 2px 6px;
+}
+.tool-more:hover {
+  color: var(--text);
+}
+.tool-body .activity-detail {
+  margin: 0;
+}
+
 /* Approval card */
 .approval-card {
   display: flex;
@@ -845,4 +936,105 @@ button.attachment-chip {
   .pending-reply {
     animation: none;
   }
+}
+
+/* A subagent's card (an Agent call): its prompt, then its own transcript
+   collapsed behind a count, then its final text. A background call wears
+   a badge. */
+.tool-card summary .tool-badge {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-2);
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+.tool-prompt pre {
+  color: var(--text-2);
+}
+.tool-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.subagent {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  min-width: 0;
+}
+.subagent > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.subagent > summary::-webkit-details-marker {
+  display: none;
+}
+.subagent > summary:hover {
+  color: var(--text);
+}
+.subagent[open] > summary .chevron {
+  transform: rotate(90deg);
+}
+.subagent-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 10px 10px;
+  border-top: 1px solid var(--line);
+}
+.subagent-transcript .message {
+  font-size: 13px;
+}
+.subagent-transcript .message-avatar {
+  display: none;
+}
+.subagent-transcript .activity-group {
+  background: var(--surface);
+}
+
+/* The todo list: a checklist that stands open and updates in place. */
+.todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.todo-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.todo-list li svg {
+  flex: none;
+  position: relative;
+  top: 2px;
+  color: var(--muted);
+}
+.todo-list li.todo-completed svg {
+  color: var(--ok, var(--accent-text));
+}
+.todo-list li.todo-completed .todo-content {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.todo-list li.todo-in_progress svg {
+  color: var(--accent-text);
+}
+.todo-list li.todo-in_progress .todo-content {
+  color: var(--text);
+  font-weight: 500;
+}
+.todo-active {
+  font-size: 12px;
 }
