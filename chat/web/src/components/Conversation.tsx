@@ -504,7 +504,11 @@ export function Conversation({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [chat.id]);
-  // When Escape was last pressed in the composer, for Esc-Esc (rewind.ts).
+  // How long a side question holds the composer before it is freed (a
+// refusal arrives well within it).
+const ASIDE_RELEASE_MS = 1500;
+
+// When Escape was last pressed in the composer, for Esc-Esc (rewind.ts).
   const lastEscape = useRef(0);
   // The composer's current contents, for the transcript's edit action,
   // which is a stable callback and cannot close over state.
@@ -1207,7 +1211,11 @@ export function Conversation({
     }
   }
   // A "/btw" question: asked of a copy of the agent's session; the card
-  // arrives over the event stream (running, then answered).
+  // arrives over the event stream (starting, running, then answered). A
+  // refusal comes back at once; an answer takes seconds, and a released
+  // session's start up to minutes, so the composer is freed after a
+  // moment either way and a late failure is shown when it lands (the
+  // card carries it too).
   async function ask(question: string) {
     if (!asides) {
       setError("side questions are a Claude chat's");
@@ -1215,17 +1223,26 @@ export function Conversation({
     }
     setBusy(true);
     setError("");
-    try {
-      await askAside(chat.id, question);
-      setText("");
-      setPastes([]);
-      setRecall(NOT_BROWSING);
-      setFollow(true);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
+    const request = askAside(chat.id, question);
+    const outcome = await Promise.race<"ok" | "pending" | Error>([
+      request.then(
+        () => "ok" as const,
+        (e) => (e instanceof Error ? e : new Error(String(e))),
+      ),
+      new Promise<"pending">((resolve) =>
+        setTimeout(() => resolve("pending"), ASIDE_RELEASE_MS),
+      ),
+    ]);
+    setBusy(false);
+    if (outcome instanceof Error) {
+      setError(String(outcome));
+      return;
     }
+    setText("");
+    setPastes([]);
+    setRecall(NOT_BROWSING);
+    setFollow(true);
+    if (outcome === "pending") request.catch((e) => setError(String(e)));
   }
   // "Ask in chat" on an aside card: the question goes as this person's
   // message with the answer quoted (the service composes it); the card
