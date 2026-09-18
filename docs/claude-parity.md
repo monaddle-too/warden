@@ -385,7 +385,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 6 TUI catch-up — merged to main c60d938 (2026-09-17); verified as the Item 6 section says.
 - [x] 7 Workspace `.claude/` loading — verified on CLI 2.1.272, merged to main 32138ea (2026-09-17); the launch-flag change (`--setting-sources=project` + `disableAllHooks`) is recommended under "Decisions needed", not made.
 - [x] 8 Compaction and context — merged to main e84a7bc (2026-09-17); verified as the Item 8 section says.
-- [ ] 9 Mid-session model, effort, thinking — implemented and live-verified 2026-09-17; see the Item 9 section.
+- [x] 9 Mid-session model, effort, thinking — merged to main a007b96 (2026-09-18); verified as the Item 9 section says.
 - [ ] 10 Queueing and rewind.
 - [x] 11 Checkpoints and session diff — merged to main 4d0a05e (2026-09-17); verified as the Item 11 section says.
 - [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
@@ -1321,6 +1321,10 @@ off · effort high", `/thinking 8k`, `/effort low`, `/effort ultra`
 "opus (claude-sonnet-5)" until the reply, then "opus (claude-opus-5)",
 `/fast on` during the turn → "· fast" in the status. Codex: unit-tested
 only (usage exhausted).
+
+Progress: started 2026-09-17 on `feat/parity-9-model-controls` from main
+05df4fa; implemented and live-verified 2026-09-17 (be53f5d); merged to
+main a007b96 (2026-09-18) after merging items 8, 11 and 12 in.
 
 Left: Codex's model change still relaunches (its `turn/start` takes
 `model`/`effort`, untested); the `thinking_display` field and the
