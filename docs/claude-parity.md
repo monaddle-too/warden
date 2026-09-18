@@ -390,7 +390,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [ ] 10 Queueing and rewind.
 - [x] 11 Checkpoints and session diff — merged to main 4d0a05e (2026-09-17); verified as the Item 11 section says.
 - [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
-- [ ] 13 Per-user instructions and memory.
+- [x] 13 Per-user instructions and memory — merged to main a5012c0 (2026-09-18); verified as the Item 13 section says.
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
 
@@ -559,7 +559,10 @@ home runs in owner mode; the auto-memory question above; the memory view
 needs a running sandbox (the runner refuses with "sandbox is stopped",
 which the panel shows); no `#`-style append for rules or auto-memory.
 
-Progress: started 2026-09-17; implemented and live-verified 2026-09-18.
+Progress: started 2026-09-17; implemented and live-verified 2026-09-18;
+merged to main a5012c0 (2026-09-18) after merging items 9 and 11 in
+(append-append seams only); the merged build re-checked on the cloned
+home (a two-line GIRAFFE answer on the resumed session, the listing).
 
 ### Item 11: checkpoints, rewind and the session diff
 
