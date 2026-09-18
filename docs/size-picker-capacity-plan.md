@@ -72,4 +72,17 @@ choices, on the New chat form and in the workspace panel's Change… row.
 
 ## Progress log
 
-- 2026-09-18: opened.
+- 2026-09-18: steps 1–6 done (5db320d, f7754cb; merged origin/main's
+  background service in c496372). Live on `~/.warden/release` (build
+  c496372, restarted as the launchd service): the runner's ceiling is
+  14 CPUs · 36 GiB on this 14-core, 48 GiB Mac (was 1 CPU); `GET capacity`
+  answers `host` with cores, load, memory free of total, disk, the warm
+  spare's reservation; the New chat form and the panel's Change… show
+  "Host: 14 CPUs, load 6.6 · 10.3 GiB of 48 GiB memory free · 1 warm
+  spare holds 1 CPU · 2 GiB", the ladders run to the ceiling (14, 36 GiB),
+  and choosing 16 GiB against ~10 GiB free shows the warning. Kubernetes
+  path unit-tested (`fillFromCluster`), not live-tested.
+- Also: the ladders include the limits' maxima (a 14-core host offered
+  1–12 before), `cpuChoices`/`memoryChoices` moved to `sizes.ts`.
+- Remaining: merge to main; a live look at the cluster line on GKE some
+  day; the TUI's `warden chat new --cpus/--memory` has no capacity hint.
