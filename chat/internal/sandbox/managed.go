@@ -689,6 +689,10 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	if r.Operation == "bind-chat" {
 		return w.bindLocked(r)
 	}
+	if r.Operation == "clone" {
+		// A new sandbox as a copy of a registered one (clone.go).
+		return w.cloneLocked(ctx, r)
+	}
 	s, _, err := w.bindingLocked(r)
 	if err != nil {
 		return Response{}, err

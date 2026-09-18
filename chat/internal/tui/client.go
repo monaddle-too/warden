@@ -68,6 +68,8 @@ type Fork struct {
 	ChatID    string `json:"chatID"`
 	Title     string `json:"title"`
 	MessageID string `json:"messageID"`
+	Workspace bool   `json:"workspace"`
+	Into      bool   `json:"into"`
 }
 
 // Aside mirrors conversation.Aside: how a side question went and what it
@@ -764,16 +766,18 @@ func (c *Client) Rewind(ctx context.Context, chatID, messageID, what string) (Re
 
 // ForkResult is what a fork made (chats.ForkResult).
 type ForkResult struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Session string `json:"session"`
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Session   string `json:"session"`
+	SandboxID string `json:"sandboxID"`
+	Workspace string `json:"workspace"`
 }
 
 // Fork copies the chat into a sibling up to messageID ("" for the whole
-// transcript).
-func (c *Client) Fork(ctx context.Context, chatID, messageID string) (ForkResult, error) {
+// of it); copy gives the fork a copy of the workspace too.
+func (c *Client) Fork(ctx context.Context, chatID, messageID string, copy bool) (ForkResult, error) {
 	var out ForkResult
-	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/fork", map[string]string{"turnID": messageID}, &out)
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/fork", map[string]any{"turnID": messageID, "copyWorkspace": copy}, &out)
 	return out, err
 }
 

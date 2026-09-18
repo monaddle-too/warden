@@ -146,11 +146,16 @@ type Entry struct {
 }
 
 // Fork names the chat a forked chat was copied from and, when the copy
-// was cut before one of its messages, that message.
+// was cut before one of its messages, that message. Workspace says the
+// fork took a copy of the workspace too (its own sandbox, cloned from the
+// source's); Into marks the marker left on the source, where ChatID and
+// Title name the fork instead.
 type Fork struct {
 	ChatID    string `json:"chatID"`
 	Title     string `json:"title,omitempty"`
 	MessageID string `json:"messageID,omitempty"`
+	Workspace bool   `json:"workspace,omitempty"`
+	Into      bool   `json:"into,omitempty"`
 }
 
 // Aside is what a side question came to: Status running, completed or

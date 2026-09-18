@@ -509,7 +509,10 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]any{"checkpoints": list})
 	case strings.HasSuffix(path, "/fork"):
-		var body struct{ TurnID string }
+		var body struct {
+			TurnID        string
+			CopyWorkspace bool
+		}
 		json.NewDecoder(r.Body).Decode(&body)
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/fork")
 		f.mu.Lock()
@@ -527,11 +530,17 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			kept = append(kept, e)
 		}
-		kept = append(kept, Entry{ID: "fork-marker", Role: "fork", Text: "Forked from “" + c.Title + "”", Detail: "the agent continues from a copy of its session", Fork: &Fork{ChatID: c.ID, Title: c.Title, MessageID: body.TurnID}})
-		fork := &Chat{ID: c.ID + "-fork", Title: c.Title + " (fork)", Provider: c.Provider, SandboxID: c.SandboxID, Status: "idle", Conversation: Conversation{Entries: kept}}
+		text, workspace, sandboxID, forkID := "Forked from “"+c.Title+"”", "shared", c.SandboxID, c.ID+"-fork"
+		if body.CopyWorkspace {
+			text += " with a copy of the workspace"
+			workspace, sandboxID, forkID = "copied", c.SandboxID+"-copy", c.ID+"-fork-copy"
+			c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "into-marker", Role: "fork", Text: "Forked into “" + c.Title + " (fork)” with a copy of the workspace", Fork: &Fork{ChatID: forkID, Title: c.Title + " (fork)", Workspace: true, Into: true}})
+		}
+		kept = append(kept, Entry{ID: "fork-marker", Role: "fork", Text: text, Detail: "the agent continues from a copy of its session", Fork: &Fork{ChatID: c.ID, Title: c.Title, MessageID: body.TurnID, Workspace: body.CopyWorkspace}})
+		fork := &Chat{ID: forkID, Title: c.Title + " (fork)", Provider: c.Provider, SandboxID: sandboxID, Status: "idle", Conversation: Conversation{Entries: kept}}
 		f.state.Chats = append(f.state.Chats, fork)
 		f.mu.Unlock()
-		json.NewEncoder(w).Encode(ForkResult{ID: fork.ID, Title: fork.Title, Session: "forked"})
+		json.NewEncoder(w).Encode(ForkResult{ID: fork.ID, Title: fork.Title, Session: "forked", SandboxID: sandboxID, Workspace: workspace})
 	case strings.HasSuffix(path, "/aside"):
 		var body struct{ Text string }
 		json.NewDecoder(r.Body).Decode(&body)
@@ -2840,7 +2849,34 @@ func TestCostForkStyleAndBellCommands(t *testing.T) {
 	if !strings.HasPrefix(app.notice, "forked the whole conversation into") {
 		t.Fatalf("fork all: %q", app.notice)
 	}
+	// "copy" takes a copy of the workspace: the fork lives on a new one,
+	// its marker says so, and the source gets a marker naming the fork.
 	app.selectChat("chat1")
+	app.submit(ctx, "/fork all copy")
+	if !strings.HasPrefix(app.notice, "forked the whole conversation with a copy of the workspace into") {
+		t.Fatalf("fork all copy: %q", app.notice)
+	}
+	if fork := app.chat(); fork == nil || fork.ID != "chat1-fork-copy" || !strings.HasSuffix(fork.SandboxID, "-copy") {
+		t.Fatalf("fork with copy: %+v", fork)
+	}
+	lines = plain(strings.Join(RenderTranscript(app.chat(), 100, false), "\n"))
+	if !strings.Contains(lines, "⑂ Forked from “Long tail” with a copy of the workspace") {
+		t.Fatalf("copy marker: %s", lines)
+	}
+	app.selectChat("chat1")
+	lines = plain(strings.Join(RenderTranscript(app.chat(), 100, false), "\n"))
+	if !strings.Contains(lines, "⑂ Forked into “Long tail (fork)” with a copy of the workspace") {
+		t.Fatalf("source marker: %s", lines)
+	}
+	app.submit(ctx, "/fork copy")
+	if !strings.HasPrefix(app.notice, "forked the whole conversation with a copy of the workspace into") {
+		t.Fatalf("fork copy: %q", app.notice)
+	}
+	app.selectChat("chat1")
+	app.submit(ctx, "/fork 1 2 copy")
+	if app.notice != "/fork [N|all] [copy]" {
+		t.Fatalf("fork with too many words: %q", app.notice)
+	}
 	f.mu.Lock()
 	f.state.Chats[0].Status = "running"
 	f.mu.Unlock()

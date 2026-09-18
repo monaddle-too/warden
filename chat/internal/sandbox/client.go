@@ -72,22 +72,25 @@ type Request struct {
 	ForkSession bool `json:"forkSession,omitempty"`
 	// OutputStyle is the Claude output style the stream launches with
 	// (chats/style.go); "" is the CLI's default.
-	OutputStyle     string   `json:"outputStyle,omitempty"`
-	BundleSize      int64    `json:"bundleSize,omitempty"`
-	RemoteHead      string   `json:"remoteHead,omitempty"`
-	PublicationHead string   `json:"publicationHead,omitempty"`
-	OpenAIAPIKey    string   `json:"openaiAPIKey,omitempty"`
-	SourceSessionID string   `json:"sourceSessionID,omitempty"`
-	Version         int      `json:"version"`
-	Operation       string   `json:"operation"`
-	ProjectID       string   `json:"projectID,omitempty"`
-	SessionID       string   `json:"sessionID,omitempty"`
-	ThreadID        string   `json:"threadID,omitempty"`
-	Repository      string   `json:"repository,omitempty"`
-	Token           string   `json:"token,omitempty"`
-	Directory       string   `json:"directory,omitempty"`
-	Args            []string `json:"args,omitempty"`
-	Expected        string   `json:"expected,omitempty"`
+	OutputStyle     string `json:"outputStyle,omitempty"`
+	BundleSize      int64  `json:"bundleSize,omitempty"`
+	RemoteHead      string `json:"remoteHead,omitempty"`
+	PublicationHead string `json:"publicationHead,omitempty"`
+	OpenAIAPIKey    string `json:"openaiAPIKey,omitempty"`
+	SourceSessionID string `json:"sourceSessionID,omitempty"`
+	// Source, on a clone, is the registered sandbox whose disk the new
+	// sandbox SandboxID is created as a copy of (managed.go cloneLocked).
+	Source     string   `json:"source,omitempty"`
+	Version    int      `json:"version"`
+	Operation  string   `json:"operation"`
+	ProjectID  string   `json:"projectID,omitempty"`
+	SessionID  string   `json:"sessionID,omitempty"`
+	ThreadID   string   `json:"threadID,omitempty"`
+	Repository string   `json:"repository,omitempty"`
+	Token      string   `json:"token,omitempty"`
+	Directory  string   `json:"directory,omitempty"`
+	Args       []string `json:"args,omitempty"`
+	Expected   string   `json:"expected,omitempty"`
 	// Resources is the size a fresh workspace is created with (bind-chat,
 	// prepare) or resized to (resize); nil leaves the sandbox's own.
 	Resources *Resources `json:"resources,omitempty"`

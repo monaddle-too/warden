@@ -282,21 +282,56 @@ func (d *sbxRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 			return nil
 		}
 	}
+	if s.Source != "" {
+		return d.createFrom(ctx, s)
+	}
 	args, err := d.createArgs(s.Name, s.Resources, d.worker.Template)
 	if err != nil {
 		return err
 	}
-	if s.Source != "" {
-		args = append(args, "--clone", "shell", s.Source)
-	} else {
-		args = append(args, "shell")
+	Report(ctx, "creating the sandbox VM from the guest template")
+	return runCreate(ctx, d.worker.Executable, append(args, "shell"))
+}
+
+// createFrom creates the sandbox as a copy of Source's disk (a workspace
+// copy, docs/claude-parity.md R2.13): SBX has no sandbox clone, so the
+// source is saved as a template (`sbx template save`, which refuses a
+// running sandbox — the worker stops the source first), the copy is
+// created from that template at the requested size with the deny-all
+// rule, and the template is dropped. The snapshot carries the guest's
+// root filesystem without /tmp, so the runtimes the worker installed
+// there are installed again at the copy's first prepare. The copy boots
+// with its creation, as any created sandbox does.
+func (d *sbxRuntime) createFrom(ctx context.Context, s RuntimeSpec) error {
+	tag := "warden-copy-" + strings.ToLower(s.Name)
+	args, err := d.createArgs(s.Name, s.Resources, tag)
+	if err != nil {
+		return err
 	}
-	if s.Source != "" {
-		Report(ctx, "cloning the sandbox VM from "+s.Source)
-	} else {
-		Report(ctx, "creating the sandbox VM from the guest template")
+	sbx := func(a ...string) error {
+		cmd := command(ctx, d.worker.Executable, a...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &limitedWriter{W: &stderr, N: 4096}
+		if err := cmd.Run(); err != nil {
+			if detail := strings.TrimSpace(stderr.String()); detail != "" {
+				return fmt.Errorf("sbx %s: %w: %s", a[0], err, detail)
+			}
+			return fmt.Errorf("sbx %s: %w", a[0], err)
+		}
+		return nil
 	}
-	return runCreate(ctx, d.worker.Executable, args)
+	Report(ctx, "saving a snapshot of the source sandbox "+s.Source)
+	if err := sbx("template", "save", s.Source, tag); err != nil {
+		return fmt.Errorf("SBX copy failed: %w", err)
+	}
+	// The template is only disk once the copy exists, and only a leftover
+	// when the creation failed; either way it goes.
+	defer func() { _ = sbx("template", "rm", tag) }()
+	Report(ctx, "creating the sandbox VM from the snapshot")
+	if err := runCreate(ctx, d.worker.Executable, append(args, "shell")); err != nil {
+		return fmt.Errorf("SBX copy failed: %w", err)
+	}
+	return nil
 }
 
 // createArgs is the `sbx create` invocation for a sandbox of the given size

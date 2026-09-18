@@ -35,6 +35,9 @@ type Environment struct {
 	Ports        []PortBinding    `json:"ports"`
 	Deleted      bool             `json:"deleted"`
 	Archived     bool             `json:"archived"`
+	// CopiedFrom is set on a workspace created as a copy of another (a
+	// fork with copyWorkspace, fork.go): which one and when.
+	CopiedFrom *WorkspaceOrigin `json:"copiedFrom,omitempty"`
 }
 type EnvironmentChat struct {
 	ID       string `json:"id"`
@@ -102,6 +105,9 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Resources: chats[0].Resources, Resizing: e.resizingOf(c.SandboxID), Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Deleted: st.deleted(c.SandboxID)}
 		env.Archived = true
 		for _, chat := range chats {
+			if chat.Origin != nil && env.CopiedFrom == nil {
+				env.CopiedFrom = chat.Origin
+			}
 			ec := EnvironmentChat{ID: chat.ID, Title: chat.Title, Status: chat.Status, Archived: chat.Archived}
 			if s := e.startupOf(chat.ID); s != nil {
 				ec.Stage = s.Stage

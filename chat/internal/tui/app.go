@@ -149,7 +149,7 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /stop /model M /provider P /mode M · /open /previews /preview N /unpublish N
            /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
            /queue (list) /queue send · /withdraw N · /edit [N] [both] (N from /rewind)
-           /fork (list) /fork N|all copies the chat into a sibling · /cost totals so far
+           /fork (list) /fork N|all [copy] copies the chat into a sibling (copy: the workspace too) · /cost totals so far
            /btw QUESTION asks a copy of the session (never sent to the agent)
            /style [default|Explanatory|Learning] · /bell [on|off]
            /find TEXT /copy /expand /verbose /clear /quit

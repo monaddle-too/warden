@@ -228,6 +228,9 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Path  string `json:"path"`
 		// Style is the body of chats/{id}/style (style.go).
 		Style string `json:"style"`
+		// CopyWorkspace, on chats/{id}/fork, gives the fork a copy of the
+		// workspace (fork.go).
+		CopyWorkspace bool `json:"copyWorkspace"`
 	}
 	// Room for a memory file (1 MiB of text, JSON-escaped); every other
 	// body is bounded far below by its own validation.
@@ -294,7 +297,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			err = h.Engine.SendQueued(parts[1])
 		case "fork":
 			// A sibling chat copied from this one up to a message (fork.go).
-			result, err = h.Engine.Fork(r.Context(), parts[1], body.TurnID, requester(r))
+			result, err = h.Engine.Fork(r.Context(), parts[1], body.TurnID, body.CopyWorkspace, requester(r))
 		case "aside":
 			// A side question answered from a copy of the session (aside.go).
 			result, err = h.Engine.Aside(r.Context(), parts[1], body.Text, requester(r))

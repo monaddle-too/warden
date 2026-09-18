@@ -79,6 +79,9 @@ func (d *testRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 	if !s.Resources.IsZero() {
 		d.record("size:" + s.Name + ":" + s.Resources.String())
 	}
+	if s.Source != "" {
+		d.record("source:" + s.Name + ":" + s.Source)
+	}
 	Report(ctx, "creating the VM")
 	if d.createStarted != nil {
 		close(d.createStarted)
