@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"warden/chat/internal/chats"
 
 	"warden/chat/internal/sandbox"
 )
@@ -72,6 +73,8 @@ type Fork struct {
 	ChatID    string `json:"chatID"`
 	Title     string `json:"title"`
 	MessageID string `json:"messageID"`
+	Workspace bool   `json:"workspace"`
+	Into      bool   `json:"into"`
 }
 
 // Aside mirrors conversation.Aside: how a side question went and what it
@@ -575,6 +578,14 @@ func (c *Client) Paths(ctx context.Context, chatID, query string) ([]string, err
 	return res.Paths, nil
 }
 
+// Resources lists what the chat can mention with "@": its workspace's
+// shared documents, repositories and previews (chats/mentions.go).
+func (c *Client) Resources(ctx context.Context, chatID string) (chats.Resources, error) {
+	var res chats.Resources
+	err := c.do(ctx, "GET", "chats/"+url.PathEscape(chatID)+"/resources", nil, &res)
+	return res, err
+}
+
 // DeleteEnvironment deletes a workspace: its sandbox and files go, its
 // chats are archived (what the web's Delete does).
 func (c *Client) DeleteEnvironment(ctx context.Context, sandboxID string) error {
@@ -854,16 +865,18 @@ func (c *Client) Rewind(ctx context.Context, chatID, messageID, what string) (Re
 
 // ForkResult is what a fork made (chats.ForkResult).
 type ForkResult struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Session string `json:"session"`
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Session   string `json:"session"`
+	SandboxID string `json:"sandboxID"`
+	Workspace string `json:"workspace"`
 }
 
 // Fork copies the chat into a sibling up to messageID ("" for the whole
-// transcript).
-func (c *Client) Fork(ctx context.Context, chatID, messageID string) (ForkResult, error) {
+// of it); copy gives the fork a copy of the workspace too.
+func (c *Client) Fork(ctx context.Context, chatID, messageID string, copy bool) (ForkResult, error) {
 	var out ForkResult
-	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/fork", map[string]string{"turnID": messageID}, &out)
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/fork", map[string]any{"turnID": messageID, "copyWorkspace": copy}, &out)
 	return out, err
 }
 

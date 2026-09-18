@@ -56,6 +56,8 @@ type claudeWorker struct {
 	// prepareErr, when set, is what "prepare" fails with (aside_test.go).
 	prepareGate chan struct{}
 	prepareErr  error
+	// cloneErr is what a "clone" call answers when set (fork_test.go).
+	cloneErr error
 }
 
 // initModel is the model the scripted CLI reports in its system/init: the
@@ -96,6 +98,15 @@ func (w *claudeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Res
 		if prepareErr != nil {
 			return sandbox.Response{}, prepareErr
 		}
+	}
+	if r.Operation == "clone" {
+		w.mu.Lock()
+		err := w.cloneErr
+		w.mu.Unlock()
+		if err != nil {
+			return sandbox.Response{}, err
+		}
+		return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID, State: "stopped"}}, nil
 	}
 	if r.Operation == "aside" {
 		if aside == nil {

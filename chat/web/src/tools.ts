@@ -4,7 +4,7 @@
 // here is string work over what the service recorded; nothing is
 // interpreted, so the cards only ever render text nodes.
 import { hasDiff, looseDiff, parseDiff, type DiffSegment } from "./diff";
-import type { Entry, Progress, Tool, ToolKind } from "./types";
+import type { Entry, Progress, ToolRead, Tool, ToolKind } from "./types";
 
 /* Lines of output a card shows before its "+N lines" control. */
 export const FOLD_LINES = 12;
@@ -276,4 +276,22 @@ export function inputText(input: Record<string, unknown> | undefined): string {
   const ordered: Record<string, unknown> = {};
   for (const k of Object.keys(input).sort()) ordered[k] = input[k];
   return JSON.stringify(ordered, null, 2);
+}
+
+/* The count a read of something other than text shows in its header: an
+   image's pixels, a PDF's pages, a notebook's cells (tools.ts is where
+   the header's words live). */
+export function readCount(read: ToolRead): string {
+  switch (read.kind) {
+    case "image":
+      return read.width && read.height
+        ? `${read.width}×${read.height}`
+        : "image";
+    case "pdf":
+      return read.pages ? `${read.pages} page${read.pages === 1 ? "" : "s"}` : "PDF";
+    case "notebook": {
+      const n = read.cells?.length ?? 0;
+      return `${n} cell${n === 1 ? "" : "s"}`;
+    }
+  }
 }

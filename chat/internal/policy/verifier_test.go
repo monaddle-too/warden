@@ -623,11 +623,17 @@ func TestRefresherStartsAndStopsWithRegistryClose(t *testing.T) {
 
 func TestVerifierAcceptsStockTemplateAndPinnedGuestImage(t *testing.T) {
 	v := &SbxInspector{ShellDigest: "sha256:" + strings.Repeat("a", 64)}
-	if !v.allowedImage(SBXShellDigest) || !v.allowedImage(v.ShellDigest) {
+	if !v.allowedImage(SBXShellDigest, "") || !v.allowedImage(v.ShellDigest, "") {
 		t.Fatal("stock template and pinned guest image must both be allowed")
 	}
-	if v.allowedImage("sha256:"+strings.Repeat("b", 64)) || v.allowedImage(nil) || v.allowedImage(42) {
+	if v.allowedImage("sha256:"+strings.Repeat("b", 64), "") || v.allowedImage(nil, "") || v.allowedImage(42, "") {
 		t.Fatal("other images must be refused")
+	}
+	// A snapshot image the runner declared for the binding (a workspace
+	// copy, a regeneration) is accepted for that binding alone.
+	snapshot := "sha256:" + strings.Repeat("c", 64)
+	if !v.allowedImage(snapshot, snapshot) || v.allowedImage("sha256:"+strings.Repeat("b", 64), snapshot) || v.allowedImage(snapshot, "sha256:"+strings.Repeat("d", 64)) {
+		t.Fatal("a declared snapshot digest must be accepted exactly and nothing else")
 	}
 	if !ValidImageDigest(SBXShellDigest) || ValidImageDigest("sha256:short") || ValidImageDigest(strings.Repeat("a", 71)) {
 		t.Fatal("digest validation")
@@ -648,10 +654,10 @@ func TestVerifierStockDigestsPerArchitecture(t *testing.T) {
 	if got := release.StockTemplateDigests("riscv64"); len(got) != 1 || got[0] != index {
 		t.Fatalf("unknown architecture must get the index digest only, got %v", got)
 	}
-	if !amd64.allowedImage(index) || amd64.allowedImage(amdManifest) || amd64.allowedImage(armManifest) {
+	if !amd64.allowedImage(index, "") || amd64.allowedImage(amdManifest, "") || amd64.allowedImage(armManifest, "") {
 		t.Fatal("amd64 must accept the index digest only, as before")
 	}
-	if !arm64.allowedImage(index) || !arm64.allowedImage(armManifest) || arm64.allowedImage(amdManifest) {
+	if !arm64.allowedImage(index, "") || !arm64.allowedImage(armManifest, "") || arm64.allowedImage(amdManifest, "") {
 		t.Fatal("arm64 must accept the index digest and the arm64 manifest digest")
 	}
 	if v, err := NewSbxCliVerifier(&Registry{State: t.TempDir(), Bindings: map[string]*Binding{}}, "sbx", false, func([]string, bool) (string, error) { return "", nil }); err != nil {

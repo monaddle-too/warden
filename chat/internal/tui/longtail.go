@@ -180,25 +180,41 @@ func (a *App) cost(c *Chat) {
 }
 
 // fork lists the messages (no argument) or forks the chat: before
-// message N, or the whole of it ("all"), then switches to the fork.
+// message N, or the whole of it ("all"), with "copy" for a copy of the
+// workspace too (`/fork all copy`, `/fork 2 copy`, `/fork copy`), then
+// switches to the fork.
 func (a *App) fork(ctx context.Context, c *Chat, arg string) {
 	if c == nil {
 		a.setNotice("no chat selected")
 		return
 	}
 	targets := rewindTargets(c)
-	if arg == "" {
+	words := strings.Fields(arg)
+	copy := false
+	if n := len(words); n > 0 && strings.EqualFold(words[n-1], "copy") {
+		copy = true
+		words = words[:n-1]
+	}
+	if len(words) > 1 {
+		a.setNotice("/fork [N|all] [copy]")
+		return
+	}
+	arg = ""
+	if len(words) == 1 {
+		arg = words[0]
+	}
+	if arg == "" && !copy {
 		var b strings.Builder
 		for i, e := range targets {
 			fmt.Fprintf(&b, "%2d   %s\n", i+1, truncate(excerptOf(e.Text), 70))
 		}
-		b.WriteString("/fork N copies the chat up to before message N into a sibling chat; /fork all copies the whole of it")
+		b.WriteString("/fork N copies the chat up to before message N into a sibling chat; /fork all copies the whole of it; add copy for a copy of the workspace too")
 		a.setNotice(b.String())
 		return
 	}
 	target := ""
 	label := "the whole conversation"
-	if arg != "all" {
+	if arg != "all" && arg != "" {
 		n, err := strconv.Atoi(arg)
 		if err != nil || n < 1 || n > len(targets) {
 			a.setNotice("/fork N (from /fork) or /fork all")
@@ -211,13 +227,16 @@ func (a *App) fork(ctx context.Context, c *Chat, arg string) {
 		a.setNotice("stop the agent first (Esc)")
 		return
 	}
-	result, err := a.Client.Fork(ctx, c.ID, target)
+	result, err := a.Client.Fork(ctx, c.ID, target, copy)
 	if err != nil {
 		a.setNotice(err.Error())
 		return
 	}
 	a.refreshState(ctx)
 	a.selectChat(result.ID)
+	if result.Workspace == "copied" {
+		label += " with a copy of the workspace"
+	}
 	a.setNotice(fmt.Sprintf("forked %s into %q; %s", label, sanitize(result.Title), forkOutcome(result.Session)))
 }
 

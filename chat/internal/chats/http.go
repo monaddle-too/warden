@@ -155,6 +155,12 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.pathsHTTP(w, r, parts[1])
 		return
 	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "resources" {
+		// What the composer's "@" menu can mention (mentions.go).
+		resources, err := h.Engine.Resources(r.Context(), parts[1])
+		respond(w, resources, err)
+		return
+	}
 	if r.Method == "GET" && len(parts) == 3 && (parts[0] == "environments" || parts[0] == "chats") && parts[2] == "rules" {
 		// A workspace's permission rules and its chats' (rules.go).
 		view, err := h.Engine.Rules(parts[1])
@@ -259,6 +265,9 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Path  string `json:"path"`
 		// Style is the body of chats/{id}/style (style.go).
 		Style string `json:"style"`
+		// CopyWorkspace, on chats/{id}/fork, gives the fork a copy of the
+		// workspace (fork.go).
+		CopyWorkspace bool `json:"copyWorkspace"`
 		// Kind and Pattern are a permission rule, the body of
 		// environments/{id}/rules and chats/{id}/rules (rules.go).
 		Kind    string `json:"kind"`
@@ -333,7 +342,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			result, err = h.Engine.UndoRewind(r.Context(), parts[1], body.ID, body.Code, requester(r))
 		case "fork":
 			// A sibling chat copied from this one up to a message (fork.go).
-			result, err = h.Engine.Fork(r.Context(), parts[1], body.TurnID, requester(r))
+			result, err = h.Engine.Fork(r.Context(), parts[1], body.TurnID, body.CopyWorkspace, requester(r))
 		case "aside":
 			// A side question answered from a copy of the session (aside.go).
 			result, err = h.Engine.Aside(r.Context(), parts[1], body.Text, requester(r))

@@ -505,3 +505,54 @@ func TestRegistryEgressSwitchAppliesEverywhereAndPersists(t *testing.T) {
 		t.Fatalf("back to restricted: %v", err)
 	}
 }
+
+// The runner's declared snapshot image (a workspace copy, a regeneration)
+// reaches the verifier with the binding's identity: on the registration
+// that names it, on a re-registration of the same generation, on a new
+// generation, and again after a restart from the first request that
+// names it; a malformed digest is refused; the digest is not part of the
+// binding identity.
+func TestRegistryPassesTheDeclaredImageDigestToTheVerifier(t *testing.T) {
+	f := newSbxFixture(t)
+	var seen []string
+	f.verifier.hook = func(identity map[string]string, phase string) { seen = append(seen, identity["imageDigest"]) }
+	digest := "sha256:" + strings.Repeat("c", 64)
+	if _, err := f.registry.Register(runContext(map[string]any{"imageDigest": "sha256:short"})); err == nil {
+		t.Fatal("malformed digest accepted")
+	}
+	if ready(f.must(f.registry.Check(f.value, "create"))); len(seen) != 1 || seen[0] != "" {
+		t.Fatalf("no digest declared yet: %v", seen)
+	}
+	declared := runContext(map[string]any{"imageDigest": digest})
+	f.must(f.registry.Register(declared))
+	f.must(f.registry.Check(declared, "create"))
+	if seen[len(seen)-1] != digest {
+		t.Fatalf("re-registration did not pass the digest: %v", seen)
+	}
+	identity, _ := ValidateContext(declared)
+	plain, _ := ValidateContext(f.value)
+	if BindingDigest(identity) != BindingDigest(plain) {
+		t.Fatal("the digest changed the binding identity")
+	}
+	// A new generation declared with the digest keeps it.
+	f.must(f.registry.Begin(declared, false))
+	f.must(f.registry.End(declared))
+	next := runContext(map[string]any{"generation": "2", "runID": "r2", "imageDigest": digest})
+	f.must(f.registry.Register(next))
+	f.must(f.registry.Check(next, "create"))
+	if seen[len(seen)-1] != digest {
+		t.Fatalf("new generation lost the digest: %v", seen)
+	}
+	// After a restart the manifest has identities only; the first request
+	// naming the digest restores it, one without it verifies without.
+	f.reopen()
+	f.registry.Verifier = f.verifier
+	f.must(f.registry.Check(runContext(map[string]any{"generation": "2", "runID": "r2"}), "create"))
+	if seen[len(seen)-1] != "" {
+		t.Fatalf("restart kept a digest the manifest does not hold: %v", seen)
+	}
+	f.must(f.registry.Check(next, "create"))
+	if seen[len(seen)-1] != digest {
+		t.Fatalf("digest not restored by the request naming it: %v", seen)
+	}
+}

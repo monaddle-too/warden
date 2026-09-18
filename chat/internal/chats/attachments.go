@@ -241,6 +241,9 @@ func (e *Engine) deliverAttachments(ctx context.Context, c *Chat, m cv.Entry) er
 // inside the sandbox; the Claude adapter runs on the host, so for Claude the
 // normalised PNG rides along as base64 (up to claudeImageBudget per turn).
 func (e *Engine) input(ctx context.Context, c *Chat, cwd string, m cv.Entry) ([]any, error) {
+	// The transcript keeps the message as typed; the agent gets its
+	// resource mentions expanded (mentions.go).
+	m.Text = e.expandMessage(ctx, c, m.Text)
 	if len(m.Attachments) == 0 {
 		return messageInput(m, cwd, nil), nil
 	}

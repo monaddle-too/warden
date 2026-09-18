@@ -9,7 +9,10 @@ import {
   exactCommand,
   isBugTest,
   mentionFor,
+  mentionToken,
   parseThinking,
+  resourceItems,
+  resourceQuery,
   prefixed,
   quoteCommand,
   replaceTrigger,
@@ -428,5 +431,59 @@ describe("side questions and output styles", () => {
     expect(exactCommand("/bug", models)?.kind).toBe("command");
     expect(exactCommand("/test", models)?.kind).toBe("command");
     expect(exactCommand("/cost", models)?.kind).toBe("command");
+  });
+});
+
+describe("resource mentions", () => {
+  const resources = {
+    documents: [
+      { id: "1AbC", title: "Budget 2026", kind: "spreadsheet", access: "read" },
+      { id: "2DeF", title: "", kind: "document", access: "" },
+    ],
+    repositories: [
+      {
+        name: "monaddle-too/warden",
+        cloneURL: "https://github.com/monaddle-too/warden.git",
+        access: ["contents"],
+      },
+    ],
+    previews: [
+      { id: "b1", title: "Dev server", port: 3000, url: "https://b1.example/" },
+    ],
+  };
+  it("builds the token the service expands", () => {
+    expect(mentionToken("doc", "Budget 2026")).toBe('@doc:"Budget 2026"');
+    expect(mentionToken("repo", "monaddle-too/warden")).toBe(
+      "@repo:monaddle-too/warden",
+    );
+    expect(mentionToken("preview", ' Say "hi" ')).toBe('@preview:"Say hi"');
+    expect(mentionToken("preview", "")).toBe('@preview:""');
+  });
+  it("lists every resource on a bare @, one kind once typed", () => {
+    expect(
+      resourceItems(resources, "").map((r) => `${r.kind}:${r.name}|${r.insert}|${r.hint}`),
+    ).toEqual([
+      'doc:Budget 2026|@doc:"Budget 2026" |spreadsheet · read access',
+      "doc:2DeF|@doc:2DeF |document",
+      "repo:monaddle-too/warden|@repo:monaddle-too/warden |repository · contents",
+      "preview:Dev server|@preview:\"Dev server\" |https://b1.example/",
+    ]);
+    expect(resourceItems(resources, "doc:bud").map((r) => r.name)).toEqual([
+      "Budget 2026",
+    ]);
+    expect(resourceItems(resources, "REPO:").map((r) => r.name)).toEqual([
+      "monaddle-too/warden",
+    ]);
+    expect(resourceItems(resources, "dev").map((r) => r.name)).toEqual([
+      "Dev server",
+    ]);
+    expect(resourceItems(resources, "preview:zzz")).toEqual([]);
+    expect(resourceItems(undefined, "")).toEqual([]);
+  });
+  it("knows a resource-only query", () => {
+    expect(resourceQuery("doc:")).toBe(true);
+    expect(resourceQuery("Repo:mon")).toBe(true);
+    expect(resourceQuery("src/doc:x")).toBe(false);
+    expect(resourceQuery("")).toBe(false);
   });
 });

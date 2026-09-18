@@ -40,7 +40,7 @@ func TestForkCopiesTranscriptAndForksTheSession(t *testing.T) {
 		st.chat(id).OutputStyle = "Learning"
 		return nil
 	})
-	result, err := e.Fork(context.Background(), id, "", cv.Actor{PrincipalID: "owner"})
+	result, err := e.Fork(context.Background(), id, "", false, cv.Actor{PrincipalID: "owner"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestForkAtAMessageRewindsTheCopy(t *testing.T) {
 	e, w, id := claudeSetup(t)
 	first := oneTurn(t, e, id, "first")
 	second := oneTurn(t, e, id, "second")
-	result, err := e.Fork(context.Background(), id, second, cv.Actor{PrincipalID: "owner"})
+	result, err := e.Fork(context.Background(), id, second, false, cv.Actor{PrincipalID: "owner"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestForkAtAMessageRewindsTheCopy(t *testing.T) {
 	}
 	// A fork at a message that is not the chat's is refused, as is one
 	// while the chat runs.
-	if _, err := e.Fork(context.Background(), id, "nope", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "no such message") {
+	if _, err := e.Fork(context.Background(), id, "nope", false, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "no such message") {
 		t.Fatalf("bad target: %v", err)
 	}
 	w.mu.Lock()
@@ -153,7 +153,7 @@ func TestForkAtAMessageRewindsTheCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "running" })
-	if _, err := e.Fork(context.Background(), id, "", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "wait for the agent") {
+	if _, err := e.Fork(context.Background(), id, "", false, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "wait for the agent") {
 		t.Fatalf("fork while running: %v", err)
 	}
 	close(hold)
@@ -166,7 +166,7 @@ func TestForkAtAMessageRewindsTheCopy(t *testing.T) {
 func TestForkWithoutASessionCopyIsFresh(t *testing.T) {
 	e, w := residentSetup(t)
 	id, first, _ := twoTurns(t, e, w)
-	result, err := e.Fork(context.Background(), id, "", cv.Actor{PrincipalID: "owner"})
+	result, err := e.Fork(context.Background(), id, "", false, cv.Actor{PrincipalID: "owner"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestForkWithoutASessionCopyIsFresh(t *testing.T) {
 		t.Fatalf("fork prepare: %+v", prepares[len(prepares)-1])
 	}
 	empty, _ := e.Create("Empty", "", "", nil)
-	result, err = e.Fork(context.Background(), empty, "", cv.Actor{})
+	result, err = e.Fork(context.Background(), empty, "", false, cv.Actor{})
 	if err != nil || result.Session != "none" {
 		t.Fatalf("%+v %v", result, err)
 	}
@@ -530,4 +530,89 @@ func TestForkAsideAndStyleRoutes(t *testing.T) {
 		t.Fatalf("fork: %+v", fork)
 	}
 	_ = w
+}
+
+// A fork with a copy of the workspace: the runner clones the source
+// sandbox for a new workspace (its idle sessions released first), the
+// fork lives there with the source's size and a record of where it came
+// from, both chats get a marker naming the other, the environments view
+// says what the new workspace was copied from, and the fork's first run
+// binds and prepares the new sandbox.
+func TestForkWithACopyOfTheWorkspace(t *testing.T) {
+	e, w, id := claudeSetup(t)
+	oneTurn(t, e, id, "make a file")
+	_ = e.Store.update(func(st *State) error {
+		st.chat(id).Resources = &sandbox.Resources{CPUMilli: 2000, MemoryMB: 3072}
+		return nil
+	})
+	result, err := e.Fork(context.Background(), id, "", true, cv.Actor{PrincipalID: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := e.Store.Snapshot()
+	source, fork := st.chat(id), st.chat(result.ID)
+	if result.Workspace != "copied" || result.SandboxID == source.SandboxID || result.SandboxID != fork.SandboxID || result.Session != "forked" {
+		t.Fatalf("%+v (source workspace %s)", result, source.SandboxID)
+	}
+	clones := w.requestsOf("clone")
+	if len(clones) != 1 || clones[0].Source != source.SandboxID || clones[0].SandboxID != fork.SandboxID || clones[0].ChatID != fork.ID {
+		t.Fatalf("clone requests: %+v", clones)
+	}
+	if fork.Origin == nil || fork.Origin.SandboxID != source.SandboxID || fork.Origin.ChatID != id || fork.Origin.Name != "Modes" || fork.Origin.At == 0 || fork.Resources == nil || fork.Resources.CPUMilli != 2000 {
+		t.Fatalf("fork origin %+v resources %+v", fork.Origin, fork.Resources)
+	}
+	marker := fork.Conversation.Entries[len(fork.Conversation.Entries)-1]
+	if marker.Role != "fork" || marker.Text != "Forked from “Modes” with a copy of the workspace" || marker.Fork == nil || !marker.Fork.Workspace || marker.Fork.Into || marker.Fork.ChatID != id || !strings.Contains(marker.Detail, "access grants") {
+		t.Fatalf("fork marker %+v", marker)
+	}
+	into := source.Conversation.Entries[len(source.Conversation.Entries)-1]
+	if into.Role != "fork" || into.Fork == nil || !into.Fork.Into || !into.Fork.Workspace || into.Fork.ChatID != fork.ID || into.Fork.Title != fork.Title || !strings.Contains(into.Text, "Forked into “Modes (fork)”") {
+		t.Fatalf("source marker %+v", into)
+	}
+	envs, err := e.Environments(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var copied *Environment
+	for i := range envs {
+		if envs[i].ID == fork.SandboxID {
+			copied = &envs[i]
+		}
+	}
+	if copied == nil || copied.CopiedFrom == nil || copied.CopiedFrom.SandboxID != source.SandboxID || copied.CopiedFrom.Name != "Modes" || copied.Name != "Modes (fork)" || len(copied.Chats) != 1 {
+		t.Fatalf("copied environment %+v", copied)
+	}
+	// The fork runs on its own workspace.
+	oneTurn(t, e, result.ID, "what is in the file?")
+	binds := w.requestsOf("bind-chat")
+	if last := binds[len(binds)-1]; last.ChatID != fork.ID || last.SandboxID != fork.SandboxID || last.Resources == nil || last.Resources.CPUMilli != 2000 {
+		t.Fatalf("fork bind %+v", last)
+	}
+	prepares := w.requestsOf("prepare")
+	if last := prepares[len(prepares)-1]; last.SandboxID != fork.SandboxID || !last.ForkSession {
+		t.Fatalf("fork prepare %+v", last)
+	}
+	// A running sibling on the workspace refuses the copy; a runner
+	// failure leaves no chat behind.
+	w.mu.Lock()
+	w.cloneErr = errors.New("template save failed")
+	w.mu.Unlock()
+	before := len(e.Store.Snapshot().Chats)
+	if _, err := e.Fork(context.Background(), id, "", true, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "template save failed") {
+		t.Fatal("runner failure not reported", err)
+	}
+	if n := len(e.Store.Snapshot().Chats); n != before {
+		t.Fatalf("a failed copy left %d chats, was %d", n, before)
+	}
+	_ = e.Store.update(func(st *State) error {
+		st.chat(result.ID).Status = "running"
+		st.chat(result.ID).SandboxID = source.SandboxID // a busy sibling on the source workspace
+		return nil
+	})
+	if _, err := e.Fork(context.Background(), id, "", true, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "on this workspace") {
+		t.Fatal("busy sibling not refused", err)
+	}
+	if _, err := e.Fork(context.Background(), id, "", false, cv.Actor{}); err != nil {
+		t.Fatal("a plain fork does not need the siblings idle", err)
+	}
 }

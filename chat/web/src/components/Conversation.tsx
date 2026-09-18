@@ -25,8 +25,10 @@ import {
   MessageCircleQuestion,
   Receipt,
   File as FileIcon,
+  FileText,
   Folder,
   Gauge,
+  Globe,
   Paperclip,
   Pencil,
   ShieldCheck,
@@ -68,6 +70,8 @@ import {
   prefixed,
   quoteCommand,
   replaceTrigger,
+  resourceItems,
+  resourceQuery,
   sideQuestion,
   triggerAt,
   withoutCommand,
@@ -135,7 +139,12 @@ import { arrowStep, isKey, modifierKey } from "../shortcuts";
 import { StyleSelect } from "./StyleSelect";
 import { CostCard } from "./CostCard";
 import { ComposerPastes } from "./Pastes";
-import { Suggest, usePathCompletion, type Suggestion } from "./Suggest";
+import {
+  Suggest,
+  usePathCompletion,
+  useResourceCompletion,
+  type Suggestion,
+} from "./Suggest";
 import { PendingReply } from "./Thinking";
 import { TurnStats } from "./TurnStats";
 
@@ -728,9 +737,16 @@ const ASIDE_RELEASE_MS = 1500;
         : [],
     [open, trigger, models, agentCommands],
   );
+  const mentionOpen = open && trigger.kind === "path";
+  // A resource-only query (`@doc:…`) asks for no paths.
   const { paths, error: pathError } = usePathCompletion(
     chat.id,
-    open && trigger.kind === "path" ? trigger.query : undefined,
+    mentionOpen && !resourceQuery(trigger.query) ? trigger.query : undefined,
+  );
+  const resources = useResourceCompletion(chat.id, mentionOpen);
+  const resourceRows = useMemo(
+    () => (mentionOpen ? resourceItems(resources, trigger.query) : []),
+    [mentionOpen, resources, trigger],
   );
   const { items, note } = useMemo((): {
     items: Suggestion[];
@@ -846,25 +862,56 @@ const ASIDE_RELEASE_MS = 1500;
       if (named) return { items, note: agentHint(named) || undefined };
       return { items, note: "No such command" };
     }
-    if (pathError) return { items: [], note: pathError };
-    if (!paths) return { items: [], note: "Looking up paths…" };
-    const items = paths.map(
-      (path): Suggestion => ({
+    // The shared resources first (documents, repositories, previews),
+    // then the workspace paths; a kind typed (`@doc:`) lists resources
+    // alone.
+    const items: Suggestion[] = resourceRows.map((row) => ({
+      id: "resource:" + row.kind + ":" + row.name,
+      label: row.name,
+      hint: row.hint,
+      icon:
+        row.kind === "doc" ? (
+          <FileText size={15} />
+        ) : row.kind === "repo" ? (
+          <GitFork size={15} />
+        ) : (
+          <Globe size={15} />
+        ),
+      group:
+        row.kind === "doc"
+          ? "Documents"
+          : row.kind === "repo"
+            ? "Repositories"
+            : "Previews",
+    }));
+    if (resourceQuery(trigger.query))
+      return {
+        items,
+        note: !items.length
+          ? !resources
+            ? "Looking up what is shared…"
+            : "Nothing shared by that name"
+          : undefined,
+      };
+    if (pathError) return { items, note: pathError };
+    if (!paths) return { items, note: "Looking up paths…" };
+    for (const path of paths)
+      items.push({
         id: "path:" + path,
         label: path,
         mono: true,
+        group: "Paths",
         icon: path.endsWith("/") ? (
           <Folder size={15} />
         ) : (
           <FileIcon size={15} />
         ),
-      }),
-    );
+      });
     return {
       items,
       note: !items.length
         ? "No matching paths"
-        : items.length >= PATH_LIMIT
+        : paths.length >= PATH_LIMIT
           ? "Keep typing to narrow the list"
           : undefined,
     };
@@ -876,6 +923,8 @@ const ASIDE_RELEASE_MS = 1500;
     agentGroup,
     paths,
     pathError,
+    resources,
+    resourceRows,
     running,
     chat.status,
     chat.archived,
@@ -1121,7 +1170,16 @@ const ASIDE_RELEASE_MS = 1500;
   function pick(item: Suggestion) {
     if (!trigger || item.disabled) return;
     if (trigger.kind === "path") {
-      place(replaceTrigger(text, trigger, mentionFor(item.id.slice(5))));
+      const row = resourceRows.find(
+        (r) => "resource:" + r.kind + ":" + r.name === item.id,
+      );
+      place(
+        replaceTrigger(
+          text,
+          trigger,
+          row ? row.insert : mentionFor(item.id.slice(5)),
+        ),
+      );
       return;
     }
     const chosen = commands.find(

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -282,21 +283,93 @@ func (d *sbxRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 			return nil
 		}
 	}
+	if s.Source != "" {
+		return d.createFrom(ctx, s)
+	}
 	args, err := d.createArgs(s.Name, s.Resources, d.worker.Template)
 	if err != nil {
 		return err
 	}
-	if s.Source != "" {
-		args = append(args, "--clone", "shell", s.Source)
-	} else {
-		args = append(args, "shell")
+	Report(ctx, "creating the sandbox VM from the guest template")
+	return runCreate(ctx, d.worker.Executable, append(args, "shell"))
+}
+
+// createFrom creates the sandbox as a copy of Source's disk (a workspace
+// copy, docs/claude-parity.md R2.13): SBX has no sandbox clone, so the
+// source is saved as a template (`sbx template save`, which refuses a
+// running sandbox — the worker stops the source first), the copy is
+// created from that template at the requested size with the deny-all
+// rule, and the template is dropped. The snapshot carries the guest's
+// root filesystem without /tmp, so the runtimes the worker installed
+// there are installed again at the copy's first prepare. The copy boots
+// with its creation, as any created sandbox does.
+func (d *sbxRuntime) createFrom(ctx context.Context, s RuntimeSpec) error {
+	tag := "warden-copy-" + strings.ToLower(s.Name)
+	args, err := d.createArgs(s.Name, s.Resources, tag)
+	if err != nil {
+		return err
 	}
-	if s.Source != "" {
-		Report(ctx, "cloning the sandbox VM from "+s.Source)
-	} else {
-		Report(ctx, "creating the sandbox VM from the guest template")
+	sbx := func(a ...string) error {
+		cmd := command(ctx, d.worker.Executable, a...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &limitedWriter{W: &stderr, N: 4096}
+		if err := cmd.Run(); err != nil {
+			if detail := strings.TrimSpace(stderr.String()); detail != "" {
+				return fmt.Errorf("sbx %s: %w: %s", a[0], err, detail)
+			}
+			return fmt.Errorf("sbx %s: %w", a[0], err)
+		}
+		return nil
 	}
-	return runCreate(ctx, d.worker.Executable, args)
+	Report(ctx, "saving a snapshot of the source sandbox "+s.Source)
+	if err := sbx("template", "save", s.Source, tag); err != nil {
+		return fmt.Errorf("SBX copy failed: %w", err)
+	}
+	// The template is only disk once the copy exists, and only a leftover
+	// when the creation failed; either way it goes.
+	defer func() { _ = sbx("template", "rm", tag) }()
+	Report(ctx, "creating the sandbox VM from the snapshot")
+	if err := runCreate(ctx, d.worker.Executable, append(args, "shell")); err != nil {
+		return fmt.Errorf("SBX copy failed: %w", err)
+	}
+	return nil
+}
+
+// ImageDigest is the digest of the image the sandbox runs, as `sbx
+// inspect` reports it: the guest image for a sandbox created from the
+// template, the snapshot's own digest for one created from a saved
+// template (a copy, or a resize's regeneration). The worker passes a
+// snapshot's digest to the policy service, whose inspector pins the
+// image (policy/sbxinspector.go allowedImage), so a sandbox the runner
+// derived from a verified guest is accepted for what it is.
+func (d *sbxRuntime) ImageDigest(ctx context.Context, name string) (string, error) {
+	cmd := command(ctx, d.worker.Executable, "inspect", name, "--json")
+	var out bytes.Buffer
+	cmd.Stdout = &limitedWriter{W: &out, N: 1 << 20}
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("sbx inspect: %w", err)
+	}
+	var details struct {
+		ImageDigest string `json:"image_digest"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &details); err != nil {
+		return "", errors.New("invalid sandbox inspection")
+	}
+	if !imageDigestShape.MatchString(details.ImageDigest) {
+		return "", errors.New("sandbox inspection reports no image digest")
+	}
+	return details.ImageDigest, nil
+}
+
+// imageDigestShape is a container image digest as sbx reports it.
+var imageDigestShape = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// ImageInspector is a driver that can say which image a sandbox runs; the
+// worker records the digest of a sandbox derived from a snapshot (a copy,
+// a regeneration) for the policy service's image pin.
+type ImageInspector interface {
+	ImageDigest(ctx context.Context, name string) (string, error)
 }
 
 // createArgs is the `sbx create` invocation for a sandbox of the given size

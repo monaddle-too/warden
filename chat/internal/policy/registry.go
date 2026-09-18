@@ -27,6 +27,14 @@ var IdentityKeys = []string{"projectID", "sandboxID", "runtimeName", "generation
 
 var identifierShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
 
+// imageDigestShape is the optional context key imageDigest: the image a
+// sandbox the runner derived from a snapshot of a verified guest runs (a
+// workspace copy, a regeneration at a new size), which the SBX
+// inspector's image pin accepts for that binding on the runner's word
+// (the runner is trusted infrastructure with the daemon in hand; the pin
+// guards the daemon's state, not the runner).
+var imageDigestShape = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
 const (
 	MaxControlMessage = 12 * 1024 * 1024
 	LeaseSeconds      = 120
@@ -88,6 +96,10 @@ type Binding struct {
 	// re-verification after its lease ends.
 	LastBegin float64
 	Begun     bool
+	// ImageDigest is the snapshot image the runner says this sandbox runs
+	// (context key imageDigest; "" on the pinned guest image), handed to
+	// the inspector with the identity so its image pin accepts it.
+	ImageDigest string
 }
 
 // endpoint is the gateway endpoint Begin advertises: the one the Gateway
@@ -230,6 +242,9 @@ func ValidateContext(value any) (map[string]string, error) {
 	if _, hasProvider := m["provider"]; hasProvider {
 		expected++
 	}
+	if _, hasDigest := m["imageDigest"]; hasDigest {
+		expected++
+	}
 	if len(m) != expected {
 		return nil, errors.New("invalid context")
 	}
@@ -241,6 +256,13 @@ func ValidateContext(value any) (map[string]string, error) {
 	out := map[string]string{}
 	for k, v := range m {
 		s, ok := v.(string)
+		if k == "imageDigest" {
+			if !ok || !imageDigestShape.MatchString(s) {
+				return nil, errors.New("invalid image digest")
+			}
+			out[k] = s
+			continue
+		}
 		if !ok || !identifierShape.MatchString(s) {
 			return nil, errors.New("invalid context identifier")
 		}
@@ -504,6 +526,11 @@ func (r *Registry) Register(value any) (map[string]any, error) {
 	sandbox := ctx["sandboxID"]
 	if previous, exists := r.Bindings[sandbox]; exists {
 		if sameIdentity(ctx, previous.Identity) {
+			if digest := ctx["imageDigest"]; digest != "" && digest != previous.ImageDigest {
+				// A binding that failed its check without the digest is
+				// distrusted and verified again with it on the next check.
+				previous.ImageDigest = digest
+			}
 			return map[string]any{"ok": true, "ready": false}, nil
 		}
 		for _, key := range IdentityKeys {
@@ -534,6 +561,7 @@ func (r *Registry) Register(value any) (map[string]any, error) {
 			return nil, err
 		}
 		replacement.ProviderSecret = previous.ProviderSecret
+		replacement.ImageDigest = ctx["imageDigest"]
 		if previous.GatewayPort != 0 {
 			if err = r.setGatewayPort(replacement, previous.GatewayPort); err != nil {
 				return nil, err
@@ -554,9 +582,11 @@ func (r *Registry) Register(value any) (map[string]any, error) {
 			return nil, errors.New("runtime already registered")
 		}
 	}
-	if _, err = r.load(identityOf(ctx)); err != nil {
+	created, err := r.load(identityOf(ctx))
+	if err != nil {
 		return nil, err
 	}
+	created.ImageDigest = ctx["imageDigest"]
 	if err = r.save(); err != nil {
 		return nil, err
 	}
@@ -567,6 +597,11 @@ func (r *Registry) binding(ctx map[string]string) (*Binding, error) {
 	b := r.Bindings[ctx["sandboxID"]]
 	if b == nil || !sameIdentity(b.Identity, ctx) {
 		return nil, errors.New("binding mismatch")
+	}
+	if digest := ctx["imageDigest"]; digest != "" && b.ImageDigest == "" {
+		// A binding reloaded from the manifest learns its image again
+		// from the first request that names it.
+		b.ImageDigest = digest
 	}
 	return b, nil
 }
@@ -579,6 +614,9 @@ func (r *Registry) proof(b *Binding, phase string) *NetworkProof {
 	identity := map[string]string{}
 	for k, v := range b.Identity {
 		identity[k] = v
+	}
+	if b.ImageDigest != "" {
+		identity["imageDigest"] = b.ImageDigest
 	}
 	proof, err := r.Verifier.Verify(identity, phase)
 	if err != nil {

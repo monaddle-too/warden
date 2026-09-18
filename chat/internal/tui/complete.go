@@ -57,7 +57,7 @@ var Commands = []Command{
 	{"diff", "", "show or hide what changed in the workspace since this chat began"},
 	{"instructions", "[edit|clear]", "your standing instructions for the agent, in every chat"},
 	{"memory", "[FILE | edit FILE]", "the workspace's CLAUDE.md, rules and auto-memory files"},
-	{"fork", "[N|all]", "copy this chat into a sibling (before message N, or the whole of it)"},
+	{"fork", "[N|all] [copy]", "copy this chat into a sibling (before message N, or the whole of it); copy takes a copy of the workspace too"},
 	{"btw", "QUESTION", "a side question answered from this chat's context, never sent to the agent (promote N asks it in chat)"},
 	{"cost", "", "this chat's turns, tokens and cost so far"},
 	{"rules", "[add allow|deny|ask PATTERN | rm N]", "the workspace's permission rules (Bash(git *), Edit(src/**)…) and this chat's"},
@@ -152,6 +152,55 @@ func commandItems(query string, extra []Command) []Command {
 		if strings.HasPrefix(c.Name, name) {
 			out = append(out, c)
 		}
+	}
+	return out
+}
+
+// resourceItems are the rows the "@" menu offers for the chat's shared
+// resources (chats/mentions.go: documents, repositories, previews), before
+// the workspace paths. With a kind typed (`doc:`, `repo:`, `preview:`)
+// only that kind, its names filtered by the rest; without one, every
+// resource whose kind or name contains the query. Picking one inserts
+// its token (`@doc:"Budget 2026" `), which the service expands for the
+// agent when the message is sent. At most 12 rows.
+func resourceItems(r chats.Resources, query string) []MenuItem {
+	q := strings.ToLower(strings.TrimSpace(query))
+	kind, rest, typed := strings.Cut(q, ":")
+	if !typed || (kind != "doc" && kind != "repo" && kind != "preview") {
+		kind, rest = "", q
+	}
+	matches := func(k, name string) bool {
+		if kind != "" {
+			return k == kind && strings.Contains(strings.ToLower(name), rest)
+		}
+		return strings.Contains(k, rest) || strings.Contains(strings.ToLower(name), rest)
+	}
+	var out []MenuItem
+	add := func(k, name, hint string) {
+		if matches(k, name) && len(out) < 12 {
+			out = append(out, MenuItem{Insert: chats.MentionToken(k, name) + " ", Label: k + ": " + truncate(sanitize(name), 48), Hint: truncate(sanitize(hint), 60)})
+		}
+	}
+	for _, d := range r.Documents {
+		name := d.Title
+		if name == "" {
+			name = d.ID
+		}
+		hint := d.Kind
+		if d.Access != "" {
+			hint = strings.TrimSpace(hint + " · " + d.Access + " access")
+		}
+		add("doc", name, strings.TrimPrefix(hint, " · "))
+	}
+	for _, repo := range r.Repositories {
+		add("repo", repo.Name, "repository · "+strings.Join(repo.Access, ", "))
+	}
+	for _, p := range r.Previews {
+		name := p.Title
+		if name == "" {
+			name = p.ID
+		}
+		add("preview", name, p.URL)
 	}
 	return out
 }

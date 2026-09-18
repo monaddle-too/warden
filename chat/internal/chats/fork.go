@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	cv "warden/chat/internal/conversation"
+	"warden/chat/internal/sandbox"
 )
 
 // Forking a chat (docs/claude-parity.md, item 15): a sibling chat on the
@@ -20,6 +22,18 @@ import (
 // message the way item 11 does, right after it starts. A chat whose agent
 // cannot fork its session (Codex; no session yet) starts a fresh one with
 // the copied transcript re-sent as a recap.
+//
+// A fork with a copy of the workspace (docs/claude-parity.md, R2.13) gets
+// a workspace of its own, created by the runner as a copy of the source
+// sandbox's disk (op `clone`, sandbox/clone.go: files, the repository
+// checkout and the checkpoint refs come along, at the same size), taken
+// before the fork exists so nothing the source does afterwards reaches
+// the copy. Access grants (documents, repositories, network) stay with
+// the source: the policy service scopes every grant to one sandbox
+// (policy/sharing.go: "grants belong to the environment"), each one an
+// approval the owner gave for that sandbox, so a copy shares nothing until
+// it is shared with — the marker says so. Both chats get a marker: the
+// copy's names the source, the source's names the copy (Fork.Into).
 
 // ForkResult is what a fork made.
 type ForkResult struct {
@@ -30,12 +44,19 @@ type ForkResult struct {
 	// launch), "fresh" (a new session with the copied transcript as
 	// context), "none" (the source had no session; the fork starts one).
 	Session string `json:"session"`
+	// SandboxID is the fork's workspace: the source's, or with
+	// Workspace "copied" a new one cloned from it.
+	SandboxID string `json:"sandboxID"`
+	Workspace string `json:"workspace"`
 }
 
 // Fork creates a chat forked from chat id: turnID, when given, is the
 // user message (its own ID or its turn's) the copy stops before; the
-// whole transcript otherwise. The source must be idle.
-func (e *Engine) Fork(ctx context.Context, id, turnID string, actor cv.Actor) (ForkResult, error) {
+// whole transcript otherwise. The source must be idle. With
+// copyWorkspace the fork gets a copy of the workspace (see above), which
+// needs every chat on it idle; the source's idle sessions are released
+// for the copy and resume at their next message.
+func (e *Engine) Fork(ctx context.Context, id, turnID string, copyWorkspace bool, actor cv.Actor) (ForkResult, error) {
 	st := e.Store.Snapshot()
 	c := st.chat(id)
 	if c == nil {
@@ -46,6 +67,9 @@ func (e *Engine) Fork(ctx context.Context, id, turnID string, actor cv.Actor) (F
 	}
 	if c.Status == "running" || c.Status == "queued" || c.Status == "stopping" {
 		return ForkResult{}, errors.New("wait for the agent to finish, or stop it, before forking")
+	}
+	if sibling := busy(st.environmentChats(c.SandboxID)); copyWorkspace && sibling != nil {
+		return ForkResult{}, fmt.Errorf("wait for chat “%s” on this workspace to finish, or stop it, before copying the workspace", sibling.Title)
 	}
 	cut := len(c.Conversation.Entries)
 	var target *cv.Entry
@@ -67,7 +91,12 @@ func (e *Engine) Fork(ctx context.Context, id, turnID string, actor cv.Actor) (F
 		session := *c.Session
 		fork.Session = &session
 	}
-	result := ForkResult{ID: fork.ID, Title: fork.Title, Session: "none"}
+	result := ForkResult{ID: fork.ID, Title: fork.Title, Session: "none", SandboxID: c.SandboxID, Workspace: "shared"}
+	if copyWorkspace {
+		fork.SandboxID = cv.ID()
+		fork.Origin = &WorkspaceOrigin{SandboxID: c.SandboxID, Name: st.environmentChats(c.SandboxID)[0].Title, ChatID: c.ID, At: e.at()}
+		result.SandboxID, result.Workspace = fork.SandboxID, "copied"
+	}
 	switch {
 	case c.Conversation.ThreadID == nil:
 		// Nothing to copy: the fork starts a session of its own, with the
@@ -91,17 +120,23 @@ func (e *Engine) Fork(ctx context.Context, id, turnID string, actor cv.Actor) (F
 		fork.NewSession = true
 		fork.Recap = recapWith(kept, forkPreamble)
 	}
-	marker := cv.NewEntry("fork", forkLabel(c.Title, target))
+	marker := cv.NewEntry("fork", forkLabel(c.Title, target, copyWorkspace))
 	marker.CreatedAt = e.at()
 	sender := actor
 	marker.Sender = &sender
-	marker.Fork = &cv.Fork{ChatID: c.ID, Title: c.Title}
+	marker.Fork = &cv.Fork{ChatID: c.ID, Title: c.Title, Workspace: copyWorkspace}
 	if target != nil {
 		marker.Fork.MessageID = target.ID
 	}
-	marker.Detail = forkDetail(result.Session)
+	marker.Detail = forkDetail(result.Session, copyWorkspace)
 	fork.Conversation.Entries = append(fork.Conversation.Entries, marker)
+	if copyWorkspace {
+		if err := e.copyWorkspace(ctx, c, fork); err != nil {
+			return ForkResult{}, err
+		}
+	}
 	if err := e.copyAttachments(c.ID, fork.ID, kept); err != nil {
+		e.dropCopy(fork)
 		return ForkResult{}, err
 	}
 	err := e.Store.update(func(st *State) error {
@@ -116,13 +151,59 @@ func (e *Engine) Fork(ctx context.Context, id, turnID string, actor cv.Actor) (F
 			return errors.New("workspace was deleted")
 		}
 		st.Chats = append(st.Chats, fork)
+		if copyWorkspace {
+			// The source's own marker: which chat took the copy.
+			into := cv.NewEntry("fork", fmt.Sprintf("Forked into “%s” with a copy of the workspace", fork.Title))
+			into.CreatedAt = marker.CreatedAt
+			into.Sender = &sender
+			into.Fork = &cv.Fork{ChatID: fork.ID, Title: fork.Title, Workspace: true, Into: true}
+			source.Conversation.Entries = append(source.Conversation.Entries, into)
+		}
 		return nil
 	})
 	if err != nil {
 		os.RemoveAll(e.attachmentDir(fork.ID))
+		e.dropCopy(fork)
 		return ForkResult{}, err
 	}
 	return result, nil
+}
+
+// copyWorkspace asks the runner for the fork's workspace as a copy of the
+// source's: the workspace's idle sessions are released first (the SBX
+// snapshot needs the sandbox stopped, and the runner refuses a sandbox
+// with a run), then the clone, retried for a moment while the runner is
+// still letting a released run go.
+func (e *Engine) copyWorkspace(ctx context.Context, source, fork *Chat) error {
+	e.releaseSandbox(ctx, source.SandboxID, "")
+	r := request(fork, "clone")
+	r.Source = source.SandboxID
+	for start := time.Now(); ; {
+		_, err := e.Worker.Call(ctx, r)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, sandbox.ErrBusy) || time.Since(start) > 15*time.Second {
+			return fmt.Errorf("copying the workspace: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// dropCopy removes the sandbox a fork's workspace copy made when the fork
+// itself could not be recorded; a fork on the source's workspace has
+// nothing to drop.
+func (e *Engine) dropCopy(fork *Chat) {
+	if fork.Origin == nil {
+		return
+	}
+	ctx, done := context.WithTimeout(context.Background(), 30*time.Second)
+	defer done()
+	_, _ = e.Worker.Call(ctx, request(fork, "remove"))
 }
 
 // copyEntries is a copy of entries with their own attachment and tool
@@ -217,26 +298,37 @@ func forkTitle(title string) string {
 	return t
 }
 
-// forkLabel is the marker's text: which chat, and which message the copy
-// stops before.
-func forkLabel(title string, target *cv.Entry) string {
+// forkLabel is the marker's text: which chat, which message the copy
+// stops before, and whether the workspace was copied too.
+func forkLabel(title string, target *cv.Entry, workspace bool) string {
 	label := fmt.Sprintf("Forked from “%s”", strings.TrimSpace(title))
 	if target != nil {
 		label += fmt.Sprintf(" at “%s”", excerpt(target.Text))
 	}
+	if workspace {
+		label += " with a copy of the workspace"
+	}
 	return label
 }
 
-// forkDetail is the marker's second line: how the agent's session follows.
-func forkDetail(session string) string {
+// forkDetail is the marker's second line: how the agent's session
+// follows, and what a workspace copy carried.
+func forkDetail(session string, workspace bool) string {
+	var parts []string
 	switch session {
 	case "forked":
-		return "the agent continues from a copy of its session; the original chat keeps its own"
+		parts = append(parts, "the agent continues from a copy of its session; the original chat keeps its own")
 	case "fresh":
-		return "the agent's session cannot be copied; the next message starts a new one with the conversation so far as context"
+		parts = append(parts, "the agent's session cannot be copied; the next message starts a new one with the conversation so far as context")
 	}
-	return ""
+	if workspace {
+		parts = append(parts, forkCopyNote)
+	}
+	return strings.Join(parts, ". ")
 }
+
+// forkCopyNote says what a workspace copy took and what it did not.
+const forkCopyNote = "the workspace is a copy of the original's disk as it was when the fork was made (files, the repository checkout, checkpoints); access grants — shared documents, repositories and network — stay with the original workspace, so share them again with this one from its panel"
 
 // excerpt is a message's first 60 runes on one line.
 func excerpt(text string) string {

@@ -36,7 +36,12 @@ type managedSandbox struct {
 	Installed          bool
 	ClaudeInstalled    string // fingerprint of the host Claude executable copied into the guest
 	ProxyCA            string // fingerprint of the gateway CA the guest trusts
-	GuestCA            string // SHA-256 of a CA preinstalled by the guest image, as its manifest reports
+	// ImageDigest is the image a sandbox the runner derived from a
+	// snapshot runs (a workspace copy, a regeneration at a new size),
+	// which the policy service's image pin accepts on the runner's word
+	// (recordImageLocked); "" for a sandbox on the pinned guest image.
+	ImageDigest string `json:",omitempty"`
+	GuestCA     string // SHA-256 of a CA preinstalled by the guest image, as its manifest reports
 	// pendingReport is a guest report captured while the guest was a spare;
 	// fresh marks a guest this worker just created or adopted, which cannot
 	// hold port publications yet. Neither is persisted.
@@ -422,7 +427,7 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		}
 	}
 	w.setProgress(s.ID, StageWaiting, "registering with the policy service")
-	grant := GrantContext{Provider: r.Provider, ProjectID: s.ProjectID, SandboxID: s.ID, RuntimeName: s.RuntimeName, Generation: s.Generation, ChatID: c.ID, RunID: r.RunID, PrincipalID: s.PrincipalID}
+	grant := GrantContext{Provider: r.Provider, ProjectID: s.ProjectID, SandboxID: s.ID, RuntimeName: s.RuntimeName, Generation: s.Generation, ChatID: c.ID, RunID: r.RunID, PrincipalID: s.PrincipalID, ImageDigest: s.ImageDigest}
 	if err = w.Gate.Register(ctx, grant); err != nil {
 		w.failEnforcementLocked(s)
 		return Response{}, err
@@ -689,6 +694,10 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	w.defaultsLocked()
 	if r.Operation == "bind-chat" {
 		return w.bindLocked(r)
+	}
+	if r.Operation == "clone" {
+		// A new sandbox as a copy of a registered one (clone.go).
+		return w.cloneLocked(ctx, r)
 	}
 	s, _, err := w.bindingLocked(r)
 	if err != nil {
@@ -1145,8 +1154,31 @@ func (w *Worker) resizeLocked(ctx context.Context, s *managedSandbox, r Request)
 		_ = w.saveManagedLocked()
 		return err
 	}
+	if restarted && w.Limits.Restart {
+		// A regeneration runs a snapshot of the old instance: its image is
+		// the snapshot's, which the policy service pins by the digest the
+		// runner reports.
+		w.recordImageLocked(ctx, s)
+	}
 	s.Resources = resolved
 	return w.saveManagedLocked()
+}
+
+// recordImageLocked asks the driver which image the sandbox runs and keeps
+// it for the policy service's image pin; a driver that cannot say, or a
+// failed inspection, leaves the record as it was (the pin then decides on
+// the guest image alone).
+func (w *Worker) recordImageLocked(ctx context.Context, s *managedSandbox) {
+	inspector, ok := w.Runtime.(ImageInspector)
+	if !ok {
+		return
+	}
+	digest, err := inspector.ImageDigest(ctx, s.RuntimeName)
+	if err != nil {
+		log.Printf("sandbox %s: image digest not recorded: %v", s.ID, err)
+		return
+	}
+	s.ImageDigest = digest
 }
 
 // removeSandboxLocked deletes the environment: its runtime, workspace and every

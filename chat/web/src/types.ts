@@ -47,7 +47,15 @@ export type RewindMark = {
   conversation?: "rewound" | "pending" | "fresh" | "";
   before?: string;
 };
-export type Fork = { chatID: string; title?: string; messageID?: string };
+export type Fork = {
+  chatID: string;
+  title?: string;
+  messageID?: string;
+  /* The fork took a copy of the workspace too. */
+  workspace?: boolean;
+  /* The marker on the source: chatID and title name the fork. */
+  into?: boolean;
+};
 export type Aside = {
   /* "starting" while the chat's released session is brought up for the
      question (the chat shows its startup stages meanwhile). */
@@ -103,7 +111,21 @@ export type Tool = {
   query?: string;
   input?: Record<string, unknown>;
   background?: boolean;
+  /* What a read of an image, a PDF or a notebook carried (conversation
+     Read); absent for a text read. */
+  read?: ToolRead;
   progress?: Progress;
+};
+export type ToolRead = {
+  kind: "image" | "pdf" | "notebook";
+  /* The stored copy of an image read (chats/{id}/images/{image}); absent
+     when it could not be stored. */
+  image?: string;
+  width?: number;
+  height?: number;
+  bytes?: number;
+  pages?: number;
+  cells?: { type: string; language?: string; text: string }[];
 };
 /* What a running subagent has done so far (conversation.Progress): what
    it is doing now in the agent's words, the tool calls it made, the tool
@@ -507,6 +529,9 @@ export type Environment = {
   rules?: Rule[];
   deleted: boolean;
   archived: boolean;
+  /* Set on a workspace created as a copy of another (a fork with "copy
+     the workspace"): which one, the chat it was forked from, and when. */
+  copiedFrom?: { sandboxID: string; name: string; chatID: string; at: number };
 };
 
 /* A person's standing instructions for the agent (me/instructions). */

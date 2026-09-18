@@ -505,9 +505,55 @@ type Tool struct {
 	Query       string         `json:"query"`
 	Input       map[string]any `json:"input"`
 	Background  bool           `json:"background"`
+	// Read is what a read of an image, a PDF or a notebook carried
+	// (conversation.Read); nil for a text read.
+	Read *Read `json:"read"`
 	// Progress is a running subagent's own account of its work
 	// (conversation.Progress), nil until the agent reports one.
 	Progress *Progress `json:"progress"`
+}
+
+// Read mirrors conversation.Read.
+type Read struct {
+	Kind   string     `json:"kind"`
+	Image  string     `json:"image"`
+	Width  int        `json:"width"`
+	Height int        `json:"height"`
+	Bytes  int64      `json:"bytes"`
+	Pages  int        `json:"pages"`
+	Cells  []ReadCell `json:"cells"`
+}
+
+// ReadCell mirrors conversation.ReadCell.
+type ReadCell struct {
+	Type     string `json:"type"`
+	Language string `json:"language"`
+	Text     string `json:"text"`
+}
+
+// readCount is the head's count for a read of something other than text:
+// an image's pixels (and that it is shown in the browser, since a
+// terminal cannot), a PDF's pages, a notebook's cells.
+func readCount(r *Read) string {
+	switch r.Kind {
+	case "image":
+		s := "image"
+		if r.Width > 0 && r.Height > 0 {
+			s += fmt.Sprintf(" %d×%d", r.Width, r.Height)
+		}
+		if r.Image != "" {
+			s += " · shown in the browser"
+		}
+		return s
+	case "pdf":
+		if r.Pages > 0 {
+			return fmt.Sprintf("%d page%s", r.Pages, plural(r.Pages))
+		}
+		return "PDF"
+	case "notebook":
+		return fmt.Sprintf("%d cell%s", len(r.Cells), plural(len(r.Cells)))
+	}
+	return ""
 }
 
 // Progress mirrors conversation.Progress: what a running subagent has
@@ -577,9 +623,15 @@ func renderTool(e Entry, width int, expanded bool) []string {
 		}
 	case "read", "search":
 		body = strings.Split(detail, "\n")
-		n, unit := resultCount(t.Kind, detail)
 		if !failed && t.Status == "completed" {
-			head += fmt.Sprintf("  %s%d %s%s", dim, n, unit, reset)
+			if t.Read != nil {
+				// An image, a PDF or a notebook: what it is instead of a
+				// line count (the summary is the body).
+				head += fmt.Sprintf("  %s%s%s", dim, readCount(t.Read), reset)
+			} else {
+				n, unit := resultCount(t.Kind, detail)
+				head += fmt.Sprintf("  %s%d %s%s", dim, n, unit, reset)
+			}
 		}
 		if !expanded && !failed {
 			body = nil // one line is the reading; Tab shows the content

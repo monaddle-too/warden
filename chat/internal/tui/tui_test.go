@@ -16,6 +16,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"warden/chat/internal/chats"
 )
 
 func TestDecodeKeys(t *testing.T) {
@@ -463,6 +464,8 @@ func TestMultiLineNoticesArePrintedOnce(t *testing.T) {
 // fakeServer is a minimal warden-chat: state, chats, messages, approvals,
 // and an event stream that emits the current state whenever it changes.
 type fakeServer struct {
+	// resources is what chats/{id}/resources answers (nil: nothing shared).
+	resources *chats.Resources
 	// tail is what an undo-rewind puts back (the rewind tests set it).
 	tail    []Entry
 	mu      sync.Mutex
@@ -542,6 +545,14 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		f.state.Chats = append(f.state.Chats, &Chat{ID: id, Title: body["title"].(string), Provider: body["provider"].(string), Status: "idle"})
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]string{"id": id})
+	case strings.HasSuffix(path, "/resources") && r.Method == "GET":
+		f.mu.Lock()
+		resources := f.resources
+		f.mu.Unlock()
+		if resources == nil {
+			resources = &chats.Resources{Documents: []chats.ResourceDocument{}, Repositories: []chats.ResourceRepository{}, Previews: []chats.ResourcePreview{}}
+		}
+		json.NewEncoder(w).Encode(resources)
 	case path == "chats/search" && r.Method == "GET":
 		// A plain version of chats/search.go: titles then entries, newest
 		// entry first, case-insensitive, one hit per entry.
@@ -883,7 +894,10 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]any{"checkpoints": list})
 	case strings.HasSuffix(path, "/fork"):
-		var body struct{ TurnID string }
+		var body struct {
+			TurnID        string
+			CopyWorkspace bool
+		}
 		json.NewDecoder(r.Body).Decode(&body)
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/fork")
 		f.mu.Lock()
@@ -901,11 +915,17 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			kept = append(kept, e)
 		}
-		kept = append(kept, Entry{ID: "fork-marker", Role: "fork", Text: "Forked from “" + c.Title + "”", Detail: "the agent continues from a copy of its session", Fork: &Fork{ChatID: c.ID, Title: c.Title, MessageID: body.TurnID}})
-		fork := &Chat{ID: c.ID + "-fork", Title: c.Title + " (fork)", Provider: c.Provider, SandboxID: c.SandboxID, Status: "idle", Conversation: Conversation{Entries: kept}}
+		text, workspace, sandboxID, forkID := "Forked from “"+c.Title+"”", "shared", c.SandboxID, c.ID+"-fork"
+		if body.CopyWorkspace {
+			text += " with a copy of the workspace"
+			workspace, sandboxID, forkID = "copied", c.SandboxID+"-copy", c.ID+"-fork-copy"
+			c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "into-marker", Role: "fork", Text: "Forked into “" + c.Title + " (fork)” with a copy of the workspace", Fork: &Fork{ChatID: forkID, Title: c.Title + " (fork)", Workspace: true, Into: true}})
+		}
+		kept = append(kept, Entry{ID: "fork-marker", Role: "fork", Text: text, Detail: "the agent continues from a copy of its session", Fork: &Fork{ChatID: c.ID, Title: c.Title, MessageID: body.TurnID, Workspace: body.CopyWorkspace}})
+		fork := &Chat{ID: forkID, Title: c.Title + " (fork)", Provider: c.Provider, SandboxID: sandboxID, Status: "idle", Conversation: Conversation{Entries: kept}}
 		f.state.Chats = append(f.state.Chats, fork)
 		f.mu.Unlock()
-		json.NewEncoder(w).Encode(ForkResult{ID: fork.ID, Title: fork.Title, Session: "forked"})
+		json.NewEncoder(w).Encode(ForkResult{ID: fork.ID, Title: fork.Title, Session: "forked", SandboxID: sandboxID, Workspace: workspace})
 	case strings.HasSuffix(path, "/aside"):
 		var body struct{ Text string }
 		json.NewDecoder(r.Body).Decode(&body)
@@ -1866,6 +1886,26 @@ func TestTriggerAt(t *testing.T) {
 	if items := commandItems("", []Command{{Name: "compact", Hint: "from the chat"}}); items[len(items)-1].Name != "compact" {
 		t.Fatal("chat commands are not listed after the built-ins")
 	}
+	r := chats.Resources{Documents: []chats.ResourceDocument{{ID: "1", Title: "Plan A", Kind: "document", Access: "read"}, {ID: "2", Title: "", Kind: "document"}}, Repositories: []chats.ResourceRepository{{Name: "o/n", Access: []string{"contents", "issues"}}}, Previews: []chats.ResourcePreview{{ID: "p1", Title: "Site", URL: "https://s/"}}}
+	labels := func(items []MenuItem) string {
+		var out []string
+		for _, i := range items {
+			out = append(out, i.Label+"|"+i.Insert+"|"+i.Hint)
+		}
+		return strings.Join(out, "\n")
+	}
+	if got := labels(resourceItems(r, "")); got != "doc: Plan A|@doc:\"Plan A\" |document · read access\ndoc: 2|@doc:2 |document\nrepo: o/n|@repo:o/n |repository · contents, issues\npreview: Site|@preview:Site |https://s/" {
+		t.Fatalf("all resources:\n%s", got)
+	}
+	if got := labels(resourceItems(r, "doc:plan")); got != "doc: Plan A|@doc:\"Plan A\" |document · read access" {
+		t.Fatalf("doc: rows:\n%s", got)
+	}
+	if got := labels(resourceItems(r, "PREV")); got != "preview: Site|@preview:Site |https://s/" {
+		t.Fatalf("kind by name:\n%s", got)
+	}
+	if got := resourceItems(r, "repo:zzz"); len(got) != 0 {
+		t.Fatalf("no match: %+v", got)
+	}
 	if mentionFor("src/") != "@src/" || mentionFor("src/app.go") != "@src/app.go " {
 		t.Fatal("mentionFor")
 	}
@@ -1997,6 +2037,37 @@ func TestPathCompletion(t *testing.T) {
 	if app.editor.Text() != "look at @src/app.go " || app.menu != nil {
 		t.Fatalf("after a file: %q menu %v", app.editor.Text(), app.menu != nil)
 	}
+	// The chat's shared resources come before the paths: every one on a
+	// bare "@", those of a kind once "doc:" (or repo:, preview:) is typed,
+	// and picking one inserts its token.
+	f.mu.Lock()
+	f.resources = &chats.Resources{Documents: []chats.ResourceDocument{{ID: "1AbC", Title: "Budget 2026", Kind: "spreadsheet", Access: "read"}}, Repositories: []chats.ResourceRepository{{Name: "monaddle-too/warden", Access: []string{"contents"}}}, Previews: []chats.ResourcePreview{{ID: "b1", Title: "Dev server", Port: 3000, URL: "https://b1.example/"}}}
+	f.mu.Unlock()
+	app.editor.Set("")
+	app.menu = nil
+	typeText(app, ctx, "@")
+	awaitPaths()
+	if len(app.menu.Items) != 7 || app.menu.Items[0].Label != "doc: Budget 2026" || app.menu.Items[1].Label != "repo: monaddle-too/warden" || app.menu.Items[2].Label != "preview: Dev server" || app.menu.Items[3].Label != "src/" {
+		t.Fatalf("resources then paths: %+v", app.menu.Items)
+	}
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.editor.Text() != `@doc:"Budget 2026" ` || app.menu != nil {
+		t.Fatalf("after a document: %q menu %v", app.editor.Text(), app.menu != nil)
+	}
+	typeText(app, ctx, "@repo:mon")
+	awaitPaths()
+	if len(app.menu.Items) != 1 || app.menu.Items[0].Insert != "@repo:monaddle-too/warden " || app.menu.Note != "" {
+		t.Fatalf("repo rows: %+v", app.menu)
+	}
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.editor.Text() != `@doc:"Budget 2026" @repo:monaddle-too/warden ` {
+		t.Fatalf("after a repository: %q", app.editor.Text())
+	}
+	app.editor.Set("look at @src/app.go ")
+	app.menu = nil
+	f.mu.Lock()
+	f.resources = nil
+	f.mu.Unlock()
 	// A stale answer (older sequence) is ignored.
 	typeText(app, ctx, "@zz")
 	awaitPaths()
@@ -2758,6 +2829,27 @@ func TestRenderToolEntries(t *testing.T) {
 		if clipLen(l) > 40 {
 			t.Fatalf("line wider than 40: %q", l)
 		}
+	}
+	// A read of an image, a PDF or a notebook: the head says what it is,
+	// the summary is the body (Tab); the image itself is the browser's.
+	rich := &Chat{ID: "c", Title: "t", Provider: "claude"}
+	rich.Conversation.Entries = []Entry{
+		{ID: "i", Role: "activity", Text: "Read img.png", Detail: "PNG image, 64×64, 139 bytes", Tool: &Tool{Kind: "read", Name: "Read", Status: "completed", Paths: []string{"img.png"}, Read: &Read{Kind: "image", Image: "img-1", Width: 64, Height: 64, Bytes: 139}}},
+		{ID: "p", Role: "activity", Text: "Read doc.pdf", Detail: "PDF, 854 bytes, 2 pages; the model reads the document itself", Tool: &Tool{Kind: "read", Name: "Read", Status: "completed", Paths: []string{"doc.pdf"}, Read: &Read{Kind: "pdf", Bytes: 854, Pages: 2}}},
+		{ID: "q", Role: "activity", Text: "Read nb.ipynb", Detail: "1 code (python): print('hello')\n2 markdown: # Title", Tool: &Tool{Kind: "read", Name: "Read", Status: "completed", Paths: []string{"nb.ipynb"}, Read: &Read{Kind: "notebook", Cells: []ReadCell{{Type: "code", Language: "python", Text: "print('hello')"}, {Type: "markdown", Text: "# Title"}}}}},
+		{ID: "u", Role: "activity", Text: "Read x.png", Detail: "PNG image", Tool: &Tool{Kind: "read", Name: "Read", Status: "completed", Read: &Read{Kind: "image"}}},
+	}
+	richLines := plain(strings.Join(RenderTranscript(rich, 80, false), "\n"))
+	for _, want := range []string{"Read img.png  image 64×64 · shown in the browser", "Read doc.pdf  2 pages", "Read nb.ipynb  2 cells", "Read x.png  image\n"} {
+		if !strings.Contains(richLines, want) {
+			t.Fatalf("missing %q in:\n%s", want, richLines)
+		}
+	}
+	if strings.Contains(richLines, "│ 1 code") {
+		t.Fatal("collapsed read shows its body")
+	}
+	if richExpanded := plain(strings.Join(RenderTranscript(rich, 80, true), "\n")); !strings.Contains(richExpanded, "│ 1 code (python): print('hello')") || !strings.Contains(richExpanded, "│ PDF, 854 bytes, 2 pages") {
+		t.Fatalf("expanded rich reads:\n%s", richExpanded)
 	}
 	// A change over several files heads each file's lines with its path.
 	multi := Entry{ID: "x", Role: "activity", Text: "Updated 2 files", Detail: "a\ndiff --git a/a b/a\n--- a/a\n+++ b/a\n-1\n+2\n\nb\ndiff --git a/b b/b\nnew file mode 100644\n--- /dev/null\n+++ b/b\n@@ -0,0 +1,1 @@\n+hi\n\n", Tool: &Tool{Kind: "edit", Status: "completed", Paths: []string{"a", "b"}}}
@@ -3908,7 +4000,34 @@ func TestCostForkStyleAndBellCommands(t *testing.T) {
 	if !strings.HasPrefix(app.notice, "forked the whole conversation into") {
 		t.Fatalf("fork all: %q", app.notice)
 	}
+	// "copy" takes a copy of the workspace: the fork lives on a new one,
+	// its marker says so, and the source gets a marker naming the fork.
 	app.selectChat("chat1")
+	app.submit(ctx, "/fork all copy")
+	if !strings.HasPrefix(app.notice, "forked the whole conversation with a copy of the workspace into") {
+		t.Fatalf("fork all copy: %q", app.notice)
+	}
+	if fork := app.chat(); fork == nil || fork.ID != "chat1-fork-copy" || !strings.HasSuffix(fork.SandboxID, "-copy") {
+		t.Fatalf("fork with copy: %+v", fork)
+	}
+	lines = plain(strings.Join(RenderTranscript(app.chat(), 100, false), "\n"))
+	if !strings.Contains(lines, "⑂ Forked from “Long tail” with a copy of the workspace") {
+		t.Fatalf("copy marker: %s", lines)
+	}
+	app.selectChat("chat1")
+	lines = plain(strings.Join(RenderTranscript(app.chat(), 100, false), "\n"))
+	if !strings.Contains(lines, "⑂ Forked into “Long tail (fork)” with a copy of the workspace") {
+		t.Fatalf("source marker: %s", lines)
+	}
+	app.submit(ctx, "/fork copy")
+	if !strings.HasPrefix(app.notice, "forked the whole conversation with a copy of the workspace into") {
+		t.Fatalf("fork copy: %q", app.notice)
+	}
+	app.selectChat("chat1")
+	app.submit(ctx, "/fork 1 2 copy")
+	if app.notice != "/fork [N|all] [copy]" {
+		t.Fatalf("fork with too many words: %q", app.notice)
+	}
 	f.mu.Lock()
 	f.state.Chats[0].Status = "running"
 	f.mu.Unlock()
