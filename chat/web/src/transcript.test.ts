@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   groupEntries,
+  nestEntries,
   newSince,
   readSeen,
   unreadEntry,
@@ -150,5 +151,43 @@ describe("activity groups", () => {
     ).toEqual(["u1", 1, 1, "m1", "u2", 1, "m2"]);
     expect("group" in items[2] && items[2].group[0].id).toBe("a2");
     expect(groupEntries(entries, 4)).toEqual(groupEntries(entries));
+  });
+});
+
+describe("subagent nesting", () => {
+  it("takes a subagent's entries out of the flow and keys them by its card", () => {
+    const list = [
+      entry("u1", "user", 1),
+      entry("agent", "activity", 2),
+      { ...entry("c1", "activity", 3), parentID: "agent" },
+      { ...entry("c2", "assistant", 4), parentID: "agent" },
+      entry("m1", "assistant", 5),
+      { ...entry("orphan", "activity", 6), parentID: "gone" },
+    ];
+    const { top, nested } = nestEntries(list);
+    expect(top.map((e) => e.id)).toEqual(["u1", "agent", "m1", "orphan"]);
+    expect(nested.get("agent")?.map((e) => e.id)).toEqual(["c1", "c2"]);
+    expect(nested.size).toBe(1);
+  });
+  it("nests a subagent's own subagent under its card", () => {
+    const list = [
+      entry("a", "activity", 1),
+      { ...entry("b", "activity", 2), parentID: "a" },
+      { ...entry("b1", "activity", 3), parentID: "b" },
+    ];
+    const { top, nested } = nestEntries(list);
+    expect(top.map((e) => e.id)).toEqual(["a"]);
+    expect(nested.get("a")?.map((e) => e.id)).toEqual(["b"]);
+    expect(nested.get("b")?.map((e) => e.id)).toEqual(["b1"]);
+  });
+  it("keeps the counts and groups to the transcript's own entries", () => {
+    const list = [
+      { ...entry("agent", "activity", 2), turnID: "t" },
+      { ...entry("c2", "assistant", 4), parentID: "agent", turnID: "t" },
+      { ...entry("m1", "assistant", 5), turnID: "t" },
+    ];
+    const { top } = nestEntries(list);
+    expect(newSince(top, "agent")).toBe(1);
+    expect(groupEntries(top).length).toBe(2);
   });
 });

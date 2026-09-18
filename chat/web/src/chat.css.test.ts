@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
-import css from "./chat.css?raw";
+import chat from "./chat.css?raw";
+import conversation from "./conversation.css?raw";
 
-// The stylesheet is hand-merged now and then, and a lost brace silently
+// The stylesheets are hand-merged now and then, and a lost brace silently
 // swallows every rule after it (the build does not parse CSS): the braces
 // must balance and every top-level rule must start at depth zero.
-describe("chat.css", () => {
+describe.each([
+  ["chat.css", chat],
+  ["conversation.css", conversation],
+])("%s", (_name, css) => {
   it("has balanced braces and no rule opened inside another", () => {
     let depth = 0;
     css.split("\n").forEach((line: string, i: number) => {
