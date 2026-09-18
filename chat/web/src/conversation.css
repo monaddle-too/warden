@@ -859,9 +859,13 @@ button.attachment-chip {
 }
 .composer-editing-code {
   display: inline-flex;
+  flex-direction: row;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
+  margin: 0;
+  font-weight: 400;
   color: var(--text-2);
+  cursor: pointer;
 }
 .composer-editing button {
   height: 26px;
