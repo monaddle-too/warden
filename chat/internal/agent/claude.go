@@ -97,8 +97,10 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		todos := claudeTodoList{}
 		todoID := ""
 		// Whether a turn is open: between turn/start (or one the CLI began
-		// by itself, cliTurn) and its result.
+		// by itself, cliTurn) and its result; turnMessage is the message
+		// id Warden's turn/start handed the CLI as the user message's uuid.
 		turnOpen, cliTurn := false, false
+		turnMessage := ""
 		textID := ""
 		text := ""
 		streamed := false
@@ -226,6 +228,7 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						textID = claudeID()
 						streamed = false
 						turnOpen, cliTurn = true, false
+						turnMessage = String(f.Params["clientUserMessageId"])
 					}
 					if f.Method == "turn/start" {
 						reply(f.ID, map[string]any{"turn": map[string]any{"id": turn, "status": "inProgress"}})
@@ -736,6 +739,20 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						} else if t.name == "TaskStop" && b["is_error"] != true {
 							settleTask(String(t.input["task_id"]), "stopped", "")
 						}
+					}
+				case "command_lifecycle":
+					// The CLI's account of a user message's life: queued,
+					// started, and completed after the result. A message
+					// the session already holds (the same uuid, as when
+					// Warden redelivers a notification a crashed run had
+					// handed over) is completed at once, with no result and
+					// nothing run; that ends the turn with nothing said,
+					// or it would wait for a first reply forever.
+					if String(v["state"]) == "completed" && turnOpen && !cliTurn && turnMessage != "" && String(v["command_uuid"]) == turnMessage {
+						turnOpen, cliTurn = false, false
+						flushThinking()
+						flushText()
+						event("turn/completed", map[string]any{"turn": map[string]any{"id": turn, "status": "completed"}})
 					}
 				case "result":
 					if String(Map(v["origin"])["kind"]) == "task-notification" && turnOpen && !cliTurn {
