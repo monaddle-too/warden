@@ -159,3 +159,38 @@ activity, eight at most.
 ## Progress log
 
 - 2026-09-18: plan written; worktree opened.
+- 2026-09-18: steps 1–6 implemented (d3d7f0a, f1bb159, 835e6b8).
+  `cmd/warden/menu.go` (`menuState`, `menuModel`, `menuFeeder`),
+  `tui.Client.Stream` / `Spend`, `warden open --chat|--new` +
+  `?new=1`; `chat/menu/main.swift`; `svc.go` `platformMenu` /
+  `launchdAgent.menu` / `menuExecutable`; install step 10, `warden menu
+  install|uninstall`, `service install|uninstall` cover both, `restart`
+  restarts the item, `stop` leaves it, `status` + doctor rows, uninstall;
+  `release.sh` compiles with `xcrun swiftc` and stages `bin/warden-menu`;
+  docs. Unit tests: the model (order, cap, attention kinds, the one-hour
+  failure window, archived ignored), the feeder against a fake chat
+  service (stopped → starting → running lines, spend fetched once and
+  again when a turn ends, stopped after the stream drops), the plist,
+  install (register, idempotent, upgrade restart, `--menu=false`, no
+  binary, no row off macOS), the commands, doctor.
+- 2026-09-18: step 7, live on a cloned home `~/.warden-menu` (chat
+  :18830; build 835e6b8 through `deploy-local.sh`, which built
+  `warden-menu` and shipped it in the tarball): `warden install
+  --upgrade` registered `com.monaddle.warden.warden-menu` and
+  `….warden-menu.menu`, both running under launchd, `status` and
+  `doctor` report both; the feed said `running` with the clone's two
+  waiting reviews, `stopped` after `warden stop` with the item still up,
+  `running` after `start`; `restart` restarted the item (new pid); a
+  Claude turn showed `working: 1` with the startup stage ("installing:
+  copying the Codex runtime bundle…"), then "Running sleep 20; echo
+  done", then idle; `menu uninstall` / `menu install` / `service
+  uninstall` (both agents gone, no orphaned feed); `warden uninstall`
+  removed the clone. Before that the item ran by hand against the
+  owner's `~/.warden` (read-only feed) and showed the shield with a red
+  2; the owner's home was not changed. A screenshot could not be taken
+  from the session (no screen-recording permission), so the dropdown's
+  look is verified by the owner, not here.
+- Remaining: deploy to the owner's `~/.warden` (`deploy-local.sh` then
+  `warden menu install`, since deploy-local does not run install);
+  later: notifications from the feed (Go, `osascript`), a bundle if
+  Login Items' name (`warden-menu`) bothers.
