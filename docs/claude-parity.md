@@ -339,4 +339,40 @@ Decisions:
 - The JSON export keeps each entry's JSON as the service sent it, so
   fields the client does not model (item 1's typed cards) survive.
 
-Progress: started 2026-09-17.
+Also decided while building:
+
+- Ctrl+O hides tool steps and thinking altogether ("steps hidden" in the
+  status); the default keeps them, as before, with Tab/`/expand` for full
+  output. `/verbose` is the same toggle.
+- Up/Down move between the draft's lines and recall history from its
+  first/last line (Ctrl+P/N always recall); transcript scrolling is the
+  wheel, PgUp/PgDn and Home/End on an empty draft.
+- A lone Escape is reported after 60 ms (the decoder used to wait for the
+  next key), so Esc interrupts on its own. Shift+Tab is decoded and left
+  for item 3.
+- `ChatCommands` on `tui.App` is the hook for commands the chat offers
+  (item 5's `slash_commands`); nil today.
+
+Verified: `go test ./internal/tui` (`-race` too), `go vet`, `gofmt`;
+live on a cloned home (`~/.warden-p2`, build 66c3e37) driving the real
+TUI under a pty (`scratchpad/tui_smoke.py`): `/att` → menu → Tab →
+`/attach note.txt` uploaded and showed above the status; the message
+carried it (Claude read the file); status line `idle 3.6s · 94k tokens
+(94k in, 226 out) · $0.02`; `see @hel` listed `hello-from-tui.txt` and
+Tab completed it; `/export json all FILE` (format `warden-chat`, the
+attachment in the entry); `/rename` seen by `warden chat list`; Esc on a
+running `sleep 90` turn → "interrupting the agent" → `interrupted 7.9s
+· 46k tokens`; Up recalled the prompt, Ctrl+R found an earlier one,
+Ctrl+O hid the steps, Ctrl+C twice quit; `/delete` asked, `n` cancelled,
+`y` deleted the workspace and archived the chat.
+
+Seen on the way (not this item): Claude Code emits a `result` for a
+background-task notification, so the engine ends the turn (status idle,
+turn record closed) while a foreground Bash of that turn is still
+streaming; item 2 (background tasks) should handle that.
+
+Left: long commands (`/delete` stops the sandbox first) block the redraw
+for a few seconds; `/attach` accepts one file per command; vim mode.
+
+Progress: started 2026-09-17; implemented and live-verified 2026-09-17
+(66c3e37); merge pending.
