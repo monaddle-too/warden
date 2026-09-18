@@ -234,6 +234,10 @@ type Editor struct {
 // Pastes is the text kept aside for the draft's paste placeholders.
 func (e *Editor) Pastes() []string { return e.pastes }
 
+// SetPastes puts kept pastes back (a command typed as its own draft does
+// not consume the pastes of the message being composed; attach.go).
+func (e *Editor) SetPastes(p []string) { e.pastes = p }
+
 func (e *Editor) Text() string { return string(e.buf) }
 func (e *Editor) Cursor() int  { return e.cursor }
 

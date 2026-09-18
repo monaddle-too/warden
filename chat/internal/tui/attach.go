@@ -289,7 +289,7 @@ func (a *App) pasteCommand(arg string) {
 			a.setNotice("no collapsed paste in the draft; a paste over 8 lines or 1000 characters becomes [Pasted text #N — M lines]")
 			return
 		}
-		a.setNotice(strings.Join(append(PasteListing(pastes), "/paste N prints one in full; Ctrl+P on its placeholder previews it"), "\n"))
+		a.setNotice(strings.Join(append(PasteListing(pastes), "kept for the next message; /paste N prints one in full, Ctrl+P on its placeholder previews it, a placeholder typed again names the same paste"), "\n"))
 	case "close", "off":
 		a.preview = nil
 	default:

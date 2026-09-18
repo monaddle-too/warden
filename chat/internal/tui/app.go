@@ -473,9 +473,15 @@ func (a *App) send(ctx context.Context) {
 		text = strings.TrimSpace(a.editor.Text())
 		a.editor.Clear()
 	} else {
+		pastes := a.editor.Pastes()
 		text = a.editor.Submit()
 		if text != "" && a.HistoryDir != "" && a.ChatID != "" {
 			AppendHistory(a.HistoryDir, a.ChatID, text)
+		}
+		if strings.HasPrefix(text, "/") {
+			// A command does not consume the pastes kept for the next
+			// message (/paste N is one; the placeholder can be typed again).
+			a.editor.SetPastes(pastes)
 		}
 	}
 	a.vim.Reset()

@@ -4726,7 +4726,8 @@ func TestPastePreviewAndChip(t *testing.T) {
 	if app.editor.Text() == "" {
 		t.Fatal("/paste cleared the draft")
 	}
-	// /paste 1 prints the whole paste into the scrollback, numbered.
+	// /paste 1 prints the whole paste into the scrollback, numbered. Typed
+	// as its own draft, the command does not consume the kept pastes.
 	app.prints = nil
 	app.submit(ctx, "/paste 1")
 	if !strings.HasPrefix(app.notice, "Pasted text #1 — 30 lines, 351 B\n   1 log line 1\n   2 log line 2") || !strings.HasSuffix(app.notice, "  30 log line 30") || len(app.prints) != 1 {
@@ -4786,6 +4787,26 @@ func TestPastePreviewAndChip(t *testing.T) {
 	}
 	if len(app.frame(120, 30).Extra) != 0 {
 		t.Fatal("chip still shown")
+	}
+	// A command typed as its own draft keeps the pastes; a message sends
+	// and drops them; the placeholder typed again names the kept paste.
+	app.handleKey(ctx, Key{Kind: KeyPaste, Text: strings.Repeat("z\n", 12)})
+	app.editor.Clear()
+	app.handleKey(ctx, Key{Kind: KeyPaste, Text: strings.Repeat("z\n", 12)})
+	app.editor.Set("")
+	app.editor.SetPastes([]string{strings.Repeat("z\n", 12)})
+	typeText(app, ctx, "/paste")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if len(app.editor.Pastes()) != 1 || !strings.Contains(app.notice, "#1  12 lines") {
+		t.Fatalf("a command consumed the pastes: %d %q", len(app.editor.Pastes()), app.notice)
+	}
+	typeText(app, ctx, "here: [Pasted text #1 — 12 lines]")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	time.Sleep(20 * time.Millisecond)
+	s, _ = app.Client.State(ctx)
+	last = s.Chats[0].Conversation.Entries[len(s.Chats[0].Conversation.Entries)-1]
+	if last.Text != "here: "+strings.TrimSpace(strings.Repeat("z\n", 12)) || len(app.editor.Pastes()) != 0 {
+		t.Fatalf("typed placeholder: %q, %d pastes left", last.Text, len(app.editor.Pastes()))
 	}
 	if placeholderAt("a [Pasted text #3 — 2 lines] b", 1) != 0 || placeholderAt("a [Pasted text #3 — 2 lines] b", 2) != 3 || placeholderAt("a [Pasted text #3 — 2 lines] b", 28) != 3 || placeholderAt("a [Pasted text #3 — 2 lines] b", 29) != 0 {
 		t.Fatal("placeholderAt")
