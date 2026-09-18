@@ -195,7 +195,7 @@ Server track (`.local/warden-bugs-server`):
 1. ✓ Config + chart values + `warden.config` rendering; chart goldens.
 2. ✓ Edge receiver (`POST /api/bug-reports`), storage, limits, retention; tests.
 3. ✓ Admin routes + console page; tests.
-4. Merge to main; deploy to GKE (`gke-deploy`); `curl` a sample report
+4. ✓ Merge to main; deploy to GKE (`gke-deploy`); `curl` a sample report
    (`docs/bug-report-sample.json`) at the cloud URL and see it in the
    console.
 
@@ -258,3 +258,22 @@ Client track (`.local/warden-bugs-client`):
   unknown kind → 400; the section listed both reports, opened the error
   one (stack, two log files, environment, raw JSON); `DELETE` through the
   edge → 204 then 404. Left: merge, GKE deploy, the cloud `curl` check.
+- 2026-09-18 (server track landed): merged to main as **c86ae18**
+  (fast-forward; conflicts only in the feature map's Admin console row,
+  unioned with round 2 A's spend section). Deployed to GKE as image
+  `v0.1.0-alpha.12-326-gc86ae18` (helm revision 23); the rendered
+  `warden.json` on the cluster has `edge.bugReports.enabled: true`. At
+  `https://cloud.warden.monaddle.com/api/bug-reports`: the sample → `202
+  {"id":"3f2a…5e6f","received":"2026-09-18T13:40:23Z"}`, the same body
+  again → `202` with the same id and time (one file on the edge PVC,
+  `bug-reports/2026-09-18/<id>.json`, mode 0600, `source` a 64-hex hash),
+  300 KB → `413`, `{"schema":1}` → `400 kind is required`, `GET` → `405`,
+  `/api/admin/bug-reports` signed out → `403`. The cloud admin console
+  (owner session) lists the report and opens it. Server step 4 done.
+  Finding: ingress-nginx runs with the default `externalTrafficPolicy:
+  Cluster`, so the address it forwards is often a node-internal
+  `10.128.x.x` (kube-proxy SNAT) rather than the client's; the per-IP
+  hourly limit and the source hash are therefore coarse on GKE. The fix
+  is `--set controller.service.externalTrafficPolicy=Local` on the
+  ingress-nginx release in `scripts/k8s-gke.sh` (`up`); not applied, an
+  operator decision.
