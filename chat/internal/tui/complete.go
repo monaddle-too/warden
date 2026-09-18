@@ -43,6 +43,8 @@ var Commands = []Command{
 	{"attachments", "", "list the files waiting to be sent"},
 	{"detach", "N", "drop a waiting file"},
 	{"export", "[md|json] [all] [FILE]", "write the transcript to a file"},
+	{"rewind", "[N] [code|conv|both]", "go back to before message N: its code, the conversation or both"},
+	{"diff", "", "show or hide what changed in the workspace since this chat began"},
 	{"copy", "", "put the agent's last reply on the clipboard"},
 	{"find", "TEXT", "scroll to the previous line containing TEXT"},
 	{"expand", "", "toggle full tool output and diffs (Tab)"},

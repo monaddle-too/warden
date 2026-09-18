@@ -373,6 +373,45 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/agent"), strings.HasSuffix(path, "/revoke"):
 		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/checkpoints"):
+		// Every user message but the first has a checkpoint.
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/checkpoints")
+		f.mu.Lock()
+		var list []Checkpoint
+		for i, e := range f.state.Chat(id).Conversation.Entries {
+			if e.Role == "user" && i > 0 {
+				list = append(list, Checkpoint{ID: e.ID, ChatID: id, Commit: "c" + e.ID, Store: "repository", Changed: true})
+			}
+		}
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"checkpoints": list})
+	case strings.HasSuffix(path, "/rewind"):
+		var body struct{ TurnID, What string }
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/rewind")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		if c.Status == "running" {
+			f.mu.Unlock()
+			w.WriteHeader(400)
+			w.Write([]byte(`{"error":"wait for the agent to finish, or stop it, before rewinding"}`))
+			return
+		}
+		var kept []Entry
+		for _, e := range c.Conversation.Entries {
+			if e.ID == body.TurnID {
+				break
+			}
+			kept = append(kept, e)
+		}
+		if body.What != "code" {
+			c.Conversation.Entries = kept
+		}
+		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "marker", Role: "rewind", Text: "Rewound to before “" + body.TurnID + "” (" + body.What + ")", Detail: "1 file restored, 0 files removed"})
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(RewindResult{MessageID: body.TurnID, What: body.What, Restored: []string{"a.txt"}, Conversation: "rewound"})
+	case strings.HasSuffix(path, "/diff"):
+		json.NewEncoder(w).Encode(WorkspaceChanges{Base: "u2", Files: []ChangedFile{{Path: "src/app.go", Added: 2, Removed: 1}, {Path: "logo.png", Binary: true}}, Diff: "diff --git a/src/app.go b/src/app.go\n--- a/src/app.go\n+++ b/src/app.go\n@@ -1,2 +1,3 @@\n-old\n+new\n+more\n context\n"})
 	default:
 		http.Error(w, "not found", 404)
 	}
@@ -1623,5 +1662,106 @@ func TestRenderSubagentBackgroundAndTodo(t *testing.T) {
 	a := &App{quiet: true}
 	if v := a.visible(c); len(v.Conversation.Entries) != 0 {
 		t.Fatalf("quiet view shows a subagent's message: %+v", v.Conversation.Entries)
+	}
+}
+
+func TestRewindCommandListsConfirmsAndRewinds(t *testing.T) {
+	f := newFakeServer(t, State{Chats: []*Chat{{ID: "chat1", Title: "Rewind", Provider: "claude", Status: "idle", Conversation: Conversation{Entries: []Entry{
+		{ID: "u1", Role: "user", Text: "Add a counter component"},
+		{ID: "a1", Role: "assistant", Text: "Done."},
+		{ID: "u2", Role: "user", Text: "Now make it   blue\nplease"},
+		{ID: "a2", Role: "assistant", Text: "Blue now."},
+	}}}}})
+	ctx := context.Background()
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	app.refreshState(ctx)
+	app.submit(ctx, "/rewind")
+	notice := plain(app.notice)
+	if !strings.Contains(notice, " 1   Add a counter component") || !strings.Contains(notice, " 2 • Now make it blue please") || !strings.Contains(notice, "/rewind N") {
+		t.Fatalf("listing: %q", notice)
+	}
+	for _, bad := range []string{"/rewind 3", "/rewind x", "/rewind 2 files-and-more extra", "/rewind 1 nothing"} {
+		app.submit(ctx, bad)
+		if app.confirm != nil || !strings.HasPrefix(app.notice, "/rewind N") {
+			t.Fatalf("%s: confirm %v notice %q", bad, app.confirm != nil, app.notice)
+		}
+	}
+	app.submit(ctx, "/rewind 2 conv")
+	if app.confirm == nil || !strings.Contains(app.confirm.prompt, `Rewind to before message 2 "Now make it blue please" (conversation)?`) {
+		t.Fatalf("confirm: %+v", app.confirm)
+	}
+	app.submit(ctx, "n")
+	if app.confirm != nil || app.notice != "cancelled" {
+		t.Fatalf("cancel: %+v %q", app.confirm, app.notice)
+	}
+	app.submit(ctx, "/rewind 2")
+	if app.confirm == nil || !strings.Contains(app.confirm.prompt, "(code and conversation)") {
+		t.Fatalf("default scope: %+v", app.confirm)
+	}
+	app.submit(ctx, "y")
+	if app.confirm != nil || app.notice != "rewound to before message 2 (code and conversation); 1 file(s) restored, 0 removed" {
+		t.Fatalf("rewind: %+v %q", app.confirm, app.notice)
+	}
+	f.mu.Lock()
+	calls := strings.Join(f.calls, "\n")
+	entries := f.state.Chats[0].Conversation.Entries
+	f.mu.Unlock()
+	if !strings.Contains(calls, "POST chats/chat1/rewind") || len(entries) != 3 || entries[2].Role != "rewind" {
+		t.Fatalf("rewind route: %d entries, calls:\n%s", len(entries), calls)
+	}
+	// The marker renders as a line of its own, with the detail.
+	lines := RenderTranscript(app.chat(), 100, false)
+	joined := plain(strings.Join(lines, "\n"))
+	if !strings.Contains(joined, "↶ Rewound to before “u2” (both)") || !strings.Contains(joined, "1 file restored, 0 files removed") {
+		t.Fatalf("marker: %s", joined)
+	}
+	// A running chat is refused before asking.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.submit(ctx, "/rewind 1 code")
+	if app.confirm != nil || app.notice != "stop the agent first (Esc)" {
+		t.Fatalf("running: %+v %q", app.confirm, app.notice)
+	}
+}
+
+func TestDiffCommandShowsChangesFoldedAndExpanded(t *testing.T) {
+	f := newFakeServer(t, State{Chats: []*Chat{{ID: "chat1", Title: "Diff", Provider: "claude", Status: "idle", Conversation: Conversation{Entries: []Entry{{ID: "u1", Role: "user", Text: "go"}}}}}})
+	ctx := context.Background()
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }, Size: func() (int, int) { return 100, 40 }}
+	app.refreshState(ctx)
+	app.submit(ctx, "/diff")
+	if app.diff == nil || app.notice != "2 changed file(s); Tab expands the hunks, /diff hides them" {
+		t.Fatalf("diff: %v %q", app.diff != nil, app.notice)
+	}
+	folded := plain(strings.Join(app.compose(100), "\n"))
+	for _, want := range []string{"Changes since this chat began: 2 file(s), +2 −1", "src/app.go  +2 −1", "logo.png  binary", "Tab expands the hunks"} {
+		if !strings.Contains(folded, want) {
+			t.Fatalf("folded lacks %q:\n%s", want, folded)
+		}
+	}
+	if strings.Contains(folded, "+new") {
+		t.Fatal("folded view shows hunks")
+	}
+	app.handleKey(ctx, Key{Kind: KeyTab})
+	expanded := plain(strings.Join(app.compose(100), "\n"))
+	for _, want := range []string{"@@ -1,2 +1,3 @@", "-old", "+new", "+more", "(not in the diff)"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded lacks %q:\n%s", want, expanded)
+		}
+	}
+	app.submit(ctx, "/diff")
+	if app.diff != nil || app.notice != "changes hidden" {
+		t.Fatalf("hide: %v %q", app.diff != nil, app.notice)
+	}
+	// Switching chats drops it.
+	app.submit(ctx, "/diff")
+	app.selectChat("chat1")
+	if app.diff != nil {
+		t.Fatal("selectChat kept the diff")
+	}
+	if got := splitDiff("diff --git a/x b/x\n+1\ndiff --git a/y b/y\n+2\n"); got["x"] != "diff --git a/x b/x\n+1\n" || got["y"] != "diff --git a/y b/y\n+2\n" {
+		t.Fatalf("splitDiff: %v", got)
 	}
 }

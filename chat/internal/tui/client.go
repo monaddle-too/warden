@@ -453,3 +453,63 @@ func (c *Client) stream(ctx context.Context, receive func(*State)) error {
 	}
 	return scanner.Err()
 }
+
+// Checkpoint is one workspace checkpoint as the runner records it: the
+// user message it was taken before (ID) and the snapshot commit.
+type Checkpoint struct {
+	ID      string `json:"id"`
+	ChatID  string `json:"chatID"`
+	Commit  string `json:"commit"`
+	Store   string `json:"store"`
+	Changed bool   `json:"changed"`
+}
+
+// ChangedFile is one file of the session diff with its counts.
+type ChangedFile struct {
+	Path    string `json:"path"`
+	Added   int    `json:"added"`
+	Removed int    `json:"removed"`
+	Binary  bool   `json:"binary"`
+}
+
+// WorkspaceChanges is the session diff: the workspace against the chat's
+// first checkpoint (or its last code rewind), as git's unified diff.
+type WorkspaceChanges struct {
+	Base      string        `json:"base"`
+	Files     []ChangedFile `json:"files"`
+	Diff      string        `json:"diff"`
+	Truncated bool          `json:"truncated"`
+}
+
+// RewindResult is what a rewind did (chats.RewindResult).
+type RewindResult struct {
+	MessageID    string   `json:"messageID"`
+	What         string   `json:"what"`
+	Restored     []string `json:"restored"`
+	Removed      []string `json:"removed"`
+	Conversation string   `json:"conversation"`
+}
+
+func (c *Client) Checkpoints(ctx context.Context, chatID string) ([]Checkpoint, error) {
+	var out struct {
+		Checkpoints []Checkpoint `json:"checkpoints"`
+	}
+	err := c.do(ctx, "GET", "chats/"+url.PathEscape(chatID)+"/checkpoints", nil, &out)
+	return out.Checkpoints, err
+}
+
+// Rewind takes the chat back to before a user message: what is "code",
+// "conversation" or "both".
+func (c *Client) Rewind(ctx context.Context, chatID, messageID, what string) (RewindResult, error) {
+	var out RewindResult
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/rewind", map[string]string{"turnID": messageID, "what": what}, &out)
+	return out, err
+}
+
+func (c *Client) Diff(ctx context.Context, chatID string) (*WorkspaceChanges, error) {
+	var out WorkspaceChanges
+	if err := c.do(ctx, "GET", "chats/"+url.PathEscape(chatID)+"/diff", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

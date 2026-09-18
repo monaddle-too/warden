@@ -51,9 +51,12 @@ type App struct {
 	rows     int  // transcript rows in the last frame
 	expanded bool // show tool output and diffs in full
 	quiet    bool // hide tool steps and thinking (Ctrl+O)
-	redraw   bool // clear the screen on the next draw (Ctrl+L)
-	quit     bool
-	ctrlC    time.Time // last Ctrl+C; a second within ctrlCQuit quits
+	// diff is the session diff /diff fetched, shown under the transcript
+	// (one line per file; Tab expands the hunks) until /diff again.
+	diff   *WorkspaceChanges
+	redraw bool // clear the screen on the next draw (Ctrl+L)
+	quit   bool
+	ctrlC  time.Time // last Ctrl+C; a second within ctrlCQuit quits
 
 	menu        *Menu
 	menuOff     string // the draft the menu was dismissed for (Esc)
@@ -119,6 +122,7 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /new [title] /chats /switch N · /rename TITLE /archive /restore /delete
            /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
            /stop /model M /provider P · /open /previews /preview N /unpublish N
+           /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
            /find TEXT /copy /expand /verbose /clear /quit
 composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
            @path completes a workspace path (Tab or Enter accepts)
@@ -287,6 +291,7 @@ func (a *App) Run(ctx context.Context) error {
 // selectChat makes id the current chat: the view goes to the tail, menus
 // close and the editor takes that chat's prompt history.
 func (a *App) selectChat(id string) {
+	a.diff = nil
 	if a.ChatID != id {
 		a.saveHistory()
 	}
@@ -932,6 +937,10 @@ func (a *App) command(ctx context.Context, line string) {
 		a.setNotice("draft cleared")
 	case "export":
 		a.export(c, arg)
+	case "rewind":
+		a.rewind(ctx, c, arg)
+	case "diff":
+		a.showDiff(ctx, c, arg)
 	case "verbose":
 		a.handleKey(ctx, Key{Kind: KeyCtrlO})
 	case "open":
@@ -1204,6 +1213,10 @@ func (a *App) compose(width int) []string {
 	default:
 		body = RenderTranscript(a.visible(c), width, a.expanded)
 		body = append(body, RenderApprovals(c, width)...)
+		if a.diff != nil {
+			body = append(body, "")
+			body = append(body, RenderChanges(a.diff, width, a.expanded)...)
+		}
 	}
 	// Notices sit under the transcript for a while.
 	if a.notice != "" && a.now().Sub(a.noticeAt) < 20*time.Second {
