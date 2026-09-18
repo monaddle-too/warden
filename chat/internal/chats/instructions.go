@@ -10,9 +10,9 @@ import (
 // they would put in a user-level CLAUDE.md. They live in Warden's store
 // keyed by principal, never in a sandbox — a workspace is shared by chats
 // and people, and the sandbox home is the agent's — and reach the agent
-// as text: appended to the system prompt when a session starts, for the
-// chat's creator and everyone who has sent into it, and once as a prefix
-// on the next message of a person the live session has not heard from.
+// as text appended to the system prompt when a session starts, for the
+// chat's creator and everyone who has sent into it. A live session is
+// relaunched when a sender's current text is not what it was given.
 
 // Instructions is one person's text with when they last changed it.
 type Instructions struct {
@@ -152,38 +152,37 @@ func sessionInstructions(st *State, c *Chat) (string, map[string]string) {
 	return strings.Join(blocks, "\n\n"), delivered
 }
 
-// messageInstructions is the block a message carries as a prefix when its
-// sender's current instructions are not what the live session was given
-// (a late joiner, or text changed since), and records that they now are.
-// "" when nothing is owed.
-func messageInstructions(st *State, m cv.Entry, instructed map[string]string) string {
-	if m.Sender == nil {
-		return ""
+// instructionsOwed reports whether the chat's next queued message is from
+// a person whose current instructions are not what the session was
+// launched with: a late joiner, or text changed or removed since. The
+// session is then relaunched (thread/resume keeps the conversation) so
+// the agent gets them in its system prompt: Claude Code treats a block
+// inside a user message as untrusted and declines it (live probe,
+// 2026-09-18), so a message prefix is no delivery.
+func (e *Engine) instructionsOwed(id string, a *activeRun) bool {
+	st := e.Store.Snapshot()
+	c := st.chat(id)
+	if c == nil {
+		return false
 	}
-	p := principalOf(*m.Sender)
-	v := st.Instructions[p]
-	if v == nil || strings.TrimSpace(v.Text) == "" || instructed[p] == v.Text {
-		return ""
+	for _, v := range c.Conversation.Entries {
+		if v.Delivery == "queued" {
+			return owed(&st, v, a.instructed)
+		}
 	}
-	instructed[p] = v.Text
-	return "[Warden: the standing instructions of the sender, kept for them like a user-level CLAUDE.md; they apply to this and their later messages.\n" + instructionsBlock(*m.Sender, v) + "]"
+	return false
 }
 
-// withInstructions puts the prefix before the message's text in the turn
-// input items (the first item is the text; images follow).
-func withInstructions(items []any, prefix string) []any {
-	if prefix == "" || len(items) == 0 {
-		return items
+// owed compares the message sender's current instructions with what the
+// session was given for them (instructed, by principal).
+func owed(st *State, m cv.Entry, instructed map[string]string) bool {
+	if m.Sender == nil {
+		return false
 	}
-	first, ok := items[0].(map[string]any)
-	if !ok {
-		return items
+	p := principalOf(*m.Sender)
+	current := ""
+	if v := st.Instructions[p]; v != nil && strings.TrimSpace(v.Text) != "" {
+		current = v.Text
 	}
-	text, _ := first["text"].(string)
-	copied := map[string]any{}
-	for k, v := range first {
-		copied[k] = v
-	}
-	copied["text"] = prefix + "\n\n" + text
-	return append([]any{copied}, items[1:]...)
+	return instructed[p] != current
 }

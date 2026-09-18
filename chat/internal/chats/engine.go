@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -52,10 +53,10 @@ type activeRun struct {
 	// them.
 	usage, usageBase cv.Usage
 	usageTurn        string
-	// instructed is, by principal, the instructions text this session was
-	// given (in its system prompt, or as a message prefix), so a person's
-	// block is delivered once and again only when it changes. Only the
-	// run's goroutine touches it.
+	// instructed is, by principal, the instructions text this session's
+	// launch put in the agent's system prompt (instructions.go); a queued
+	// message whose sender's current text differs relaunches the session.
+	// Only the run's goroutine touches it.
 	instructed map[string]string
 }
 type Engine struct {
@@ -1028,7 +1029,6 @@ func (e *Engine) run(parent context.Context, id string) {
 	if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 		return
 	}
-	items = e.instruct(a, *message, items)
 	e.applyMode(ctx, id, &current, client)
 	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 	if err != nil {
@@ -1076,7 +1076,6 @@ func (e *Engine) run(parent context.Context, id string) {
 		if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 			return
 		}
-		items = e.instruct(a, *message, items)
 		e.applyMode(ctx, id, &current, client)
 		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 		if err != nil {
@@ -1096,17 +1095,6 @@ func (e *Engine) run(parent context.Context, id string) {
 		}
 		e.setStartup(id, stageFirstResponse, "waiting for the model's first reply")
 	}
-}
-
-// instruct prefixes the message with its sender's instructions when the
-// session has not been given them (a late joiner, or text changed since
-// the launch), and records that it now has.
-func (e *Engine) instruct(a *activeRun, m cv.Entry, items []any) []any {
-	if a.instructed == nil {
-		a.instructed = map[string]string{}
-	}
-	st := e.Store.Snapshot()
-	return withInstructions(items, messageInstructions(&st, m, a.instructed))
 }
 
 // turn drives one agent turn to completion. It returns nil once the turn
@@ -1164,6 +1152,9 @@ func (e *Engine) turn(ctx context.Context, id string, current *Chat, a *activeRu
 		case <-tick.C:
 			if !e.steers(current.Provider) || a.interrupting.Load() {
 				continue // Claude queues a separate turn; it does not implement Codex steering.
+			}
+			if e.instructionsOwed(id, a) {
+				continue // left queued: the session is relaunched for the sender's instructions after this turn
 			}
 			message, err := e.attempt(id, turnID)
 			if err != nil {
@@ -1274,6 +1265,12 @@ func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *
 				}
 			}
 		case <-tick.C:
+			if e.instructionsOwed(id, a) {
+				// The message stays queued; the run ends cleanly and the
+				// chat's next run launches with the sender's instructions.
+				log.Printf("chat %s: relaunching the agent session for a sender's standing instructions", id)
+				return nil, ""
+			}
 			message, err := e.resume(id)
 			if err != nil {
 				return nil, ""

@@ -71,9 +71,10 @@ func TestInstructionsRoutesArePerPerson(t *testing.T) {
 	}
 }
 
-// The blocks: named after the person (quoted), the creator first, then
-// senders in order of first appearance, people without text left out; a
-// message prefix only for text the session was not given.
+// The blocks: the header, then one per person (quoted name), the creator
+// first, then senders in order of first appearance, people without text
+// left out; owed says whether a message's sender has text the session was
+// not given, or had theirs changed or removed since.
 func TestInstructionBlocks(t *testing.T) {
 	owner := cv.Actor{PrincipalID: "owner"}
 	ada := cv.Actor{PrincipalID: "u1", Name: "Ada", Email: "ada@example.com"}
@@ -94,40 +95,44 @@ func TestInstructionBlocks(t *testing.T) {
 	if len(delivered) != 2 || delivered["owner"] != "Answer in haiku form." || delivered["u1"] != "Be terse.\n" {
 		t.Fatalf("%+v", delivered)
 	}
-	// Bob has no text: no prefix. Ada's was delivered: no prefix. A change
-	// to Ada's: one prefix, then none.
-	if p := messageInstructions(&st, cv.Entry{Sender: &bob}, delivered); p != "" {
-		t.Fatalf("bob: %q", p)
+	// Nobody with text: nothing appended, not even the header.
+	if text, _ = sessionInstructions(&State{}, c); text != "" {
+		t.Fatalf("%q", text)
 	}
-	if p := messageInstructions(&st, cv.Entry{Sender: &ada}, delivered); p != "" {
-		t.Fatalf("ada again: %q", p)
+	// Bob has no text and was given none: nothing owed. Ada's was given.
+	// A change to Ada's, or its removal, is owed; so is a late joiner's.
+	if owed(&st, cv.Entry{Sender: &bob}, delivered) || owed(&st, cv.Entry{Sender: &ada}, delivered) || owed(&st, cv.Entry{}, delivered) {
+		t.Fatal("owed with nothing changed")
 	}
 	st.Instructions["u1"].Text = "Be brief."
-	if p := messageInstructions(&st, cv.Entry{Sender: &ada}, delivered); !strings.HasPrefix(p, "[Warden: the standing instructions of the sender") || !strings.HasSuffix(p, "\nFrom \"Ada\":\nBe brief.]") {
-		t.Fatalf("ada changed: %q", p)
+	if !owed(&st, cv.Entry{Sender: &ada}, delivered) {
+		t.Fatal("changed text not owed")
 	}
-	if p := messageInstructions(&st, cv.Entry{Sender: &ada}, delivered); p != "" {
-		t.Fatalf("ada delivered twice: %q", p)
+	delete(st.Instructions, "u1")
+	if !owed(&st, cv.Entry{Sender: &ada}, delivered) {
+		t.Fatal("removed text not owed")
 	}
-	// A name is quoted; without name or email the stored name serves.
+	if !owed(&st, cv.Entry{Sender: &cv.Actor{PrincipalID: "u3"}}, delivered) {
+		t.Fatal("late joiner not owed")
+	}
+	// Without a name or email the stored name serves; without either, a
+	// participant.
 	st.Instructions["u2"] = &Instructions{Text: "x", Name: "Bob"}
-	if p := messageInstructions(&st, cv.Entry{Sender: &cv.Actor{PrincipalID: "u2"}}, map[string]string{}); !strings.HasSuffix(p, "\nFrom \"Bob\":\nx]") {
-		t.Fatalf("%q", p)
+	if b := instructionsBlock(cv.Actor{PrincipalID: "u2"}, st.Instructions["u2"]); b != "From \"Bob\":\nx" {
+		t.Fatalf("%q", b)
 	}
-	items := withInstructions([]any{map[string]any{"type": "text", "text": "hello", "text_elements": []any{}}, map[string]any{"type": "localImage"}}, "[x]")
-	if len(items) != 2 || agent.Map(items[0])["text"] != "[x]\n\nhello" || agent.Map(items[0])["type"] != "text" || agent.Map(items[1])["type"] != "localImage" {
-		t.Fatalf("%+v", items)
-	}
-	if got := withInstructions(items, ""); len(got) != 2 || agent.Map(got[0])["text"] != "[x]\n\nhello" {
-		t.Fatalf("%+v", got)
+	if b := instructionsBlock(cv.Actor{PrincipalID: "u9"}, &Instructions{Text: "y"}); b != "From \"a participant\":\ny" {
+		t.Fatalf("%q", b)
 	}
 }
 
 // A session's launch carries the participants' blocks (the stream request
 // for Claude's system prompt, developerInstructions for Codex); a late
-// joiner's first message into the live session carries their block as a
-// prefix, their next one does not; the creator is recorded.
-func TestInstructionsReachTheLaunchAndLateJoiners(t *testing.T) {
+// joiner's message into the live session, or one after a person changed
+// their text, relaunches the session (a second stream request with the
+// current blocks, the message itself untouched); a sender whose text the
+// session has is answered on the same session.
+func TestInstructionsReachTheLaunchAndRelaunchForLateJoiners(t *testing.T) {
 	e, w := residentSetup(t)
 	owner := cv.Actor{PrincipalID: "owner"}
 	ada := cv.Actor{PrincipalID: "u1", Name: "Ada"}
@@ -144,88 +149,93 @@ func TestInstructionsReachTheLaunchAndLateJoiners(t *testing.T) {
 	if c := e.Store.Snapshot().chat(id); c.Creator == nil || c.Creator.PrincipalID != "owner" {
 		t.Fatalf("creator %+v", c.Creator)
 	}
+	streams := func() []sandbox.Request {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		var out []sandbox.Request
+		for _, r := range w.requests {
+			if r.Operation == "stream" {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	input := func(i int) string {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		text, _ := agent.Map(w.inputs[i][0])["text"].(string)
+		return text
+	}
 	if err = e.MessageFrom(id, "Hello", cv.ID(), owner); err != nil {
 		t.Fatal(err)
 	}
 	until(t, func() bool { return w.turnCount() == 1 })
 	w.mu.Lock()
-	var stream sandbox.Request
-	for _, r := range w.requests {
-		if r.Operation == "stream" {
-			stream = r
-		}
-	}
-	first := agent.Map(w.inputs[0][0])["text"]
 	developer := w.developer
 	w.mu.Unlock()
-	if stream.Instructions != instructionsHeader+"\n\nFrom \"the owner\":\nAnswer in haiku form." {
-		t.Fatalf("stream instructions %q", stream.Instructions)
+	if s := streams(); len(s) != 1 || s[0].Instructions != instructionsHeader+"\n\nFrom \"the owner\":\nAnswer in haiku form." {
+		t.Fatalf("stream instructions %+v", s)
 	}
 	if !strings.HasPrefix(developer, "You are an agent in a Warden-managed sandbox.") || !strings.HasSuffix(developer, "\n\nFrom \"the owner\":\nAnswer in haiku form.") {
 		t.Fatalf("developerInstructions %q", developer)
 	}
-	if first != "Hello" {
-		t.Fatalf("first message prefixed: %q", first)
+	if input(0) != "Hello" {
+		t.Fatalf("first message: %q", input(0))
 	}
 	completeTurn(t, e, w, id)
-	// Ada joins the live session: her block once, as a prefix.
+	// The owner again: the same session answers.
+	sendAndDeliver(t, e, id, "Still me")
+	until(t, func() bool { return w.turnCount() == 2 })
+	if len(streams()) != 1 {
+		t.Fatal("relaunched for a sender the session knows")
+	}
+	completeTurn(t, e, w, id)
+	// Ada joins the live session: it is relaunched with both blocks and
+	// her message is sent as written.
 	if err = e.MessageFrom(id, "Hi from Ada", cv.ID(), ada); err != nil {
 		t.Fatal(err)
 	}
-	until(t, func() bool { return w.turnCount() == 2 })
-	w.mu.Lock()
-	second, _ := agent.Map(w.inputs[1][0])["text"].(string)
-	w.mu.Unlock()
-	if !strings.HasPrefix(second, "[Warden: the standing instructions of the sender") || !strings.HasSuffix(second, "\nFrom \"Ada\":\nBe terse.]\n\nHi from Ada") {
-		t.Fatalf("late joiner: %q", second)
+	until(t, func() bool { return w.turnCount() == 3 })
+	if s := streams(); len(s) != 2 || s[1].Instructions != instructionsHeader+"\n\nFrom \"the owner\":\nAnswer in haiku form.\n\nFrom \"Ada\":\nBe terse." {
+		t.Fatalf("relaunch: %+v", s)
+	}
+	if input(2) != "Hi from Ada" {
+		t.Fatalf("late joiner's message: %q", input(2))
 	}
 	completeTurn(t, e, w, id)
 	if err = e.MessageFrom(id, "Again", cv.ID(), ada); err != nil {
 		t.Fatal(err)
 	}
-	until(t, func() bool { return w.turnCount() == 3 })
-	w.mu.Lock()
-	third := agent.Map(w.inputs[2][0])["text"]
-	w.mu.Unlock()
-	if third != "Again" {
-		t.Fatalf("delivered twice: %q", third)
+	until(t, func() bool { return w.turnCount() == 4 })
+	if len(streams()) != 2 {
+		t.Fatal("relaunched twice for the same text")
 	}
 	completeTurn(t, e, w, id)
-	// The owner changes theirs: the next message carries the new text.
+	// The owner changes theirs: relaunched with the new text.
 	if err = e.SetInstructions(owner, "Answer in limericks."); err != nil {
 		t.Fatal(err)
 	}
 	if err = e.MessageFrom(id, "Once more", cv.ID(), owner); err != nil {
 		t.Fatal(err)
 	}
-	until(t, func() bool { return w.turnCount() == 4 })
-	w.mu.Lock()
-	fourth, _ := agent.Map(w.inputs[3][0])["text"].(string)
-	w.mu.Unlock()
-	if !strings.HasSuffix(fourth, "\nFrom \"the owner\":\nAnswer in limericks.]\n\nOnce more") {
-		t.Fatalf("changed text: %q", fourth)
+	until(t, func() bool { return w.turnCount() == 5 })
+	if s := streams(); len(s) != 3 || s[2].Instructions != instructionsHeader+"\n\nFrom \"the owner\":\nAnswer in limericks.\n\nFrom \"Ada\":\nBe terse." {
+		t.Fatalf("changed text: %+v", s)
+	}
+	if input(4) != "Once more" {
+		t.Fatalf("%q", input(4))
 	}
 	completeTurn(t, e, w, id)
-	// A fresh launch carries everyone's current text in order.
-	e.releaseChat(t.Context(), id)
-	until(t, func() bool { return !e.sessionAlive(id) })
-	if err = e.MessageFrom(id, "Back", cv.ID(), owner); err != nil {
+	// Removing theirs relaunches too, without their block.
+	if err = e.SetInstructions(ada, ""); err != nil {
 		t.Fatal(err)
 	}
-	until(t, func() bool { return w.turnCount() == 5 })
-	w.mu.Lock()
-	for _, r := range w.requests {
-		if r.Operation == "stream" {
-			stream = r
-		}
+	if err = e.MessageFrom(id, "Gone", cv.ID(), ada); err != nil {
+		t.Fatal(err)
 	}
-	fifth := agent.Map(w.inputs[4][0])["text"]
-	w.mu.Unlock()
-	if stream.Instructions != instructionsHeader+"\n\nFrom \"the owner\":\nAnswer in limericks.\n\nFrom \"Ada\":\nBe terse." {
-		t.Fatalf("relaunch instructions %q", stream.Instructions)
-	}
-	if fifth != "Back" {
-		t.Fatalf("relaunch prefixed: %q", fifth)
+	until(t, func() bool { return w.turnCount() == 6 })
+	if s := streams(); len(s) != 4 || s[3].Instructions != instructionsHeader+"\n\nFrom \"the owner\":\nAnswer in limericks." {
+		t.Fatalf("removed text: %+v", s)
 	}
 	completeTurn(t, e, w, id)
 }
