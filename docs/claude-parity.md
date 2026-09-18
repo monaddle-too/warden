@@ -376,7 +376,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 5 Slash-command pass-through — merged to main 32138ea (2026-09-17); verified as the Item 5 section says; TUI `/` menu from `chat.commands` left for a follow-up.
 - [x] 6 TUI catch-up — merged to main c60d938 (2026-09-17); verified as the Item 6 section says.
 - [x] 7 Workspace `.claude/` loading — verified on CLI 2.1.272, merged to main 32138ea (2026-09-17); the launch-flag change (`--setting-sources=project` + `disableAllHooks`) is recommended under "Decisions needed", not made.
-- [ ] 8 Compaction and context.
+- [x] 8 Compaction and context — merged to main e84a7bc (2026-09-17); verified as the Item 8 section says.
 - [ ] 9 Mid-session model, effort, thinking.
 - [ ] 10 Queueing and rewind.
 - [ ] 11 Checkpoints and session diff.
