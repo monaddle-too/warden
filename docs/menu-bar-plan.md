@@ -196,5 +196,13 @@ activity, eight at most.
   registered on the owner's home (`com.monaddle.warden.menu`, running
   under launchd beside the service). The full Go suite passed before the
   deploy.
+- 2026-09-18: on this branch too (c1c9354, found through the item):
+  approving two old document proposals "failed" with no reason on the
+  review page — the reason (the workspace's share had expired) was stored
+  but shown only under the Summary tab, in the agent's wording. Fixed in
+  `policy/docproposals.go` (`googleRefusal`, `docFailedNext`,
+  `outcome.detail`, a log line), `policy/sharing.go` `Document` (Google's
+  status and message), `DocumentReview.tsx` (failure under the badge on
+  every tab). Deployed to `~/.warden/release`.
 - Remaining: the owner's look at the dropdown; merge to main. Later: notifications from the feed (Go, `osascript`), a bundle if
   Login Items' name (`warden-menu`) bothers.
