@@ -1515,6 +1515,22 @@ button.attachment-chip {
   background: var(--danger);
 }
 
+/* The spend chip beside the model: the chat's cost (or tokens) so far. */
+.spend-chip {
+  display: inline-flex;
+  flex: none; /* a few characters: never the one the footer cuts */
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: default;
+  font-variant-numeric: tabular-nums;
+}
+.composer-model .composer-fast.disallowed {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* The divider where the agent compacted its context. */
 .compaction-entry {
   align-self: stretch;

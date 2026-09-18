@@ -104,10 +104,9 @@ func (c *cli) chat(args []string) error {
 		}
 		return nil
 	case "new":
+		// No title: the chat is named from its first exchange (the
+		// service's automatic titles, chats/title.go).
 		title := strings.Join(fs.Args(), " ")
-		if title == "" {
-			title = "Terminal chat " + time.Now().Format("Jan 2 15:04")
-		}
 		p := *provider
 		if p == "" {
 			p = "codex"

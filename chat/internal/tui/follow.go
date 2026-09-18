@@ -156,12 +156,6 @@ func followMessage(out io.Writer, c *Chat, messageID string, seen map[string]boo
 	}
 	switch message.Delivery {
 	case "failed":
-		if c.Running() {
-			// The service marks a message unconfirmed while it hands it
-			// over and confirms it with the turn; final only once the run
-			// is over.
-			return false, c.Status, nil
-		}
 		detail := message.Detail
 		if detail == "" {
 			detail = "not delivered"
@@ -174,7 +168,7 @@ func followMessage(out io.Writer, c *Chat, messageID string, seen map[string]boo
 		return false, c.Status, nil
 	}
 	if message.TurnID == nil {
-		return false, c.Status, nil
+		return false, c.Status, nil // "sending": handed over, not yet confirmed with its turn
 	}
 	*turn = *message.TurnID
 	streaming := false

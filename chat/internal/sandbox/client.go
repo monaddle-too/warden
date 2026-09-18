@@ -103,7 +103,8 @@ type Request struct {
 	Before string `json:"before,omitempty"`
 	// Instructions is the participants' standing instructions a stream
 	// appends to the agent's system prompt (memory.go: one block per
-	// person, assembled by the chat service); "" appends nothing.
+	// person, assembled by the chat service); "" appends nothing. On a
+	// oneshot it is the system prompt the one-shot CLI runs with.
 	Instructions string `json:"instructions,omitempty"`
 	// Scope says which memory location a memory-write's Directory names:
 	// "workspace" (CLAUDE.md, AGENTS.md, .claude/rules) or "auto" (the
@@ -154,7 +155,8 @@ type Response struct {
 	// Exec is what an "exec" came to: output, exit code, timeout.
 	Exec *ExecResult `json:"exec,omitempty"`
 	// Aside is what an "aside" (a side question to a forked copy of the
-	// chat's session) came to.
+	// chat's session) or a "oneshot" (a prompt to a fresh, tool-less CLI)
+	// came to.
 	Aside *AsideResult `json:"aside,omitempty"`
 	// Memory is a "memory-list": the workspace's instruction and memory
 	// files with their contents.

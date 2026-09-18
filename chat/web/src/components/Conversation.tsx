@@ -123,6 +123,7 @@ import { ApprovalCard } from "./Approvals";
 import { FindBar, isFindKey, modifierKey, type FindRequest } from "./FindBar";
 import { HistorySearch } from "./HistorySearch";
 import { ModelSelect, modelOptions } from "./ModelSelect";
+import { SpendChip } from "./SpendChip";
 import { ModeSelect } from "./ModeSelect";
 import { StyleSelect } from "./StyleSelect";
 import { CostCard } from "./CostCard";
@@ -782,9 +783,9 @@ export function Conversation({
                     ? {
                         id: "model:" + item.model.value,
                         label: item.model.label,
-                        hint: item.model.value,
+                        hint: item.model.hint || item.model.value,
                         icon: <Cpu size={15} />,
-                        disabled: modelLocked,
+                        disabled: modelLocked || item.model.disabled,
                       }
                     : {
                         id: "agent:" + item.command.name,
@@ -1710,6 +1711,7 @@ export function Conversation({
               {chat.conversation.context && (
                 <ContextMeter context={chat.conversation.context} />
               )}
+              <SpendChip chat={chat} />
               <span
                 className={`status-dot ${chat.startup && running ? "starting" : chat.status}`}
               />

@@ -668,6 +668,9 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	case "aside":
 		// A side question to a copy of the running agent session.
 		return w.aside(ctx, r)
+	case "oneshot":
+		// A prompt to a fresh, tool-less CLI beside the running session.
+		return w.oneshot(ctx, r)
 	case "memory-list":
 		return w.listMemory(ctx, r)
 	case "memory-write":

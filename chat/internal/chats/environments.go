@@ -33,8 +33,11 @@ type Environment struct {
 	Documents    []map[string]any `json:"documents"`
 	Repositories []any            `json:"repositories"`
 	Ports        []PortBinding    `json:"ports"`
-	Deleted      bool             `json:"deleted"`
-	Archived     bool             `json:"archived"`
+	// Rules are the workspace's permission rules (rules.go), applied to
+	// every chat of it.
+	Rules    []Rule `json:"rules"`
+	Deleted  bool   `json:"deleted"`
+	Archived bool   `json:"archived"`
 }
 type EnvironmentChat struct {
 	ID       string `json:"id"`
@@ -99,7 +102,10 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		}
 		seen[c.SandboxID] = true
 		chats := st.environmentChats(c.SandboxID)
-		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Resources: chats[0].Resources, Resizing: e.resizingOf(c.SandboxID), Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Deleted: st.deleted(c.SandboxID)}
+		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Resources: chats[0].Resources, Resizing: e.resizingOf(c.SandboxID), Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Rules: []Rule{}, Deleted: st.deleted(c.SandboxID)}
+		if rec := st.Environments[c.SandboxID]; rec != nil && len(rec.Rules) > 0 {
+			env.Rules = rec.Rules
+		}
 		env.Archived = true
 		for _, chat := range chats {
 			ec := EnvironmentChat{ID: chat.ID, Title: chat.Title, Status: chat.Status, Archived: chat.Archived}
