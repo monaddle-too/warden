@@ -113,6 +113,9 @@ type pathResult struct {
 	query string
 	paths []string
 	err   error
+	// resources are the chat's shared documents, repositories and
+	// previews, offered before the paths (complete.go resourceItems).
+	resources chats.Resources
 }
 
 // searchState is a Ctrl+R reverse search through the prompt history.
@@ -723,8 +726,11 @@ func (a *App) requestPaths(ctx context.Context, chatID, query string) {
 			}
 		}
 		paths, err := a.Client.Paths(ctx, chatID, query)
+		// The resources are the menu's other rows; a failure there only
+		// leaves them out.
+		resources, _ := a.Client.Resources(ctx, chatID)
 		select {
-		case a.pathResults <- pathResult{seq: seq, query: query, paths: paths, err: err}:
+		case a.pathResults <- pathResult{seq: seq, query: query, paths: paths, err: err, resources: resources}:
 		case <-ctx.Done():
 		}
 	}()
@@ -736,7 +742,7 @@ func (a *App) applyPaths(r pathResult) {
 		return
 	}
 	m := a.menu
-	m.Items, m.Note = nil, ""
+	m.Items, m.Note = resourceItems(r.resources, r.query), ""
 	if r.err != nil {
 		m.Note = sanitize(r.err.Error())
 		return
@@ -746,7 +752,7 @@ func (a *App) applyPaths(r pathResult) {
 	}
 	if len(m.Items) == 0 {
 		m.Note = "No matching paths"
-	} else if len(m.Items) >= 50 {
+	} else if len(r.paths) >= 50 {
 		m.Note = "More paths match; keep typing"
 	}
 	if m.Selected >= len(m.Items) {

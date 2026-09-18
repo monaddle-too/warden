@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"warden/chat/internal/chats"
 
 	"warden/chat/internal/sandbox"
 )
@@ -522,6 +523,14 @@ func (c *Client) Paths(ctx context.Context, chatID, query string) ([]string, err
 		return nil, err
 	}
 	return res.Paths, nil
+}
+
+// Resources lists what the chat can mention with "@": its workspace's
+// shared documents, repositories and previews (chats/mentions.go).
+func (c *Client) Resources(ctx context.Context, chatID string) (chats.Resources, error) {
+	var res chats.Resources
+	err := c.do(ctx, "GET", "chats/"+url.PathEscape(chatID)+"/resources", nil, &res)
+	return res, err
 }
 
 // DeleteEnvironment deletes a workspace: its sandbox and files go, its

@@ -145,6 +145,12 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.pathsHTTP(w, r, parts[1])
 		return
 	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "resources" {
+		// What the composer's "@" menu can mention (mentions.go).
+		resources, err := h.Engine.Resources(r.Context(), parts[1])
+		respond(w, resources, err)
+		return
+	}
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "diff" {
 		changes, err := h.Engine.Diff(r.Context(), parts[1])
 		respond(w, changes, err)

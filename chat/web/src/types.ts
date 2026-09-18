@@ -37,7 +37,15 @@ export type Entry = {
      never sent to the session. */
   aside?: Aside;
 };
-export type Fork = { chatID: string; title?: string; messageID?: string };
+export type Fork = {
+  chatID: string;
+  title?: string;
+  messageID?: string;
+  /* The fork took a copy of the workspace too. */
+  workspace?: boolean;
+  /* The marker on the source: chatID and title name the fork. */
+  into?: boolean;
+};
 export type Aside = {
   status: "running" | "completed" | "failed";
   error?: string;
@@ -430,6 +438,9 @@ export type Environment = {
   ports: { id: string; port: number; title: string; url: string }[];
   deleted: boolean;
   archived: boolean;
+  /* Set on a workspace created as a copy of another (a fork with "copy
+     the workspace"): which one, the chat it was forked from, and when. */
+  copiedFrom?: { sandboxID: string; name: string; chatID: string; at: number };
 };
 
 /* A person's standing instructions for the agent (me/instructions). */

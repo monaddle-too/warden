@@ -5,7 +5,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { workspacePaths } from "../api";
+import { chatResources, workspacePaths } from "../api";
+import { EMPTY_RESOURCES, type Resources } from "../composer";
 
 /* One row of the composer's suggestion list. */
 export type Suggestion = {
@@ -142,4 +143,45 @@ export function usePathCompletion(chatID: string, query: string | undefined) {
     paths: state.paths,
     error: state.query === query ? state.error : undefined,
   };
+}
+
+const RESOURCES_TTL = 15000;
+
+/* The chat's shared resources for the "@" menu (documents, repositories,
+   previews; chats/{id}/resources), asked for when a mention opens and
+   kept for a short while per chat, so typing through a mention asks
+   once; a failure leaves the list empty and the next mention asks
+   again. */
+export function useResourceCompletion(chatID: string, open: boolean) {
+  const cache = useRef<
+    { chatID: string; at: number; resources: Resources } | undefined
+  >(undefined);
+  const [resources, setResources] = useState<Resources>();
+  useEffect(() => {
+    if (!open) return;
+    const known = cache.current;
+    if (
+      known &&
+      known.chatID === chatID &&
+      Date.now() - known.at < RESOURCES_TTL
+    ) {
+      setResources(known.resources);
+      return;
+    }
+    let stale = false;
+    void chatResources(chatID).then(
+      (result) => {
+        if (stale) return;
+        cache.current = { chatID, at: Date.now(), resources: result };
+        setResources(result);
+      },
+      () => {
+        if (!stale) setResources(EMPTY_RESOURCES);
+      },
+    );
+    return () => {
+      stale = true;
+    };
+  }, [chatID, open]);
+  return open ? resources : undefined;
 }

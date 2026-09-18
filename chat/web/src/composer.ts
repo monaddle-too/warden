@@ -431,6 +431,88 @@ export function mentionFor(path: string) {
   return "@" + path + (path.endsWith("/") ? "" : " ");
 }
 
+/* Resource mentions (chats/mentions.go): the "@" menu offers, before the
+   workspace paths, the chat's shared documents, repositories and
+   previews, and picking one inserts a token — `@doc:"Budget 2026"`,
+   `@repo:owner/name`, `@preview:Site` — that the service expands for the
+   agent when the message is sent (the transcript keeps the token). The
+   kind can be typed to narrow the list (`@doc:bud`). */
+export type ResourceKind = "doc" | "repo" | "preview";
+export type Resources = {
+  documents: { id: string; title: string; kind: string; access: string }[];
+  repositories: { name: string; cloneURL: string; access: string[] }[];
+  previews: { id: string; title: string; port: number; url: string }[];
+};
+export const EMPTY_RESOURCES: Resources = {
+  documents: [],
+  repositories: [],
+  previews: [],
+};
+export type ResourceRow = {
+  kind: ResourceKind;
+  name: string;
+  hint: string;
+  /* The token the pick inserts, with its trailing space. */
+  insert: string;
+};
+export const RESOURCE_LIMIT = 12;
+
+/* The token for a resource: the name quoted when it has whitespace (or is
+   empty), its own quotes dropped; the same as chats.MentionToken. */
+export function mentionToken(kind: ResourceKind, name: string) {
+  const clean = name.trim().replace(/"/g, "");
+  return /\s/.test(clean) || !clean
+    ? `@${kind}:"${clean}"`
+    : `@${kind}:${clean}`;
+}
+
+/* The resource rows for an "@" query: with a kind typed (`doc:`, `repo:`,
+   `preview:`) only that kind, names filtered by the rest; otherwise every
+   resource whose kind or name contains the query. Documents, then
+   repositories, then previews; at most RESOURCE_LIMIT. */
+export function resourceItems(
+  resources: Resources | undefined,
+  query: string,
+): ResourceRow[] {
+  if (!resources) return [];
+  const q = query.trim().toLowerCase();
+  const colon = q.indexOf(":");
+  let kind: ResourceKind | "" = "";
+  let rest = q;
+  if (colon !== -1) {
+    const head = q.slice(0, colon);
+    if (head === "doc" || head === "repo" || head === "preview") {
+      kind = head;
+      rest = q.slice(colon + 1);
+    }
+  }
+  const matches = (k: ResourceKind, name: string) =>
+    kind
+      ? k === kind && name.toLowerCase().includes(rest)
+      : k.includes(rest) || name.toLowerCase().includes(rest);
+  const rows: ResourceRow[] = [];
+  const add = (k: ResourceKind, name: string, hint: string) => {
+    if (rows.length < RESOURCE_LIMIT && matches(k, name))
+      rows.push({ kind: k, name, hint, insert: mentionToken(k, name) + " " });
+  };
+  for (const d of resources.documents)
+    add(
+      "doc",
+      d.title || d.id,
+      [d.kind, d.access && `${d.access} access`].filter(Boolean).join(" · "),
+    );
+  for (const r of resources.repositories)
+    add("repo", r.name, ["repository", r.access.join(", ")].filter(Boolean).join(" · "));
+  for (const p of resources.previews) add("preview", p.title || p.id, p.url);
+  return rows;
+}
+
+/* Whether an "@" query asks for resources only (a kind prefix), so the
+   path lookup can be skipped. */
+export function resourceQuery(query: string) {
+  return /^(doc|repo|preview):/i.test(query.trim());
+}
+
 /* The text once a command has run: the command line is removed and any
    lines after it keep their place. */
 export function withoutCommand(text: string, trigger: Trigger) {

@@ -1,3 +1,4 @@
+import type { Resources } from "./composer";
 import { saveFile } from "./export";
 import type {
   Checkpoint,
@@ -244,16 +245,37 @@ export function sendQueued(chatID: string): Promise<unknown> {
 
 /* A sibling chat copied from this one up to `turnID` (a user message, or
    its turn); the whole transcript when unset. */
-export function forkChat(chatID: string, turnID?: string): Promise<ForkResult> {
+export function forkChat(
+  chatID: string,
+  turnID?: string,
+  copyWorkspace = false,
+): Promise<ForkResult> {
   return api<ForkResult>(`chats/${encodeURIComponent(chatID)}/fork`, {
     turnID: turnID || "",
+    copyWorkspace,
   });
 }
 export type ForkResult = {
   id: string;
   title: string;
   session: "forked" | "fresh" | "none";
+  /* The fork's workspace: the source's ("shared") or a copy of it. */
+  sandboxID?: string;
+  workspace?: "shared" | "copied";
 };
+
+/* What the chat can mention with "@": its workspace's shared documents,
+   repositories and previews (chats/mentions.go). */
+export async function chatResources(chatID: string): Promise<Resources> {
+  const result = await api<Partial<Resources>>(
+    `chats/${encodeURIComponent(chatID)}/resources`,
+  );
+  return {
+    documents: Array.isArray(result.documents) ? result.documents : [],
+    repositories: Array.isArray(result.repositories) ? result.repositories : [],
+    previews: Array.isArray(result.previews) ? result.previews : [],
+  };
+}
 
 /* A side question answered from a copy of the chat's session; the answer
    lands as an aside entry over the event stream too. */

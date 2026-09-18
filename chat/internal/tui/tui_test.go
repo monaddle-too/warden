@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"warden/chat/internal/chats"
 )
 
 func TestDecodeKeys(t *testing.T) {
@@ -211,13 +212,15 @@ func TestFrameShowsTailAndScrolls(t *testing.T) {
 // fakeServer is a minimal warden-chat: state, chats, messages, approvals,
 // and an event stream that emits the current state whenever it changes.
 type fakeServer struct {
-	mu      sync.Mutex
-	state   State
-	calls   []string
-	uploads []string // name:content, in upload order
-	srv     *httptest.Server
-	token   string
-	notes   []string // "#" notes the memory route received
+	// resources is what chats/{id}/resources answers (nil: nothing shared).
+	resources *chats.Resources
+	mu        sync.Mutex
+	state     State
+	calls     []string
+	uploads   []string // name:content, in upload order
+	srv       *httptest.Server
+	token     string
+	notes     []string // "#" notes the memory route received
 	// fastMode is whether the fake Warden allows fast mode.
 	fastMode bool
 	// instructions is the person's text (me/instructions); memory the
@@ -278,6 +281,14 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		f.state.Chats = append(f.state.Chats, &Chat{ID: id, Title: body["title"].(string), Provider: body["provider"].(string), Status: "idle"})
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]string{"id": id})
+	case strings.HasSuffix(path, "/resources") && r.Method == "GET":
+		f.mu.Lock()
+		resources := f.resources
+		f.mu.Unlock()
+		if resources == nil {
+			resources = &chats.Resources{Documents: []chats.ResourceDocument{}, Repositories: []chats.ResourceRepository{}, Previews: []chats.ResourcePreview{}}
+		}
+		json.NewEncoder(w).Encode(resources)
 	case strings.HasSuffix(path, "/paths") && r.Method == "GET":
 		q := r.URL.Query().Get("q")
 		var paths []string
@@ -1012,6 +1023,26 @@ func TestTriggerAt(t *testing.T) {
 	if items := commandItems("", []Command{{Name: "compact", Hint: "from the chat"}}); items[len(items)-1].Name != "compact" {
 		t.Fatal("chat commands are not listed after the built-ins")
 	}
+	r := chats.Resources{Documents: []chats.ResourceDocument{{ID: "1", Title: "Plan A", Kind: "document", Access: "read"}, {ID: "2", Title: "", Kind: "document"}}, Repositories: []chats.ResourceRepository{{Name: "o/n", Access: []string{"contents", "issues"}}}, Previews: []chats.ResourcePreview{{ID: "p1", Title: "Site", URL: "https://s/"}}}
+	labels := func(items []MenuItem) string {
+		var out []string
+		for _, i := range items {
+			out = append(out, i.Label+"|"+i.Insert+"|"+i.Hint)
+		}
+		return strings.Join(out, "\n")
+	}
+	if got := labels(resourceItems(r, "")); got != "doc: Plan A|@doc:\"Plan A\" |document · read access\ndoc: 2|@doc:2 |document\nrepo: o/n|@repo:o/n |repository · contents, issues\npreview: Site|@preview:Site |https://s/" {
+		t.Fatalf("all resources:\n%s", got)
+	}
+	if got := labels(resourceItems(r, "doc:plan")); got != "doc: Plan A|@doc:\"Plan A\" |document · read access" {
+		t.Fatalf("doc: rows:\n%s", got)
+	}
+	if got := labels(resourceItems(r, "PREV")); got != "preview: Site|@preview:Site |https://s/" {
+		t.Fatalf("kind by name:\n%s", got)
+	}
+	if got := resourceItems(r, "repo:zzz"); len(got) != 0 {
+		t.Fatalf("no match: %+v", got)
+	}
 	if mentionFor("src/") != "@src/" || mentionFor("src/app.go") != "@src/app.go " {
 		t.Fatal("mentionFor")
 	}
@@ -1146,6 +1177,37 @@ func TestPathCompletion(t *testing.T) {
 	if app.editor.Text() != "look at @src/app.go " || app.menu != nil {
 		t.Fatalf("after a file: %q menu %v", app.editor.Text(), app.menu != nil)
 	}
+	// The chat's shared resources come before the paths: every one on a
+	// bare "@", those of a kind once "doc:" (or repo:, preview:) is typed,
+	// and picking one inserts its token.
+	f.mu.Lock()
+	f.resources = &chats.Resources{Documents: []chats.ResourceDocument{{ID: "1AbC", Title: "Budget 2026", Kind: "spreadsheet", Access: "read"}}, Repositories: []chats.ResourceRepository{{Name: "monaddle-too/warden", Access: []string{"contents"}}}, Previews: []chats.ResourcePreview{{ID: "b1", Title: "Dev server", Port: 3000, URL: "https://b1.example/"}}}
+	f.mu.Unlock()
+	app.editor.Set("")
+	app.menu = nil
+	typeText(app, ctx, "@")
+	awaitPaths()
+	if len(app.menu.Items) != 7 || app.menu.Items[0].Label != "doc: Budget 2026" || app.menu.Items[1].Label != "repo: monaddle-too/warden" || app.menu.Items[2].Label != "preview: Dev server" || app.menu.Items[3].Label != "src/" {
+		t.Fatalf("resources then paths: %+v", app.menu.Items)
+	}
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.editor.Text() != `@doc:"Budget 2026" ` || app.menu != nil {
+		t.Fatalf("after a document: %q menu %v", app.editor.Text(), app.menu != nil)
+	}
+	typeText(app, ctx, "@repo:mon")
+	awaitPaths()
+	if len(app.menu.Items) != 1 || app.menu.Items[0].Insert != "@repo:monaddle-too/warden " || app.menu.Note != "" {
+		t.Fatalf("repo rows: %+v", app.menu)
+	}
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.editor.Text() != `@doc:"Budget 2026" @repo:monaddle-too/warden ` {
+		t.Fatalf("after a repository: %q", app.editor.Text())
+	}
+	app.editor.Set("look at @src/app.go ")
+	app.menu = nil
+	f.mu.Lock()
+	f.resources = nil
+	f.mu.Unlock()
 	// A stale answer (older sequence) is ignored.
 	typeText(app, ctx, "@zz")
 	awaitPaths()

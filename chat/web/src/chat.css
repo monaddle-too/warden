@@ -1677,6 +1677,31 @@ button.danger:hover {
   color: inherit;
   font-weight: 600;
 }
+/* The fork dialog's "copy the workspace" choice. */
+.fork-copy {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 12px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.fork-copy input {
+  margin-top: 3px;
+}
+.fork-copy > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.fork-copy small {
+  color: var(--muted);
+}
+.workspace-origin a {
+  color: inherit;
+  font-weight: 600;
+}
 .composer-style select.style-pending {
   border-color: var(--accent);
 }

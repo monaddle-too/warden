@@ -384,6 +384,24 @@ export function WorkspacePanel({
           resumed.
         </p>
       )}
+      {ws?.copiedFrom && (
+        <p className="workspace-note workspace-origin">
+          Copied from{" "}
+          <a
+            href={"?chat=" + encodeURIComponent(ws.copiedFrom.chatID)}
+            title="Open the chat this workspace was forked from"
+            onClick={(e) => {
+              e.preventDefault();
+              onSelectChat(ws.copiedFrom!.chatID);
+            }}
+          >
+            {ws.copiedFrom.name || "another workspace"}
+          </a>{" "}
+          at {when(ws.copiedFrom.at)}. Its files came along; shared
+          documents, repositories and network stay with the original until
+          shared here.
+        </p>
+      )}
       {!ws?.deleted && (limits || ws?.usage) && (
         <section className="workspace-section">
           <h2>
