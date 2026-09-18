@@ -86,3 +86,7 @@ choices, on the New chat form and in the workspace panel's Change… row.
   1–12 before), `cpuChoices`/`memoryChoices` moved to `sizes.ts`.
 - Remaining: merge to main; a live look at the cluster line on GKE some
   day; the TUI's `warden chat new --cpus/--memory` has no capacity hint.
+- 2026-09-18: merged to main as 2d87ec6 (fast-forward after merging main's
+  workspace keepalive; Go, web and chart verification green). The local
+  install runs c496372, the same feature code without keepalive; redeploy
+  main when convenient.
