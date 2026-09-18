@@ -436,6 +436,79 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [ ] 14 Project MCP, OAuth, plugins.
 - [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
 
+### Round 2 B: permission rules
+
+Branch `feat/parity-r2-b-rules`, worktree `.local/warden-parity-r2-b-rules`,
+from main adbf4f5 (2026-09-18). Items R2.4 (workspace-wide allow-always),
+R2.5 (the rules editor) and R2.6 (permission history), on item 3's model.
+
+Design (as implemented):
+
+1. A rule is a kind (`allow`, `deny`, `ask`) and a pattern in Claude Code's
+   own syntax (`chats/rules.go`): `Bash(git *)` (or the CLI's `git:*`) is
+   `git` alone or `git ` followed by anything, `Bash(npm test)` exactly
+   that command, `*` anywhere else a glob (`Bash(git * main)`);
+   `Edit(src/**)` a path glob (`**` spans directories, `*` and `?` stay
+   within one) matched against the call's `file_path`/`path`/
+   `notebook_path` and against every tail of it since the engine does not
+   know the guest's working directory, `/…` or `//…` absolute, `~/…` under
+   `/home/*` or `/root`; `Edit` covers every file tool (Write, MultiEdit,
+   NotebookEdit) and `Read` every read tool (Glob, Grep, LS), as the CLI's
+   own rules do; `WebFetch(domain:example.com)` the host or a subdomain;
+   `mcp__warden__*` a glob on the tool name; a bare name every call of
+   that tool. A chained command (`&&`, `||`, `;`, `|`, `&`, a newline; not
+   `>&`) is matched part by part: an allow needs every part covered (and
+   never covers a substitution), a deny or ask fires on any part — so
+   `Bash(git *)` does not allow `git status && rm -rf /` while
+   `deny Bash(rm *)` catches it. Leading `FOO=1` assignments are dropped
+   from a part. Quotes are not parsed (a `;` inside one splits too, which
+   only makes an allow harder and a deny easier).
+2. Rules live in two places: the chat's (`Chat.Rules`, JSON `rules`;
+   item 3's `allowed` `{tool, command}` entries are converted on open —
+   a program prefix to `Bash(prefix *)`, a chained command to
+   `Bash(the command)`, `edit` to `Edit`) and the workspace's, on a new
+   per-sandbox record (`State.Environments[sandboxID].Rules`; the
+   environment view carries them as `rules`). Each rule has an id, an
+   origin (`editor`, or `always` for an "Allow always" answer, with the
+   chat it came from when the rule is the workspace's), who added it and
+   when. The engine consults both: a deny wins over an ask over an allow
+   whichever scope holds it; within a kind the chat's rules come first.
+3. Per mode (`decide` in `chats/permissions.go`): a matching deny declines
+   in every mode, auto included, with the model reading "a permission
+   rule of this workspace denies it (deny Bash(rm *)); do not retry it,
+   find another way or ask" inside the CLI's own rejection wording; a
+   matching ask makes a card in every mode; a matching allow accepts in
+   ask and plan mode (auto accepts anyway); `ExitPlanMode` is always the
+   owner's. Rules answer the asks the CLI raises (file edits, commands
+   that write or are not in its read-only set) and are not pushed into
+   the CLI's settings, so a rule on what the CLI never asks about (`Read`,
+   `ls`, `git status`) does not fire; the panel says so.
+4. "Allow always" takes a scope: the card has two buttons (in this chat /
+   in this workspace, the rule in the title), the TUI `a` / `A` (or
+   `/allow`, `/allow chat`), the route body `scope`. The rule recorded is
+   `RuleFor`'s, as item 3 chose it (`Bash(git commit *)`, `Edit`).
+5. Editor: the workspace panel's Permissions section (Claude chats) lists
+   the workspace's rules with kind, pattern and origin ("Allow always in
+   “chat” by Dan", "from the editor by the owner"), an add form (kind +
+   pattern, checked by `rules.ts` before the round trip with the service's
+   wording), Remove; then each chat's own rules, read-only with Remove.
+   TUI `/rules` (numbered: the workspace's, then each chat's), `/rules
+   add allow|deny|ask PATTERN` (a workspace rule), `/rules rm N`. Routes
+   `GET|POST environments/{id}/rules`, `POST …/rules/{rid}/remove`, the
+   same under `chats/{id}/rules` (GET gives the same workspace view).
+6. History: every `can_use_tool` decision is recorded on the chat
+   (`Chat.Permissions`, last 200; left out of the streamed state, served
+   by `GET chats/{id}/permissions`): tool, a one-line summary (the
+   command, the path, the URL), allow/deny, how (`auto`, `rule` with the
+   rule and its scope, `card` with who answered, the rule an "Allow
+   always" made, a denial's message), when. "Permissions…" in the chat
+   menu opens it newest first; TUI `/permissions`.
+
+Left: rules for what the CLI never asks about would need the CLI's own
+rule channel (`updatedPermissions` per session or its settings), which
+this round keeps out; the collaborator policy of item 3 still applies to
+who may add rules (every admitted person, today).
+
 ### Item 15: the long tail
 
 Branch `feat/parity-15-long-tail`, worktree `.local/warden-parity-15-long-tail`,
