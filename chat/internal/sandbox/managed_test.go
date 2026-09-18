@@ -78,6 +78,9 @@ type testRuntime struct {
 	// digests is what ImageDigest answers per runtime name (a snapshot's
 	// digest for a copy or a regeneration); a name without one errors.
 	digests map[string]string
+	// survivors is what a restarted worker's Reconcile finds still
+	// running: runtime name to the generation of its guest.
+	survivors map[string]string
 }
 
 func (d *testRuntime) record(s string) {
@@ -166,13 +169,24 @@ func (d *testRuntime) Remove(_ context.Context, name string) error {
 	return nil
 }
 
-// Reconcile records the registered names a restarted worker hands the
-// driver, sorted so tests can compare them.
-func (d *testRuntime) Reconcile(_ context.Context, registered []string) error {
-	names := append([]string(nil), registered...)
+// Reconcile records the registered runtimes a restarted worker hands the
+// driver (name, with "*" for one registered resident), sorted so tests can
+// compare them, and reports the names in survivors as still running.
+func (d *testRuntime) Reconcile(_ context.Context, registered []RegisteredRuntime) ([]string, error) {
+	var names, kept []string
+	for _, r := range registered {
+		name := r.Name
+		if r.Resident {
+			name += "*"
+		}
+		names = append(names, name)
+		if d.survivors[r.Name] == r.Generation && r.Resident {
+			kept = append(kept, r.Name)
+		}
+	}
 	sort.Strings(names)
 	d.record("reconcile:" + strings.Join(names, ","))
-	return nil
+	return kept, nil
 }
 
 // Publish serves a fake guest service on a fresh loopback port, the same
@@ -1363,7 +1377,7 @@ func TestSpareSandboxIsBootedAheadAndAdoptedByTheNextEnvironment(t *testing.T) {
 	for i, c := range calls {
 		if strings.HasPrefix(c, "reconcile:") {
 			reconciled = i
-			if c != "reconcile:"+spareName {
+			if c != "reconcile:"+spareName+"*" {
 				t.Fatalf("reconcile did not name the registered sandbox: %s", c)
 			}
 		}
@@ -1375,6 +1389,123 @@ func TestSpareSandboxIsBootedAheadAndAdoptedByTheNextEnvironment(t *testing.T) {
 		if strings.HasPrefix(c, "remove:wc-spare-") || strings.HasPrefix(c, "stop:") {
 			t.Fatalf("reconcile ran before the registry pass: %v", calls)
 		}
+	}
+}
+
+// A restarted worker on a driver whose guests outlive it keeps a sandbox
+// whose guest the driver finds still running at its generation: running,
+// with no run on it, its grant ended, its idle window started over; the
+// driver stops the guests it does not keep, and the worker stops nothing
+// itself. A later prepare resumes the kept sandbox without a stop or a
+// creation, and the idle sweep still stops it once the window passes.
+func TestRestartKeepsTheGuestsTheDriverFindsRunning(t *testing.T) {
+	w, d, g, r := managedFixture(t)
+	prepareFixture(t, w, r)
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	generation, activity := s.Generation, s.LastActivity
+	w.mu.Unlock()
+	if s.State != "running" || s.Active == nil || generation == "" {
+		t.Fatalf("fixture not running: %s active=%v generation=%q", s.State, s.Active != nil, generation)
+	}
+	// A second sandbox on the same worker whose guest did not survive.
+	other := r
+	other.ChatID, other.SandboxID, other.RunID = "chat-two", "sandbox-two", "run-two"
+	if _, err := w.dispatch(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
+	prepareFixture(t, w, other)
+	w.mu.Lock()
+	lostName := w.managed.Sandboxes[other.SandboxID].RuntimeName
+	w.mu.Unlock()
+	later := activity.Add(20 * time.Minute)
+	d.survivors = map[string]string{s.RuntimeName: generation}
+	fresh := NewWorker(w.Root, "/never-host-exec", "template")
+	fresh.Runtime, fresh.Gate, fresh.RuntimeDir = d, g, w.RuntimeDir
+	fresh.IdleTimeout = 30 * time.Minute
+	fresh.Now = func() time.Time { return later }
+	before := len(g.calls)
+	if err := fresh.initializeManaged(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fresh.mu.Lock()
+	kept, lost := fresh.managed.Sandboxes[r.SandboxID], fresh.managed.Sandboxes[other.SandboxID]
+	fresh.mu.Unlock()
+	if kept.State != "running" || kept.Active != nil || kept.Generation != generation || !kept.LastActivity.Equal(later) {
+		t.Fatalf("kept sandbox after restart: state=%s active=%v generation=%q activity=%v", kept.State, kept.Active != nil, kept.Generation, kept.LastActivity)
+	}
+	if lost.State != "stopped" || lost.Active != nil {
+		t.Fatalf("lost sandbox after restart: state=%s active=%v", lost.State, lost.Active != nil)
+	}
+	ended := 0
+	for _, c := range g.calls[before:] {
+		if c == "end" {
+			ended++
+		}
+	}
+	if ended != 2 {
+		t.Fatalf("both runs' grants must end at the restart: %v", g.calls[before:])
+	}
+	d.mu.Lock()
+	calls := append([]string(nil), d.calls...)
+	d.mu.Unlock()
+	reconciled := false
+	for _, c := range calls {
+		if strings.HasPrefix(c, "reconcile:") {
+			reconciled = true
+			if c != "reconcile:"+lostName+"*,"+s.RuntimeName+"*" && c != "reconcile:"+s.RuntimeName+"*,"+lostName+"*" {
+				t.Fatalf("reconcile did not name both sandboxes resident: %s", c)
+			}
+		}
+		if strings.HasPrefix(c, "stop:") && reconciled {
+			t.Fatalf("the worker stopped a guest the driver settles: %v", calls)
+		}
+	}
+	if !reconciled {
+		t.Fatal("restart did not reconcile the driver")
+	}
+	// The next prepare resumes the kept sandbox on the same generation
+	// without creating or stopping anything.
+	created, stops := len(d.created()), 0
+	resumed := r
+	resumed.RunID = "run-three"
+	prepareFixture(t, fresh, resumed)
+	d.mu.Lock()
+	for _, c := range d.calls {
+		if strings.HasPrefix(c, "stop:") {
+			stops++
+		}
+	}
+	d.mu.Unlock()
+	fresh.mu.Lock()
+	again := fresh.managed.Sandboxes[r.SandboxID]
+	fresh.mu.Unlock()
+	if again.State != "running" || again.Active == nil || again.Generation != generation || len(d.created()) != created || stops != 0 {
+		t.Fatalf("resume on the kept guest: state=%s active=%v generation=%q created=%d stops=%d", again.State, again.Active != nil, again.Generation, len(d.created()), stops)
+	}
+	// Once the run ends, the idle window counts from the restart.
+	fresh.mu.Lock()
+	again.Active = nil
+	fresh.mu.Unlock()
+	fresh.Now = func() time.Time { return later.Add(29 * time.Minute) }
+	if err := fresh.SweepIdle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fresh.mu.Lock()
+	state := fresh.managed.Sandboxes[r.SandboxID].State
+	fresh.mu.Unlock()
+	if state != "running" {
+		t.Fatalf("swept inside the idle window: %s", state)
+	}
+	fresh.Now = func() time.Time { return later.Add(31 * time.Minute) }
+	if err := fresh.SweepIdle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fresh.mu.Lock()
+	state = fresh.managed.Sandboxes[r.SandboxID].State
+	fresh.mu.Unlock()
+	if state != "stopped" {
+		t.Fatalf("not swept after the idle window: %s", state)
 	}
 }
 

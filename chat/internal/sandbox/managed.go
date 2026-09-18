@@ -175,19 +175,60 @@ func (w *Worker) initializeManaged(ctx context.Context) error {
 		}
 	}
 	// Only names registered in this worker root are ours. Startup never scans a prefix.
-	for _, s := range w.managed.Sandboxes {
-		if s.State != "stopped" && (s.Created || s.Creating) {
-			if err = w.Runtime.Stop(ctx, s.RuntimeName); err != nil {
-				return fmt.Errorf("could not stop interrupted registered sandbox: %w", err)
-			}
+	if w.managed.Spares == nil {
+		w.managed.Spares = map[string]*spareSandbox{}
+	}
+	for name := range w.managed.Spares {
+		// Its keep-alive died with the previous worker; a fresh spare is cheaper
+		// than proving what state this one is in.
+		_ = w.Runtime.Remove(ctx, name)
+		delete(w.managed.Spares, name)
+	}
+	resident := map[string]bool{}
+	reconciler, outlives := w.Runtime.(Reconciler)
+	if outlives {
+		// The driver's guests outlive the worker, so the driver settles
+		// them: it keeps the registered ones it finds still running at
+		// their generation (the worker keeps those sandboxes running
+		// below), stops what else it finds and keeps the registered
+		// workspaces.
+		registered := make([]RegisteredRuntime, 0, len(w.managed.Sandboxes))
+		for _, s := range w.managed.Sandboxes {
+			registered = append(registered, RegisteredRuntime{Name: s.RuntimeName, Generation: s.Generation, Resident: s.Created && !s.Creating && (s.State == "running" || s.State == "starting")})
 		}
+		kept, err := reconciler.Reconcile(ctx, registered)
+		if err != nil {
+			return fmt.Errorf("runtime reconciliation: %w", err)
+		}
+		for _, name := range kept {
+			resident[name] = true
+		}
+	}
+	for _, s := range w.managed.Sandboxes {
 		if s.Active != nil && s.Grant.RunID != "" {
 			endCtx, done := context.WithTimeout(ctx, 10*time.Second)
 			_ = w.Gate.End(endCtx, s.Grant)
 			done()
 		}
-		s.State = "stopped"
 		s.Active = nil
+		if resident[s.RuntimeName] {
+			// The guest survived the restart: the sandbox stays running with
+			// no run on it (its stream died with the worker; the next start
+			// registers and attests the same generation again) and a whole
+			// idle window ahead of it. Its publications are restored by the
+			// next run like any resumed sandbox's.
+			s.State = "running"
+			s.LastActivity = w.now()
+			s.previewAuditAt = time.Time{}
+			continue
+		}
+		if !outlives && s.State != "stopped" && (s.Created || s.Creating) {
+			// The guest died with the previous worker; stop what is left of it.
+			if err = w.Runtime.Stop(ctx, s.RuntimeName); err != nil {
+				return fmt.Errorf("could not stop interrupted registered sandbox: %w", err)
+			}
+		}
+		s.State = "stopped"
 	}
 	for _, p := range w.managed.Publications {
 		if p.State != "removed" {
@@ -209,27 +250,6 @@ func (w *Worker) initializeManaged(ctx context.Context) error {
 		if a.State != "removed" {
 			a.State = "stopped"
 			a.URL = ""
-		}
-	}
-	if w.managed.Spares == nil {
-		w.managed.Spares = map[string]*spareSandbox{}
-	}
-	for name := range w.managed.Spares {
-		// Its keep-alive died with the previous worker; a fresh spare is cheaper
-		// than proving what state this one is in.
-		_ = w.Runtime.Remove(ctx, name)
-		delete(w.managed.Spares, name)
-	}
-	if reconciler, ok := w.Runtime.(Reconciler); ok {
-		// Every registered guest is stopped and every registered spare gone;
-		// a driver whose guests outlive the worker retires what else it finds
-		// and keeps the registered workspaces.
-		registered := make([]string, 0, len(w.managed.Sandboxes))
-		for _, s := range w.managed.Sandboxes {
-			registered = append(registered, s.RuntimeName)
-		}
-		if err = reconciler.Reconcile(ctx, registered); err != nil {
-			return fmt.Errorf("runtime reconciliation: %w", err)
 		}
 	}
 	if err = w.saveManagedLocked(); err != nil {
