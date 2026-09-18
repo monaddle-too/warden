@@ -43,6 +43,7 @@ import {
 import {
   api,
   askAside,
+  promoteAside,
   editQueued as editQueuedMessage,
   me,
   newID,
@@ -59,6 +60,7 @@ import {
   commandItems,
   exactCommand,
   mentionFor,
+  nextMode,
   prefixed,
   quoteCommand,
   replaceTrigger,
@@ -120,11 +122,12 @@ import { chatStatusLabel, startupLine } from "../stages";
 import { pendingReply } from "../thinking";
 import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
-import { FindBar, isFindKey, modifierKey, type FindRequest } from "./FindBar";
+import { FindBar, type FindRequest } from "./FindBar";
 import { HistorySearch } from "./HistorySearch";
 import { ModelSelect, modelOptions } from "./ModelSelect";
 import { SpendChip } from "./SpendChip";
 import { ModeSelect } from "./ModeSelect";
+import { arrowStep, isKey, modifierKey } from "../shortcuts";
 import { StyleSelect } from "./StyleSelect";
 import { CostCard } from "./CostCard";
 import { ComposerPastes } from "./Pastes";
@@ -476,7 +479,7 @@ export function Conversation({
   // find keeps working.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (!isFindKey(event)) return;
+      if (!isKey(event, "find")) return;
       const target = event.target as Element | null;
       const here =
         target === document.body ||
@@ -1149,6 +1152,18 @@ export function Conversation({
       setBusy(false);
     }
   }
+  // "Ask in chat" on an aside card: the question goes as this person's
+  // message with the answer quoted (the service composes it); the card
+  // then says so.
+  async function promote(entry: Entry) {
+    setError("");
+    try {
+      await promoteAside(chat.id, entry.id);
+      setFollow(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
   async function send(event: FormEvent) {
     event.preventDefault();
     const command = exactCommand(text, models);
@@ -1306,6 +1321,7 @@ export function Conversation({
                       }
                       onFork={onFork ? (entry) => onFork(entry.id) : undefined}
                       onQuote={quote}
+                      onPromote={promote}
                       onEditQueued={editQueued}
                       onWithdraw={withdraw}
                       onSendQueued={sendQueuedNow}
@@ -1343,6 +1359,7 @@ export function Conversation({
             {costOpen && (
               <CostCard
                 turns={chat.conversation.turns}
+                entries={chat.conversation.entries}
                 provider={chat.provider}
                 running={running}
                 onClose={() => setCostOpen(false)}
@@ -1547,35 +1564,32 @@ export function Conversation({
             disabled={busy || chat.archived}
             rows={3}
             onKeyDown={(e) => {
+              // Every key here is a row of shortcuts.ts (the `?` overlay
+              // lists the same table).
               if (open) {
-                if (e.key === "Escape") {
+                if (isKey(e, "menu-close")) {
                   e.preventDefault();
                   setDismissed(triggerKey);
                   return;
                 }
                 // With every row disabled the arrows keep moving the caret.
-                if (
-                  selected >= 0 &&
-                  (e.key === "ArrowDown" || e.key === "ArrowUp")
-                ) {
+                if (selected >= 0 && isKey(e, "menu-move")) {
                   e.preventDefault();
-                  setActive(
-                    enabledFrom(selected, e.key === "ArrowDown" ? 1 : -1),
-                  );
+                  setActive(enabledFrom(selected, arrowStep(e)));
                   return;
                 }
-                if (selected >= 0 && (e.key === "Enter" || e.key === "Tab")) {
+                if (selected >= 0 && isKey(e, "menu-pick")) {
                   e.preventDefault();
                   pick(items[selected]);
                   return;
                 }
-              } else if (e.key === "Escape" && editing) {
+              } else if (editing && isKey(e, "edit-cancel")) {
                 // Editing a message: Esc leaves it, the draft comes back.
                 e.preventDefault();
                 lastEscape.current = 0;
                 cancelEditing();
                 return;
-              } else if (e.key === "Escape") {
+              } else if (isKey(e, "rewind")) {
                 // Esc-Esc, Claude Code's rewind key: the chooser opens on
                 // the last message. One Esc is the interrupt (the Stop
                 // button) and stays as it is.
@@ -1588,27 +1602,29 @@ export function Conversation({
                 }
                 lastEscape.current = now;
               }
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              if (isKey(e, "send")) {
                 e.preventDefault();
                 e.currentTarget.form?.requestSubmit();
                 return;
               }
-              if (e.key === "r" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+              if (isKey(e, "history-search")) {
                 // Ctrl-R (or ⌘R, which would reload): search the history.
                 e.preventDefault();
                 setSearching(true);
                 return;
               }
+              if (modes && isKey(e, "mode-cycle")) {
+                // Shift-Tab, Claude Code's: the next permission mode.
+                e.preventDefault();
+                setError("");
+                void onMode(nextMode(chat.mode)).catch((err) =>
+                  setError(String(err)),
+                );
+                return;
+              }
               // Up in an empty composer with a message of this person's
               // queued edits it (Claude Code's ↑), before the history.
-              if (
-                e.key === "ArrowUp" &&
-                !e.altKey &&
-                !e.shiftKey &&
-                !e.metaKey &&
-                text === "" &&
-                !editing
-              ) {
+              if (isKey(e, "edit-queued") && text === "" && !editing) {
                 const last = lastQueued(all, me);
                 if (last) {
                   e.preventDefault();
@@ -1620,10 +1636,7 @@ export function Conversation({
               // Down at its last line the next (then the draft again);
               // inside a longer draft the arrows move the caret.
               if (
-                e.key === "ArrowUp" &&
-                !e.altKey &&
-                !e.shiftKey &&
-                !e.metaKey &&
+                isKey(e, "history-older") &&
                 onFirstLine(text, e.currentTarget.selectionStart)
               ) {
                 const step = recallOlder(recall, history, text);
@@ -1634,10 +1647,7 @@ export function Conversation({
                 return;
               }
               if (
-                e.key === "ArrowDown" &&
-                !e.altKey &&
-                !e.shiftKey &&
-                !e.metaKey &&
+                isKey(e, "history-newer") &&
                 onLastLine(text, e.currentTarget.selectionStart)
               ) {
                 const step = recallNewer(recall, history);

@@ -3,6 +3,7 @@
 // the focus; Up/Down (or Ctrl-R again) move through the matches, Enter
 // puts the chosen prompt into the composer, Escape gives the draft back.
 import { useEffect, useMemo, useRef, useState } from "react";
+import { isKey } from "../shortcuts";
 import { History } from "lucide-react";
 import { promptLine, searchHistory } from "../history";
 import { Suggest, type Suggestion } from "./Suggest";
@@ -68,22 +69,19 @@ export function HistorySearch({
           onChange={(e) => setQuery(e.target.value)}
           onBlur={onClose}
           onKeyDown={(e) => {
-            if (e.key === "Escape") {
+            if (isKey(e, "history-close")) {
               e.preventDefault();
               onClose();
-            } else if (
-              e.key === "ArrowDown" ||
-              (e.key === "r" && (e.ctrlKey || e.metaKey))
-            ) {
+            } else if (isKey(e, "history-next")) {
               // Down the list is further back in time; Ctrl-R again too.
               e.preventDefault();
               if (items.length)
                 setActive((a) => (a + 1 + items.length) % items.length);
-            } else if (e.key === "ArrowUp") {
+            } else if (isKey(e, "history-prev")) {
               e.preventDefault();
               if (items.length)
                 setActive((a) => (a - 1 + items.length) % items.length);
-            } else if (e.key === "Enter" || e.key === "Tab") {
+            } else if (isKey(e, "history-pick")) {
               e.preventDefault();
               if (selected >= 0) onPick(matches[selected]);
               else onClose();

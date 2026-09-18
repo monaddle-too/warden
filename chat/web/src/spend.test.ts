@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  asidesLabel,
   chatSpend,
   spendLabel,
   spendLine,
@@ -59,6 +60,21 @@ describe("spend", () => {
     expect(spendTitle(priced)).toContain("This chat so far: 3 turns");
     expect(spendSummary(priced)).toBe("$0.12 · 31k tokens · 3 turns");
     expect(spendSummary({ ...tokens, turns: 1 })).toBe("1.0k tokens · 1 turn");
+  });
+  it("marks the side questions in the line and sums them across chats", () => {
+    const withAsides: Spend = { ...priced, asides: 2, asideCostUSD: 0.05 };
+    expect(asidesLabel(withAsides)).toBe("2 side questions ($0.05)");
+    expect(asidesLabel({ ...priced, asides: 1 })).toBe("1 side question");
+    expect(asidesLabel(priced)).toBe("");
+    expect(spendLine(withAsides)).toBe(
+      "3 turns · 31k tokens (30k in, 1.0k out) · $0.12 · 2 side questions ($0.05)",
+    );
+    expect(spendTitle(withAsides)).toContain("turns and your side questions summed");
+    expect(spendTitle(priced)).not.toContain("side questions");
+    const sum = sumSpend([withAsides, priced, { ...tokens, asides: 1 }]);
+    expect(sum.asides).toBe(3);
+    expect(sum.asideCostUSD).toBeCloseTo(0.05);
+    expect(sumSpend([priced]).asides).toBeUndefined();
   });
   it("takes the service's sum, or sums the turns when the service gave none", () => {
     expect(chatSpend(chat("a", "ws", priced))).toBe(priced);

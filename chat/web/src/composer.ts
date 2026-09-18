@@ -130,6 +130,13 @@ export const MODES: ModeOption[] = [
   },
 ];
 
+/* The mode after `mode` in the order above (Shift-Tab cycles them, as in
+   Claude Code and the TUI); "" is auto. */
+export function nextMode(mode: string | undefined): string {
+  const i = MODES.findIndex((m) => m.value === (mode || "auto"));
+  return MODES[(i + 1) % MODES.length].value;
+}
+
 /* The thinking settings of a Claude chat (chats/settings.go): "" is the
    agent's default (the model decides), "off" no thinking, else a budget
    in tokens. The selector offers these; /thinking also takes any budget. */

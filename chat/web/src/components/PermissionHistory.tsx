@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { isKey } from "../shortcuts";
 import { api } from "../api";
 import { decidedBy, historySummary, newestFirst } from "../rules";
 import type { Chat, PermissionEvent } from "../types";
@@ -38,7 +39,7 @@ export function PermissionHistory({
       aria-labelledby="permission-history-title"
       onClose={onClose}
       onKeyDown={(event) => {
-        if (event.key === "Escape") dialog.current?.close();
+        if (isKey(event, "dialog-close")) dialog.current?.close();
       }}
     >
       <h2 id="permission-history-title">Permissions in “{chat.title}”</h2>

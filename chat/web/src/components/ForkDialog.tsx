@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { isKey } from "../shortcuts";
 import { forkChat, type ForkResult } from "../api";
 import { senderLabel } from "../export";
 import { canRewind, excerpt, rewindTargets } from "../rewind";
@@ -57,7 +58,7 @@ export function ForkDialog({
       aria-labelledby="fork-title"
       onClose={() => onClose(result, openFork.current)}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
+        if (isKey(event, "dialog-close")) {
           event.stopPropagation();
           close();
         }

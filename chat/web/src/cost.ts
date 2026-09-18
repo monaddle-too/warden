@@ -5,7 +5,7 @@
    agent. The service keeps one record per turn (`Turn`); the sums are
    made here from `conversation.turns`. */
 import { formatCost, formatDuration, formatTokens } from "./turns";
-import type { Turn, Usage } from "./types";
+import type { Entry, Turn, Usage } from "./types";
 
 export type CostSummary = {
   turns: number;
@@ -18,9 +18,20 @@ export type CostSummary = {
   seconds: number;
   /* A turn still running counts up at `now`. */
   running: boolean;
+  /* Answered side questions (R2.19), in the usage above and marked here
+     with their share of the cost. */
+  asides: number;
+  asideCostUSD: number;
 };
 
-export function sessionCost(turns: Turn[] | undefined, now?: number): CostSummary {
+/* The chat's cost from its turn records, plus its answered side
+   questions when the entries are given (their tokens and cost are the
+   chat's spend as much as the turns'). */
+export function sessionCost(
+  turns: Turn[] | undefined,
+  now?: number,
+  entries?: Entry[],
+): CostSummary {
   const usage: Usage = {
     input: 0,
     cached: 0,
@@ -56,7 +67,30 @@ export function sessionCost(turns: Turn[] | undefined, now?: number): CostSummar
       }
     }
   }
-  return { turns: (turns || []).length, reported, usage, priced, seconds, running };
+  let asides = 0;
+  let asideCostUSD = 0;
+  for (const v of entries || []) {
+    if (v.role !== "aside" || v.aside?.status !== "completed") continue;
+    asides++;
+    usage.input += v.aside.input || 0;
+    usage.output += v.aside.output || 0;
+    usage.total += (v.aside.input || 0) + (v.aside.output || 0);
+    if (v.aside.costUSD) {
+      priced = true;
+      usage.costUSD = (usage.costUSD || 0) + v.aside.costUSD;
+      asideCostUSD += v.aside.costUSD;
+    }
+  }
+  return {
+    turns: (turns || []).length,
+    reported,
+    usage,
+    priced,
+    seconds,
+    running,
+    asides,
+    asideCostUSD,
+  };
 }
 
 /* The card's rows: label and value. */
@@ -74,6 +108,11 @@ export function costRows(c: CostSummary): [string, string][] {
     "Cost",
     c.priced ? formatCost(c.usage.costUSD || 0) : "not reported by this agent",
   ]);
+  if (c.asides)
+    rows.push([
+      "  of it, side questions",
+      `${c.asides} · ${c.asideCostUSD ? formatCost(c.asideCostUSD) : "no cost reported"}`,
+    ]);
   rows.push([
     "Time in turns",
     formatDuration(c.seconds) + (c.running ? " (one running)" : ""),
@@ -88,6 +127,7 @@ export function costLine(c: CostSummary): string {
     `${formatTokens(c.usage.total)} tokens (${formatTokens(c.usage.input)} in, ${formatTokens(c.usage.output)} out)`,
   ];
   if (c.priced) parts.push(formatCost(c.usage.costUSD || 0));
+  if (c.asides) parts.push(`${c.asides} side question${c.asides === 1 ? "" : "s"}`);
   if (c.seconds > 0) parts.push(formatDuration(c.seconds));
   return parts.join(" · ");
 }

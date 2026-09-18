@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isKey } from "../shortcuts";
 import { RefreshCw } from "lucide-react";
 import { sessionChanges } from "../api";
 import { parseDiff } from "../diff";
@@ -41,7 +42,7 @@ export function SessionDiff({
       aria-labelledby="changes-title"
       onClose={onClose}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
+        if (isKey(event, "dialog-close")) {
           event.stopPropagation();
           dialog.current?.close();
         }

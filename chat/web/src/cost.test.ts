@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { costLine, costRows, sessionCost } from "./cost";
-import type { Turn } from "./types";
+import type { Entry, Turn } from "./types";
 
 const turns: Turn[] = [
   {
@@ -27,6 +27,28 @@ const turns: Turn[] = [
 ];
 
 describe("sessionCost", () => {
+  it("counts the answered side questions in the usage, marked apart", () => {
+    const entries = [
+      { id: "a", role: "aside", text: "q", createdAt: 1, aside: { status: "completed", input: 1000, output: 50, costUSD: 0.02 } },
+      { id: "b", role: "aside", text: "q", createdAt: 2, aside: { status: "failed", error: "no", input: 5, output: 1, costUSD: 0.01 } },
+      { id: "c", role: "aside", text: "q", createdAt: 3, aside: { status: "running" } },
+      { id: "d", role: "user", text: "hi", createdAt: 4 },
+    ] as Entry[];
+    const c = sessionCost(turns, undefined, entries);
+    expect(c.asides).toBe(1);
+    expect(c.asideCostUSD).toBeCloseTo(0.02);
+    expect(c.usage.total).toBe(32050);
+    expect(c.usage.costUSD).toBeCloseTo(0.1);
+    expect(costRows(c)).toContainEqual(["  of it, side questions", "1 · $0.02"]);
+    expect(costLine(c)).toContain("1 side question");
+    const none = sessionCost(turns, undefined, []);
+    expect(none.asides).toBe(0);
+    expect(costRows(none).some(([l]) => l.includes("side questions"))).toBe(false);
+    // Side questions alone price a chat that has no turn yet.
+    const only = sessionCost([], undefined, entries);
+    expect(only.priced).toBe(true);
+    expect(only.usage.costUSD).toBeCloseTo(0.02);
+  });
   it("sums the turns' usage, cost and time", () => {
     const c = sessionCost(turns);
     expect(c.turns).toBe(3);

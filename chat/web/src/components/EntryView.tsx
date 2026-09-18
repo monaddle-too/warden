@@ -1,5 +1,6 @@
 // Adapted from Panta Conversation.tsx at bf61d5b; presentation retained, app dependencies removed.
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isKey } from "../shortcuts";
 import {
   Bot,
   Check,
@@ -10,6 +11,7 @@ import {
   History,
   LoaderCircle,
   MessageCircleQuestion,
+  MessageSquareReply,
   Pencil,
   RotateCcw,
   Send,
@@ -286,10 +288,10 @@ function QueuedEditor({
         disabled={busy}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Escape") {
+          if (isKey(e, "queued-cancel")) {
             e.preventDefault();
             onCancel();
-          } else if (e.key === "Enter" && !e.shiftKey && !e.altKey) {
+          } else if (isKey(e, "queued-save")) {
             e.preventDefault();
             void save();
           }
@@ -521,6 +523,7 @@ export const EntryView = memo(function EntryView({
   onRewind,
   onFork,
   onQuote,
+  onPromote,
   onEditQueued,
   onWithdraw,
   onSendQueued,
@@ -548,6 +551,8 @@ export const EntryView = memo(function EntryView({
   onFork?: (entry: Entry) => void;
   /* For a command the person ran: quote it into the composer. */
   onQuote?: (entry: Entry) => void;
+  /* For an answered side question: ask it in chat as a message. */
+  onPromote?: (entry: Entry) => void;
   /* For a queued message (queue.ts): edit it in the composer, withdraw
      it, let a held queue go; `queue` says what its card shows. */
   onEditQueued?: (entry: Entry) => void;
@@ -686,7 +691,14 @@ export const EntryView = memo(function EntryView({
       </div>
     );
   if (entry.role === "aside")
-    return <AsideCard entry={entry} chatID={chatID} onFile={onFile} />;
+    return (
+      <AsideCard
+        entry={entry}
+        chatID={chatID}
+        onFile={onFile}
+        onPromote={onPromote}
+      />
+    );
   const user = entry.role === "user";
   const header = (
     <header>
@@ -847,14 +859,19 @@ function AsideCard({
   entry,
   chatID,
   onFile,
+  onPromote,
 }: {
   entry: Entry;
   chatID: string;
   onFile: (href: string) => void;
+  onPromote?: (entry: Entry) => void;
 }) {
   const a = entry.aside ?? { status: "completed" as const };
-  const running = a.status === "running" || (entry.isStreaming && !entry.detail);
+  const starting = a.status === "starting";
+  const running =
+    starting || a.status === "running" || (entry.isStreaming && !entry.detail);
   const failed = a.status === "failed";
+  const answered = !running && !failed && !!entry.detail?.trim();
   const facts: string[] = [];
   if (a.durationMS) facts.push(formatDuration(a.durationMS / 1000));
   if (a.input || a.output)
@@ -877,7 +894,9 @@ function AsideCard({
       <p className="aside-question">{entry.text}</p>
       {running ? (
         <p className="aside-answer muted">
-          Answering from a copy of the session
+          {starting
+            ? "Starting the agent's session for the question"
+            : "Answering from a copy of the session"}
           <span className="typing-dots">…</span>
         </p>
       ) : failed ? (
@@ -895,7 +914,36 @@ function AsideCard({
           />
         </div>
       )}
-      {facts.length > 0 && <p className="aside-facts">{facts.join(" · ")}</p>}
+      {(facts.length > 0 || answered) && (
+        <p className="aside-facts">
+          {facts.join(" · ")}
+          {answered && a.promoted ? (
+            <button
+              type="button"
+              className="ghost aside-promote"
+              title="The question went as a message; jump to it"
+              onClick={() =>
+                document
+                  .querySelector(`[data-entry="${a.promoted}"]`)
+                  ?.scrollIntoView({ block: "center" })
+              }
+            >
+              <MessageSquareReply size={13} aria-hidden="true" />
+              Asked in chat
+            </button>
+          ) : answered && onPromote ? (
+            <button
+              type="button"
+              className="ghost aside-promote"
+              title="Send the question as your message, with this answer quoted, so the agent can build on it"
+              onClick={() => onPromote(entry)}
+            >
+              <MessageSquareReply size={13} aria-hidden="true" />
+              Ask in chat
+            </button>
+          ) : null}
+        </p>
+      )}
     </article>
   );
 }
