@@ -331,6 +331,7 @@ func TestLoginLedgerPersistsAndAdminConsoleIsOwnerOnly(t *testing.T) {
 		{demoAuth{a}, "POST", "/api/sharing/disconnect", 403}, {a, "POST", "/api/sharing/disconnect", 204},
 		{demoAuth{a}, "POST", "/api/sharing/egress_set", 403}, {a, "POST", "/api/sharing/egress_set", 204}, {demoAuth{a}, "GET", "/api/sharing/egress", 204},
 		{demoAuth{a}, "GET", "/api/cluster", 403}, {demoAuth{a}, "GET", "/api/cluster/logs?pod=x", 403}, {a, "GET", "/api/cluster", 204},
+		{demoAuth{a}, "POST", "/api/environments/ws1/network", 403}, {a, "POST", "/api/environments/ws1/network", 204}, {demoAuth{a}, "POST", "/api/environments/ws1/resize", 204},
 		{demoAuth{a}, "GET", "/api/spend", 403}, {a, "GET", "/api/spend", 204},
 	} {
 		s.Auth = tc.auth
@@ -593,11 +594,12 @@ func TestLoopbackRevocationCancelsActivePreviewStream(t *testing.T) {
 // own, after discarding any the client sent.
 func TestProxyForwardsIdentityHeadersItOwns(t *testing.T) {
 	var seen http.Header
-	s, _ := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = r.Header.Clone(); w.WriteHeader(204) }))
+	s, a := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = r.Header.Clone(); w.WriteHeader(204) }))
 	r := httptest.NewRequest("GET", "https://warden.example.com/api/state", nil)
 	r.AddCookie(&http.Cookie{Name: "main", Value: "valid"})
 	r.Header.Set(HeaderPrincipal, "forged")
 	r.Header.Set(HeaderName, "Forged Name")
+	r.Header.Set(HeaderRole, "admin")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, r)
 	if w.Code != 204 {
@@ -605,6 +607,20 @@ func TestProxyForwardsIdentityHeadersItOwns(t *testing.T) {
 	}
 	if seen.Get(HeaderPrincipal) != "google-subject" || seen.Get(HeaderEmail) != "owner@gmail.com" || seen.Get(HeaderName) != "Owner Person" {
 		t.Fatalf("identity headers: %v", seen)
+	}
+	// The owner's role travels too; an admitted person's forged copy does
+	// not.
+	if seen.Get(HeaderRole) != "admin" {
+		t.Fatalf("owner role: %v", seen)
+	}
+	s.Auth = demoAuth{a}
+	r = httptest.NewRequest("GET", "https://warden.example.com/api/state", nil)
+	r.AddCookie(&http.Cookie{Name: "main", Value: "valid"})
+	r.Header.Set(HeaderRole, "admin")
+	w = httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != 204 || seen.Get(HeaderRole) != "" {
+		t.Fatalf("admitted person: %d %v", w.Code, seen)
 	}
 }
 

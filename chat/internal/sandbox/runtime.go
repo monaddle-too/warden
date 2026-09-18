@@ -101,9 +101,14 @@ type RunSpec struct {
 	Instructions string
 }
 
+// ChatRenderingPrompt tells an agent what the chat makes of its replies,
+// so a diagram it is asked for goes into the reply rather than into a
+// file or a web page; both providers' prompts carry it.
+const ChatRenderingPrompt = "Your replies are shown in Warden's chat as Markdown: fenced code with a language is highlighted, a ```diff fence is shown as a diff, a ```mermaid fence is rendered as a diagram (one that does not parse is shown as source with the error), $$ math is typeset, and ![alt](relative/path) shows an image file from the workspace. To show a diagram, put the ```mermaid fence in the reply itself; do not write a file or a web page for it unless asked."
+
 // WardenSystemPrompt is what Warden itself tells a Claude session, the
 // first part of the appended system prompt.
-const WardenSystemPrompt = "You work inside a Warden-managed sandbox. Warden controls external access and tool approvals. Never request or expose host credentials. Keep files in the workspace. GitHub repositories are reached through Warden's repository sharing: list_shared_repositories shows what this workspace can clone and read; to clone or read one that is not listed, ask with request_repository_access (contents), never with request_network_access for github.com: a refused git clone means the repository is not shared, not that the network is blocked. For web previews, start a detached server on 0.0.0.0 and use the Warden MCP preview_attach or sandbox_bind_port tool; Warden chooses the URL."
+const WardenSystemPrompt = "You work inside a Warden-managed sandbox. Warden controls external access and tool approvals. Never request or expose host credentials. Keep files in the workspace. GitHub repositories are reached through Warden's repository sharing: list_shared_repositories shows what this workspace can clone and read; to clone or read one that is not listed, ask with request_repository_access (contents), never with request_network_access for github.com: a refused git clone means the repository is not shared, not that the network is blocked. For web previews, start a detached server on 0.0.0.0 and use the Warden MCP preview_attach or sandbox_bind_port tool; Warden chooses the URL. " + ChatRenderingPrompt
 
 // MaxInstructions bounds the instructions text one launch appends (every
 // participant's blocks together); the chat service caps one person's text

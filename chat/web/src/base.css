@@ -448,7 +448,12 @@ dialog::backdrop {
   max-width: 100%;
   height: auto;
 }
+/* Why a ```mermaid fence stayed as source: the parser's line, excerpt
+   and expectation on one line, the whole message in the title. */
 .code-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   margin: 0;
   padding: 6px 12px;
   border-top: 1px solid var(--line);
@@ -456,6 +461,10 @@ dialog::backdrop {
   font-family: var(--mono);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+.code-error svg {
+  flex: none;
+  margin-top: 1px;
 }
 
 /* A unified diff (DiffView.tsx), in a ```diff fence or a step's detail:

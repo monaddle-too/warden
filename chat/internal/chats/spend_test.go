@@ -58,9 +58,8 @@ func TestSpendOfTurns(t *testing.T) {
 // provider over every chat, archived included; a turn counts at its end
 // (its start while it runs).
 func TestSpendOnTheStateAndTheReport(t *testing.T) {
-	e, _, _ := setup(t)
 	now := time.Date(2026, 9, 18, 15, 0, 0, 0, time.Local)
-	e.Now = func() time.Time { return now }
+	e, _, _ := setup(t, func(e *Engine) { e.Now = func() time.Time { return now } })
 	at := func(d time.Duration) float64 { return float64(now.Add(d).UnixMilli()) / 1000 }
 	claude, _ := e.Create("Claude", "", "", nil, "claude", "")
 	codex, _ := e.Create("Codex", "", "", nil, "codex", "")

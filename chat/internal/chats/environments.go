@@ -28,6 +28,9 @@ type Environment struct {
 	// sandbox exists, else what its first chat asked for, else nil (the
 	// runner's default).
 	Resources *sandbox.Resources `json:"resources,omitempty"`
+	// Network is the workspace's own network access ("" follows the
+	// install; network.go).
+	Network string `json:"network,omitempty"`
 	// Resizing is a resize in flight or how the last one ended.
 	Resizing     *Resizing        `json:"resizing,omitempty"`
 	Documents    []map[string]any `json:"documents"`
@@ -105,7 +108,7 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		}
 		seen[c.SandboxID] = true
 		chats := st.environmentChats(c.SandboxID)
-		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Resources: chats[0].Resources, Resizing: e.resizingOf(c.SandboxID), Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Rules: []Rule{}, Deleted: st.deleted(c.SandboxID)}
+		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Resources: chats[0].Resources, Network: chats[0].Network, Resizing: e.resizingOf(c.SandboxID), Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Rules: []Rule{}, Deleted: st.deleted(c.SandboxID)}
 		if rec := st.Environments[c.SandboxID]; rec != nil && len(rec.Rules) > 0 {
 			env.Rules = rec.Rules
 		}
@@ -154,10 +157,12 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 					env.Pod = res.Pod
 				}
 			}
-			if e.PolicyAddress != "" {
-				if result, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": ran.ID, "sandboxID": c.SandboxID}); err == nil {
-					env.Repositories = agent.Array(result["repositories"])
-				}
+		}
+		// Shared repositories belong to the workspace, not to a run: a
+		// chat that has not sent its first message lists them too.
+		if e.PolicyAddress != "" && !env.Deleted {
+			if result, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": chats[0].ID, "sandboxID": c.SandboxID}); err == nil {
+				env.Repositories = agent.Array(result["repositories"])
 			}
 		}
 		out = append(out, env)

@@ -116,10 +116,9 @@ func TestImageFileRouteReadsWorkspaceImages(t *testing.T) {
 // the bytes; without a policy service the bytes are dropped and the entry
 // keeps the image's description.
 func TestReadImageIsStoredNotKept(t *testing.T) {
-	e, w, id := claudeSetup(t)
 	sharing, socket := newFakeSharing(t)
-	e.PolicyAddress = "unix://" + socket
-	sharing.results["image_add"] = map[string]any{"image_id": "img-1"}
+	sharing.results["image_add"] = map[string]any{"image_id": "img-1"} // before the engine polls the fake
+	e, w, id := claudeSetup(t, func(e *Engine) { e.PolicyAddress = "unix://" + socket })
 	var normalized [][]byte
 	e.NormalizeImage = func(_ context.Context, raw []byte) ([]byte, error) {
 		normalized = append(normalized, raw)

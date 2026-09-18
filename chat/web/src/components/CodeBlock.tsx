@@ -12,6 +12,7 @@ import {
   Code,
   Copy,
   TextWrap,
+  TriangleAlert,
 } from "lucide-react";
 import {
   COLLAPSE_LINES,
@@ -74,7 +75,10 @@ export function CodeBlock({
       className={`code-block${wrap ? " wrap" : ""}${collapsed ? " collapsed" : ""}`}
     >
       <div className="code-head">
-        <span className="code-lang">{language || "text"}</span>
+        <span className="code-lang">
+          {language || "text"}
+          {diagram?.error && " · not rendered"}
+        </span>
         {diagram?.svg && (
           <button
             type="button"
@@ -111,7 +115,12 @@ export function CodeBlock({
       ) : (
         <pre>{children}</pre>
       )}
-      {diagram?.error && <p className="code-error">{diagram.error}</p>}
+      {diagram?.error && (
+        <p className="code-error" title={diagram.detail}>
+          <TriangleAlert size={14} aria-hidden="true" />
+          {diagram.error}
+        </p>
+      )}
       {collapsible && (
         <button
           type="button"

@@ -763,13 +763,34 @@ func TestDisconnectGitHubUserTokenDeletesTheFileAndSelections(t *testing.T) {
 	}
 }
 
-type fakeEgress struct{ mode, source string }
+type fakeEgress struct {
+	mode, source string
+	own          map[string]string
+}
 
 func (f *fakeEgress) EgressMode() (string, string) { return f.mode, f.source }
 func (f *fakeEgress) SetEgressMode(mode string) error {
 	f.mode, f.source = mode, "console"
 	return nil
 }
+func (f *fakeEgress) SandboxEgress(sandbox string) (string, string) {
+	if own := f.own[sandbox]; own != "" {
+		return own, own
+	}
+	return "", f.mode
+}
+func (f *fakeEgress) SetSandboxEgress(sandbox, mode string) error {
+	if f.own == nil {
+		f.own = map[string]string{}
+	}
+	if mode == "" {
+		delete(f.own, sandbox)
+	} else {
+		f.own[sandbox] = mode
+	}
+	return nil
+}
+func (f *fakeEgress) EgressOverrides() int { return len(f.own) }
 
 // The console speaks restricted/open; the policy document speaks
 // restricted/public. The sharing operations translate both ways.
@@ -791,8 +812,40 @@ func TestEgressOperationsTranslateConsoleNames(t *testing.T) {
 	if _, err := f.s.Dispatch("egress_set", map[string]any{"mode": "public"}); err == nil {
 		t.Fatal("policy vocabulary accepted from the console")
 	}
-	if r := f.dispatch("egress_set", map[string]any{"mode": "restricted"}); r["mode"] != "restricted" {
+	if r := f.dispatch("egress_set", map[string]any{"mode": "restricted"}); r["mode"] != "restricted" || r["overrides"] != 0 {
 		t.Fatalf("egress_set restricted: %v", r)
+	}
+}
+
+// With a sandboxID the egress operations read and set one workspace's own
+// mode: "" follows the install, and the answer carries both the choice and
+// the mode in effect; the install-wide answer counts the overrides.
+func TestEgressOperationsScopeToASandbox(t *testing.T) {
+	f := newSharingFixture(t)
+	f.s.Egress = &fakeEgress{mode: "restricted", source: "config"}
+	if r := f.dispatch("egress", map[string]any{"sandboxID": "s1"}); r["mode"] != "" || r["effective"] != "restricted" || r["install"] != "restricted" || r["source"] != "config" {
+		t.Fatalf("egress s1: %v", r)
+	}
+	if r := f.dispatch("egress_set", map[string]any{"sandboxID": "s1", "mode": "open"}); r["mode"] != "open" || r["effective"] != "open" || r["install"] != "restricted" {
+		t.Fatalf("egress_set s1 open: %v", r)
+	}
+	if f.s.Egress.(*fakeEgress).own["s1"] != "public" {
+		t.Fatal("open not translated to the policy's public")
+	}
+	if r := f.dispatch("egress", nil); r["overrides"] != 1 {
+		t.Fatalf("overrides: %v", r)
+	}
+	for _, bad := range []map[string]any{{"sandboxID": "s1", "mode": "public"}, {"sandboxID": "s1", "mode": "any"}, {"sandboxID": strings.Repeat("x", 129), "mode": "open"}} {
+		if _, err := f.s.Dispatch("egress_set", bad); err == nil {
+			t.Fatalf("accepted %v", bad)
+		}
+	}
+	if r := f.dispatch("egress_set", map[string]any{"sandboxID": "s1", "mode": ""}); r["mode"] != "" || r["effective"] != "restricted" {
+		t.Fatalf("egress_set s1 cleared: %v", r)
+	}
+	// Install-wide, an empty mode is still refused.
+	if _, err := f.s.Dispatch("egress_set", map[string]any{"mode": ""}); err == nil {
+		t.Fatal("install-wide empty mode accepted")
 	}
 }
 

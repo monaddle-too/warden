@@ -34,6 +34,11 @@ type Chat struct {
 	// runner's record is the current size (a grant or the owner may have
 	// changed it since), which Environment.Resources reports.
 	Resources *sandbox.Resources `json:"resources,omitempty"`
+	// Network is the workspace's own network access (network.go): "" follows
+	// the install's egress setting, else "restricted" or "open". Chosen by
+	// the owner at creation or from the workspace panel, never by an agent;
+	// the same on every chat of the workspace.
+	Network string `json:"network,omitempty"`
 	// Mode is the chat's permission mode (permissions.go): auto when
 	// empty. Rules are its own permission rules (rules.go: "Allow always"
 	// answers and rules added to the chat), in the order given; Allowed

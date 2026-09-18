@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"strings"
 	"testing"
@@ -389,7 +390,7 @@ func TestClaudeInterruptEndsTurnAsInterrupted(t *testing.T) {
 		if !claudeNext(d, &v) {
 			return
 		}
-		interrupts <- v
+		interrupts <- maps.Clone(v) // v is decoded into again below
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{}}})
 		// What the CLI reports for an aborted query: an error result.
 		_ = e.Encode(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "result": "Request was aborted."})

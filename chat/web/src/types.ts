@@ -275,6 +275,9 @@ export type Chat = {
   sandboxID: string;
   repository: string;
   resources?: Resources;
+  /* The workspace's own network access (network.ts); absent when it
+     follows the install's setting. */
+  network?: "restricted" | "open";
   status: string;
   archived: boolean;
   error?: string;
@@ -509,6 +512,7 @@ export type Environment = {
   chats: EnvironmentChat[];
   runtime: { state: string; runtimeName: string } | null;
   resources?: Resources;
+  network?: "restricted" | "open";
   /* A resize in flight, or how the last one ended. */
   resizing?: {
     target: Resources;

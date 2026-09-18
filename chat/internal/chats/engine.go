@@ -134,8 +134,11 @@ type Engine struct {
 	// titling: chat id -> a title being made (title.go).
 	asides  map[string]bool
 	titling map[string]bool
-	wake    chan struct{}
-	done    chan struct{}
+	// background counts the goroutines a run leaves behind it (a naming
+	// beside the idle session); Serve returns once they are done.
+	background sync.WaitGroup
+	wake       chan struct{}
+	done       chan struct{}
 }
 
 const runSlots = 2
@@ -218,6 +221,7 @@ func (e *Engine) Wake() {
 }
 func (e *Engine) Serve(ctx context.Context) {
 	defer close(e.done)
+	defer e.background.Wait() // after the runs, which spawn them
 	defer e.Bugs.Recover("engine serve loop")
 	e.fillDefaultModels()
 	if e.PolicyAddress != "" {
@@ -344,6 +348,7 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 		resources = &resolved
 	}
 	id := cv.ID()
+	network := "" // a shared workspace's own network access comes along
 	err := e.Store.update(func(st *State) error {
 		title = strings.TrimSpace(title)
 		// A chat named by its creator keeps that name; one left at the
@@ -366,6 +371,7 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 					sbxID = shared
 					repository = c.Repository
 					resources = c.Resources
+					network = c.Network
 					found = true
 					break
 				}
@@ -375,7 +381,7 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 			}
 		}
 		creator := actor
-		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, Titled: titled, SandboxID: sbxID, Repository: repository, Resources: resources, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
+		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, Titled: titled, SandboxID: sbxID, Repository: repository, Resources: resources, Network: network, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
 		return nil
 	})
 	return id, err
@@ -1037,7 +1043,7 @@ func (e *Engine) run(parent context.Context, id string) {
 	e.mu.Lock()
 	a.client = client
 	e.mu.Unlock()
-	params := map[string]any{"cwd": prep.Directory, "approvalPolicy": "on-request", "sandbox": "danger-full-access", "developerInstructions": "You are an agent in a Warden-managed sandbox. The files, shared documents and shared repositories belong to this workspace and are visible to every chat in it; preserve other chats' files. Warden controls external access. Do not request or expose host credentials. GitHub repositories are reached through Warden's repository sharing: list_shared_repositories shows what this workspace can clone and read; to clone or read one that is not listed, ask with request_repository_access (contents), never with request_network_access for github.com: a refused git clone means the repository is not shared, not that the network is blocked. To show a web preview, start the server as a detached process on 0.0.0.0 inside this sandbox (for example subprocess.Popen with start_new_session=True and stdio redirected to files), then call preview_attach with port, path beginning /, and title. The controller chooses the URL.", "ephemeral": false, "historyMode": "legacy"}
+	params := map[string]any{"cwd": prep.Directory, "approvalPolicy": "on-request", "sandbox": "danger-full-access", "developerInstructions": "You are an agent in a Warden-managed sandbox. The files, shared documents and shared repositories belong to this workspace and are visible to every chat in it; preserve other chats' files. Warden controls external access. Do not request or expose host credentials. GitHub repositories are reached through Warden's repository sharing: list_shared_repositories shows what this workspace can clone and read; to clone or read one that is not listed, ask with request_repository_access (contents), never with request_network_access for github.com: a refused git clone means the repository is not shared, not that the network is blocked. To show a web preview, start the server as a detached process on 0.0.0.0 inside this sandbox (for example subprocess.Popen with start_new_session=True and stdio redirected to files), then call preview_attach with port, path beginning /, and title. The controller chooses the URL. " + sandbox.ChatRenderingPrompt, "ephemeral": false, "historyMode": "legacy"}
 	params["modelProvider"] = "warden"
 	if instructions != "" {
 		params["developerInstructions"] = params["developerInstructions"].(string) + "\n\n" + instructions
@@ -1157,7 +1163,8 @@ func (e *Engine) run(parent context.Context, id string) {
 		e.settleTurn(parent, id, a)
 		// A chat still at the default title is named from its first
 		// exchange, beside the idle session (title.go).
-		go e.autoTitle(parent, id, a)
+		e.background.Add(1)
+		go func() { defer e.background.Done(); e.autoTitle(parent, id, a) }()
 		var agentTurn string
 		message, agentTurn = e.awaitMessage(ctx, id, &current, a, client, frames)
 		if agentTurn != "" {

@@ -69,15 +69,14 @@ func TestMentionTokensAndExpansion(t *testing.T) {
 // message with tokens reaches the agent expanded while the transcript
 // keeps it as typed.
 func TestResourcesRouteAndExpandedInput(t *testing.T) {
-	e, w := residentSetup(t)
 	sharing, socket := newFakeSharing(t)
-	e.PolicyAddress = "unix://" + socket
+	sharing.results["list"] = map[string]any{"grants": []any{map[string]any{"access": "read", "expires_at": 1.7e9, "documents": []any{map[string]any{"id": "2DeF", "title": "Notes", "kind": "document", "url": "https://docs.google.com/document/d/2DeF/edit"}}}}}
+	sharing.results["github_list"] = map[string]any{"repositories": []any{map[string]any{"full_name": "monaddle-too/warden", "url": "https://github.com/monaddle-too/warden", "clone_url": "https://github.com/monaddle-too/warden.git", "access": []any{"contents"}}}}
+	e, w := residentSetup(t, func(e *Engine) { e.PolicyAddress = "unix://" + socket })
 	id, err := e.Create("Mentions", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sharing.results["list"] = map[string]any{"grants": []any{map[string]any{"access": "read", "expires_at": 1.7e9, "documents": []any{map[string]any{"id": "2DeF", "title": "Notes", "kind": "document", "url": "https://docs.google.com/document/d/2DeF/edit"}}}}}
-	sharing.results["github_list"] = map[string]any{"repositories": []any{map[string]any{"full_name": "monaddle-too/warden", "url": "https://github.com/monaddle-too/warden", "clone_url": "https://github.com/monaddle-too/warden.git", "access": []any{"contents"}}}}
 	c := e.Store.Snapshot().chat(id)
 	_ = e.Store.update(func(st *State) error {
 		st.Ports = append(st.Ports, PortBinding{ID: "b1", ChatID: id, SandboxID: c.SandboxID, Port: 3000, Title: "Dev server", URL: "https://b1.preview.example.com/", State: "approved"}, PortBinding{ID: "b9", ChatID: id, SandboxID: "other", Port: 1, Title: "Elsewhere", URL: "https://x/", State: "approved"}, PortBinding{ID: "b8", ChatID: id, SandboxID: c.SandboxID, Port: 2, Title: "Gone", URL: "https://y/", State: "revoked"})
@@ -98,10 +97,14 @@ func TestResourcesRouteAndExpandedInput(t *testing.T) {
 	if len(got.Documents) != 1 || got.Documents[0].Title != "Notes" || got.Documents[0].Expires != 1.7e9 || len(got.Repositories) != 1 || got.Repositories[0].CloneURL != "https://github.com/monaddle-too/warden.git" || len(got.Previews) != 1 || got.Previews[0].ID != "b1" {
 		t.Fatalf("%+v", got)
 	}
-	for i := 0; i < 2; i++ {
-		data := agent.Map(sharing.op(i)["data"])
+	asked := sharing.actions("list", "github_list")
+	if len(asked) != 2 {
+		t.Fatalf("asked %v", asked)
+	}
+	for i, op := range asked {
+		data := agent.Map(op["data"])
 		if data["chatID"] != id || data["sandboxID"] != c.SandboxID {
-			t.Fatalf("op %d %v", i, sharing.op(i))
+			t.Fatalf("op %d %v", i, op)
 		}
 	}
 	// The message: the agent's input carries the expansion, the entry the
@@ -132,14 +135,10 @@ func TestResourcesRouteAndExpandedInput(t *testing.T) {
 		t.Fatalf("transcript entry %+v", entry)
 	}
 	completeTurn(t, e, w, id)
-	sharing.mu.Lock()
-	ops := len(sharing.ops)
-	sharing.mu.Unlock()
+	ops := len(sharing.actions("list", "github_list"))
 	sendAndDeliver(t, e, id, "no mentions")
 	until(t, func() bool { w.mu.Lock(); defer w.mu.Unlock(); return len(w.inputs) > len(inputs) })
-	sharing.mu.Lock()
-	after := len(sharing.ops)
-	sharing.mu.Unlock()
+	after := len(sharing.actions("list", "github_list"))
 	if after != ops {
 		t.Fatal("a message without tokens asked the policy service", after-ops)
 	}
