@@ -405,9 +405,15 @@ func copyToClipboard(text string) error {
 	return errors.New("no clipboard command found")
 }
 
+// openBrowser opens url in the person's browser: the command $BROWSER
+// names when set (the convention xdg-open and gh follow; a script that
+// records the URL serves a headless machine or a test), else /usr/bin/open
+// on macOS or xdg-open.
 func openBrowser(url string) error {
 	var cmd *exec.Cmd
 	switch {
+	case os.Getenv("BROWSER") != "":
+		cmd = exec.Command(os.Getenv("BROWSER"), url)
 	case executableFile("/usr/bin/open") == nil:
 		cmd = exec.Command("/usr/bin/open", url)
 	default:

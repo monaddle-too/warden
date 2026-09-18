@@ -694,7 +694,8 @@ need the Google picker). When one appears the launcher opens the app on
 that chat under every `--popups` value, the default `none` included, and
 logs a line (`warden: review pending in "…": …; opening the app`); `notify`
 and `browser` add the desktop notification. `--popups silent` turns even
-that off, for a machine with no browser to open. The terminal client shows
+that off, for a machine with no browser to open; `$BROWSER`, when set,
+names the command that opens URLs instead of `open`/`xdg-open`. The terminal client shows
 the review above the approvals ("Claude proposed a pull request “…” to
 owner/repo — review it in the app: /review"), counts it in the status line
 and the terminal title, rings the bell for it, and `/review [N]` opens the

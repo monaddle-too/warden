@@ -231,6 +231,19 @@ func TestPopupsOpenTheAppForReviews(t *testing.T) {
 			t.Fatalf("%s detached=%v: approval notified %v", tc.mode, tc.detached, notified)
 		}
 	}
+	// $BROWSER names the command openBrowser runs with the URL.
+	stub := filepath.Join(t.TempDir(), "browser.sh")
+	seen := filepath.Join(t.TempDir(), "opened")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s' \"$1\" > "+seen+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BROWSER", stub)
+	if err := openBrowser("http://127.0.0.1:1/?chat=abc123"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(seen); string(b) != "http://127.0.0.1:1/?chat=abc123" {
+		t.Fatalf("opened %q", b)
+	}
 	// Without a launch URL the review is logged, not opened.
 	var log strings.Builder
 	p := &popupper{mode: popupsNone, log: &log, notify: desktopNotify, open: func(string) error { t.Fatal("opened without a URL"); return nil }}
