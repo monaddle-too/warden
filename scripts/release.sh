@@ -1,7 +1,8 @@
 #!/bin/sh
 # Build a Warden release: the frontend, the warden binary for linux/amd64,
-# linux/arm64 and darwin/arm64 with the revision linked in, one tarball per
-# target and SHA256SUMS. .github/workflows/release.yml runs this script on the
+# linux/arm64 and darwin/arm64 with the revision linked in, the macOS menu
+# bar item (chat/menu/main.swift, compiled with swiftc when the build host
+# has it: the Mac runner does), one tarball per target and SHA256SUMS. .github/workflows/release.yml runs this script on the
 # self-hosted Mac runner and adds the server image, the Helm chart and the
 # GitHub release; run it by hand for the same tarballs without Actions. With
 # --chart it also packages the Helm chart (scripts/package-chart.sh: chart
@@ -108,6 +109,19 @@ for target in linux/amd64 linux/arm64 darwin/arm64; do
   done
 done
 
+# The menu bar item, darwin/arm64 only: a Swift executable beside warden
+# in bin/ (warden install registers it as a launchd agent; a tarball
+# without it installs without the item, and warden install says so).
+# Xcode's swiftc is the one that links AppKit; a build host without it
+# ships no item.
+if command -v xcrun >/dev/null 2>&1 && xcrun --find swiftc >/dev/null 2>&1; then
+  xcrun swiftc -O -target arm64-apple-macos14.0 -framework AppKit \
+    -o dist/darwin-arm64/warden-menu chat/menu/main.swift
+  echo "built dist/darwin-arm64/warden-menu"
+else
+  echo "no swiftc: the darwin tarball ships without the menu bar item" >&2
+fi
+
 # The binary for this host runs here: it and each service subcommand must
 # report the version.
 host="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
@@ -131,6 +145,7 @@ for target in linux-amd64 linux-arm64 darwin-arm64; do
   stage="dist/stage/$name"
   mkdir -p "$stage/bin" "$stage/config" "$stage/vendor"
   for cmd in $CMDS; do cp "dist/$target/$cmd" "$stage/bin/"; done
+  [ ! -f "dist/$target/warden-menu" ] || cp "dist/$target/warden-menu" "$stage/bin/"
   cp -R chat/web/dist "$stage/web"
   cp config/policy.template.json "$stage/config/"
   cp vendor/github-operations.json vendor/github-meta.json "$stage/vendor/"
