@@ -524,8 +524,10 @@ func (e *Engine) Edit(id, title string, archived bool) error {
 // (`turn/interrupt`; the model stops mid-thought, a running tool is
 // aborted) and the chat is handed back as `interrupted`, with the agent's
 // session resident and the sandbox up, so the next message is answered at
-// once. An idle session is released, and a chat still queued just has its
-// messages failed. Only a run with no live agent yet (still booting), or
+// once. An idle session is released, and a chat still queued is taken off
+// the queue. Messages queued behind the turn are held, not failed: they
+// stay in the transcript until SendQueued or the next message lets them
+// go (queue.go). Only a run with no live agent yet (still booting), or
 // an agent that ignores the interrupt, falls back to cancelling the run,
 // which stops the sandbox (the runner cannot otherwise prove the guest's
 // processes died). Stopping the sandbox itself is StopEnvironment.
@@ -569,15 +571,9 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 			if c == nil {
 				return errors.New("chat not found")
 			}
-			fail := func() {
-				for i := range c.Conversation.Entries {
-					v := &c.Conversation.Entries[i]
-					if v.Delivery == "queued" {
-						v.Delivery = "failed"
-						v.Detail = "Stopped before delivery"
-					}
-				}
-			}
+			// Messages still queued are held, not failed: they stay in the
+			// transcript to be edited, withdrawn or sent (SendQueued, or
+			// the next message) once the person is ready (queue.go).
 			switch {
 			case c.Status == "stopping":
 				return errors.New("stop already pending")
@@ -587,14 +583,12 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 			case a == nil || (c.Status == "queued" && idle):
 				// Waiting for a slot or the sandbox (or the run just ended, its
 				// own cleanup keeps the mark): off the queue, nothing to cancel.
-				fail()
 				c.Status = "interrupted"
 				c.Conversation.ActiveTurnID = nil
 				mode = "unqueued"
 			case idle || c.Status == "queued":
 				again = true // a session resuming, or settling with a message waiting
 			default:
-				fail()
 				c.Status = "stopping"
 				cpy = *c
 				mode = "stop"
@@ -838,15 +832,19 @@ func (e *Engine) run(parent context.Context, id string) {
 			}
 			c.Conversation.ActiveTurnID = nil
 			c.Conversation.EndTurns(e.at())
+			// A run Stop ended (the agent ignored the interrupt, or had no
+			// turn yet) holds its queued messages like any stop; a run
+			// that failed on its own fails them, retry being the fix.
+			held := c.Status == "stopping" || c.Status == "interrupted"
 			for i := range c.Conversation.Entries {
 				v := &c.Conversation.Entries[i]
 				v.IsStreaming = false
-				if err != nil && v.Delivery == "queued" {
+				if err != nil && !held && v.Delivery == "queued" {
 					v.Delivery = "failed"
 					v.Detail = "Not delivered"
 				}
 			}
-			if c.Status == "stopping" || c.Status == "interrupted" {
+			if held {
 				return nil
 			}
 			c.Status = "idle"

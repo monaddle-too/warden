@@ -253,6 +253,12 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			result, err = h.Engine.Runtime(r.Context(), parts[1], "activity")
 		case "rewind":
 			result, err = h.Engine.Rewind(r.Context(), parts[1], body.TurnID, body.What)
+		case "withdraw":
+			// A queued message out of the queue, returned for the
+			// composer (queue.go); send-queued lets a held queue go.
+			result, err = h.Engine.Withdraw(parts[1], body.ID, requester(r))
+		case "send-queued":
+			err = h.Engine.SendQueued(parts[1])
 		default:
 			http.Error(w, "not found", 404)
 			return

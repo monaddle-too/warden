@@ -46,6 +46,9 @@ type RewindResult struct {
 	// not rewind; the next message starts a new one with the kept
 	// transcript as context), "" for a code-only rewind.
 	Conversation string `json:"conversation,omitempty"`
+	// Withdrawn counts the queued messages a conversation rewind took
+	// out of the queue (they were never handed to the agent).
+	Withdrawn int `json:"withdrawn,omitempty"`
 }
 
 // maxRecap bounds the transcript re-sent to a fresh session.
@@ -183,6 +186,9 @@ func (e *Engine) Rewind(ctx context.Context, id, turnID, what string) (RewindRes
 			return errors.New("chat not found")
 		}
 		if what != "code" {
+			// The queue goes with the conversation: a message queued
+			// behind the rewound turn was written for the old thread.
+			result.Withdrawn = withdrawQueued(c)
 			truncate(c, message.ID)
 		}
 		if what != "conversation" {
@@ -302,9 +308,8 @@ func (e *Engine) applyPendingRewind(ctx context.Context, id string, client *agen
 }
 
 // truncate drops message messageID and everything after it from the
-// transcript, keeping only user messages still queued (sent after the
-// rewind was asked for, ahead of a turn); the turns of the dropped entries
-// go with them.
+// transcript (a conversation rewind withdraws the queue first,
+// withdrawQueued); the turns of the dropped entries go with them.
 func truncate(c *Chat, messageID string) {
 	entries := c.Conversation.Entries
 	at := -1
@@ -318,11 +323,6 @@ func truncate(c *Chat, messageID string) {
 		return
 	}
 	kept := append([]cv.Entry(nil), entries[:at]...)
-	for _, v := range entries[at:] {
-		if v.Role == "user" && v.Delivery == "queued" {
-			kept = append(kept, v)
-		}
-	}
 	turns := map[string]bool{}
 	for _, v := range kept {
 		if v.TurnID != nil {
@@ -414,6 +414,9 @@ func rewindDetail(r RewindResult) string {
 		parts = append(parts, "the agent forgets the messages when its session resumes")
 	case "fresh":
 		parts = append(parts, "the agent's session could not rewind; the next message starts a new one with the conversation so far as context")
+	}
+	if r.Withdrawn > 0 {
+		parts = append(parts, count(r.Withdrawn, "queued message")+" withdrawn")
 	}
 	return strings.Join(parts, "; ")
 }

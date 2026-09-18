@@ -685,7 +685,7 @@ func TestStopBeforeFirstTurnEndsRunWithoutCancel(t *testing.T) {
 }
 
 // A chat waiting for its run (queued, nothing started) is just taken off
-// the queue; the sandbox is not touched.
+// the queue, its message held for later; the sandbox is not touched.
 func TestStopQueuedChatTouchesNothing(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -702,7 +702,7 @@ func TestStopQueuedChatTouchesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := s.Snapshot().chat(id)
-	if c.Status != "interrupted" || c.Conversation.Entries[0].Delivery != "failed" || len(w.requests) != 0 {
+	if c.Status != "interrupted" || c.Conversation.Entries[0].Delivery != "queued" || len(w.requests) != 0 {
 		t.Fatalf("after stop: %s, delivery %s, runner calls %d", c.Status, c.Conversation.Entries[0].Delivery, len(w.requests))
 	}
 }
