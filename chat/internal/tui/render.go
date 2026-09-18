@@ -205,9 +205,19 @@ func lastLines(text string, n int) []string {
 // output and diffs in full instead of their last lines, and a subagent's
 // own transcript under its card.
 func RenderTranscript(c *Chat, width int, expanded bool) []string {
+	return RenderTranscriptFrom(c, width, expanded, "")
+}
+
+// RenderTranscriptFrom is RenderTranscript with the "── new ──" divider
+// (unread.go) before the entry whose ID is unreadID, when it is one of
+// the conversation's own.
+func RenderTranscriptFrom(c *Chat, width int, expanded bool, unreadID string) []string {
 	top, children := nestEntries(c.Conversation.Entries)
 	var out []string
 	for _, e := range queuedLast(top) {
+		if unreadID != "" && e.ID == unreadID {
+			out = append(out, cyan+UnreadDivider+strings.Repeat("─", max(0, width-len([]rune(UnreadDivider))-1))+reset)
+		}
 		out = append(out, renderEntry(c, e, width, expanded, children, "")...)
 		out = append(out, "")
 	}
