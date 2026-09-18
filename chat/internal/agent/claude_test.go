@@ -478,7 +478,7 @@ func TestClaudeToolItems(t *testing.T) {
 	ws := "/home/agent/workspace/"
 
 	// Bash: the command, its description, the output; a failure by is_error.
-	bash := claudeTool{"Bash", in("command", "ls -la", "description", "List files")}
+	bash := claudeTool{name: "Bash", input: in("command", "ls -la", "description", "List files")}
 	item := claudeToolItem("t1", bash, nil, nil)
 	if item["type"] != "commandExecution" || item["command"] != "ls -la" || item["description"] != "List files" || item["status"] != "running" || item["aggregatedOutput"] != "" {
 		t.Fatalf("bash started: %v", item)
@@ -487,7 +487,7 @@ func TestClaudeToolItems(t *testing.T) {
 	if item["status"] != "completed" || item["aggregatedOutput"] != "total 0\nfile" {
 		t.Fatalf("bash completed: %v", item)
 	}
-	item = claudeToolItem("t1", claudeTool{"Bash", in("command", "false")}, failed("Exit code 1"), "Error: Exit code 1")
+	item = claudeToolItem("t1", claudeTool{name: "Bash", input: in("command", "false")}, failed("Exit code 1"), "Error: Exit code 1")
 	if item["status"] != "failed" || item["aggregatedOutput"] != "Exit code 1" || item["description"] != nil {
 		t.Fatalf("bash failed: %v", item)
 	}
@@ -495,7 +495,7 @@ func TestClaudeToolItems(t *testing.T) {
 	// Edit: at the start a headerless hunk of the old and new text (the
 	// line is not known); the structured result brings the CLI's own
 	// numbered hunks. Paths read relative to the workspace.
-	edit := claudeTool{"Edit", in("file_path", ws+"notes.txt", "old_string", "gamma", "new_string", "GAMMA\nGAMMA2")}
+	edit := claudeTool{name: "Edit", input: in("file_path", ws+"notes.txt", "old_string", "gamma", "new_string", "GAMMA\nGAMMA2")}
 	item = claudeToolItem("t2", edit, nil, nil)
 	change := Map(Array(item["changes"])[0])
 	if item["type"] != "fileChange" || item["tool"] != "Edit" || change["path"] != "notes.txt" || change["kind"] != "update" {
@@ -518,7 +518,7 @@ func TestClaudeToolItems(t *testing.T) {
 	}
 
 	// MultiEdit: one hunk per edit, headerless.
-	multi := claudeTool{"MultiEdit", in("file_path", ws+"a.go", "edits", []any{in("old_string", "x", "new_string", "y"), in("old_string", "p\nq", "new_string", "")})}
+	multi := claudeTool{name: "MultiEdit", input: in("file_path", ws+"a.go", "edits", []any{in("old_string", "x", "new_string", "y"), in("old_string", "p\nq", "new_string", "")})}
 	item = claudeToolItem("t3", multi, nil, nil)
 	if diff := String(Map(Array(item["changes"])[0])["diff"]); !strings.HasSuffix(diff, "+++ b/a.go\n-x\n+y\n-p\n-q\n") {
 		t.Fatalf("multi-edit diff:\n%s", diff)
@@ -527,7 +527,7 @@ func TestClaudeToolItems(t *testing.T) {
 	// Write: the content as an added file with numbered lines; the result
 	// says whether the file was created (new file) or replaced (then the
 	// CLI's patch against the old content).
-	write := claudeTool{"Write", in("file_path", ws+"hello.txt", "content", "hello\nworld\n")}
+	write := claudeTool{name: "Write", input: in("file_path", ws+"hello.txt", "content", "hello\nworld\n")}
 	item = claudeToolItem("t4", write, nil, nil)
 	change = Map(Array(item["changes"])[0])
 	if diff := String(change["diff"]); change["kind"] != "add" || diff != "diff --git a/hello.txt b/hello.txt\nnew file mode 100644\n--- /dev/null\n+++ b/hello.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n" {
@@ -544,14 +544,14 @@ func TestClaudeToolItems(t *testing.T) {
 	}
 
 	// NotebookEdit: the new source as added lines under the cell.
-	item = claudeToolItem("t5", claudeTool{"NotebookEdit", in("notebook_path", ws+"nb.ipynb", "cell_id", "c3", "new_source", "print(1)")}, nil, nil)
+	item = claudeToolItem("t5", claudeTool{name: "NotebookEdit", input: in("notebook_path", ws+"nb.ipynb", "cell_id", "c3", "new_source", "print(1)")}, nil, nil)
 	if diff := String(Map(Array(item["changes"])[0])["diff"]); item["tool"] != "NotebookEdit" || !strings.HasSuffix(diff, "+++ b/nb.ipynb\n@@ cell c3\n+print(1)\n") {
 		t.Fatalf("notebook diff:\n%s", diff)
 	}
 
 	// A Warden MCP tool: server and tool from the name, the arguments, the
 	// result's text blocks.
-	mcp := claudeTool{"mcp__warden__preview_attach", in("port", 3000.0, "title", "Preview")}
+	mcp := claudeTool{name: "mcp__warden__preview_attach", input: in("port", 3000.0, "title", "Preview")}
 	item = claudeToolItem("t6", mcp, nil, nil)
 	if item["type"] != "mcpToolCall" || item["server"] != "warden" || item["tool"] != "preview_attach" || Map(item["arguments"])["title"] != "Preview" || item["result"] != nil {
 		t.Fatalf("mcp started: %v", item)
@@ -566,21 +566,25 @@ func TestClaudeToolItems(t *testing.T) {
 		tool                     claudeTool
 		kind, title, path, query string
 	}{
-		{claudeTool{"Read", in("file_path", ws+"chat/main.go")}, "read", "Read chat/main.go", "chat/main.go", ""},
-		{claudeTool{"Read", in("file_path", "/etc/hosts", "offset", 10.0, "limit", 20.0)}, "read", "Read /etc/hosts (lines 10–29)", "/etc/hosts", ""},
-		{claudeTool{"Grep", in("pattern", "func main", "path", ws+"chat", "glob", "*.go")}, "search", "Grep 'func main' in chat *.go", "chat", "func main"},
-		{claudeTool{"Grep", in("pattern", "x")}, "search", "Grep 'x' in .", ".", "x"},
-		{claudeTool{"Glob", in("pattern", "**/*.ts")}, "search", "Glob '**/*.ts' in .", ".", "**/*.ts"},
-		{claudeTool{"LS", in("path", ws)}, "search", "List .", ".", ""},
-		{claudeTool{"WebFetch", in("url", "https://example.com/x", "prompt", "title?")}, "fetch", "Fetch https://example.com/x", "", "https://example.com/x"},
-		{claudeTool{"Agent", in("description", "list files", "subagent_type", "Explore", "prompt", "…")}, "task", "Agent: list files (Explore)", "", ""},
-		{claudeTool{"Task", in("description", "list files")}, "task", "Agent: list files", "", ""},
-		{claudeTool{"TodoWrite", in("todos", []any{in("content", "a"), in("content", "b")})}, "other", "Update todos (2)", "", ""},
-		{claudeTool{"Skill", in("skill", "deploy", "args", "prod")}, "other", "Skill /deploy prod", "", ""},
-		{claudeTool{"ToolSearch", in("query", "select:Foo")}, "other", "ToolSearch 'select:Foo'", "", "select:Foo"},
-		{claudeTool{"AskUserQuestion", in("questions", []any{in("question", "Which?")})}, "other", "Question: Which?", "", ""},
-		{claudeTool{"Monitor", in("description", "wait for the build", "command", "sleep 1")}, "other", "Monitor wait for the build", "", ""},
-		{claudeTool{"", nil}, "other", "tool", "", ""},
+		{claudeTool{name: "Read", input: in("file_path", ws+"chat/main.go")}, "read", "Read chat/main.go", "chat/main.go", ""},
+		{claudeTool{name: "Read", input: in("file_path", "/etc/hosts", "offset", 10.0, "limit", 20.0)}, "read", "Read /etc/hosts (lines 10–29)", "/etc/hosts", ""},
+		{claudeTool{name: "Grep", input: in("pattern", "func main", "path", ws+"chat", "glob", "*.go")}, "search", "Grep 'func main' in chat *.go", "chat", "func main"},
+		{claudeTool{name: "Grep", input: in("pattern", "x")}, "search", "Grep 'x' in .", ".", "x"},
+		{claudeTool{name: "Glob", input: in("pattern", "**/*.ts")}, "search", "Glob '**/*.ts' in .", ".", "**/*.ts"},
+		{claudeTool{name: "LS", input: in("path", ws)}, "search", "List .", ".", ""},
+		{claudeTool{name: "WebFetch", input: in("url", "https://example.com/x", "prompt", "title?")}, "fetch", "Fetch https://example.com/x", "", "https://example.com/x"},
+		{claudeTool{name: "Agent", input: in("description", "list files", "subagent_type", "Explore", "prompt", "…")}, "task", "Agent: list files (Explore)", "", ""},
+		{claudeTool{name: "Task", input: in("description", "list files")}, "task", "Agent: list files", "", ""},
+		{claudeTool{name: "TodoWrite", input: in("todos", []any{in("content", "a"), in("content", "b")})}, "other", "Update todos (2)", "", ""},
+		{claudeTool{name: "Skill", input: in("skill", "deploy", "args", "prod")}, "other", "Skill /deploy prod", "", ""},
+		{claudeTool{name: "ToolSearch", input: in("query", "select:Foo")}, "other", "ToolSearch 'select:Foo'", "", "select:Foo"},
+		{claudeTool{name: "AskUserQuestion", input: in("questions", []any{in("question", "Which?")})}, "other", "Question: Which?", "", ""},
+		{claudeTool{name: "Monitor", input: in("description", "wait for the build", "command", "sleep 1")}, "other", "Monitor: wait for the build", "", ""},
+		{claudeTool{name: "Monitor", input: in("task_id", "b1"), taskTitle: "Run the tests"}, "other", "Monitor: Run the tests", "", ""},
+		{claudeTool{name: "TaskOutput", input: in("task_id", "b1", "block", true), taskTitle: "Run the tests"}, "other", "Task output: Run the tests", "", ""},
+		{claudeTool{name: "TaskOutput", input: in("task_id", "b1")}, "other", "Task output: b1", "", ""},
+		{claudeTool{name: "TaskStop", input: in("task_id", "b1"), taskTitle: "Run the tests"}, "other", "Stop task: Run the tests", "", ""},
+		{claudeTool{}, "other", "tool", "", ""},
 	}
 	for _, c := range cases {
 		item = claudeToolItem("id", c.tool, nil, nil)
@@ -593,21 +597,21 @@ func TestClaudeToolItems(t *testing.T) {
 			t.Fatalf("%s: %v", c.tool.name, item)
 		}
 	}
-	item = claudeToolItem("id", claudeTool{"Read", in("file_path", ws+"x")}, ok("1\talpha\n2\tbeta"), map[string]any{"type": "text"})
+	item = claudeToolItem("id", claudeTool{name: "Read", input: in("file_path", ws+"x")}, ok("1\talpha\n2\tbeta"), map[string]any{"type": "text"})
 	if item["status"] != "completed" || item["output"] != "1\talpha\n2\tbeta" {
 		t.Fatalf("read completed: %v", item)
 	}
-	item = claudeToolItem("id", claudeTool{"Read", in("file_path", ws+"x")}, failed("File does not exist."), nil)
+	item = claudeToolItem("id", claudeTool{name: "Read", input: in("file_path", ws+"x")}, failed("File does not exist."), nil)
 	if item["status"] != "failed" || item["output"] != "File does not exist." {
 		t.Fatalf("read failed: %v", item)
 	}
 	// A search's content blocks join; an image block is named; a long
 	// input string is cut on the generic item.
-	item = claudeToolItem("id", claudeTool{"Agent", in("prompt", strings.Repeat("p", 3000))}, ok([]any{map[string]any{"type": "text", "text": "a"}, map[string]any{"type": "image"}, map[string]any{"type": "text", "text": "b"}}), nil)
+	item = claudeToolItem("id", claudeTool{name: "Agent", input: in("prompt", strings.Repeat("p", 3000))}, ok([]any{map[string]any{"type": "text", "text": "a"}, map[string]any{"type": "image"}, map[string]any{"type": "text", "text": "b"}}), nil)
 	if item["output"] != "a\n[image]\nb" || len([]rune(String(Map(item["input"])["prompt"]))) != 2001 {
 		t.Fatalf("content blocks: %v", item)
 	}
-	item = claudeToolItem("id", claudeTool{"WebSearch", in("query", "warden sandbox")}, ok("results…"), nil)
+	item = claudeToolItem("id", claudeTool{name: "WebSearch", input: in("query", "warden sandbox")}, ok("results…"), nil)
 	if item["type"] != "webSearch" || item["query"] != "warden sandbox" || item["output"] != "results…" {
 		t.Fatalf("web search: %v", item)
 	}

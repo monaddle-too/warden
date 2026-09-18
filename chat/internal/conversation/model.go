@@ -83,7 +83,8 @@ type Entry struct {
 	TurnID    *string `json:"turnID,omitempty"`
 	CreatedAt float64 `json:"createdAt"`
 	// EndedAt is when a thinking entry stopped streaming, so the
-	// transcript can say how long the model thought; 0 for other entries.
+	// transcript can say how long the model thought, or when a subagent
+	// (a task entry) finished; 0 for other entries.
 	EndedAt     float64 `json:"endedAt,omitempty"`
 	IsStreaming bool    `json:"isStreaming"`
 	Delivery    string  `json:"delivery"`
@@ -97,17 +98,27 @@ type Entry struct {
 	// unified diff per changed file). Nil on an activity entry recorded
 	// before it existed, whose Detail then starts with the status line.
 	Tool *Tool `json:"tool,omitempty"`
+	// ParentID names the subagent this entry belongs to: the ID of the
+	// task entry (the Agent tool call) whose subagent produced it, so a
+	// surface can nest a subagent's messages and tool calls under its
+	// card. Empty for the conversation's own entries. A subagent's own
+	// subagent chains by the same rule.
+	ParentID string `json:"parentID,omitempty"`
 }
 
 // Tool describes one agent tool call: Kind is what a surface renders by
-// (command, edit, read, search, fetch, webSearch, mcp, task or other),
+// (command, edit, read, search, fetch, webSearch, mcp, task, todo or
+// other),
 // Name the tool as the agent names it (Bash, Read, an MCP tool's name),
 // Server an MCP tool's server, Status running, completed or failed (an
 // agent's own word otherwise, such as Codex's declined). Description is
 // what the agent said the call is for, Paths the workspace files it names
 // (relative to the workspace when inside it), Query a search's pattern or
 // a fetch's URL, and Input the call's input where the surfaces show it as
-// given (a generic tool, an MCP call), with long strings cut.
+// given (a generic tool, an MCP call, a todo list's items), with long
+// strings cut. Background marks a command or a subagent the agent runs in
+// the background: the call returns at once and the entry stays running
+// until the task reports back.
 type Tool struct {
 	Kind        string         `json:"kind"`
 	Name        string         `json:"name,omitempty"`
@@ -117,6 +128,7 @@ type Tool struct {
 	Paths       []string       `json:"paths,omitempty"`
 	Query       string         `json:"query,omitempty"`
 	Input       map[string]any `json:"input,omitempty"`
+	Background  bool           `json:"background,omitempty"`
 }
 
 // Attachment is one file sent with a user message. Kind is "image" for a

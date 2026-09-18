@@ -67,8 +67,19 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		var initID json.RawMessage
 		tools := []any{}
 		pending := map[string]map[string]any{}
-		// Tool calls in flight, by tool_use id, until their result.
+		// Tool calls in flight, by tool_use id, until their result; a
+		// background task's call stays until the task's notification.
 		toolCalls := map[string]claudeTool{}
+		// Background tasks the CLI announced (task_started), by task id:
+		// the call that started each, so the task's notification and the
+		// output the model later reads land on that call's card.
+		tasks := map[string]string{}
+		// The agent's todo list, one item replaced in place by every write.
+		todos := claudeTodoList{}
+		todoID := ""
+		// Whether a turn is open: between turn/start (or one the CLI began
+		// by itself, cliTurn) and its result.
+		turnOpen, cliTurn := false, false
 		textID := ""
 		text := ""
 		streamed := false
@@ -101,6 +112,53 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 			event("item/completed", map[string]any{"turnId": turn, "item": map[string]any{"id": thinkingID, "type": "reasoning", "summary": []any{thinking}}})
 			thinkingID, thinking = "", ""
 		}
+		// The CLI resumes the model by itself when a background task it
+		// started (a command, a subagent) reports back after the turn
+		// ended: that is a turn to Warden too, begun here at the first
+		// frame of the conversation's own after a result, so the engine
+		// drives it like one it asked for.
+		openTurn := func() {
+			if turnOpen {
+				return
+			}
+			turn = claudeID()
+			text, textID, streamed, turnOpen, cliTurn = "", claudeID(), false, true, true
+			event("turn/started", map[string]any{"turn": map[string]any{"id": turn, "status": "inProgress"}})
+		}
+		// itemTurn is the turn an item belongs to: a subagent's the one its
+		// Agent call was made in (which may have ended), else the current.
+		itemTurn := func(parent string) string {
+			if t, ok := toolCalls[parent]; ok && t.turn != "" {
+				return t.turn
+			}
+			return turn
+		}
+		// taskTitle names a background task for the cards of the calls
+		// that wait on it: the originating command or subagent's
+		// description, else its command.
+		taskTitle := func(taskID string) string {
+			t, ok := toolCalls[tasks[taskID]]
+			if !ok {
+				return ""
+			}
+			return claudeOr(String(t.input["description"]), claudeCut(strings.SplitN(String(t.input["command"]), "\n", 2)[0], 80))
+		}
+		// settleTask completes the card of the call behind background task
+		// `taskID` (the notification's outcome and summary; a TaskOutput's
+		// real output) and forgets the call. A foreground subagent's task
+		// is left to its tool_result, which carries the subagent's text.
+		settleTask := func(taskID, status, output string) {
+			id := tasks[taskID]
+			t, ok := toolCalls[id]
+			if !ok || !t.background {
+				return
+			}
+			delete(toolCalls, id)
+			delete(tasks, taskID)
+			item := claudeToolItem(id, t, map[string]any{"content": output, "is_error": status == "failed"}, nil)
+			item["status"] = status
+			event("item/completed", map[string]any{"turnId": t.turn, "item": item})
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -127,6 +185,7 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						text = ""
 						textID = claudeID()
 						streamed = false
+						turnOpen, cliTurn = true, false
 					}
 					if f.Method == "turn/start" {
 						reply(f.ID, map[string]any{"turn": map[string]any{"id": turn, "status": "inProgress"}})
@@ -270,7 +329,34 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						thread = String(v["session_id"])
 						event("thread/started", map[string]any{"thread": map[string]any{"id": thread}})
 					}
+					switch v["subtype"] {
+					case "task_started":
+						// A background task (a command, a subagent) and the
+						// call that started it; its card waits for the task.
+						if id, taskID := String(v["tool_use_id"]), String(v["task_id"]); id != "" && taskID != "" {
+							tasks[taskID] = id
+							if t, ok := toolCalls[id]; ok {
+								t.task = taskID
+								t.background = t.background || v["is_backgrounded"] == true
+								toolCalls[id] = t
+							}
+						}
+					case "task_notification":
+						// The task ended: its outcome, and the subagent's
+						// final text or the command's exit line as the
+						// card's result until the model reads the output.
+						taskID := String(v["task_id"])
+						if id := String(v["tool_use_id"]); id != "" && tasks[taskID] == "" {
+							tasks[taskID] = id
+						}
+						summary := String(v["summary"])
+						settleTask(taskID, claudeTaskStatus(String(v["status"]), summary), summary)
+					}
 				case "stream_event":
+					if String(v["parent_tool_use_id"]) != "" {
+						continue // a subagent's text arrives complete in its assistant frame
+					}
+					openTurn()
 					e := Map(v["event"])
 					switch e["type"] {
 					case "content_block_start":
@@ -304,40 +390,112 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						flushThinking()
 					}
 				case "assistant":
-					flushThinking()
+					// A subagent's frames name their Agent call; they arrive
+					// complete (never streamed) and leave the conversation's
+					// own text and thinking alone.
+					parent := String(v["parent_tool_use_id"])
+					if parent == "" {
+						openTurn()
+						flushThinking()
+					}
 					for _, x := range Array(Map(v["message"])["content"]) {
 						b := Map(x)
-						if b["type"] == "tool_use" {
-							flushText()
+						switch b["type"] {
+						case "text":
+							if s := String(b["text"]); parent != "" && s != "" {
+								event("item/completed", map[string]any{"turnId": itemTurn(parent), "item": map[string]any{"id": claudeID(), "type": "agentMessage", "text": s, "parentId": parent}})
+							}
+						case "tool_use":
+							if parent == "" {
+								flushText()
+							}
 							// Each tool call is a typed item (claude_tools.go):
 							// started here with what the call asks, completed by
 							// its result below.
 							id := String(b["id"])
-							t := claudeTool{name: String(b["name"]), input: Map(b["input"])}
+							t := claudeTool{name: String(b["name"]), input: Map(b["input"]), parent: parent, turn: itemTurn(parent)}
+							t.background = t.input["run_in_background"] == true
+							if taskID := String(t.input["task_id"]); taskID != "" {
+								t.taskTitle = taskTitle(taskID)
+							}
 							toolCalls[id] = t
-							event("item/started", map[string]any{"turnId": turn, "item": claudeToolItem(id, t, nil, nil)})
+							if claudeTodoTool(t.name) {
+								continue // the list, not the write, is the card (at the result)
+							}
+							event("item/started", map[string]any{"turnId": t.turn, "item": claudeToolItem(id, t, nil, nil)})
 						}
 					}
 				case "user":
+					parent := String(v["parent_tool_use_id"])
 					results := []map[string]any{}
 					for _, x := range Array(Map(v["message"])["content"]) {
 						if b := Map(x); b["type"] == "tool_result" {
 							results = append(results, b)
 						}
 					}
+					if parent == "" && len(results) > 0 {
+						openTurn()
+					}
 					for _, b := range results {
 						id := String(b["tool_use_id"])
 						t := toolCalls[id]
-						delete(toolCalls, id)
+						if t.turn == "" {
+							t.turn = turn
+						}
 						// The CLI's structured result rides on the frame, so it
 						// belongs to a lone result only.
 						var structured any
 						if len(results) == 1 {
 							structured = v["tool_use_result"]
 						}
-						event("item/completed", map[string]any{"turnId": turn, "item": claudeToolItem(id, t, b, structured)})
+						if claudeTodoTool(t.name) {
+							delete(toolCalls, id)
+							if b["is_error"] != true && todos.apply(t.name, t.input, b, structured) {
+								if todoID == "" {
+									todoID = "todos-" + claudeID()
+								}
+								item := map[string]any{"id": todoID, "type": "todoList", "tool": t.name, "todos": todos.list()}
+								if t.parent != "" {
+									item["parentId"] = t.parent
+								}
+								event("item/completed", map[string]any{"turnId": t.turn, "item": item})
+							}
+							continue
+						}
+						if taskID := claudeBackgroundTask(t, b, structured); taskID != "" {
+							// The call went to the background: its result is
+							// boilerplate, and the card stays running until the
+							// task's notification.
+							t.background, t.task = true, taskID
+							tasks[taskID] = id
+							toolCalls[id] = t
+							event("item/started", map[string]any{"turnId": t.turn, "item": claudeToolItem(id, t, nil, nil)})
+							continue
+						}
+						delete(toolCalls, id)
+						event("item/completed", map[string]any{"turnId": t.turn, "item": claudeToolItem(id, t, b, structured)})
+						if t.name == "TaskOutput" {
+							// The output the model read is the command's own.
+							if taskID, output, status := claudeTaskOutput(b, structured); taskID != "" && status != "" {
+								settleTask(taskID, status, output)
+							}
+						} else if t.name == "TaskStop" && b["is_error"] != true {
+							settleTask(String(t.input["task_id"]), "stopped", "")
+						}
 					}
 				case "result":
+					if String(Map(v["origin"])["kind"]) == "task-notification" && turnOpen && !cliTurn {
+						// The model's answer to a background task's
+						// notification, delivered while the turn Warden asked
+						// for still runs (its own tool in flight): the answer
+						// is a message in that turn, which goes on to its own
+						// result.
+						flushThinking()
+						flushText()
+						continue
+					}
+					openTurn()
+					turnOpen, cliTurn = false, false
 					// Only a turn that streamed nothing falls back to the summary
 					// result; otherwise it would duplicate the last text block.
 					if text == "" && !streamed {
