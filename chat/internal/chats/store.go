@@ -32,7 +32,11 @@ type Chat struct {
 	// whoever started its first chat; nil is the runner's default. The
 	// runner's record is the current size (a grant or the owner may have
 	// changed it since), which Environment.Resources reports.
-	Resources    *sandbox.Resources        `json:"resources,omitempty"`
+	Resources *sandbox.Resources `json:"resources,omitempty"`
+	// Mode is the chat's permission mode (permissions.go): auto when
+	// empty. Allowed are its allow-always rules, in the order given.
+	Mode         string                    `json:"mode,omitempty"`
+	Allowed      []PermissionRule          `json:"allowed,omitempty"`
 	Status       string                    `json:"status"`
 	RunID        string                    `json:"runID"`
 	Error        string                    `json:"error,omitempty"`

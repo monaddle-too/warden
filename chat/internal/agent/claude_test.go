@@ -77,7 +77,7 @@ func TestClaudeStreamingTranslation(t *testing.T) {
 	}
 }
 
-func TestClaudeBuiltinToolsAllowedAndMCPResponse(t *testing.T) {
+func TestClaudeBuiltinToolAskAndMCPResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	raw, fake := net.Pipe()
@@ -99,7 +99,7 @@ func TestClaudeBuiltinToolsAllowedAndMCPResponse(t *testing.T) {
 		if d.Decode(&v) != nil {
 			return
 		}
-		allowed := Map(Map(v["response"])["response"])["behavior"] == "allow"
+		allowed := Map(Map(v["response"])["response"])["behavior"] == "allow" && Map(Map(Map(v["response"])["response"])["updatedInput"])["content"] == "ok"
 		_ = e.Encode(map[string]any{"type": "control_request", "request_id": "preview", "request": map[string]any{"subtype": "mcp_message", "server_name": "warden", "message": map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": map[string]any{"name": "preview_attach", "arguments": map[string]any{"port": 3000, "path": "/", "title": "Preview"}}}}})
 		if d.Decode(&v) != nil {
 			return
@@ -122,8 +122,18 @@ func TestClaudeBuiltinToolsAllowedAndMCPResponse(t *testing.T) {
 	}
 	select {
 	case f := <-frames:
-		// Built-in tools are allowed without an owner prompt; the first
-		// frame the controller sees is the Warden MCP tool call.
+		// A built-in tool's ask reaches the controller as a permission
+		// request carrying the call typed as its card; the controller's
+		// mode answers it (here: accept).
+		if f.Method != "item/tool/requestPermission" || f.Params["tool"] != "Write" || Map(f.Params["item"])["type"] != "fileChange" {
+			t.Fatal(f)
+		}
+		_ = c.Reply(f.ID, map[string]any{"decision": "accept"})
+	case <-ctx.Done():
+		t.Fatal("permission timeout")
+	}
+	select {
+	case f := <-frames:
 		if f.Method != "item/tool/call" || f.Params["tool"] != "preview_attach" {
 			t.Fatal(f)
 		}
@@ -680,5 +690,178 @@ func TestClaudeToolItemsThroughTheStream(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("translation timed out")
 		}
+	}
+}
+
+// claudeFake is a scripted CLI on the far side of the adapter: it answers
+// the initialize handshake, then hands every frame the adapter writes to
+// `writes` and encodes whatever the test sends.
+type claudeFake struct {
+	enc    *json.Encoder
+	writes chan map[string]any
+}
+
+func newClaudeFake(t *testing.T, ctx context.Context) (*Client, *claudeFake, chan Frame) {
+	t.Helper()
+	raw, fake := net.Pipe()
+	t.Cleanup(func() { fake.Close() })
+	cf := &claudeFake{enc: json.NewEncoder(fake), writes: make(chan map[string]any, 32)}
+	go func() {
+		d := json.NewDecoder(fake)
+		for {
+			var v map[string]any
+			if d.Decode(&v) != nil {
+				return
+			}
+			if v["type"] == "control_request" && Map(v["request"])["subtype"] == "initialize" {
+				_ = cf.enc.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{}}})
+				continue
+			}
+			select {
+			case cf.writes <- v:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	frames := make(chan Frame, 32)
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(_ *Client, f Frame) { frames <- f })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	if _, err = c.Call(ctx, "thread/start", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	return c, cf, frames
+}
+
+func (cf *claudeFake) send(v map[string]any) { _ = cf.enc.Encode(v) }
+
+func (cf *claudeFake) next(t *testing.T, ctx context.Context) map[string]any {
+	t.Helper()
+	select {
+	case v := <-cf.writes:
+		return v
+	case <-ctx.Done():
+		t.Fatal("the adapter wrote nothing")
+	}
+	return nil
+}
+
+func nextFrame(t *testing.T, ctx context.Context, frames chan Frame, method string) Frame {
+	t.Helper()
+	for {
+		select {
+		case f := <-frames:
+			if f.Method == method {
+				return f
+			}
+		case <-ctx.Done():
+			t.Fatalf("no %s frame", method)
+		}
+	}
+}
+
+// A tool ask is the controller's to answer: it arrives typed with the
+// call's card, and a decline carries the controller's message to the CLI
+// as the tool's error text.
+func TestClaudePermissionAskDeniedWithMessage(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, cf, frames := newClaudeFake(t, ctx)
+	if _, err := c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "go"}}}); err != nil {
+		t.Fatal(err)
+	}
+	cf.next(t, ctx) // the user message
+	cf.send(map[string]any{"type": "control_request", "request_id": "r1", "request": map[string]any{"subtype": "can_use_tool", "tool_name": "Bash", "tool_use_id": "toolu_9", "description": "Create a file", "input": map[string]any{"command": "touch x", "description": "Create a file"}, "permission_suggestions": []any{}}})
+	f := nextFrame(t, ctx, frames, "item/tool/requestPermission")
+	item := Map(f.Params["item"])
+	if f.Params["tool"] != "Bash" || Map(f.Params["input"])["command"] != "touch x" || f.Params["description"] != "Create a file" || item["type"] != "commandExecution" || item["command"] != "touch x" || item["id"] != "toolu_9" {
+		t.Fatalf("%+v", f.Params)
+	}
+	if err := c.Reply(f.ID, map[string]any{"decision": "decline", "message": "use printf"}); err != nil {
+		t.Fatal(err)
+	}
+	v := cf.next(t, ctx)
+	r := Map(v["response"])
+	answer := Map(r["response"])
+	if v["type"] != "control_response" || r["request_id"] != "r1" || answer["behavior"] != "deny" || answer["message"] != "use printf" || answer["updatedPermissions"] != nil {
+		t.Fatalf("%+v", v)
+	}
+}
+
+// ExitPlanMode is an ask with the plan; approving it into a mode moves
+// the CLI's mode with the answer.
+func TestClaudeExitPlanModeApprovalSetsMode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, cf, frames := newClaudeFake(t, ctx)
+	if _, err := c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "go"}}}); err != nil {
+		t.Fatal(err)
+	}
+	cf.next(t, ctx)
+	cf.send(map[string]any{"type": "control_request", "request_id": "r2", "request": map[string]any{"subtype": "can_use_tool", "tool_name": "ExitPlanMode", "tool_use_id": "toolu_p", "input": map[string]any{"plan": "# Plan\n1. edit", "planFilePath": "/home/agent/.claude/plans/p.md"}}})
+	f := nextFrame(t, ctx, frames, "item/tool/requestPermission")
+	if f.Params["tool"] != "ExitPlanMode" || f.Params["plan"] != "# Plan\n1. edit" {
+		t.Fatalf("%+v", f.Params)
+	}
+	if err := c.Reply(f.ID, map[string]any{"decision": "accept", "mode": "ask"}); err != nil {
+		t.Fatal(err)
+	}
+	answer := Map(Map(cf.next(t, ctx)["response"])["response"])
+	updates := Array(answer["updatedPermissions"])
+	if answer["behavior"] != "allow" || Map(answer["updatedInput"])["plan"] != "# Plan\n1. edit" || len(updates) != 1 || Map(updates[0])["type"] != "setMode" || Map(updates[0])["mode"] != "default" || Map(updates[0])["destination"] != "session" {
+		t.Fatalf("%+v", answer)
+	}
+	// The CLI now reports default; asking for ask again sends nothing,
+	// plan sends set_permission_mode.
+	if _, err := c.Call(ctx, "permissions/set", map[string]any{"mode": "ask"}); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		v := cf.next(t, ctx)
+		if Map(v["request"])["subtype"] != "set_permission_mode" || Map(v["request"])["mode"] != "plan" {
+			t.Errorf("%+v", v)
+		}
+		cf.send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{"mode": "plan"}}})
+	}()
+	result, err := c.Call(ctx, "permissions/set", map[string]any{"mode": "plan"})
+	if err != nil || result["mode"] != "plan" {
+		t.Fatal(result, err)
+	}
+	select {
+	case v := <-cf.writes:
+		t.Fatalf("unexpected write %+v", v)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// A mode the CLI refuses fails the call; the CLI's own status frames
+// reach the controller as mode changes.
+func TestClaudeModeRefusedAndStatusReported(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, cf, frames := newClaudeFake(t, ctx)
+	go func() {
+		v := cf.next(t, ctx)
+		cf.send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": v["request_id"], "error": "Cannot set permission mode"}})
+	}()
+	if _, err := c.Call(ctx, "permissions/set", map[string]any{"mode": "plan"}); err == nil || !strings.Contains(err.Error(), "Cannot set permission mode") {
+		t.Fatal(err)
+	}
+	cf.send(map[string]any{"type": "system", "subtype": "status", "status": nil, "permissionMode": "plan"})
+	f := nextFrame(t, ctx, frames, "permissions/modeChanged")
+	if f.Params["mode"] != "plan" {
+		t.Fatal(f)
+	}
+	// The CLI is in plan mode now: asking for plan sends nothing more.
+	if r, err := c.Call(ctx, "permissions/set", map[string]any{"mode": "plan"}); err != nil || r["mode"] != "plan" {
+		t.Fatal(r, err)
+	}
+	select {
+	case v := <-cf.writes:
+		t.Fatalf("unexpected write %+v", v)
+	case <-time.After(50 * time.Millisecond):
 	}
 }

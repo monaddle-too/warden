@@ -67,6 +67,12 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		var initID json.RawMessage
 		tools := []any{}
 		pending := map[string]map[string]any{}
+		// Control requests Warden sent the CLI (a permission mode change),
+		// by request id, until the CLI answers them; cliMode is the CLI's
+		// permission mode as last set or reported, so a change is sent only
+		// when it is one.
+		outbound := map[string]claudeOutbound{}
+		cliMode := "default"
 		// Tool calls in flight, by tool_use id, until their result.
 		toolCalls := map[string]claudeTool{}
 		textID := ""
@@ -157,6 +163,19 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						_ = cli.Encode(map[string]any{"type": "control_request", "request_id": "warden-interrupt-" + claudeID(), "request": map[string]any{"subtype": "interrupt"}})
 					}
 					reply(f.ID, map[string]any{})
+				case "permissions/set":
+					// The chat's permission mode (auto, ask, plan) as the CLI's:
+					// plan is plan, the rest is default, since in auto Warden
+					// allows every request itself. Sent only when it changes
+					// the CLI's mode; the CLI's answer completes the call.
+					want := claudePermissionMode(String(f.Params["mode"]))
+					if want == cliMode {
+						reply(f.ID, map[string]any{"mode": cliMode})
+						continue
+					}
+					rid := "warden-mode-" + claudeID()
+					outbound[rid] = claudeOutbound{id: f.ID, mode: want}
+					_ = cli.Encode(map[string]any{"type": "control_request", "request_id": rid, "request": map[string]any{"subtype": "set_permission_mode", "mode": want}})
 				case "":
 					key := string(f.ID)
 					p := pending[key]
@@ -176,9 +195,19 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						}
 						control(id, map[string]any{"mcp_response": map[string]any{"jsonrpc": "2.0", "id": msg["id"], "result": map[string]any{"content": content, "isError": result["success"] != true}}})
 					} else {
+						// The engine's decision on a can_use_tool: accept, or
+						// decline with the message the model reads as the
+						// tool's error; `mode` moves the CLI's permission mode
+						// with the answer (a plan approved into auto or ask).
 						answer := map[string]any{"behavior": "deny", "message": "Denied by Warden"}
 						if result["decision"] == "accept" {
 							answer = map[string]any{"behavior": "allow", "updatedInput": req["input"]}
+						} else if msg := String(result["message"]); msg != "" {
+							answer["message"] = msg
+						}
+						if mode := String(result["mode"]); mode != "" {
+							cliMode = claudePermissionMode(mode)
+							answer["updatedPermissions"] = []any{map[string]any{"type": "setMode", "mode": cliMode, "destination": "session"}}
 						}
 						if req["tool_name"] == "AskUserQuestion" {
 							updated := Map(req["input"])
@@ -218,6 +247,17 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						} else {
 							reply(initID, map[string]any{})
 						}
+					} else if o, ok := outbound[String(r["request_id"])]; ok {
+						delete(outbound, String(r["request_id"]))
+						if r["subtype"] == "error" {
+							send(Frame{ID: o.id, Error: &RPCError{Code: -32000, Message: String(r["error"])}})
+						} else {
+							cliMode = o.mode
+							if m := String(Map(r["response"])["mode"]); m != "" {
+								cliMode = m
+							}
+							reply(o.id, map[string]any{"mode": cliMode})
+						}
 					}
 				case "control_request":
 					req := Map(v["request"])
@@ -244,18 +284,30 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						}
 						control(id, map[string]any{"mcp_response": map[string]any{"jsonrpc": "2.0", "id": msg["id"], "result": result}})
 					} else if req["subtype"] == "can_use_tool" {
-						if req["tool_name"] != "AskUserQuestion" {
+						rid, _ := json.Marshal("claude-" + id)
+						pending[string(rid)] = v
+						if name := String(req["tool_name"]); name != "AskUserQuestion" {
 							// The SBX guest is the security boundary, as with
 							// Codex's dangerFullAccess: built-in tools act only
 							// inside the guest, network egress goes through the
 							// Warden proxy, and every Warden MCP tool obtains
-							// owner approval itself before granting access.
-							// A second per-call prompt here adds no control.
-							control(id, map[string]any{"behavior": "allow", "updatedInput": req["input"]})
+							// owner approval itself before granting access. So
+							// the ask is the chat's permission mode's to decide,
+							// not a control: the engine allows it at once in
+							// auto, by an allow-always rule, or asks the owner
+							// with the call typed as its transcript card
+							// (claude_tools.go) and, for ExitPlanMode, the plan.
+							t := claudeTool{name: name, input: Map(req["input"])}
+							params := map[string]any{"tool": name, "input": t.input, "item": claudeToolItem(String(req["tool_use_id"]), t, nil, nil)}
+							if d := String(req["description"]); d != "" {
+								params["description"] = d
+							}
+							if name == "ExitPlanMode" {
+								params["plan"] = String(t.input["plan"])
+							}
+							send(Frame{ID: rid, Method: "item/tool/requestPermission", Params: params})
 							continue
 						}
-						rid, _ := json.Marshal("claude-" + id)
-						pending[string(rid)] = v
 						questions := []any{}
 						for i, q := range Array(Map(req["input"])["questions"]) {
 							question := Map(q)
@@ -269,6 +321,13 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 					if v["subtype"] == "init" {
 						thread = String(v["session_id"])
 						event("thread/started", map[string]any{"thread": map[string]any{"id": thread}})
+					}
+					// The CLI reports its permission mode whenever it changes:
+					// after a set_permission_mode, an approved plan, or the
+					// model's own EnterPlanMode, which only shows here.
+					if m := String(v["permissionMode"]); v["subtype"] == "status" && m != "" {
+						cliMode = m
+						event("permissions/modeChanged", map[string]any{"mode": m})
 					}
 				case "stream_event":
 					e := Map(v["event"])
@@ -365,6 +424,24 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 	return client
 }
 func claudeID() string { var b [16]byte; _, _ = rand.Read(b[:]); return hex.EncodeToString(b[:]) }
+
+// claudeOutbound is a control request Warden sent the CLI: the engine call
+// it answers and, for set_permission_mode, the mode asked for.
+type claudeOutbound struct {
+	id   json.RawMessage
+	mode string
+}
+
+// claudePermissionMode is the CLI's permission mode for one of Warden's:
+// plan is the CLI's plan mode (it withholds edits and asks through
+// ExitPlanMode); auto and ask are both the CLI's default, the difference
+// being whether the engine answers the asks itself.
+func claudePermissionMode(mode string) string {
+	if mode == "plan" {
+		return "plan"
+	}
+	return "default"
+}
 
 func claudeResultError(v map[string]any) string {
 	if errors := Array(v["errors"]); len(errors) > 0 {
