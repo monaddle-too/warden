@@ -65,6 +65,16 @@ missing one.
   expiry, polled status, and Cancel cleared it. Completing the
   authorisation at GitHub was left to the owner.
 
+## Status
+
+Merged to `origin/main` as 23f9f4c (2026-09-17) and deployed the same day:
+locally (`~/.warden/release`, user-token file) and to the GKE Autopilot
+cluster (`scripts/k8s-gke.sh build-images && deploy`, image
+`v0.1.0-alpha.12-195-g23f9f4c`, all four Deployments rolled out; there the
+sign-in lands in the `warden-github-login` Secret through the credential
+store). On the cluster the edge answers `github_login_status` with 403 when
+signed out, as intended.
+
 ## Remaining
 
 - Nothing planned. Possible later: a device-flow sign-in for the first
