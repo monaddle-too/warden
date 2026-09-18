@@ -350,6 +350,93 @@
   margin: 4px 0 6px;
 }
 
+/* Typed tool cards (ToolCard.tsx): the summary row names the call in its
+   own terms, the body shows its output folded, its diff, or its input. */
+.tool-card summary .tool-icon {
+  flex: none;
+  color: var(--muted);
+}
+.tool-card summary .tool-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-card summary .tool-title.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.tool-card summary .tool-count,
+.tool-card summary .tool-failed {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.tool-card summary .tool-failed {
+  color: var(--danger);
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--danger-soft);
+}
+.tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.activity-group > .tool-body {
+  padding: 0 10px 10px;
+}
+.activity-entry > .tool-body {
+  padding: 4px 0 6px;
+}
+.tool-body p {
+  margin: 0;
+}
+.tool-description,
+.tool-meta {
+  font-size: 12px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.tool-meta code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.tool-meta a {
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.tool-output {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+.tool-output pre {
+  align-self: stretch;
+  margin: 0;
+  max-height: none;
+}
+.tool-input pre {
+  color: var(--muted);
+}
+.tool-more {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 2px 6px;
+}
+.tool-more:hover {
+  color: var(--text);
+}
+.tool-body .activity-detail {
+  margin: 0;
+}
+
 /* Approval card */
 .approval-card {
   display: flex;

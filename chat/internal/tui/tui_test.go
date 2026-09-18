@@ -588,3 +588,65 @@ func TestTabExpandsFindAndCopy(t *testing.T) {
 		t.Fatalf("run indicator %q", ind)
 	}
 }
+
+// Typed tool entries render by kind: a command as `$ command` with its
+// description and its output's last lines, a file change with its counts
+// and the diff's lines coloured (the git header left out), a read or
+// search as one line with what it returned until expanded, a failure with
+// its message; long bodies fold with the Tab hint.
+func TestRenderToolEntries(t *testing.T) {
+	c := &Chat{ID: "c", Title: "t", Provider: "claude"}
+	long := ""
+	for i := 1; i <= 20; i++ {
+		long += fmt.Sprintf("line %d\n", i)
+	}
+	c.Conversation.Entries = []Entry{
+		{ID: "b", Role: "activity", Text: "ls -la", Detail: long, Tool: &Tool{Kind: "command", Name: "Bash", Status: "completed", Description: "List files"}},
+		{ID: "f", Role: "activity", Text: "false", Detail: "Exit code 1", Tool: &Tool{Kind: "command", Name: "Bash", Status: "failed"}},
+		{ID: "e", Role: "activity", Text: "Edit notes.txt", Detail: "notes.txt\ndiff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n alpha\n-gamma\n+GAMMA\n+GAMMA2\n", Tool: &Tool{Kind: "edit", Name: "Edit", Status: "completed", Paths: []string{"notes.txt"}}},
+		{ID: "r", Role: "activity", Text: "Read notes.txt", Detail: "1\talpha\n2\tbeta\n", Tool: &Tool{Kind: "read", Name: "Read", Status: "completed", Paths: []string{"notes.txt"}}},
+		{ID: "g", Role: "activity", Text: "Grep 'x' in .", Detail: "Found 3 files\na\nb\nc\n", Tool: &Tool{Kind: "search", Name: "Grep", Status: "completed", Query: "x"}},
+		{ID: "n", Role: "activity", Text: "Read missing.txt", Detail: "File does not exist.", Tool: &Tool{Kind: "read", Name: "Read", Status: "failed"}},
+		{ID: "m", Role: "activity", Text: "warden · preview_attach", Detail: "https://p", Tool: &Tool{Kind: "mcp", Name: "preview_attach", Server: "warden", Status: "completed", Input: map[string]any{"port": 3000, "title": "Preview"}}},
+		{ID: "s", Role: "activity", Text: "sleep 5", Detail: "", IsStreaming: true, Tool: &Tool{Kind: "command", Name: "Bash", Status: "running"}},
+	}
+	collapsed := plain(strings.Join(RenderTranscript(c, 60, false), "\n"))
+	for _, want := range []string{"· $ ls -la", "    List files", "12 more lines (Tab to expand)", "│ line 20", "✗ $ false failed", "│ Exit code 1", "Edit notes.txt  +2 −1", "│ @@ -1,3 +1,3 @@", "│  alpha", "│ -gamma", "│ +GAMMA2", "Read notes.txt  2 lines", "Grep 'x' in .  3 files", "✗ Read missing.txt failed", "│ File does not exist.", "warden · preview_attach", "│ https://p", "⋯ $ sleep 5"} {
+		if !strings.Contains(collapsed, want) {
+			t.Fatalf("missing %q in:\n%s", want, collapsed)
+		}
+	}
+	for _, unwanted := range []string{"│ line 1\n", "diff --git", "+++ b/notes.txt", "--- a/notes.txt", "│ 1\talpha", "│ Found 3 files", "port: 3000"} {
+		if strings.Contains(collapsed, unwanted) {
+			t.Fatalf("unexpected %q in:\n%s", unwanted, collapsed)
+		}
+	}
+	styled := strings.Join(RenderTranscript(c, 60, false), "\n")
+	if !strings.Contains(styled, green+"    │ +GAMMA") || !strings.Contains(styled, red+"    │ -gamma") || !strings.Contains(styled, cyan+"    │ @@") {
+		t.Fatalf("diff colours:\n%s", styled)
+	}
+	expanded := plain(strings.Join(RenderTranscript(c, 60, true), "\n"))
+	for _, want := range []string{"│ line 1\n", "│ line 20", "│ 1\talpha", "│ Found 3 files", "│ c\n", "│ port: 3000", "│ title: Preview"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("missing %q when expanded in:\n%s", want, expanded)
+		}
+	}
+	if strings.Contains(expanded, "more lines") {
+		t.Fatal("expanded output still folded")
+	}
+	for _, l := range RenderTranscript(c, 40, false) {
+		if clipLen(l) > 40 {
+			t.Fatalf("line wider than 40: %q", l)
+		}
+	}
+	// A change over several files heads each file's lines with its path.
+	multi := Entry{ID: "x", Role: "activity", Text: "Updated 2 files", Detail: "a\ndiff --git a/a b/a\n--- a/a\n+++ b/a\n-1\n+2\n\nb\ndiff --git a/b b/b\nnew file mode 100644\n--- /dev/null\n+++ b/b\n@@ -0,0 +1,1 @@\n+hi\n\n", Tool: &Tool{Kind: "edit", Status: "completed", Paths: []string{"a", "b"}}}
+	lines, adds, dels := diffLines(strings.TrimRight(multi.Detail, "\n"))
+	if adds != 2 || dels != 1 || strings.Join(lines, "|") != "§ a|-1|+2|§ b|@@ -0,0 +1,1 @@|+hi" {
+		t.Fatalf("multi-file diff: %d %d %q", adds, dels, lines)
+	}
+	// A removed line that itself starts with "-- " is a change, not a header.
+	if lines, _, dels = diffLines("a\ndiff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1,1 +0,0 @@\n---- rule\n"); dels != 1 || lines[len(lines)-1] != "---- rule" {
+		t.Fatalf("header ambiguity: %q", lines)
+	}
+}

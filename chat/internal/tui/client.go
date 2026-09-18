@@ -30,6 +30,7 @@ type Entry struct {
 	EndedAt     float64 `json:"endedAt"`
 	IsStreaming bool    `json:"isStreaming"`
 	Delivery    string  `json:"delivery"`
+	Tool        *Tool   `json:"tool"` // the tool call an activity entry records (render.go)
 	Sender      *struct {
 		PrincipalID string `json:"principalID"`
 		Email       string `json:"email"`

@@ -52,3 +52,85 @@ func TestReasoningItemsAreThinkingEntries(t *testing.T) {
 		t.Fatalf("end turns: %+v", c.Entries[3])
 	}
 }
+
+// A tool item is an activity entry with its Tool recorded: the title in
+// Text, the output or diff alone in Detail, the kind, status and what the
+// call names on Tool; a status word of the agent's is kept as it is.
+func TestToolItemsRecordTheirTool(t *testing.T) {
+	var c Conversation
+	c.Upsert(map[string]any{"id": "b", "type": "commandExecution", "tool": "Bash", "command": "ls", "description": "List", "status": "inProgress"}, "turn", false)
+	e := c.Entries[0]
+	if e.Role != "activity" || e.Text != "ls" || e.Detail != "" || e.Tool == nil || e.Tool.Kind != "command" || e.Tool.Name != "Bash" || e.Tool.Status != "running" || e.Tool.Description != "List" || !e.IsStreaming {
+		t.Fatalf("command started: %+v %+v", e, e.Tool)
+	}
+	// Streamed output (Codex) appends to the detail; the completed item
+	// carries the whole.
+	c.Delta("b", "turn", "a.go\n", "activity")
+	c.Delta("b", "turn", "b.go\n", "activity")
+	if c.Entries[0].Detail != "a.go\nb.go\n" || c.Entries[0].Tool == nil {
+		t.Fatalf("streamed output: %+v", c.Entries[0])
+	}
+	c.Upsert(map[string]any{"id": "b", "type": "commandExecution", "tool": "Bash", "command": "ls", "status": "failed", "aggregatedOutput": "a.go\nb.go\nExit code 1"}, "turn", true)
+	if e = c.Entries[0]; e.Detail != "a.go\nb.go\nExit code 1" || e.Tool.Status != "failed" || e.IsStreaming {
+		t.Fatalf("command failed: %+v %+v", e, e.Tool)
+	}
+	c.Upsert(map[string]any{"id": "d", "type": "commandExecution", "command": "rm -rf x", "status": "declined"}, "turn", true)
+	if c.Entries[1].Tool.Status != "declined" {
+		t.Fatalf("declined: %+v", c.Entries[1].Tool)
+	}
+	// A delta before the item is announced makes a running command entry.
+	c.Delta("early", "turn", "out", "activity")
+	if e = c.Entries[2]; e.Text != "Running command" || e.Detail != "out" || e.Tool == nil || e.Tool.Kind != "command" || e.Tool.Status != "running" {
+		t.Fatalf("delta-first command: %+v %+v", e, e.Tool)
+	}
+
+	// A file change: the tool and path name it, each change's path and
+	// diff make the detail, the paths are on the tool.
+	c.Upsert(map[string]any{"id": "e", "type": "fileChange", "tool": "Edit", "status": "completed", "changes": []any{map[string]any{"path": "a.go", "kind": "update", "diff": "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,1 +1,1 @@\n-x\n+y\n"}}}, "turn", true)
+	if e = c.Entries[3]; e.Text != "Edit a.go" || e.Tool.Kind != "edit" || e.Tool.Name != "Edit" || len(e.Tool.Paths) != 1 || e.Tool.Paths[0] != "a.go" || e.Detail != "a.go\ndiff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,1 +1,1 @@\n-x\n+y\n\n" {
+		t.Fatalf("edit: %+v %+v", e, e.Tool)
+	}
+	// Codex names no tool: a single change reads by its kind, several by
+	// their count.
+	c.Upsert(map[string]any{"id": "f", "type": "fileChange", "status": "completed", "changes": []any{map[string]any{"path": "new.txt", "kind": "add", "diff": "+hi\n"}}}, "turn", true)
+	c.Upsert(map[string]any{"id": "g", "type": "fileChange", "status": "completed", "changes": []any{map[string]any{"path": "a", "kind": "update", "diff": ""}, map[string]any{"path": "b", "kind": "delete", "diff": ""}}}, "turn", true)
+	if c.Entries[4].Text != "Add new.txt" || c.Entries[5].Text != "Updated 2 files" || len(c.Entries[5].Tool.Paths) != 2 {
+		t.Fatalf("codex changes: %q %q", c.Entries[4].Text, c.Entries[5].Text)
+	}
+
+	// A generic tool call: kind, title, paths, query and input carried
+	// over; the result's text is the detail.
+	c.Upsert(map[string]any{"id": "r", "type": "toolCall", "tool": "Grep", "kind": "search", "title": "Grep 'x' in .", "status": "completed", "paths": []any{"."}, "query": "x", "output": "a.go:1:x", "input": map[string]any{"pattern": "x"}}, "turn", true)
+	if e = c.Entries[6]; e.Text != "Grep 'x' in ." || e.Detail != "a.go:1:x" || e.Tool.Kind != "search" || e.Tool.Name != "Grep" || e.Tool.Query != "x" || e.Tool.Paths[0] != "." || e.Tool.Input["pattern"] != "x" {
+		t.Fatalf("grep: %+v %+v", e, e.Tool)
+	}
+	c.Upsert(map[string]any{"id": "u", "type": "toolCall", "tool": "Whatever", "status": "running"}, "turn", false)
+	if e = c.Entries[7]; e.Text != "Whatever" || e.Tool.Kind != "other" {
+		t.Fatalf("untitled tool: %+v %+v", e, e.Tool)
+	}
+
+	// An MCP call: server and tool, the arguments as input, the result's
+	// text (or its error) as the detail.
+	c.Upsert(map[string]any{"id": "m", "type": "mcpToolCall", "server": "warden", "tool": "preview_attach", "status": "completed", "arguments": map[string]any{"port": 3000.0}, "result": map[string]any{"content": []any{map[string]any{"type": "text", "text": "https://p"}}}}, "turn", true)
+	if e = c.Entries[8]; e.Text != "warden · preview_attach" || e.Detail != "https://p" || e.Tool.Kind != "mcp" || e.Tool.Server != "warden" || e.Tool.Name != "preview_attach" || e.Tool.Input["port"] != 3000.0 {
+		t.Fatalf("mcp: %+v %+v", e, e.Tool)
+	}
+	c.Upsert(map[string]any{"id": "m2", "type": "mcpToolCall", "server": "warden", "tool": "x", "status": "failed", "error": map[string]any{"message": "denied"}}, "turn", true)
+	if c.Entries[9].Detail != "denied" || c.Entries[9].Tool.Status != "failed" {
+		t.Fatalf("mcp error: %+v", c.Entries[9])
+	}
+	// Codex's dynamic tool call is the same kind of thing.
+	c.Upsert(map[string]any{"id": "dt", "type": "dynamicToolCall", "tool": "request_network_access", "status": "completed", "arguments": map[string]any{"host": "x"}}, "turn", true)
+	if e = c.Entries[10]; e.Text != "request_network_access" || e.Tool.Kind != "mcp" || e.Tool.Server != "warden" || e.Tool.Input["host"] != "x" {
+		t.Fatalf("dynamic tool: %+v %+v", e, e.Tool)
+	}
+	c.Upsert(map[string]any{"id": "w", "type": "webSearch", "query": "warden", "status": "completed", "output": "hits"}, "turn", true)
+	if e = c.Entries[11]; e.Text != "Search: warden" || e.Detail != "hits" || e.Tool.Kind != "webSearch" || e.Tool.Query != "warden" {
+		t.Fatalf("web search: %+v %+v", e, e.Tool)
+	}
+	// Finishing the turn ends the streaming of a call still running.
+	c.Finish("turn", 10)
+	if c.Entries[2].IsStreaming {
+		t.Fatal("finish left a tool streaming")
+	}
+}

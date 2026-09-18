@@ -20,6 +20,7 @@ import { DiffView } from "./DiffView";
 import { ImageAttachment } from "./ImageAttachment";
 import { RichText } from "./RichText";
 import { ThinkingBlock } from "./Thinking";
+import { ToolBody, ToolSummary } from "./ToolCard";
 import { TurnStats } from "./TurnStats";
 import { useCopy } from "./useCopy";
 const time = (v: number) =>
@@ -39,24 +40,58 @@ function ActivityDetail({ text }: { text: string }) {
     <pre>{text}</pre>
   );
 }
+/* One step's summary row: the typed card's (ToolCard.tsx) when the
+   service recorded the tool call, else the step's text. */
+function StepSummary({ entry }: { entry: Entry }) {
+  if (entry.tool) return <ToolSummary entry={entry} />;
+  return (
+    <>
+      <FileText size={13} />
+      <span>{entry.text || "Agent activity"}</span>
+      {entry.isStreaming && <LoaderCircle size={12} className="spin" />}
+    </>
+  );
+}
+function StepBody({
+  entry,
+  onFile,
+}: {
+  entry: Entry;
+  onFile?: (href: string) => void;
+}) {
+  if (entry.tool) return <ToolBody entry={entry} onFile={onFile} />;
+  return <ActivityDetail text={entry.detail} />;
+}
 /* A run of consecutive tool steps collapses into one row. */
 export const ActivityGroup = memo(function ActivityGroup({
   entries,
+  onFile,
 }: {
   entries: Entry[];
+  /* Opens a workspace file a step names (a read's path). */
+  onFile?: (href: string) => void;
 }) {
   const streaming = entries.some((e) => e.isStreaming);
   const latest = entries[entries.length - 1];
   // `data-entry` is how the find bar lands on an entry from the palette.
   if (entries.length === 1)
     return (
-      <details className="activity-group" data-entry={latest.id}>
+      <details
+        className={`activity-group${latest.tool ? ` tool-card tool-kind-${latest.tool.kind}` : ""}`}
+        data-entry={latest.id}
+      >
         <summary>
           <ChevronRight size={14} className="chevron" />
-          <span>{latest.text || "Agent activity"}</span>
-          {streaming && <LoaderCircle size={12} className="spin" />}
+          {latest.tool ? (
+            <ToolSummary entry={latest} />
+          ) : (
+            <>
+              <span>{latest.text || "Agent activity"}</span>
+              {streaming && <LoaderCircle size={12} className="spin" />}
+            </>
+          )}
         </summary>
-        <ActivityDetail text={latest.detail} />
+        <StepBody entry={latest} onFile={onFile} />
       </details>
     );
   return (
@@ -70,16 +105,14 @@ export const ActivityGroup = memo(function ActivityGroup({
       <div className="activity-list">
         {entries.map((entry) => (
           <details
-            className="activity-entry"
+            className={`activity-entry${entry.tool ? ` tool-card tool-kind-${entry.tool.kind}` : ""}`}
             key={entry.id}
             data-entry={entry.id}
           >
             <summary>
-              <FileText size={13} />
-              <span>{entry.text || "Agent activity"}</span>
-              {entry.isStreaming && <LoaderCircle size={12} className="spin" />}
+              <StepSummary entry={entry} />
             </summary>
-            <ActivityDetail text={entry.detail} />
+            <StepBody entry={entry} onFile={onFile} />
           </details>
         ))}
       </div>
@@ -182,7 +215,8 @@ export const EntryView = memo(function EntryView({
         entryID={entry.id}
       />
     );
-  if (entry.role === "activity") return <ActivityGroup entries={[entry]} />;
+  if (entry.role === "activity")
+    return <ActivityGroup entries={[entry]} onFile={onFile} />;
   if (entry.role === "thinking")
     return (
       <ThinkingBlock

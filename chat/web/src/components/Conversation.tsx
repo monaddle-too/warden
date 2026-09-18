@@ -767,7 +767,7 @@ export function Conversation({
                     />
                   )}
                   {"group" in item ? (
-                    <ActivityGroup entries={item.group} />
+                    <ActivityGroup entries={item.group} onFile={onFile} />
                   ) : (
                     <EntryView
                       provider={chat.provider}
