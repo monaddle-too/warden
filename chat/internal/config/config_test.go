@@ -437,3 +437,44 @@ func TestValidationByRuntimeKind(t *testing.T) {
 		t.Fatal("long state accepted for the sbx kind")
 	}
 }
+
+// Bug reporting (docs/bug-reporting-plan.md): off by default with the
+// cloud receiver as the URL, an opt-in that survives a round trip, and a
+// URL that is https or a loopback http.
+func TestReportingDefaultsOptInAndURL(t *testing.T) {
+	c := Defaults("/tmp/w")
+	if c.Reporting.Enabled || c.Reporting.URL != DefaultReportingURL {
+		t.Fatalf("%+v", c.Reporting)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "warden.json")
+	c.Reporting.Enabled = true
+	if err := Write(path, c); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path, "")
+	if err != nil || !loaded.Reporting.Enabled || loaded.Reporting.URL != DefaultReportingURL {
+		t.Fatalf("%+v %v", loaded.Reporting, err)
+	}
+	// A file without the section reads as off with the default URL.
+	old, err := Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"}}`))
+	if err != nil || old.Reporting.Enabled || old.Reporting.URL != DefaultReportingURL {
+		t.Fatalf("%+v %v", old.Reporting, err)
+	}
+	for url, ok := range map[string]bool{
+		"https://cloud.warden.monaddle.com/api/bug-reports": true,
+		"http://127.0.0.1:9999/api/bug-reports":            true,
+		"http://[::1]:9999/api/bug-reports":                true,
+		"http://example.com/api/bug-reports":               false,
+		"http://localhost:9999/x":                          false,
+		"ftp://127.0.0.1/x":                                false,
+		"cloud.warden.monaddle.com/api/bug-reports":        false,
+		"":                                                 false,
+	} {
+		c := Defaults("/tmp/w")
+		c.Reporting.URL = url
+		if err := c.Validate(); (err == nil) != ok {
+			t.Errorf("reporting.url %q: %v", url, err)
+		}
+	}
+}

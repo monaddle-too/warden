@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warden bug report</title>
+<style>
+  :root { color-scheme: light dark; --line: #8884; --muted: #777; --pre: #8881a; --ok: #2b8a3e; --bad: #c92a2a; }
+  body { margin: 0; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 20px 60px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 28px 0 8px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  p.lead { margin: 0 0 20px; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; vertical-align: top; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line); font-weight: normal; }
+  th { width: 160px; color: var(--muted); white-space: nowrap; }
+  pre { background: var(--pre); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin: 0; max-height: 320px; overflow: auto; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+  pre.json { max-height: 480px; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 110px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font: inherit; resize: vertical; background: transparent; color: inherit; }
+  details { margin: 8px 0; }
+  summary { cursor: pointer; padding: 6px 0; }
+  .actions { display: flex; gap: 12px; align-items: center; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  button { font: inherit; padding: 9px 18px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; cursor: pointer; }
+  button.primary { background: #1971c2; border-color: #1971c2; color: #fff; }
+  .note { color: var(--muted); font-size: 13px; }
+  .banner { border-radius: 6px; padding: 12px 14px; margin: 0 0 20px; border: 1px solid var(--line); }
+  .banner.ok { border-color: var(--ok); }
+  .banner.bad { border-color: var(--bad); }
+  code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  form.inline { display: inline; }
+</style>
+</head>
+<body>
+<main>
+{{if eq .Mode "sent"}}
+  <h1>Report sent</h1>
+  <p class="banner ok">Thank you. The report's id is <code>{{.Result}}</code>. You can close this window.</p>
+  <p class="note">What was sent is below, for your records.</p>
+  <details><summary>The report as sent (JSON)</summary><pre class="json">{{.JSON}}</pre></details>
+{{else if eq .Mode "discarded"}}
+  <h1>Report discarded</h1>
+  <p class="banner ok">Nothing was sent, and the draft is deleted. You can close this window.</p>
+{{else}}
+  <h1>Warden bug report</h1>
+  <p class="lead">Nothing has been sent. This page is everything the report contains: read it, edit the description, then send it to Monaddle or don't.</p>
+  {{if eq .Mode "failed"}}<p class="banner bad">Not sent: {{.Result}}</p>{{end}}
+  <table>
+    <tr><th>Summary</th><td>{{.Report.Summary}}</td></tr>
+    <tr><th>Kind</th><td>{{.Report.Kind}} · {{.Report.Trigger}} · {{.Report.Component}}</td></tr>
+    <tr><th>Created</th><td>{{.Report.CreatedAt}}</td></tr>
+    <tr><th>Report id</th><td><code>{{.Report.ID}}</code></td></tr>
+  </table>
+
+  <h2>Description</h2>
+  <form method="post" action="/{{.Token}}/send" id="send">
+  <textarea name="description" placeholder="What happened, what you expected, what you were doing (optional for an automatic report)">{{.Description}}</textarea>
+  </form>
+  <p class="note">Your own words; edits are applied when you send. Tokens, e-mail addresses and your home directory have already been removed from everything below.</p>
+
+  {{with .Report.Error}}
+  <h2>Error</h2>
+  <table>
+    <tr><th>Message</th><td>{{.Message}}</td></tr>
+    {{if .Operation}}<tr><th>Operation</th><td>{{.Operation}}</td></tr>{{end}}
+  </table>
+  {{if .Stack}}<details open><summary>Stack</summary><pre>{{.Stack}}</pre></details>{{end}}
+  {{end}}
+
+  {{with .Report.Context}}
+  <h2>Chat (ids only; no messages)</h2>
+  <table>
+    {{if .ChatID}}<tr><th>Chat</th><td><code>{{.ChatID}}</code></td></tr>{{end}}
+    {{if .RunID}}<tr><th>Run</th><td><code>{{.RunID}}</code></td></tr>{{end}}
+    {{if .Provider}}<tr><th>Provider</th><td>{{.Provider}}</td></tr>{{end}}
+    {{if .Model}}<tr><th>Model</th><td>{{.Model}}</td></tr>{{end}}
+  </table>
+  {{end}}
+
+  <h2>Environment</h2>
+  <table>
+    <tr><th>Warden</th><td>{{.Report.Warden.Version}} (protocol {{.Report.Warden.Protocol}}, runtime {{.Report.Warden.Runtime}})</td></tr>
+    <tr><th>Installed</th><td>Codex {{or .Report.Warden.Installed.Codex "—"}} · Claude Code {{or .Report.Warden.Installed.Claude "—"}} · guest {{or .Report.Warden.Installed.GuestArch "—"}}</td></tr>
+    <tr><th>System</th><td>{{.Report.System.OS}}/{{.Report.System.Arch}} {{.Report.System.OSVersion}} · {{.Report.System.CPUs}} CPUs · {{.Report.System.MemoryMB}} MiB</td></tr>
+  </table>
+
+  {{if .Report.Logs}}
+  <h2>Logs</h2>
+  {{range .Report.Logs}}
+  <details open><summary>{{.Name}} ({{len .Lines}} lines)</summary><pre>{{range .Lines}}{{.}}
+{{end}}</pre></details>
+  {{end}}
+  {{end}}
+
+  <h2>Everything, as it will be sent</h2>
+  <details><summary>The full report (JSON)</summary><pre class="json">{{.JSON}}</pre></details>
+
+  <div class="actions">
+    <button class="primary" type="submit" form="send">Send report</button>
+    <form method="post" action="/{{.Token}}/discard" class="inline"><button type="submit">Don't send</button></form>
+    <span class="note">Sending posts the JSON above to the receiver; "Don't send" deletes the draft. Without a decision this page closes after 15 minutes and the draft stays (<code>warden bugs pending</code>).</span>
+  </div>
+{{end}}
+</main>
+</body>
+</html>
