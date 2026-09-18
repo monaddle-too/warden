@@ -68,6 +68,56 @@ func (e *Engine) attachImage(ctx context.Context, c *Chat, path, caption string)
 	return image, err
 }
 
+// keepReadImage stores the image a Read tool call returned (the Claude
+// adapter puts its bytes on the item's `read` object, docs/claude-parity.md
+// R2.15) through the same normaliser and policy image store as
+// attach_image, and leaves the stored image's id in its place, so the
+// transcript's read card shows it from chats/{id}/images/{id}. The bytes
+// never reach the store: whatever happens they are dropped, and a failure
+// (no policy service, an image the normaliser refuses) leaves the card
+// with the image's description alone.
+func (e *Engine) keepReadImage(ctx context.Context, chatID string, item map[string]any) {
+	read := agent.Map(item["read"])
+	data := agent.String(read["data"])
+	if data == "" {
+		return
+	}
+	delete(read, "data")
+	delete(read, "mediaType")
+	if e.PolicyAddress == "" {
+		return
+	}
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil || len(raw) == 0 || len(raw) > 8<<20 {
+		return
+	}
+	c := e.Store.Snapshot().chat(chatID)
+	if c == nil {
+		return
+	}
+	png, err := e.normalizeImage(ctx, raw)
+	if err != nil {
+		return
+	}
+	caption := "Read " + strings.Join(pathsOf(item), ", ")
+	image, err := e.sharingCall(ctx, "image_add", map[string]any{"chatID": c.ID, "sandboxID": c.SandboxID, "caption": caption, "png": base64.StdEncoding.EncodeToString(png)})
+	if err != nil {
+		return
+	}
+	if id := agent.String(image["image_id"]); id != "" {
+		read["image"] = id
+	}
+}
+
+// pathsOf are the paths an item names.
+func pathsOf(item map[string]any) []string {
+	var out []string
+	for _, p := range agent.Array(item["paths"]) {
+		out = append(out, agent.String(p))
+	}
+	return out
+}
+
 // workspaceImage reads a PNG/JPEG the agent wrote beneath the workspace and
 // returns it as an imageguard-normalised PNG. The worker's image-file op
 // refuses symlinks, non-regular files and anything over 8 MiB; the
@@ -94,6 +144,9 @@ func (e *Engine) workspaceImage(ctx context.Context, c *Chat, path string) ([]by
 // memory-capped process (imageguard); every image shown in the transcript
 // or sent to an agent passes through here.
 func (e *Engine) normalizeImage(ctx context.Context, raw []byte) ([]byte, error) {
+	if e.NormalizeImage != nil {
+		return e.NormalizeImage(ctx, raw)
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err

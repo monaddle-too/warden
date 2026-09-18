@@ -9,6 +9,7 @@ import {
   hitCount,
   inputText,
   lineCount,
+  readCount,
   shortPath,
   subagentInput,
   subagentProgress,
@@ -221,5 +222,25 @@ describe("subagent and todo cards", () => {
     ]);
     expect(todoProgress(items)).toBe("1 of 3 done");
     expect(todoItems({ kind: "todo", status: "completed" })).toEqual([]);
+  });
+});
+
+describe("rich reads", () => {
+  it("counts an image's pixels, a PDF's pages and a notebook's cells", () => {
+    expect(readCount({ kind: "image", width: 64, height: 48 })).toBe("64×48");
+    expect(readCount({ kind: "image" })).toBe("image");
+    expect(readCount({ kind: "pdf", pages: 2 })).toBe("2 pages");
+    expect(readCount({ kind: "pdf", pages: 1 })).toBe("1 page");
+    expect(readCount({ kind: "pdf" })).toBe("PDF");
+    expect(
+      readCount({
+        kind: "notebook",
+        cells: [
+          { type: "code", language: "python", text: "print(1)" },
+          { type: "markdown", text: "# T" },
+        ],
+      }),
+    ).toBe("2 cells");
+    expect(readCount({ kind: "notebook" })).toBe("0 cells");
   });
 });

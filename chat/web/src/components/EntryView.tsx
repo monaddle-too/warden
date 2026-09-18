@@ -75,6 +75,7 @@ function StepBody({ entry, ctx }: { entry: Entry; ctx: StepContext }) {
     <ToolBody
       entry={entry}
       onFile={ctx.onFile}
+      chatID={ctx.chatID}
       nested={
         entry.tool.kind === "task" && children?.length ? (
           <SubagentTranscript parent={entry} entries={children} ctx={ctx} />

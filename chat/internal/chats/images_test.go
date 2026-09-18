@@ -1,10 +1,14 @@
 package chats
 
 import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"warden/chat/internal/agent"
+	cv "warden/chat/internal/conversation"
 )
 
 // /published/<token>.png needs no sign-in: the token is the capability,
@@ -104,5 +108,75 @@ func TestImageFileRouteReadsWorkspaceImages(t *testing.T) {
 	defer w.mu.Unlock()
 	if len(w.requests) != before+1 || w.requests[before].Operation != "image-file" || w.requests[before].Directory != "out/plot.png" || w.requests[before].ChatID != id {
 		t.Fatalf("%+v", w.requests[before:])
+	}
+}
+
+// An image a Read returned is stored through the policy image store as
+// attach_image's are, and the read entry keeps the stored id in place of
+// the bytes; without a policy service the bytes are dropped and the entry
+// keeps the image's description.
+func TestReadImageIsStoredNotKept(t *testing.T) {
+	e, w, id := claudeSetup(t)
+	sharing, socket := newFakeSharing(t)
+	e.PolicyAddress = "unix://" + socket
+	sharing.results["image_add"] = map[string]any{"image_id": "img-1"}
+	var normalized [][]byte
+	e.NormalizeImage = func(_ context.Context, raw []byte) ([]byte, error) {
+		normalized = append(normalized, raw)
+		return append([]byte("PNG:"), raw...), nil
+	}
+	png := "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAUklEQVR42u3YwQkAAAwCMfdful2iUIQcLpCvmfICAAAAAAAAAAAAAAAAAPABSG4GAAAAAAAAAAAAAAAAAAAAANAF8MwBAAAAAAAAAAAAAAAA9LZBylcGAx5/OwAAAABJRU5ErkJggg=="
+	w.mu.Lock()
+	w.frames = []map[string]any{
+		{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "id": "toolu_img", "name": "Read", "input": map[string]any{"file_path": "/home/agent/workspace/img.png"}}}}},
+		{"type": "user", "message": map[string]any{"content": []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_img", "content": []any{map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": png}}}}}}, "tool_use_result": map[string]any{"type": "image", "file": map[string]any{"base64": png, "type": "image/png", "originalSize": 139.0, "dimensions": map[string]any{"originalWidth": 64.0, "originalHeight": 64.0}}}},
+	}
+	w.mu.Unlock()
+	oneTurn(t, e, id, "read the image")
+	var entry *cv.Entry
+	for _, v := range e.Store.Snapshot().chat(id).Conversation.Entries {
+		if v.ID == "toolu_img" {
+			entry = &v
+		}
+	}
+	if entry == nil || entry.Tool == nil || entry.Tool.Kind != "read" || entry.Tool.Read == nil {
+		t.Fatalf("read entry %+v", entry)
+	}
+	if r := entry.Tool.Read; r.Kind != "image" || r.Image != "img-1" || r.Width != 64 || r.Height != 64 || r.Bytes != 139 || entry.Detail != "PNG image, 64×64, 139 bytes" {
+		t.Fatalf("read record %+v detail %q", r, entry.Detail)
+	}
+	raw, _ := base64.StdEncoding.DecodeString(png)
+	if len(normalized) != 1 || string(normalized[0]) != string(raw) {
+		t.Fatal("the bytes did not pass the normaliser once", len(normalized))
+	}
+	var add map[string]any
+	for i := 0; ; i++ {
+		op := sharing.op(i)
+		if op["action"] == "image_add" {
+			add = agent.Map(op["data"])
+			break
+		}
+	}
+	if add["caption"] != "Read img.png" || add["png"] != base64.StdEncoding.EncodeToString(append([]byte("PNG:"), raw...)) {
+		t.Fatalf("image_add %v", add)
+	}
+	if data, _ := json.Marshal(e.Store.Snapshot().chat(id)); strings.Contains(string(data), png[:40]) {
+		t.Fatal("the image's bytes reached the store")
+	}
+	// Without the policy service: no store, description kept.
+	e.PolicyAddress = ""
+	w.mu.Lock()
+	w.frames = []map[string]any{
+		{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "id": "toolu_img2", "name": "Read", "input": map[string]any{"file_path": "/home/agent/workspace/img.png"}}}}},
+		{"type": "user", "message": map[string]any{"content": []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_img2", "content": []any{map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": png}}}}}}, "tool_use_result": map[string]any{"type": "image", "file": map[string]any{"base64": png, "type": "image/png"}}},
+	}
+	w.mu.Unlock()
+	oneTurn(t, e, id, "again")
+	for _, v := range e.Store.Snapshot().chat(id).Conversation.Entries {
+		if v.ID == "toolu_img2" {
+			if v.Tool.Read == nil || v.Tool.Read.Image != "" || v.Tool.Read.Kind != "image" || v.Detail != "PNG image" {
+				t.Fatalf("unstored read %+v %q", v.Tool.Read, v.Detail)
+			}
+		}
 	}
 }

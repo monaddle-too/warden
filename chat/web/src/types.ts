@@ -96,6 +96,20 @@ export type Tool = {
   query?: string;
   input?: Record<string, unknown>;
   background?: boolean;
+  /* What a read of an image, a PDF or a notebook carried (conversation
+     Read); absent for a text read. */
+  read?: ToolRead;
+};
+export type ToolRead = {
+  kind: "image" | "pdf" | "notebook";
+  /* The stored copy of an image read (chats/{id}/images/{image}); absent
+     when it could not be stored. */
+  image?: string;
+  width?: number;
+  height?: number;
+  bytes?: number;
+  pages?: number;
+  cells?: { type: string; language?: string; text: string }[];
 };
 export type ToolKind =
   | "command"

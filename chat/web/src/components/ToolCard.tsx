@@ -32,6 +32,7 @@ import {
   hitCount,
   inputText,
   lineCount,
+  readCount,
   shortPath,
   subagentInput,
   subagentProgress,
@@ -45,6 +46,7 @@ import {
 import { senderLabel } from "../export";
 import type { Entry, ToolKind } from "../types";
 import { DiffView } from "./DiffView";
+import { ImageAttachment } from "./ImageAttachment";
 
 const ICONS: Record<ToolKind, typeof Terminal> = {
   command: Terminal,
@@ -108,7 +110,7 @@ export const ToolSummary = memo(function ToolSummary({
         return `${count} ${unit}`;
       }
       case "read":
-        return `${lineCount(entry.detail)} lines`;
+        return tool.read ? readCount(tool.read) : `${lineCount(entry.detail)} lines`;
       default:
         return "";
     }
@@ -204,10 +206,13 @@ export const ToolBody = memo(function ToolBody({
   entry,
   onFile,
   nested,
+  chatID,
 }: {
   entry: Entry;
   onFile?: (href: string) => void;
   nested?: ReactNode;
+  /* The chat, for a read image's stored copy (chats/{id}/images). */
+  chatID?: string;
 }) {
   const tool = entry.tool!;
   const running = toolRunning(entry);
@@ -291,11 +296,15 @@ export const ToolBody = memo(function ToolBody({
           <DiffView segments={segments} />
         </div>
       )}
-      {(tool.kind !== "edit" || failed) && (
-        <Folded
-          text={entry.detail}
-          running={running && tool.kind === "command"}
-        />
+      {tool.kind === "read" && tool.read && !failed ? (
+        <ReadBody entry={entry} chatID={chatID} />
+      ) : (
+        (tool.kind !== "edit" || failed) && (
+          <Folded
+            text={entry.detail}
+            running={running && tool.kind === "command"}
+          />
+        )
       )}
       {tool.kind === "command" && running && tool.background && (
         <p className="tool-meta muted">
@@ -309,3 +318,42 @@ export const ToolBody = memo(function ToolBody({
     </div>
   );
 });
+
+/* A read that returned no text: an image (its stored copy as a thumbnail
+   that opens in the lightbox, or its description when it could not be
+   stored), a PDF (its size and page count; the CLI hands the model the
+   document and returns no text per page), a notebook (its cells, first
+   line each). */
+function ReadBody({ entry, chatID }: { entry: Entry; chatID?: string }) {
+  const read = entry.tool?.read;
+  if (!read) return null;
+  if (read.kind === "image")
+    return (
+      <div className="tool-read-image">
+        {read.image && chatID ? (
+          <ImageAttachment
+            chatID={chatID}
+            id={read.image}
+            caption={entry.detail || shortPath(entry.tool?.paths?.[0] || "")}
+          />
+        ) : (
+          <p className="tool-meta muted">{entry.detail || "Image"}</p>
+        )}
+      </div>
+    );
+  if (read.kind === "notebook")
+    return (
+      <ol className="tool-read-cells">
+        {(read.cells ?? []).map((cell, i) => (
+          <li key={i}>
+            <span className="muted">
+              {cell.type}
+              {cell.language ? ` (${cell.language})` : ""}
+            </span>{" "}
+            <code>{cell.text}</code>
+          </li>
+        ))}
+      </ol>
+    );
+  return <p className="tool-meta muted">{entry.detail}</p>;
+}

@@ -1880,6 +1880,27 @@ func TestRenderToolEntries(t *testing.T) {
 			t.Fatalf("line wider than 40: %q", l)
 		}
 	}
+	// A read of an image, a PDF or a notebook: the head says what it is,
+	// the summary is the body (Tab); the image itself is the browser's.
+	rich := &Chat{ID: "c", Title: "t", Provider: "claude"}
+	rich.Conversation.Entries = []Entry{
+		{ID: "i", Role: "activity", Text: "Read img.png", Detail: "PNG image, 64×64, 139 bytes", Tool: &Tool{Kind: "read", Name: "Read", Status: "completed", Paths: []string{"img.png"}, Read: &Read{Kind: "image", Image: "img-1", Width: 64, Height: 64, Bytes: 139}}},
+		{ID: "p", Role: "activity", Text: "Read doc.pdf", Detail: "PDF, 854 bytes, 2 pages; the model reads the document itself", Tool: &Tool{Kind: "read", Name: "Read", Status: "completed", Paths: []string{"doc.pdf"}, Read: &Read{Kind: "pdf", Bytes: 854, Pages: 2}}},
+		{ID: "q", Role: "activity", Text: "Read nb.ipynb", Detail: "1 code (python): print('hello')\n2 markdown: # Title", Tool: &Tool{Kind: "read", Name: "Read", Status: "completed", Paths: []string{"nb.ipynb"}, Read: &Read{Kind: "notebook", Cells: []ReadCell{{Type: "code", Language: "python", Text: "print('hello')"}, {Type: "markdown", Text: "# Title"}}}}},
+		{ID: "u", Role: "activity", Text: "Read x.png", Detail: "PNG image", Tool: &Tool{Kind: "read", Name: "Read", Status: "completed", Read: &Read{Kind: "image"}}},
+	}
+	richLines := plain(strings.Join(RenderTranscript(rich, 80, false), "\n"))
+	for _, want := range []string{"Read img.png  image 64×64 · shown in the browser", "Read doc.pdf  2 pages", "Read nb.ipynb  2 cells", "Read x.png  image\n"} {
+		if !strings.Contains(richLines, want) {
+			t.Fatalf("missing %q in:\n%s", want, richLines)
+		}
+	}
+	if strings.Contains(richLines, "│ 1 code") {
+		t.Fatal("collapsed read shows its body")
+	}
+	if richExpanded := plain(strings.Join(RenderTranscript(rich, 80, true), "\n")); !strings.Contains(richExpanded, "│ 1 code (python): print('hello')") || !strings.Contains(richExpanded, "│ PDF, 854 bytes, 2 pages") {
+		t.Fatalf("expanded rich reads:\n%s", richExpanded)
+	}
 	// A change over several files heads each file's lines with its path.
 	multi := Entry{ID: "x", Role: "activity", Text: "Updated 2 files", Detail: "a\ndiff --git a/a b/a\n--- a/a\n+++ b/a\n-1\n+2\n\nb\ndiff --git a/b b/b\nnew file mode 100644\n--- /dev/null\n+++ b/b\n@@ -0,0 +1,1 @@\n+hi\n\n", Tool: &Tool{Kind: "edit", Status: "completed", Paths: []string{"a", "b"}}}
 	lines, adds, dels := diffLines(strings.TrimRight(multi.Detail, "\n"))

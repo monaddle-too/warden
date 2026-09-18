@@ -206,7 +206,55 @@ type Tool struct {
 	Query       string         `json:"query,omitempty"`
 	Input       map[string]any `json:"input,omitempty"`
 	Background  bool           `json:"background,omitempty"`
+	// Read is what a read of something other than text carried (an
+	// image, a PDF, a notebook); nil for a text read.
+	Read *Read `json:"read,omitempty"`
 }
+
+// Read describes a file read that returned no text: Kind "image" (Image
+// the stored copy's id, served at chats/{id}/images/{image}, "" when it
+// could not be stored; Width and Height its pixels), "pdf" (Pages as
+// counted from the bytes, 0 when unknown) or "notebook" (Cells, first
+// line each); Bytes the file's size when reported.
+type Read struct {
+	Kind   string     `json:"kind"`
+	Image  string     `json:"image,omitempty"`
+	Width  int        `json:"width,omitempty"`
+	Height int        `json:"height,omitempty"`
+	Bytes  int64      `json:"bytes,omitempty"`
+	Pages  int        `json:"pages,omitempty"`
+	Cells  []ReadCell `json:"cells,omitempty"`
+}
+
+// ReadCell is one notebook cell: its type (code, markdown, raw), the
+// code cell's language, and its first line.
+type ReadCell struct {
+	Type     string `json:"type"`
+	Language string `json:"language,omitempty"`
+	Text     string `json:"text"`
+}
+
+// ReadFrom reads an item's `read` object (the Claude adapter's) into a
+// Read; nil when there is none.
+func ReadFrom(m map[string]any) *Read {
+	if m == nil {
+		return nil
+	}
+	n := func(k string) int { f, _ := m[k].(float64); return int(f) }
+	r := &Read{Kind: stringOf(m["kind"]), Image: stringOf(m["image"]), Width: n("width"), Height: n("height"), Bytes: int64(n("bytes")), Pages: n("pages")}
+	if r.Kind == "" {
+		return nil
+	}
+	if cells, ok := m["cells"].([]any); ok {
+		for _, v := range cells {
+			c, _ := v.(map[string]any)
+			r.Cells = append(r.Cells, ReadCell{Type: stringOf(c["type"]), Language: stringOf(c["language"]), Text: stringOf(c["text"])})
+		}
+	}
+	return r
+}
+
+func stringOf(v any) string { s, _ := v.(string); return s }
 
 // Attachment is one file sent with a user message. Kind is "image" for a
 // PNG/JPEG (stored and delivered as an imageguard-normalised PNG) and
