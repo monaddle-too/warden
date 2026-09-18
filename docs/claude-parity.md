@@ -308,6 +308,97 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
 
+### Item 11: checkpoints, rewind and the session diff
+
+Branch `feat/parity-11-rewind`, worktree `.local/warden-parity-11-rewind`,
+from main 0881386 (2026-09-17).
+
+What the CLI gives (probed on the guest's 2.1.272 in Warden's launch mode,
+`-p --input-format stream-json --output-format stream-json`, a second
+process in a chat's sandbox with the resident CLI's environment):
+
+- **User message ids.** A `user` frame accepts a `uuid`; any string
+  works (Warden's 32-hex entry IDs were used), and the CLI keys its
+  rewinds by it. `--replay-user-messages` echoes each user message back
+  with its uuid (`isReplay: true`), needed only when the caller sets none.
+- **`rewind_files`** `{user_message_id, dry_run?}` →
+  `{canRewind, filesChanged, insertions, deletions, skippedLinks}` exists
+  but is gated in `-p` mode on `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`
+  (Warden does not set it) and is backed by the CLI's own file history:
+  it restored a file changed with Edit and left a file created with Bash
+  in place. Not used.
+- **`rewind_conversation`** `{target_message_uuid,
+  last_seen_user_message_uuid?, interrupt_if_running?}` →
+  `{rewound: true, targetMessageUuid, prefillText, precedingAssistantUuid}`
+  slices the resident session to before the target (the model then knew
+  only what came before), and the anchor persists: a later
+  `--resume <session>` continued from the rewound state; rewinding to
+  before the first message works too. Without `last_seen…` any later user
+  message makes the target `stale_target`; other refusals are
+  `target_not_found`, `unseen_later_turn`, `turn_running`,
+  `commands_queued`, `prompt_pending`. **Used** for the conversation.
+- **`fork_conversation`** → `{forked: false, reason: "unsupported"}` in
+  this mode. **`get_workspace_diff`** works (`{diff: {stats,
+  perFileStats, hunks, skippedLarge, restricted, source}}`) but is the
+  working tree against HEAD with the CLI's caps (5 s, 50 files, 1 MB per
+  file), untracked files listed without hunks — not "since the chat
+  started". Not used.
+
+Decisions:
+
+1. **Checkpoints are Warden's, in git.** Before every user turn the runner
+   snapshots the workspace (tracked and untracked files, ignored ones and
+   `.warden/` left out) as a tree through a temporary index — the
+   working tree and the agent's index and HEAD are never touched — and
+   records a root commit under `refs/warden/checkpoints/<message id>`
+   (op `checkpoint`, `sandbox/checkpoint.go`). In a workspace that is a
+   repository the refs live in its own `.git`; otherwise in a private git
+   directory beside the workspace (`/home/agent/.warden-checkpoints.git`,
+   `GIT_WORK_TREE` = the workspace), where a nested repository is
+   recorded as its HEAD commit only and the snapshot is refused over
+   256 MiB (`du`, dependency and build directories excluded). A snapshot
+   whose tree equals the previous checkpoint's makes no new objects: the
+   ref points at the previous commit. The runner keeps the records per
+   sandbox (`managedSandbox.Checkpoints`, op `checkpoints`) and verifies
+   the ref still names the recorded commit before restoring. A tarball
+   would cost a full copy per checkpoint and give no diff; the CLI's own
+   checkpoints miss what Bash does. Checkpoints are a convenience, not a
+   boundary: the agent can alter refs in its own sandbox.
+2. **Rewind code** (`chats/{id}/rewind` `{turnID, what}`, `turnID` the
+   turn's id or the user message's) restores the checkpoint taken at that
+   message: the runner snapshots the workspace as it is now, diffs it
+   against the checkpoint and writes back only the paths that differ
+   (`checkout-index` from a temporary index), deleting the ones the
+   checkpoint lacks (op `restore`). The chat must be idle; the sandbox
+   must be running.
+3. **Rewind conversation** truncates the transcript to before the message
+   (its turn records and pending approvals with it) and asks the agent to
+   forget the same: on a live idle Claude session at once through the
+   adapter's new `conversation/rewind` command (the CLI's
+   `rewind_conversation`, keyed by the message id the adapter now puts on
+   every user frame as its `uuid`); with no live session, recorded as
+   `Chat.Rewind` and applied right after the next `--resume`, before the
+   first turn. When the agent cannot rewind (Codex; a message from before
+   this landed, which the CLI never saw a uuid for) the fallback is a
+   fresh session: the thread is dropped (`prepare` with `newSession`
+   clears the runner's binding so Claude launches without `--resume`) and
+   the kept transcript is re-sent once as a preamble of the next message
+   (`Chat.Recap`, last 24 KiB). Both = code, then conversation.
+4. A marker entry (role `rewind`) says "Rewound to before “…” (code /
+   conversation / both)"; the web renders it as a divider, the TUI as a
+   line.
+5. **Session diff** (`GET chats/{id}/diff`) is the workspace now against
+   `Chat.DiffBase`: the chat's first checkpoint, or the one its last code
+   rewind restored. The runner snapshots the workspace and answers
+   `git diff-tree` between the two trees (op `diff`): a unified diff per
+   file capped at 2 MiB, plus `--numstat` counts. Git-based in both
+   stores, so it works for non-repository workspaces too.
+6. Web: a rewind action in a user message's hover bar and Esc-Esc in the
+   composer open the chooser (`RewindDialog.tsx`); "Changes" in the
+   workspace panel opens `SessionDiff.tsx` over `DiffView`. TUI:
+   `/rewind` lists the user messages, `/rewind N code|conv|both`,
+   `/diff` shows the changed files folded, Tab expands.
+
 ### Item 1: typed tool cards and diffs
 
 Branch `feat/parity-1-tool-cards`, worktree `.local/warden-parity-1-tool-cards`,

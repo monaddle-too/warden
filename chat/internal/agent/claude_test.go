@@ -1087,3 +1087,77 @@ func TestClaudeTaskHelpers(t *testing.T) {
 		t.Fatalf("a foreground command: %q", id)
 	}
 }
+
+// A user message carries Warden's message ID as its uuid, and
+// conversation/rewind is the CLI's rewind_conversation control request,
+// answered with what the CLI said: rewound, or not with the reason.
+func TestClaudeConversationRewind(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	raw, fake := net.Pipe()
+	defer fake.Close()
+	seen := make(chan map[string]any, 8)
+	go func() {
+		d := json.NewDecoder(fake)
+		e := json.NewEncoder(fake)
+		var v map[string]any
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
+		// The user message, answered at once.
+		if d.Decode(&v) != nil {
+			return
+		}
+		seen <- v
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "result", "is_error": false, "result": "ok"})
+		// Two rewind requests: one the CLI applies, one it refuses.
+		for i := 0; i < 2; i++ {
+			if d.Decode(&v) != nil {
+				return
+			}
+			seen <- v
+			req := Map(v["request"])
+			answer := map[string]any{"rewound": true, "targetMessageUuid": req["target_message_uuid"], "prefillText": "first"}
+			if req["target_message_uuid"] == "unknown" {
+				answer = map[string]any{"rewound": false, "error": "target not found", "reason": "target_not_found"}
+			}
+			_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": answer}})
+		}
+	}()
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(_ *Client, f Frame) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err = c.Call(ctx, "thread/start", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"clientUserMessageId": "m1", "input": []any{map[string]any{"text": "first"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if v := <-seen; v["type"] != "user" || v["uuid"] != "m1" {
+		t.Fatalf("user frame without the message's uuid: %v", v)
+	}
+	result, err := c.Call(ctx, "conversation/rewind", map[string]any{"threadId": "s", "targetMessageId": "m1", "lastSeenMessageId": "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := <-seen; v["type"] != "control_request" || Map(v["request"])["subtype"] != "rewind_conversation" || Map(v["request"])["target_message_uuid"] != "m1" || Map(v["request"])["last_seen_user_message_uuid"] != "m1" {
+		t.Fatalf("rewind not forwarded as rewind_conversation: %v", v)
+	}
+	if result["rewound"] != true || result["prefillText"] != "first" {
+		t.Fatalf("rewind answer: %v", result)
+	}
+	result, err = c.Call(ctx, "conversation/rewind", map[string]any{"threadId": "s", "targetMessageId": "unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := <-seen; Map(v["request"])["last_seen_user_message_uuid"] != nil {
+		t.Fatalf("an empty last-seen id must be left out: %v", v)
+	}
+	if result["rewound"] != false || result["reason"] != "target_not_found" {
+		t.Fatalf("refused rewind answer: %v", result)
+	}
+}

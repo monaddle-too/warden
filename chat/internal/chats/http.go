@@ -128,6 +128,16 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.pathsHTTP(w, r, parts[1])
 		return
 	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "diff" {
+		changes, err := h.Engine.Diff(r.Context(), parts[1])
+		respond(w, changes, err)
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "checkpoints" {
+		list, err := h.Engine.Checkpoints(r.Context(), parts[1])
+		respond(w, map[string]any{"checkpoints": list}, err)
+		return
+	}
 	if len(parts) >= 3 && parts[0] == "chats" && parts[2] == "attachments" {
 		switch {
 		case r.Method == "POST" && len(parts) == 3:
@@ -180,6 +190,9 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Resources  *sandbox.Resources  `json:"resources"`
 		// Attachments are upload IDs a message sends along.
 		Attachments []string `json:"attachments"`
+		// TurnID and What are a rewind's target and scope (rewind.go).
+		TurnID string `json:"turnID"`
+		What   string `json:"what"`
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
 	dec.DisallowUnknownFields()
@@ -225,6 +238,8 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			err = h.Engine.Stop(r.Context(), parts[1])
 		case "activity":
 			result, err = h.Engine.Runtime(r.Context(), parts[1], "activity")
+		case "rewind":
+			result, err = h.Engine.Rewind(r.Context(), parts[1], body.TurnID, body.What)
 		default:
 			http.Error(w, "not found", 404)
 			return

@@ -105,6 +105,10 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		// An interrupt asked of the CLI: its next result ends the turn as
 		// interrupted, whatever the CLI calls the abort.
 		interrupting := false
+		// Control requests Warden sent the CLI whose answers a command
+		// waits for (conversation/rewind), by request id: the command's
+		// frame id to reply to.
+		awaiting := map[string]json.RawMessage{}
 		flushThinking := func() {
 			if thinkingID == "" {
 				return
@@ -205,7 +209,25 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 							content = append(content, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": data}})
 						}
 					}
-					_ = cli.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil})
+					frame := map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil}
+					if id := String(f.Params["clientUserMessageId"]); id != "" {
+						// Warden's message ID is the CLI's uuid for the message,
+						// so a rewind can name it (conversation/rewind).
+						frame["uuid"] = id
+					}
+					_ = cli.Encode(frame)
+				case "conversation/rewind":
+					// Claude Code's rewind_conversation: the session forgets the
+					// target user message and everything after it, durably (a
+					// later --resume continues from there). The CLI's answer
+					// ({rewound, reason…}) is the command's reply.
+					id := "warden-rewind-" + claudeID()
+					awaiting[id] = f.ID
+					req := map[string]any{"subtype": "rewind_conversation", "target_message_uuid": String(f.Params["targetMessageId"])}
+					if last := String(f.Params["lastSeenMessageId"]); last != "" {
+						req["last_seen_user_message_uuid"] = last
+					}
+					_ = cli.Encode(map[string]any{"type": "control_request", "request_id": id, "request": req})
 				case "turn/interrupt":
 					// Claude Code's SDK interrupt: the query aborts where it is
 					// (mid-thought, mid-tool) and reports a result; the process
@@ -270,6 +292,15 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 				switch String(v["type"]) {
 				case "control_response":
 					r := Map(v["response"])
+					if rid, ok := awaiting[String(r["request_id"])]; ok {
+						delete(awaiting, String(r["request_id"]))
+						if r["subtype"] == "error" {
+							send(Frame{ID: rid, Error: &RPCError{Code: -32000, Message: String(r["error"])}})
+						} else {
+							reply(rid, Map(r["response"]))
+						}
+						continue
+					}
 					if r["request_id"] == "warden-init" {
 						if r["subtype"] == "error" {
 							send(Frame{ID: initID, Error: &RPCError{Code: -32000, Message: String(r["error"])}})

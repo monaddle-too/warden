@@ -54,13 +54,15 @@ type Request struct {
 	Port         int    `json:"port,omitempty"`
 	// Namespace, Pod, Container, Tail and Previous select pod logs
 	// (cluster.logs).
-	Namespace       string   `json:"namespace,omitempty"`
-	Pod             string   `json:"pod,omitempty"`
-	Container       string   `json:"container,omitempty"`
-	Tail            int      `json:"tail,omitempty"`
-	Previous        bool     `json:"previous,omitempty"`
-	Path            string   `json:"path,omitempty"`
-	Title           string   `json:"title,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Pod       string `json:"pod,omitempty"`
+	Container string `json:"container,omitempty"`
+	Tail      int    `json:"tail,omitempty"`
+	Previous  bool   `json:"previous,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Title     string `json:"title,omitempty"`
+	// NewSession on a prepare drops the chat's recorded agent thread, so
+	// the next stream starts a session instead of resuming one.
 	NewSession      bool     `json:"newSession,omitempty"`
 	BundleSize      int64    `json:"bundleSize,omitempty"`
 	RemoteHead      string   `json:"remoteHead,omitempty"`
@@ -84,6 +86,13 @@ type Request struct {
 	Bytes []byte `json:"bytes,omitempty"`
 }
 type Response struct {
+	// Checkpoint is a checkpoint just taken; Checkpoints the sandbox's
+	// records; Restore what a restore changed; Changes a workspace diff
+	// (checkpoint.go).
+	Checkpoint        *Checkpoint            `json:"checkpoint,omitempty"`
+	Checkpoints       []Checkpoint           `json:"checkpoints,omitempty"`
+	Restore           *WorkspaceRestore      `json:"restore,omitempty"`
+	Changes           *WorkspaceChanges      `json:"changes,omitempty"`
 	PublishPlan       *RepositoryPublishPlan `json:"publishPlan,omitempty"`
 	Review            *RepositoryReview      `json:"review,omitempty"`
 	Available         bool                   `json:"available,omitempty"`

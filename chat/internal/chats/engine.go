@@ -876,6 +876,7 @@ func (e *Engine) run(parent context.Context, id string) {
 	if current.Conversation.ThreadID != nil {
 		r.ThreadID = *current.Conversation.ThreadID
 	}
+	r.NewSession = current.NewSession
 	var prep sandbox.Response
 	// The runner reports its stages (sandbox creation, the boot, the guest
 	// provisioning) while prepare runs; a follower copies them to the chat.
@@ -987,6 +988,11 @@ func (e *Engine) run(parent context.Context, id string) {
 	if err != nil {
 		return
 	}
+	if current.Rewind != nil && !e.applyPendingRewind(ctx, id, client, threadID) {
+		// The resumed session could not rewind: this run ends cleanly and
+		// the message stays queued for a fresh session (rewind.go).
+		return
+	}
 	var message *cv.Entry
 	message, err = e.attempt(id, "")
 	if err != nil {
@@ -1001,6 +1007,7 @@ func (e *Engine) run(parent context.Context, id string) {
 	if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 		return
 	}
+	items = e.beforeTurn(ctx, id, &current, message.ID, items)
 	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 	if err != nil {
 		return
@@ -1047,6 +1054,7 @@ func (e *Engine) run(parent context.Context, id string) {
 		if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 			return
 		}
+		items = e.beforeTurn(ctx, id, &current, message.ID, items)
 		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 		if err != nil {
 			return
@@ -1321,6 +1329,7 @@ func (e *Engine) confirm(id, message, turn string) error {
 	return e.Store.update(func(st *State) error {
 		c := st.chat(id)
 		c.Conversation.Begin(turn, e.at())
+		c.Recap, c.NewSession = "", false // delivered with this turn (rewind.go)
 		for i := range c.Conversation.Entries {
 			v := &c.Conversation.Entries[i]
 			if v.ID == message {

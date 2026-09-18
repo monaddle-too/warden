@@ -44,6 +44,10 @@ type fakeWorker struct {
 	// ignoreInterrupt answers turn/interrupt without ending the turn, as an
 	// agent that hangs would.
 	ignoreInterrupt bool
+	// checkpoints are the records the checkpoint op made (rewind_test.go);
+	// rewindAnswer is what conversation/rewind answers (nil: rewound).
+	checkpoints  []sandbox.Checkpoint
+	rewindAnswer map[string]any
 }
 
 func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
@@ -74,6 +78,24 @@ func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 	}
 	if r.Operation == "paths" {
 		return sandbox.Response{Version: 2, Paths: f.paths}, nil
+	}
+	switch r.Operation {
+	case "checkpoint":
+		cp := sandbox.Checkpoint{ID: r.CallID, ChatID: r.ChatID, Commit: "commit-" + r.CallID[:4], Tree: "tree-" + r.CallID[:4], Store: "repository", Changed: true}
+		f.checkpoints = append(f.checkpoints, cp)
+		return sandbox.Response{Version: 2, Checkpoint: &cp}, nil
+	case "checkpoints":
+		return sandbox.Response{Version: 2, Checkpoints: append([]sandbox.Checkpoint(nil), f.checkpoints...)}, nil
+	case "restore", "diff":
+		for _, cp := range f.checkpoints {
+			if cp.ID == r.CallID {
+				if r.Operation == "restore" {
+					return sandbox.Response{Version: 2, Restore: &sandbox.WorkspaceRestore{Checkpoint: cp, Restored: []string{"a.txt"}, Removed: []string{"b.txt"}}}, nil
+				}
+				return sandbox.Response{Version: 2, Changes: &sandbox.WorkspaceChanges{Base: cp.ID, Files: []sandbox.ReviewFile{{Path: "a.txt", Added: 1}}, Diff: "diff --git a/a.txt b/a.txt\n--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1 @@\n+hello\n"}}, nil
+			}
+		}
+		return sandbox.Response{}, errors.New("no checkpoint was recorded at this message")
 	}
 	return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: id, ProjectID: r.ProjectID}}, nil
 }
@@ -140,6 +162,14 @@ func (f *fakeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWriteC
 					turnID = "turn-one"
 				}
 				result = map[string]any{"turn": map[string]any{"id": turnID, "status": "inProgress"}}
+			case "conversation/rewind":
+				f.mu.Lock()
+				answer := f.rewindAnswer
+				f.mu.Unlock()
+				if answer == nil {
+					answer = map[string]any{"rewound": true}
+				}
+				result = answer
 			case "turn/steer":
 				f.mu.Lock()
 				f.inputs = append(f.inputs, agent.Array(frame.Params["input"]))
