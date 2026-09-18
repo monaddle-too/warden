@@ -318,13 +318,16 @@ func TestTruncateCutsFromTheTargetQueueIncluded(t *testing.T) {
 		{ID: "d", Role: "activity", TurnID: cv.Ptr("t2"), ParentID: ""},
 		{ID: "e", Role: "user", Delivery: "queued"},
 	}, Turns: []cv.Turn{{ID: "t1"}, {ID: "t2"}}}, Approvals: []Approval{{ID: "p", State: "pending"}}}
-	truncate(c, "c")
+	removed, removedTurns := truncate(c, "c")
 	ids := []string{}
 	for _, v := range c.Conversation.Entries {
 		ids = append(ids, v.ID)
 	}
 	if strings.Join(ids, ",") != "a,b" || len(c.Conversation.Turns) != 1 || c.Approvals[0].State != "expired" {
 		t.Fatalf("truncate: %v turns %v approvals %v", ids, c.Conversation.Turns, c.Approvals)
+	}
+	if len(removed) != 3 || removed[0].ID != "c" || removed[2].ID != "e" || len(removedTurns) != 1 || removedTurns[0].ID != "t2" {
+		t.Fatalf("truncate must hand back what it dropped: %+v %+v", removed, removedTurns)
 	}
 }
 

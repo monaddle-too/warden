@@ -109,6 +109,11 @@ Most important first. Each item lands on both surfaces unless marked.
 15. **Long tail.** Fork a session, `/btw`, prompt suggestions, output
     styles, status line and terminal title, desktop notifications, `/cost`
     and `/context` breakdowns, share links (see the chat-sharing plan).
+16. **Scrollback rendering** (TUI only). Render as Claude Code's TUI
+    does: into the terminal's normal buffer, final entries written once
+    and left in the scrollback, only a live tail redrawn in place; no
+    alternate screen, no mouse tracking, so the terminal's own scrolling,
+    search and text selection work on the whole conversation.
 
 Out of scope: `/login`, `/logout`, `/upgrade`, `/doctor`, `/config`,
 `/theme`, `/terminal-setup`, `/bug`, `/release-notes`, the auto-updater,
@@ -264,24 +269,24 @@ bundles, one worktree and one cloned home each; bundles A–D run first,
 E–G after.
 
 ### A. Titles, spend, model catalog (`feat/parity-r2-a-titles-spend`)
-- [ ] R2.1 **Auto-titles**: a chat titled "New chat" gets a title from its first exchange (a one-shot inside the sandbox on the cheapest model, as `/btw` runs; fallback the first message's first line); rename still wins; the sidebar and TUI show it.
-- [ ] R2.2 **Spend**: cost per chat (sum of turns) in the chat header/menu, per workspace in the workspace panel (all its chats), and today / 7 days / all-time totals in the admin console; Codex shows tokens without cost.
-- [ ] R2.3 **Model catalog from the CLI**: the picker's rows, effort levels and fast/1M availability come from `list_models` (per session, cached per provider), and disallowed costlier options show a hint instead of vanishing (item 9's leftover).
+- [x] R2.1 **Auto-titles**: a chat titled "New chat" gets a title from its first exchange (a one-shot inside the sandbox on the cheapest model, as `/btw` runs; fallback the first message's first line); rename still wins; the sidebar and TUI show it. Merged to main fe1deaa (2026-09-18); verified as the Round 2 A section says.
+- [x] R2.2 **Spend**: cost per chat (sum of turns) in the chat header/menu, per workspace in the workspace panel (all its chats), and today / 7 days / all-time totals in the admin console; Codex shows tokens without cost. Merged to main fe1deaa (2026-09-18); verified as the Round 2 A section says.
+- [x] R2.3 **Model catalog from the CLI**: the picker's rows, effort levels and fast/1M availability come from `list_models` (per session, cached per provider), and disallowed costlier options show a hint instead of vanishing (item 9's leftover). Merged to main fe1deaa (2026-09-18); verified as the Round 2 A section says.
 
 ### B. Permission rules (`feat/parity-r2-b-rules`)
-- [ ] R2.4 **Workspace-wide allow-always**: the "Allow always" answer offers this chat / this workspace; workspace rules apply to every chat of the environment.
-- [ ] R2.5 **Rules editor**: allow / deny / ask rules by tool pattern (Claude's `Bash(git *)`, `Edit(src/**)` syntax) per workspace, in the workspace panel and TUI `/rules`; deny rules answer without asking in every mode, ask rules force a card even in `auto`.
-- [ ] R2.6 **Permission history**: what was allowed, denied or auto-answered in a chat and by whom, from the chat menu and TUI `/permissions`.
+- [x] R2.4 **Workspace-wide allow-always**: the "Allow always" answer offers this chat / this workspace; workspace rules apply to every chat of the environment. Merged to main 72aee03 (2026-09-18); verified as the Round 2 B section says.
+- [x] R2.5 **Rules editor**: allow / deny / ask rules by tool pattern (Claude's `Bash(git *)`, `Edit(src/**)` syntax) per workspace, in the workspace panel and TUI `/rules`; deny rules answer without asking in every mode, ask rules force a card even in `auto`. Merged to main 72aee03 (2026-09-18); verified as the Round 2 B section says.
+- [x] R2.6 **Permission history**: what was allowed, denied or auto-answered in a chat and by whom, from the chat menu and TUI `/permissions`. Merged to main 72aee03 (2026-09-18); verified as the Round 2 B section says.
 
 ### C. Live activity, search, export (`feat/parity-r2-c-activity-search`)
-- [ ] R2.7 **Live activity status**: the chat status line and sidebar dot say what the agent is doing ("Running go test…", "Editing engine.go", "Explore: 3 tool calls"), `task_progress` while a subagent runs (item 2's leftover).
-- [ ] R2.8 **Search and export nesting-aware**: ⌘F, ⌘K and TUI `/find` reach nested subagent entries and `!` cards; export nests children under their parent (items 2 and 12's leftovers).
-- [ ] R2.9 **TUI search across chats**: `/search <text>` over titles and transcripts of every chat, with a jump.
+- [x] R2.7 **Live activity status**: the chat status line and sidebar dot say what the agent is doing ("Running go test…", "Editing engine.go", "Explore: 3 tool calls"), `task_progress` while a subagent runs (item 2's leftover). Merged to main fbd25a5 (2026-09-18); verified as the Round 2 C section says.
+- [x] R2.8 **Search and export nesting-aware**: ⌘F, ⌘K and TUI `/find` reach nested subagent entries and `!` cards; export nests children under their parent (items 2 and 12's leftovers). Merged to main fbd25a5 (2026-09-18); verified as the Round 2 C section says.
+- [x] R2.9 **TUI search across chats**: `/search <text>` over titles and transcripts of every chat, with a jump (on the scrollback TUI: the entry is printed). Merged to main fbd25a5 (2026-09-18); verified as the Round 2 C section says.
 
 ### D. Queue and rewind polish (`feat/parity-r2-d-queue-rewind`)
-- [ ] R2.10 **Edit a queued message in place**: inline on the queued card (web) and back into its slot (TUI `/edit N`).
-- [ ] R2.11 **Queue semantics**: `!` and `#` release a held queue; `warden chat send --wait` waits for its own message's turn only (item 10's leftovers).
-- [ ] R2.12 **Undo a conversation rewind**: the removed tail is kept and can be restored until the next turn (restore the entries; a session that cannot un-rewind starts fresh with the recap, as item 11's fallback does).
+- [x] R2.10 **Edit a queued message in place**: inline on the queued card (web) and back into its slot (TUI `/edit N`). Merged to main 917fb2a (2026-09-18); "### Round 2 D" below.
+- [x] R2.11 **Queue semantics**: `!` and `#` leave a held queue held, explicitly (the reason in "### Round 2 D"); `warden chat send --wait` waits for its own message's turn only, `--wait-all` for the chat (item 10's leftovers). Merged to main 917fb2a.
+- [x] R2.12 **Undo a conversation rewind**: the removed tail is kept and can be restored until the next turn (restore the entries; a session that cannot un-rewind starts fresh with the recap, as item 11's fallback does). Merged to main 917fb2a.
 
 ### E. Workspace fork, resource mentions, rich reads (`feat/parity-r2-e-fork-mentions`)
 - [ ] R2.13 **Fork with a copy of the workspace**: "Fork…" gains "copy the workspace" — a new environment cloned from the sandbox (the runner's clone path on both drivers) plus the forked session; markers link both.
@@ -417,6 +422,14 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - Each item ticks its box below with the merge sha and a line on how it
   was verified.
 
+## Deployments
+
+- 2026-09-18: main f998301 (items 1–13, 15) deployed to `~/.warden/release`
+  on the owner's Mac (a wedged SBX daemon had to be terminated first).
+- 2026-09-18: main e5bf597 (the above plus round 2 A/B) deployed to GKE
+  Autopilot at cloud.warden.monaddle.com (images
+  `warden:v0.1.0-alpha.12-316-ge5bf597`), replacing 1a8a06f.
+
 ## Progress
 
 - [x] Design discussion, inventory and priority order (this document).
@@ -434,7 +447,708 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
 - [x] 13 Per-user instructions and memory — merged to main a5012c0 (2026-09-18); verified as the Item 13 section says.
 - [ ] 14 Project MCP, OAuth, plugins.
+- [x] 16 Scrollback rendering (Claude-style TUI) — merged to main 2445764 (2026-09-18); verified as the Item 16 section says. Not deployed to `~/.warden`.
 - [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
+
+### Round 2 C: live activity, nesting-aware search and export, TUI search across chats
+
+Branch `feat/parity-r2-c-activity-search`, worktree
+`.local/warden-parity-r2-c-activity-search`, from main adbf4f5
+(2026-09-18). Live-tested on a cloned home (`~/.warden-p15`) against the
+guest's CLI 2.1.272.
+
+What the CLI gives for a subagent's progress (2.1.272, live): one
+`system/task_progress` frame per step of a foreground subagent,
+`{task_id, tool_use_id, description, subagent_type, usage: {total_tokens,
+tool_uses, duration_ms}, last_tool_name}` — the counts sit under `usage`
+(item 2's note had them at the top level, from 2.1.275's docs), and
+`description` is the subagent's current step in the CLI's own words
+("Reading hello.txt", "Running Search current directory for
+zebrafish-quokka"). A `task_updated` (`patch.status`, `end_time`) precedes
+the notification; ignored. Foreground Bash gets `task_started` /
+`task_notification` too (no progress).
+
+Decisions:
+
+1. **R2.7** The status is a pure derivation from the entries, the same on
+   both surfaces: `activity.ts` (`activityLabel`) and `tui/activity.go`
+   (`ActivityLabel`) read the newest entry still running — a command
+   ("Running go test ./...", first line, 48 chars), a file change
+   ("Editing engine.go" / "Writing hello.txt" / "Editing 3 files"), a read,
+   a search ("Searching for x", "Listing dir"), a web search, a fetch
+   (its host), an MCP call ("Calling name"), a subagent ("Explore agent:
+   3 tool calls · Reading hello.txt": type, the larger of its child steps
+   and the CLI's count, the CLI's step), any other tool by its title; the
+   model's thinking and a compaction as before; "" → "Agent is working"
+   (was "Agent is running"). A subagent's running child names the
+   outermost running Agent card. A `!` command (a sender) and a
+   background command are skipped: not what the agent does now. The
+   thirty shared cases live in `tui/testdata/activity.json`, run by
+   `activity.test.ts` and `tui/activity_test.go`. `chatStatusLabel`
+   (`stages.ts`) serves the web status line and the sidebar dot's title;
+   `StatusLine` (`tui/status.go`) puts the words in place of "running".
+2. `task_progress` rides on the Agent call's item as `progress`
+   (`conversation.Progress`: `activity`, `toolCalls`, `lastTool`,
+   `durationMS`, `tokens`), re-sent as `item/started` so `Upsert` updates
+   the card in place; the card's summary and the nested transcript's
+   header show the step while the subagent runs, and the count when it
+   runs ahead of the child entries.
+3. **R2.8** The web find bar keeps searching the rendered text (the
+   highlights need real ranges) but first opens what hides a match:
+   `search.ts` `entryHits` says which entries match (text, or a step's /
+   aside's detail — nested and `!` cards included) and `FindBar.tsx`
+   `revealHits` opens their `<details>` ancestors (group, card, subagent
+   transcript) and, when the entry's visible text still has no match,
+   clicks its own "+N lines" fold (never a nested entry's, never the
+   prompt/input folds), once per entry per query; a palette landing waits
+   for that pass. This is what browsers do for `<details>` on
+   find-in-page. The palette's rows say "Tool output · in Explore agent"
+   (`Hit.parent`) and "Command by You".
+4. Export (`export.ts` `exportTree`, `tui/export.go` `exportTree`): a
+   subagent's entries go under its card — quoted (`> `) in markdown, a
+   nested subagent quoted twice, before the card's result; `children` in
+   JSON (the TUI splices `children` into the service's raw record so
+   unknown fields survive); a card left out (no steps) takes its subagent
+   with it; a `!` card is "### Command by You — cmd" and stays in the
+   messages-only export (it is the person's, not the agent's working).
+5. TUI `/find` prints the rendered lines that hold the term (item 16's
+   form; the terminal's own search jumps to them); when they lack it but
+   the entries have it, it shows the steps (Ctrl+O) and/or expands the
+   transcript (Tab) first — which reprints the transcript — and says so
+   in the notice ("(output expanded)").
+6. **R2.9** `GET chats/search?q=&limit=` (`chats/search.go`) searches the
+   store: every chat (archived too), titles first then entries newest
+   chat and newest entry first, one hit per entry, case-insensitive with
+   whitespace folded (no accent folding server-side; the web palette
+   keeps its own client-side search), default 40 hits, at most 200, with
+   `more`; hits carry the entry's role, sender, `parentID` and a snippet
+   (`before`/`match`/`after`, as `search.ts`'s). The TUI's `/search TEXT`
+   lists the hits as a numbered menu (`Insert: /search N`, Enter runs
+   it); `/search N` opens the chat and prints the entry as the transcript
+   renders it — its card with its steps for a subagent's entry, cut to
+   `findLimit` lines around the match (`entryLines`) — under a line
+   saying where it is, expanding the transcript first when the entry is
+   nested or the match is in a fold. This bundle was built on the
+   alternate-screen TUI (a jump scrolled the entry to the top, and the
+   notice moved above the status line while scrolled); item 16 landed
+   in the meantime and put the transcript into the terminal's scrollback,
+   which the app cannot scroll, so a jump prints instead — the same
+   thing `/find` does, and what Claude Code's local commands do.
+
+Verified: `go vet`, `gofmt -l`, `go test ./...`, `pnpm build`, `pnpm test`
+(228 tests); live on `~/.warden-p15` with a Claude chat: a turn running
+`sleep`, Write/Edit, Read and a foreground Explore subagent — the web
+status line and sidebar title went "Sending your message" → "Waiting for
+the first reply" → "Running sleep 20 && echo slept" → "Agent is working"
+→ "Explore agent: starting" → "Explore agent: 1 tool call · Running Sleep
+for 15 seconds" → "… 2 tool calls · Running Search current directory for
+zebrafish-…" → "… 3 tool calls · Reading notes.txt" → "Agent is idle"
+(the edit and read are sub-second on this workspace and were not caught
+by a 250 ms poll), the Agent card "1 tool call · 4s · Running Sleep for
+15 seconds"; the TUI status "⠼ 6s Running sleep 25 && echo slept", "30s
+Explore agent: 1 tool call · Running sleep 12", "43s Explore agent: 2
+tool calls · Reading notes.txt". ⌘F "quokka" (only in the subagents'
+transcripts and the prompts) opened the three Explore cards that held it
+and left the fourth closed, 16 matches, match 5 the nested grep step;
+⌘F "axolotl" (only past a `!` card's fold) unfolded that card alone; ⌘K
+"zebrafish" listed "Agent step · in Explore agent" rows and opening one
+landed on it (14 of 16). TUI in a pty (on the alternate-screen TUI, before
+item 16 landed): `/find quokka` found it 107 lines up, `/find grep exit`
+(a subagent's child only) reported "(output expanded)" with the child's
+line heading the view; `/export md all` wrote the Agent cards with their
+steps quoted under them and two "### Command by You" cards; `/search
+zebrafish` listed 9 numbered hits ("agent step in a subagent · 06:26 ·
+grep -r …"), ↓ Enter put the card at the top, `/search first message
+fix` then `/search 1` opened the other chat. After merging item 16 the
+TUI parts were re-based on the scrollback model (decisions 5 and 6) and
+re-verified by their unit tests (`TestFindReachesNestedAndFoldedEntries`,
+`TestSearchAcrossChatsListsAndJumps`, `TestEntryLines`) and one more pty
+run on the merged build (4a13594): `/find grep exit` printed the two
+child lines under `2 line(s) contain "grep exit" (output expanded)`,
+`/search zebrafish` then ↓ Enter printed the Agent card with its steps
+under "Activity status test · tool output · 2026-09-18 06:28:" (the
+transcript already expanded by the find), `/search first message fix`
+then `/search 1` opened the other chat.
+
+Left: the web's ⌘K palette still searches the browser's state rather
+than the new route (it has every transcript and folds accents; a
+deployment with many chats would want the route); a `!` card's output in
+the web export is the same fence as a tool step's (no attribution inside
+the fence); `activity` shows nothing for a streaming reply beyond
+"Agent is working".
+
+Progress: started 2026-09-18; implemented and live-verified 2026-09-18
+(c661a58); merged to main fbd25a5 (2026-09-18) after merging round 2 A,
+B and D, the bug-report receiver and item 16 in. Not deployed to
+`~/.warden`.
+### Item 16: scrollback rendering (Claude-style TUI)
+
+Branch `feat/parity-16-scrollback-tui`, worktree
+`.local/warden-parity-16-scrollback-tui`, from main 31ecf8d (2026-09-18).
+TUI only (`chat/internal/tui`); `warden chat send --wait`'s `Follow`
+printing is untouched.
+
+Why: the owner wants to select text in the TUI. The client entered the
+alternate screen (`?1049h`) and asked for mouse reports (`?1000h`,
+`?1006h`) so the wheel could scroll its own viewport; mouse reporting is
+what takes the mouse away from the terminal's selection. Mouse off on the
+alternate screen does not work either: terminals then send wheel ticks as
+↑/↓, which collide with ↑ = prompt recall. Claude Code (Ink) avoids all
+of it by printing the transcript into the normal buffer and redrawing
+only a live tail; the instruction was "make it work like in Claude".
+
+How it works (`app.go`, `render.go`):
+
+- **Terminal modes.** Raw mode, bracketed paste (`?2004h`) and the title
+  stack (`22;0t` / `23;0t`) as before; no `?1049`, no `?1000`/`?1006`.
+  The cursor is hidden only while a draw writes. At exit (`finish`) the
+  cursor goes below the last tail, bracketed paste is turned off and the
+  title popped; the transcript and the last status/composer stay on the
+  screen, as Claude Code leaves them.
+- **Committed and live.** Every draw renders the whole body — the
+  transcript as `RenderBlocks` (one `Block` per entry with `Final`), the
+  pending approvals, the session diff — at the terminal's width. An entry
+  is final when nothing about it will change: not streaming, not a
+  running tool (a background card until its notification), not a queued
+  message, not a compaction or an aside under way, and not a subagent's
+  card while an entry under it is still one of these. The leading run of
+  final entries is the committed prefix: written to the scrollback once
+  (`Frame.Commit`) and never rewritten. Everything after it is the live
+  tail — streaming entries, queued cards, approvals, the one-line notice,
+  the `/`/`@` menu, attachments, a confirmation, the status rows and the
+  composer — and a draw rewrites it in place: cursor up by the row the
+  cursor was on (`screen.cursorLine`), `\r`, `ESC[J`, the new lines.
+  Lines are clipped to the width so each takes exactly one row, which is
+  what makes the cursor-up count right. An unchanged tail is not written.
+- **Structural changes.** The body is compared with what the scrollback
+  holds (`hasPrefix`): while it still begins with the committed lines the
+  draw is incremental; otherwise the screen is cleared (`ESC[2J ESC[H`,
+  never `3J`: the person's earlier terminal history survives) and the
+  transcript is printed again from its first entry, then the tail. That
+  covers a rewind (the prefix is longer than the body), the service
+  reordering entries, a todo list rewritten in place, Tab / `/expand` /
+  Ctrl-O / `/verbose` when they change a card that is already printed
+  (when they only change the tail, no reprint), and a background card
+  committed early that then settles. A chat switch (`/switch`, `/new`,
+  `/fork`), a terminal resize and Ctrl-L set `redraw` and reprint
+  unconditionally. Claude Code does the same clear-and-rerender on Ctrl-L,
+  resize and rewind; on `/resume` it prints the other session afresh.
+  `/clear` keeps its Warden meaning (the draft and its attachments), it
+  is not Claude's history clear.
+- **Tail budget.** The tail is kept to at most rows − 1 so the cursor
+  never has to move up past the top of the screen. A taller tail has its
+  top committed early (`earlyCommit`): at least the excess, rounded up to
+  the next blank line (a paragraph's or an entry's end), never the last
+  two lines (the ones still changing). Greedy wrapping and per-line
+  inline styling make a streaming reply's earlier lines stable, so a long
+  answer goes out a paragraph at a time; a committed line that does
+  change later (a folded card whose window slid) costs one reprint. If
+  the chrome alone does not fit (a very small terminal) the notice, then
+  the extras, are cut from the top.
+- **Notices.** A notice of several lines (`/help`, `/chats`, `/memory`,
+  `/rewind`, `/cost`, `/find`…) is printed into the scrollback once, like
+  Claude Code's local command output, and is not reprinted by a
+  structural redraw (it is above, in the terminal's history). A one-line
+  notice stays under the transcript for 20 s as before.
+- **What is never committed.** Found live: the engine marks a queued
+  message `failed` ("delivery unconfirmed") while it attempts delivery
+  and `sent` once the agent acknowledges it, so a user message is final
+  only when sent (or failed on an idle chat, shown red as not delivered;
+  the dim `(sent)` line the TUI used to print is gone, the web shows
+  none either). The todo list is one entry the adapter rewrites in place
+  with every write, this turn and the next (`todoID` is per session), so
+  it is a live panel at the bottom of the transcript above the queued
+  messages — as Claude Code keeps its todo list above the composer,
+  never in the static transcript — and goes away once the chat is idle
+  with every item done (the web and an export keep it in place).
+- **Resize.** `TIOCSWINSZ` itself raises SIGWINCH and a window drag
+  sends one per step, each a full reprint in the first live run;
+  resize events now settle for 150 ms (`resizeSettle`) and reprint only
+  when the size the last draw painted for changed.
+- **Scrolling and search.** PgUp/PgDn/Home/End/wheel no longer scroll
+  anything in the app (the terminal has them; Home/End move within the
+  draft); the scroll hint left the status bar. `/find TEXT` prints the
+  matching lines as they show on the screen (up to 20, with the count)
+  so the person sees where the text occurs; the terminal's own search
+  jumps to it. Kept rather than dropped because round 2 bundle C builds
+  on `/find`. ↑/↓ keep items 6/10/12's meanings.
+- **Widths are columns.** In the alternate screen a miscounted line only
+  shifted a row until the next full repaint; in the normal buffer a line
+  the terminal wraps because a rune took two columns leaves a stale row
+  behind at every draw. `visibleWidth`, `wrap`, `cutVisible` and `clip`
+  now measure columns (`width.go`: East Asian wide and fullwidth forms
+  and Emoji_Presentation runes take two, combining marks, joiners and
+  variation selectors none, U+FE0F after a symbol makes it wide), and
+  `sanitize` expands a tab to four spaces. Doubtful runes count as wide:
+  an over-estimate wraps early, an under-estimate corrupts the screen.
+- Everything else is unchanged: the menus, paste placeholders, `!`/`#`,
+  approvals, Shift-Tab, Esc, Esc-Esc, Ctrl-C/D/R, the status line's
+  content (now the bottom of the tail rather than the screen's last
+  row), the bell and the title.
+
+Tests (`tui_test.go`): `TestPaintCommitsOnceAndRewritesTheTail` feeds
+states through `draw` and checks the bytes (no `?1049`/`?1000`/`?1006`,
+a committed line written once, the tail rewritten with the right
+cursor-up and `ESC[J`, an unchanged tail not written, a rewind and
+Ctrl-L clearing and reprinting once without `3J`, the exit sequence);
+`TestPaintCommitsEarlyWhenTheTailOutgrowsTheScreen` streams thirty
+paragraphs on a 12-row terminal (tail ≤ rows − 1, no reprint, every
+paragraph written once after it is committed);
+`TestMultiLineNoticesArePrintedOnce`; `TestEntryFinality`;
+`TestFrameSplitsCommittedFromLiveTail`; `TestTodoListIsALivePanel`;
+`TestResizeBurstReprintsOnce` (the Run loop under a fake server: one
+reprint for a burst, none for an unchanged size, the start and exit
+sequences); `TestColumnWidths`; the key, find and status tests adapted.
+
+Verified live (2026-09-18, build 4d693d9 on a cloned home
+`~/.warden-p17`): the real `warden chat` driven under a pty from Python
+(`pty.fork`, `TIOCSWINSZ` + SIGWINCH, keys with delays, the raw byte
+stream recorded and replayed through a small VT emulator with a
+scrollback) on a Claude chat: a turn with `ls -la`, a `Write` and a
+`cat` card and a reply; `/find beta-p16` (four matching lines printed
+once); `/help` (printed once); Tab expand and collapse (no reprint — no
+card was folded, the notice went to the tail); Ctrl-L (one clear and
+reprint); a second turn; a resize to 60×24 (one clear and reprint after
+the fix above); then a 20-paragraph story streamed on the 24-row screen
+and Ctrl-C twice. From the stream: no `?1049`, `?1000` or `?1006`, no
+`3J`, exactly two `2J` (Ctrl-L, resize), the largest cursor-up 11 rows
+on 30 rows and 22 on 24, every paragraph of the streamed story in the
+emulated scrollback exactly once (committed early, never rewritten
+after), every committed entry once per segment between clears, the
+transcript and the last status/composer left on the screen at exit
+with `\r\n ?2004l ?25h 23;0t`. The pinned CLI offered Claude no todo
+tool in this environment, so the todo panel is covered by its unit
+test only.
+
+Progress: started 2026-09-18; implemented, unit-tested and live-verified
+the same day; merged to main 2445764 (2026-09-18) after merging round 2
+A, B and D in (main's "sending" delivery state replaced this branch's
+running-chat rule for "failed": a message is live until sent). Not
+deployed to `~/.warden`.
+
+### Round 2 B: permission rules
+
+Branch `feat/parity-r2-b-rules`, worktree `.local/warden-parity-r2-b-rules`,
+from main adbf4f5 (2026-09-18). Items R2.4 (workspace-wide allow-always),
+R2.5 (the rules editor) and R2.6 (permission history), on item 3's model.
+
+Design (as implemented):
+
+1. A rule is a kind (`allow`, `deny`, `ask`) and a pattern in Claude Code's
+   own syntax (`chats/rules.go`): `Bash(git *)` (or the CLI's `git:*`) is
+   `git` alone or `git ` followed by anything, `Bash(npm test)` exactly
+   that command, `*` anywhere else a glob (`Bash(git * main)`);
+   `Edit(src/**)` a path glob (`**` spans directories, `*` and `?` stay
+   within one) matched against the call's `file_path`/`path`/
+   `notebook_path` and against every tail of it since the engine does not
+   know the guest's working directory, `/…` or `//…` absolute, `~/…` under
+   `/home/*` or `/root`; `Edit` covers every file tool (Write, MultiEdit,
+   NotebookEdit) and `Read` every read tool (Glob, Grep, LS), as the CLI's
+   own rules do; `WebFetch(domain:example.com)` the host or a subdomain;
+   `mcp__warden__*` a glob on the tool name; a bare name every call of
+   that tool. A chained command (`&&`, `||`, `;`, `|`, `&`, a newline; not
+   `>&`) is matched part by part: an allow needs every part covered (and
+   never covers a substitution), a deny or ask fires on any part — so
+   `Bash(git *)` does not allow `git status && rm -rf /` while
+   `deny Bash(rm *)` catches it. Leading `FOO=1` assignments are dropped
+   from a part. Quotes are not parsed (a `;` inside one splits too, which
+   only makes an allow harder and a deny easier).
+2. Rules live in two places: the chat's (`Chat.Rules`, JSON `rules`;
+   item 3's `allowed` `{tool, command}` entries are converted on open —
+   a program prefix to `Bash(prefix *)`, a chained command to
+   `Bash(the command)`, `edit` to `Edit`) and the workspace's, on a new
+   per-sandbox record (`State.Environments[sandboxID].Rules`; the
+   environment view carries them as `rules`). Each rule has an id, an
+   origin (`editor`, or `always` for an "Allow always" answer, with the
+   chat it came from when the rule is the workspace's), who added it and
+   when. The engine consults both: a deny wins over an ask over an allow
+   whichever scope holds it; within a kind the chat's rules come first.
+3. Per mode (`decide` in `chats/permissions.go`): a matching deny declines
+   in every mode, auto included, with the model reading "a permission
+   rule of this workspace denies it (deny Bash(rm *)); do not retry it,
+   find another way or ask" inside the CLI's own rejection wording; a
+   matching ask makes a card in every mode; a matching allow accepts in
+   ask and plan mode (auto accepts anyway); `ExitPlanMode` is always the
+   owner's. Rules answer the asks the CLI raises (file edits, commands
+   that write or are not in its read-only set) and are not pushed into
+   the CLI's settings, so a rule on what the CLI never asks about (`Read`,
+   `ls`, `git status`) does not fire; the panel says so.
+4. "Allow always" takes a scope: the card has two buttons (in this chat /
+   in this workspace, the rule in the title), the TUI `a` / `A` (or
+   `/allow`, `/allow chat`), the route body `scope`. The rule recorded is
+   `RuleFor`'s, as item 3 chose it (`Bash(git commit *)`, `Edit`).
+5. Editor: the workspace panel's Permissions section (Claude chats) lists
+   the workspace's rules with kind, pattern and origin ("Allow always in
+   “chat” by Dan", "from the editor by the owner"), an add form (kind +
+   pattern, checked by `rules.ts` before the round trip with the service's
+   wording), Remove; then each chat's own rules, read-only with Remove.
+   TUI `/rules` (numbered: the workspace's, then each chat's), `/rules
+   add allow|deny|ask PATTERN` (a workspace rule), `/rules rm N`. Routes
+   `GET|POST environments/{id}/rules`, `POST …/rules/{rid}/remove`, the
+   same under `chats/{id}/rules` (GET gives the same workspace view).
+6. History: every `can_use_tool` decision is recorded on the chat
+   (`Chat.Permissions`, last 200; left out of the streamed state, served
+   by `GET chats/{id}/permissions`): tool, a one-line summary (the
+   command, the path, the URL), allow/deny, how (`auto`, `rule` with the
+   rule and its scope, `card` with who answered, the rule an "Allow
+   always" made, a denial's message), when. "Permissions…" in the chat
+   menu opens it newest first; TUI `/permissions`.
+
+Verified (2026-09-18): `gofmt -l`, `go vet ./...`, `go test ./...`
+(`chats/rules_test.go`: the matcher table — prefixes, globs, chained
+commands per kind, redirections, path globs with tails, absolute and
+`~/`, domains, tool globs, bad patterns; a workspace rule from chat one's
+"Allow always" answering a sibling created later, with its origin,
+author and both chats' history; deny and ask rules in auto with the
+model's denial text and the history in order; precedence and the history
+cap; the routes; `chats/permissions_test.go`: item 3's `allowed` entries
+converted on load; `tui/tui_test.go`: `A`, `/allow`, `/rules`, `/rules
+add`, `/rules rm N` across scopes, `/permissions`); `pnpm build`, `pnpm
+test` (195 tests; `rules.test.ts`, `permissions.test.ts`). Live on a
+cloned home (`~/.warden-p14`, CLI 2.1.275): chat one in ask mode asked
+for `touch`, denied once with a message (the model split its chained
+command as told), then allowed always for the workspace — the rule
+`allow Bash(touch *)` on the environment with the chat and the owner;
+chat two on the same workspace, in ask mode, ran `touch` with no card
+and its history says "workspace rule allow Bash(touch *)"; `deny
+Bash(rm *)` added from the API, chat two in auto: `rm` refused without a
+card, the model replied "a workspace permission rule denies Bash(rm *),
+and I won't retry it or route around it"; `ask Edit(*)` in auto made a
+card for a Write, with "Always allow file edits in this chat / in this
+workspace" beside Deny and Allow; the panel's Permissions section listed
+the three rules with their origins, refused `TodoWrite(x)` with the
+service's wording before sending, added and removed
+`WebFetch(domain:example.com)`; "Permissions…" listed the three
+decisions newest first; the TUI in a pty: `/rules`, `/rules add ask
+"WebFetch(domain:example.com)"`, `/rules rm 4`, `/permissions`, and `A`
+on a `mkdir` card ("allowed always for this workspace: `mkdir`
+commands", the rule on the workspace). Seen: `warden start --detach`
+opens the browser on every pending card (popups), which answered one
+card before the API did — `--popups none` for scripted runs.
+
+Progress: merged to main 72aee03 (2026-09-18) after merging round 2 A
+in. Not deployed to `~/.warden`.
+
+Left: rules for what the CLI never asks about would need the CLI's own
+rule channel (`updatedPermissions` per session or its settings), which
+this round keeps out; the collaborator policy of item 3 still applies to
+who may add rules (every admitted person, today).
+
+### Round 2 A: auto-titles, spend, the model catalog
+
+Branch `feat/parity-r2-a-titles-spend`, worktree
+`.local/warden-parity-r2-a-titles-spend`, from main adbf4f5 (2026-09-18).
+
+What the pinned CLI (2.1.272) does, checked on the way: `list_models`
+answers at once after `initialize`, before any `system/init`, with
+`{models: [{value, resolvedModel, displayName, description,
+supportsEffort, supportedEffortLevels, supportsAdaptiveThinking,
+supportsFastMode, supportsAutoMode}]}` (the owner's account in the
+sandbox: `default` → sonnet, `sonnet`, `sonnet[1m]`, `opus`, `opus[1m]`,
+`haiku`; effort levels on every row but Haiku, fast mode on the Opus
+rows); the one-shot flags `--max-turns 1`, `--no-session-persistence`
+and `--system-prompt` exist on 2.1.272 (the binary's own strings, then
+the live run) and a `--system-prompt` of one sentence makes a Haiku
+title cost a fraction of a cent (46k-token conversation → the title in
+about 3 s).
+
+Design (as implemented):
+
+1. **Titles** (`chats/title.go`). `Chat.Titled` is "" while the chat has
+   the default title (`DefaultTitle`, "New chat") and waits to be named,
+   "auto" once it was, "manual" once a person named it: `CreateFrom`
+   sets "manual" for a title given at creation, `Edit` sets it when the
+   title changes (an archive with the same title changes nothing). After
+   every turn the run loop calls `autoTitle`: nothing unless the chat is
+   still untitled; on a resident Claude run it asks the runner op
+   `oneshot` (Haiku, `TitleSystemPrompt` as the whole system prompt,
+   "User: …\n\nAssistant: …" from the first user message and the first
+   reply, each cut to 2000 runes) beside the idle session — the gateway
+   serves the credential only while the run is live, so it goes at once,
+   in a goroutine so the session reports idle meanwhile; `CleanTitle`
+   takes the first line, strips quotes and a trailing period, cuts at 60
+   runes. Codex, a run that ended with the turn (`!a.resident`), or a
+   failed one-shot fall back to `FallbackTitle`: the first message's
+   first non-empty line, cut at a word to 60 runes with an ellipsis. The
+   store update checks the chat is still untitled, so a rename that
+   landed while the one-shot ran stays. One naming per chat at a time
+   (`Engine.titling`); no transcript entry; the log says which it was.
+   `warden chat new` and the TUI's `/new` without a title leave it to the
+   service (they used to say "Terminal chat <time>"); the web's name
+   field says so in its placeholder.
+2. **The runner op `oneshot`** (`sandbox/aside.go`): `aside` and
+   `oneshot` share `oneShotRun` (the active streaming Claude run's
+   brokered environment, `r.Model` when valid, the guest script that
+   feeds stdin and adds `--tools ""`, the parsed `result`); `OneShotCommand`
+   resumes nothing and adds `--max-turns 1 --no-session-persistence
+   --system-prompt <r.Instructions>`; `OneShotTimeout` is a minute.
+3. **Spend** (`chats/spend.go`). `Chat.Spend` (turns, input, output,
+   total, costUSD, priced) is filled in by `Engine.state` from the turn
+   records and never stored; `GET spend` (owner-only at the edge) sums
+   every chat's turns, archived included, into today (since the local
+   midnight), the last seven days and all time, each with the chats
+   that had a turn and a per-provider breakdown; a turn counts at its
+   end, or its start while it runs. Side questions and titles are not
+   turns and are left out. Web: a `spend-chip` beside the context meter
+   (`spend.ts`, the service's sum or the turns summed locally on an
+   older service), a Spend block in the workspace panel (this chat and
+   its siblings; "$0.06 · 139k tokens · 3 turns · 2 chats"), a Spend
+   section in the admin console (`SpendView.tsx`, a table by period and
+   provider). TUI: `/cost` ends with "this workspace: 2 chats · 3 turns
+   · 139k tokens · $0.06" when the chat shares its workspace.
+4. **Catalog** (`chats/catalog.go`). After `thread/start` on a Claude
+   chat the engine calls the adapter's `models/list` (→ `list_models`,
+   the answer as the reply, 10 s at most) and keeps the parsed rows
+   (`ModelInfo`: value, resolved, label, description, efforts,
+   adaptiveThinking, fastMode; strings bounded, at most 64 rows) in
+   `State.Catalog[provider]` with the time, replaced only when they
+   change; a refusal keeps the last. `View` hands them out as
+   `agentOptions.models` and drops them from the state. The engine
+   drives the request (not the adapter on its own) so the adapter tests'
+   synchronous pipes see no unexpected frame and the engine can skip
+   Codex. Web `models.ts`: `modelOptions` builds the picker's rows from
+   the catalog (the `default` row becomes "Provider default" with its
+   resolved model as the hint; "Claude " + displayName), the static rows
+   without one; a `[1m]` row the operator has not allowed is listed
+   disabled as "… (not allowed)" with `LONG_CONTEXT_HINT`;
+   `effortOptions` filters the Effort select to the chosen model's
+   levels (the default alone, disabled, for Haiku); `fastModeFor` keeps
+   the Fast checkbox visible, disabled with `FAST_MODE_HINT` until
+   allowed, and says when the model lacks it. The new-chat form's picker
+   gets the catalog too. TUI `complete.go`: `/model` and `/effort` gain
+   argument menus (`ModelRows`, `EffortsFor`), the 1M rows with "not
+   allowed here: enable providers.claude.allowLongContext"; the default
+   row inserts "default", which `/model` maps to "".
+
+Verified (2026-09-18): `gofmt -l`, `go vet ./...`, `go test ./...`
+(`sandbox/aside_test.go` the one-shot launch and op; `chats/title_test.go`
+the one-shot request and the cleaned title, no entry, no second naming,
+a created title kept, a rename before the turn and one landing while
+the one-shot runs, the Codex / failed / non-resident fallbacks,
+`CleanTitle` and `FallbackTitle`; `chats/spend_test.go` the sums, the
+state's spend, the report's periods and providers, the route;
+`chats/catalog_test.go` cached and exposed, a refusal, a replacement,
+Codex never asked, `ParseCatalog`; `agent/claude_test.go`
+`TestClaudeModelsList`; `tui/tui_test.go` the menus and the workspace
+line; `edge/edge_test.go` `api/spend` owner-only), `pnpm build`, `pnpm
+test` (200; `models.test.ts`, `spend.test.ts` new, `composer.test.ts`
+follows the disabled 1M rows). Live on a cloned home (`~/.warden-p13`,
+build d4ae6b2 then 79961e1, CLI 2.1.272): `warden chat new --provider
+claude` → "New chat"; one message → 10 s later `warden chat list`
+showed "Fibonacci Script with Recursion Explanation", the log
+"(generated)", `titled: auto`; `chats/{id}/edit` → "Fib demo (renamed
+by hand)", `titled: manual`, kept across the next turn; a second
+untitled chat on the same workspace → "Counting directory entries with
+wc" in the header, the sidebar and `/chats`. `GET state` carried
+`chat.spend` ($0.037 after two turns) and the six catalog rows; `GET
+spend` today / week / all by provider (claude and codex, the cloned
+chats). Web (1280 px): the picker's rows from the catalog with the
+resolved model and blurb as titles, "Claude Sonnet 5 (1M context) (not
+allowed)" disabled with the config hint, the Fast checkbox disabled with
+its hint, the model switched to haiku live ("Model → haiku") and the
+Effort select collapsed to "Effort: default" disabled with "The chosen
+model takes no effort level"; the "$0.02" chip beside the context meter;
+the panel's "Workspace $0.06 · 139k tokens · 3 turns · 2 chats" and
+"This chat $0.02 · 46k tokens · 1 turn"; the admin console's Spend table
+(Today $0.51 · 844k tokens, 11 turns, 6 chats; all time $1.83 with a
+Codex column of tokens). TUI in a pty: `/cost` with the workspace line,
+the `/model` menu's six rows with hints, `/chats` with the generated
+title. Codex titling is unit-tested only (usage exhausted).
+
+Progress: started 2026-09-18 on `feat/parity-r2-a-titles-spend` from
+main adbf4f5; implemented and live-verified 2026-09-18 (79961e1);
+merged to main fe1deaa (2026-09-18) after merging main's TUI status-bar
+rows and the "sending" delivery state in (one append-append seam in
+`tui_test.go`).
+
+Left: the composer footer is crowded (the style, mode, context and
+spend controls ellipsise each other at 1280 px; the chip itself never
+shrinks); the aside op's cost is not in the spend; the catalog is asked
+at every session start (cheap, but a `list_models` refusal is only
+logged); the TUI's `/effort` menu was not seen live.
+
+### Round 2 D: queue and rewind polish
+
+Branch `feat/parity-r2-d-queue-rewind`, worktree
+`.local/warden-parity-r2-d-queue-rewind`, from main adbf4f5 (2026-09-18).
+R2.10 edit a queued message in place, R2.11 queue semantics, R2.12 undo a
+conversation rewind.
+
+Design:
+
+1. **Edit in place** (`POST chats/{id}/queued/{entryID}/edit {text,
+   attachments?}` → the entry; `EditQueued`): the queued entry keeps its
+   slot and ID, its text is replaced and, when `attachments` is given,
+   its attachment set (IDs of the chat's uploads; absent keeps the set);
+   the sender or the owner; a message the agent has meanwhile answers
+   409 "already sent". Web: the pencil (and ↑ in an empty composer, for
+   the last queued message of this person's) opens an editor on the card
+   itself (`QueuedEditor`: Enter saves, Shift-Enter a newline, Esc leaves
+   it as it was, each attachment removable); the draft lives in
+   `Conversation.tsx` (`queuedEdit`) so a card that stops being queued —
+   handed to the agent, or withdrawn elsewhere — moves the draft into the
+   composer with a notice instead of losing it. TUI: `/edit N` (and ↑)
+   loads the message into the composer as an `editing` (the same state
+   `/memory edit` uses): Enter saves it back into its slot, Esc or Ctrl+C
+   leaves it, an empty save is refused (`/withdraw` drops it), and the
+   "already sent" conflict ends the edit with the draft kept to send as a
+   new message. Item 10's withdraw-into-composer edit is gone from both
+   surfaces (Withdraw stays).
+2. **The held queue is explicit** — `!` and `#` do not release it. The
+   plan's wording ("`!` and `#` release a held queue") was found
+   surprising: Stop is the person's decision to keep the agent from
+   continuing, and a `!` command (`!git status`, `!cat file`) is the very
+   thing they run after stopping to decide what to do next; restarting
+   the agent as a side effect would defeat the stop. A `#` note writes
+   `CLAUDE.md`, which the agent reads at launch — after a stop it is
+   often the fix the person wants in place *before* the held messages go.
+   Neither is addressed to the agent (item 12's decision 1), so nothing
+   is out of order when they leave the queue alone; a new message
+   releases it because it *is* addressed to the agent and would otherwise
+   jump the queue. Claude Code's own `!` never touches its queue either.
+   So `Exec` and `AppendMemory` run beside a held queue and never fail
+   (they never did), and both surfaces say so: the web composer's hint
+   for a `!`/`#` draft while held ("The command runs beside the held
+   queue: N messages stay held until Send on a card or your next
+   message", `heldHint`), the TUI's notices ("… · N queued message(s)
+   still held (/queue send lets them go)", `heldNote`); the card's Send
+   and the status hint were already there.
+3. **`warden chat send --wait` follows its own message** (`Follow` with a
+   message ID, `followMessage`): it prints the message (with "(queued: N
+   message(s) ahead)" or "(queued: sends when the agent finishes)"),
+   then the entries of the turn the message opens (`TurnID` once
+   confirmed) and returns when that turn's record has ended and nothing
+   of it streams — "idle" when the queue moved on to the next message,
+   the chat's status otherwise. The wait ends with an error when the
+   message is withdrawn, fails for good (the hand-over's transient
+   "Delivery unconfirmed" mark, `attempt` before `confirm`, is not final
+   while the run is on), or is held in a stopped chat's queue ("the
+   message is held in the queue; send it from the app, with `warden chat
+   send`, or withdraw it", exit 1). `--wait-all` is the old whole-chat
+   wait.
+4. **Undo a rewind.** A conversation or both rewind keeps what it removed
+   as `Chat.RewoundTail` — the entries from the target on (the queued
+   ones the rewind withdrew last), their turn records, the marker's ID,
+   how the session followed, what the session had before (the pending
+   rewind it replaced; the thread, `NewSession` and `Recap` a fresh
+   fallback dropped), the diff base a code rewind moved and the
+   checkpoint recorded of the workspace before the restore. Clients
+   never get the tail: `state()` turns it into `chat.undoRewind`, the
+   marker's ID, and the marker carries `entry.rewind` `{messageID, what,
+   conversation, before}`. The tail is dropped when a turn starts
+   (`attempt`, `resume`, `beginAgentTurn`: `dropRewoundTail`) and by the
+   next rewind (only the latest is undoable); a `!` command, a `#` note
+   or a side question leave it (they start no turn) and their entries
+   stay after the restored ones, since the undo splices the tail in
+   place of the marker. `POST chats/{id}/undo-rewind {id, code}` →
+   `UndoResult {messageID, what, entries, requeued, session, code,
+   restored, removed}`, chat idle: the entries and turns go back, the
+   marker goes, queued messages come back held (as after a stop), and
+   the session follows as far as it can — "cancelled" when the rewind
+   was still pending (`c.Rewind` back to the one it replaced), "resumed"
+   when the fresh fallback had dropped the thread (the CLI refused the
+   rewind, so the session still knows everything: thread, flag and recap
+   restored, the next message `--resume`s it), "fresh" when the live
+   session rewound (the CLI cannot un-rewind: item 11's fallback, the
+   restored transcript as recap, the idle session released). A `system`
+   entry says what was done ("Rewind undone: N entries restored; …").
+   A code rewind is one-way in the checkpoints, so the runner's `restore`
+   now records the workspace as it is under `Request.Before` — the
+   marker's ID — before writing the checkpoint back (`restoreScript`
+   commits the snapshot it takes anyway; `WorkspaceRestore.Before`), for
+   every code and both rewind; undo with `code: true` restores that
+   checkpoint and puts the diff base back (offered only when the marker's
+   `before` is set: web "Undo and restore the files", TUI `/undo-rewind
+   code`); otherwise the notice says the workspace stays as the rewind
+   left it. A code-only rewind keeps no tail (nothing to undo). Seen on
+   the way: a rewind on a chat owed a fresh session (thread dropped,
+   recap kept — the state an undo of a live rewind leaves) answered
+   "rewound" and left the old recap describing the pre-rewind
+   transcript; `Rewind` now re-renders the recap from what it leaves.
+5. Web: `EntryView.tsx` (`QueuedEditor`, the marker's `rewind-actions`),
+   `Conversation.tsx` (`queuedEdit`, `saveQueued`, `overtaken`, `undo`),
+   `rewind.ts` (`UndoResult`, `canUndoRewind`, `undoOffersCode`,
+   `undoHint`, `undoOutcome`), `queue.ts` (`heldHint`), `api.ts`
+   (`editQueued`, `undoRewind`). TUI: `tui/queue.go` (`takeQueued` in
+   place, `heldNote`), `tui/rewind.go` (`/undo-rewind`, `undoHint`,
+   `undoNotice`), `tui/render.go` (the marker's hint), `tui/client.go`
+   (`EditQueued`, `UndoRewind`, `Chat.UndoRewind`, `Entry.Rewind`).
+
+Verified (2026-09-18): `gofmt -l`, `go vet ./...`, `go test ./...`
+(`chats/queue_edit_test.go`: edit in place keeping order, ID and
+attachments, the sender/owner refusals, the conflict once sent; `!`/`#`
+leaving a held queue held; undo of a pending rewind (cancelled, the
+resumed session gets no `conversation/rewind`), of a live one (fresh
+with the recap, the notice by the actor), of a refused one (the thread
+resumed without a recap); the tail dropped by a turn and by another
+rewind; a both-rewind's restore carrying `Before`, its undo restoring
+the marker's checkpoint and the diff base, the withdrawn message
+requeued and held, "kept" without the code; the refusals; the routes;
+`sandbox/checkpoint_test.go`: `restore` with `Before` writing the ref
+and the record on the local git store, restoring it afterwards, a bad
+ID refused; `tui/tui_test.go`: `Follow` on one message printing its own
+turn only and returning while a later turn runs, held / withdrawn /
+unconfirmed-then-confirmed / failed-for-good; `/edit` and ↑ in place
+with Esc, save, the empty edit and the conflict; `/undo-rewind [code]`
+with the marker's hint, the confirmation, the conversation-only
+refusal, and the `!`/`#` held notes), `pnpm build`, `pnpm test` (196;
+`rewind.test.ts`, `queue.test.ts`). Live on a cloned home
+(`~/.warden-p16`, builds e83cb84 and abdd2ad, CLI 2.1.272) through the
+API and `warden chat send`: two messages queued behind a `sleep 30`,
+the second edited in place (same ID and slot), the queue then going
+Q1, Q2-edited (the agent answered the edited text), Q3; `send --wait`
+behind two queued messages printed "(queued: 2 message(s) ahead)" and
+only its own turn (39 s), and `send --wait` with a `sleep 15` message
+queued *behind* it returned at its own turn's end while that later turn
+ran; Stop with a message queued, then `!ls -a` and `#note` — the queue
+stayed held 10 s+ (their card and line after the queued entry), then
+`send-queued` released it; `--wait` on a message Stop held ended with
+"interrupted: the message is held in the queue" (exit 1); `--wait-all`
+printed the whole queue. Undo: a live conversation rewind (`rewound`)
+undone → `session: fresh`, entries back in place after the `!` card and
+the note, and the new session (a new thread) answered
+"CODEWORD=ALPHA, LAST=HELD-ONE" from the recap; a pending rewind
+(session released by a style change) undone → `cancelled`, `rewind`
+cleared, the same thread resumed and answered all three codewords and
+"LAST=THREAD-UP", `conversation/rewind` never sent; a both rewind (a
+file edited and one created by the agent, restored/removed) recorded
+`before` = the marker's ID, and its undo with `code: true` restored
+both files (`!cat r2d.txt; ls`) and 5 entries; the kept tail survived a
+service restart. Browser: the pencil opening the card's editor (dashed
+accent box, "Enter saves it in its place · Shift-Enter newline · Esc
+cancels", Cancel/Save), the save keeping the card queued with the new
+text while the earlier queued message went as its own turn; the marker
+with "Undo" and its hint, the undo putting the two entries back with the
+notice line; a both marker with "Undo" and "Undo and restore the files"
+("the files can come back too"), the latter's notice; the held card
+("Held · the agent was stopped; send or withdraw it", Send) with the
+composer hint for a `!ls` draft ("The command runs beside the held
+queue: 1 message stays held …"), the `!` card landing while
+"interrupted · 1 message held", Send releasing it. TUI in a pty
+(`scratchpad/p16-tui.py`): `/edit` on the queued message → "editing the
+queued message in place", Esc → "edit of queued message cancelled"
+(still queued as it was), ↑ then Ctrl+A Ctrl+K and a new text, Enter →
+"saved queued message" (same ID, still queued, the agent later answered
+the edited text); Esc on a running turn → "the queued messages are
+held", the held marker, `!ls` → "… · 1 queued message(s) still held
+(/queue send lets them go)" and "command finished · …", `#note` →
+"added to CLAUDE.md · 1 queued message(s) still held", `/queue send` →
+the answer; `/undo-rewind` with nothing → "nothing to undo", `/rewind N
+conv` + `y`, the marker's "/undo-rewind puts the removed messages back
+(until the next turn)", `/undo-rewind code` refused on a conversation
+rewind, `/undo-rewind` + `y` → "rewind undone: 2 entries restored; …"
+and the `!` line.
+
+Left: the web editor edits text and drops attachments but cannot add
+one (the composer's uploads are not offered to the card); the TUI's
+in-place edit leaves the message's attachments as they are; a code-only
+rewind is still not undoable (its `before` checkpoint is recorded, so a
+later item could offer it); a fresh session after an undo knows the
+restored transcript only through the recap (item 11's limit); the
+pre-restore snapshot costs one more `commit-tree` per code rewind.
+
+Progress: started 2026-09-18; implemented and live-verified 2026-09-18
+(abdd2ad); merged to main 917fb2a (2026-09-18).
 
 ### Item 15: the long tail
 

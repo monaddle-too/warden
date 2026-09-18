@@ -13,12 +13,16 @@ import (
 	"warden/chat/internal/tui"
 )
 
-// Popup modes for `warden start --popups`.
+// Popup modes for `warden start --popups`. The default is none: a pending
+// approval waits in the app and the terminal client, which both show it and
+// answer it, until someone opens one; an approval a person is already looking
+// at in one client must not open another (2026-09-18, the owner's call after
+// a question asked in the terminal client opened the browser).
 const (
 	popupsAuto    = "auto"    // browser when detached, notification when in the foreground
 	popupsBrowser = "browser" // desktop notification and open the chat in the browser
 	popupsNotify  = "notify"  // desktop notification only
-	popupsNone    = "none"
+	popupsNone    = "none"    // the default
 )
 
 // notifyCommand builds the desktop notification command for this host:

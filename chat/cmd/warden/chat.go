@@ -21,7 +21,8 @@ import (
 const chatUsage = `usage: warden chat [flags] [CHAT]           interactive terminal client
        warden chat list [flags]               list chats
        warden chat new [flags] [TITLE]        create a chat and print its id
-       warden chat send [flags] CHAT TEXT     send a message (--wait streams the reply)
+       warden chat send [flags] CHAT TEXT     send a message (--wait streams its turn,
+                                              --wait-all the chat until idle)
        warden chat approve [flags] CHAT [--decline] [--answer TEXT]
                                               answer the first pending approval
 
@@ -65,7 +66,8 @@ func (c *cli) chat(args []string) error {
 	model := fs.String("model", "", "model for a new chat (default: the provider's default)")
 	cpus := fs.Float64("cpus", 0, "new: CPUs for the fresh workspace (default: the runner's)")
 	memory := fs.String("memory", "", "new: memory for the fresh workspace, e.g. 4g or 2048m (default: the runner's)")
-	wait := fs.Bool("wait", false, "send: stream the transcript until the agent is idle")
+	wait := fs.Bool("wait", false, "send: stream the message's own turn until it ends")
+	waitAll := fs.Bool("wait-all", false, "send: stream the transcript until the agent is idle, queued messages included")
 	decline := fs.Bool("decline", false, "approve: decline instead of allowing")
 	answer := fs.String("answer", "", "approve: the answer to the agent's question")
 	all := fs.Bool("all", false, "list: include archived chats")
@@ -102,10 +104,9 @@ func (c *cli) chat(args []string) error {
 		}
 		return nil
 	case "new":
+		// No title: the chat is named from its first exchange (the
+		// service's automatic titles, chats/title.go).
 		title := strings.Join(fs.Args(), " ")
-		if title == "" {
-			title = "Terminal chat " + time.Now().Format("Jan 2 15:04")
-		}
 		p := *provider
 		if p == "" {
 			p = "codex"
@@ -139,7 +140,7 @@ func (c *cli) chat(args []string) error {
 		}
 		text := strings.Join(fs.Args()[1:], " ")
 		seen := map[string]bool{}
-		if *wait {
+		if *wait || *waitAll {
 			if s, err := client.State(ctx); err == nil {
 				if ch := s.Chat(id); ch != nil {
 					for _, e := range ch.Conversation.Entries {
@@ -148,14 +149,20 @@ func (c *cli) chat(args []string) error {
 				}
 			}
 		}
-		if err := client.Message(ctx, id, text, tui.NewMessageID()); err != nil {
+		messageID := tui.NewMessageID()
+		if err := client.Message(ctx, id, text, messageID); err != nil {
 			return err
 		}
-		if !*wait {
+		if !*wait && !*waitAll {
 			fmt.Fprintln(c.stdout, "sent")
 			return nil
 		}
-		status, err := tui.Follow(ctx, client, id, c.stdout, seen)
+		// --wait follows this message's own turn; --wait-all the whole
+		// chat until it is idle, the queue included.
+		if *waitAll {
+			messageID = ""
+		}
+		status, err := tui.Follow(ctx, client, id, c.stdout, seen, messageID)
 		if err != nil {
 			return err
 		}

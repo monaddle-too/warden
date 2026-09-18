@@ -14,7 +14,7 @@ import (
 // disagrees with a loaded file is an error.
 type settings struct {
 	cfg           config.Config
-	configPath    string // the warden.json the settings came from ("" for flags only)
+	configPath    string         // the warden.json the settings came from ("" for flags only)
 	state         string         // paths.state/app
 	policy        string         // services.policy.address (unix://paths.state/policy/sbx-control.sock)
 	runner        string         // services.runner.address (unix://paths.state/runner/worker.sock)

@@ -18,7 +18,7 @@ import (
 // error rather than a silent precedence.
 type settings struct {
 	cfg              config.Config
-	configPath string // the warden.json the settings came from ("" for flags only)
+	configPath       string // the warden.json the settings came from ("" for flags only)
 	state            string // policy state directory (paths.state/policy)
 	listen           string // services.policy.listen (unix://<state>/sbx-control.sock)
 	tls              *transport.TLS

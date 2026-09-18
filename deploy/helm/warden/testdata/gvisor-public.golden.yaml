@@ -565,6 +565,14 @@ data:
       "chat": {
         "listen": "127.0.0.1:18780"
       },
+      "edge": {
+        "bugReports": {
+          "enabled": true,
+          "maxPerDay": 500,
+          "maxPerHour": 30,
+          "retentionDays": 30
+        }
+      },
       "kubernetes": {
         "gatewayPort": 7000,
         "gatewayService": "warden-gateway",
@@ -1254,7 +1262,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: policy
       annotations:
-        checksum/config: b99492d11f421f69fa6122a746c218dbfc200b1494ed89d7d39675343d279790
+        checksum/config: 712fbc5e6015e07e1395ae3e2bd1895db974fb085e86f837c250469e645ba94e
     spec:
       serviceAccountName: warden-policy
       automountServiceAccountToken: true
@@ -1389,7 +1397,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: runner
       annotations:
-        checksum/config: b99492d11f421f69fa6122a746c218dbfc200b1494ed89d7d39675343d279790
+        checksum/config: 712fbc5e6015e07e1395ae3e2bd1895db974fb085e86f837c250469e645ba94e
     spec:
       serviceAccountName: warden-runner
       automountServiceAccountToken: true
@@ -1524,7 +1532,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: chat
       annotations:
-        checksum/config: b99492d11f421f69fa6122a746c218dbfc200b1494ed89d7d39675343d279790
+        checksum/config: 712fbc5e6015e07e1395ae3e2bd1895db974fb085e86f837c250469e645ba94e
     spec:
       serviceAccountName: warden-chat
       automountServiceAccountToken: false
@@ -1656,7 +1664,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: edge
       annotations:
-        checksum/config: b99492d11f421f69fa6122a746c218dbfc200b1494ed89d7d39675343d279790
+        checksum/config: 712fbc5e6015e07e1395ae3e2bd1895db974fb085e86f837c250469e645ba94e
     spec:
       serviceAccountName: warden-edge
       automountServiceAccountToken: false

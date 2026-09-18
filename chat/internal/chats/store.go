@@ -35,9 +35,16 @@ type Chat struct {
 	// changed it since), which Environment.Resources reports.
 	Resources *sandbox.Resources `json:"resources,omitempty"`
 	// Mode is the chat's permission mode (permissions.go): auto when
-	// empty. Allowed are its allow-always rules, in the order given.
-	Mode    string           `json:"mode,omitempty"`
-	Allowed []PermissionRule `json:"allowed,omitempty"`
+	// empty. Rules are its own permission rules (rules.go: "Allow always"
+	// answers and rules added to the chat), in the order given; Allowed
+	// is where item 3 kept them, read once and moved into Rules on open.
+	// Permissions is the chat's permission history (the last historyCap
+	// decisions), served by chats/{id}/permissions and left out of the
+	// state clients stream.
+	Mode        string            `json:"mode,omitempty"`
+	Rules       []Rule            `json:"rules,omitempty"`
+	Allowed     []Rule            `json:"allowed,omitempty"`
+	Permissions []PermissionEvent `json:"permissions,omitempty"`
 	// Thinking, Effort and Fast are the chat's session settings
 	// (settings.go): the thinking budget ("" the agent's default, "off",
 	// or a number of tokens), the effort level ("" the model's default)
@@ -81,6 +88,12 @@ type Chat struct {
 	Rewind     *PendingRewind `json:"rewind,omitempty"`
 	Recap      string         `json:"recap,omitempty"`
 	NewSession bool           `json:"newSession,omitempty"`
+	// RewoundTail is what the last conversation rewind removed, kept so
+	// the rewind can be undone until the next turn starts (rewind.go);
+	// never sent to clients, which get UndoRewind, the marker whose
+	// rewind can be undone, filled in by Engine.View and never stored.
+	RewoundTail *RewoundTail `json:"rewoundTail,omitempty"`
+	UndoRewind  string       `json:"undoRewind,omitempty"`
 	// ForkSession marks a chat forked from another whose session (the
 	// ThreadID it carries) its first run resumes as a copy; cleared once
 	// the agent reports the copy's own session (fork.go).
@@ -88,6 +101,14 @@ type Chat struct {
 	// OutputStyle is the Claude output style the chat's process launches
 	// with; "" is the CLI's default (style.go).
 	OutputStyle string `json:"outputStyle,omitempty"`
+	// Titled says how the chat got its title: "" while it still has the
+	// default one and waits to be named from its first exchange, "auto"
+	// once it was, "manual" once a person gave or changed the title, which
+	// ends the naming (title.go).
+	Titled string `json:"titled,omitempty"`
+	// Spend is what the chat's turns took so far (spend.go), filled in for
+	// clients by Engine.View and never stored.
+	Spend *Spend `json:"spend,omitempty"`
 }
 
 // Command is one slash command the agent's session offers.
@@ -155,6 +176,12 @@ type State struct {
 	// by principal (instructions.go). Never sent to clients as part of the
 	// state: a person reads their own through me/instructions.
 	Instructions map[string]*Instructions `json:"instructions,omitempty"`
+	// Environments is what is kept per workspace beyond its chats, by
+	// sandbox id: its permission rules (rules.go).
+	Environments map[string]*EnvironmentRecord `json:"environments,omitempty"`
+	// Catalog is each provider's model catalog as its CLI last reported
+	// it (catalog.go); clients get it as agentOptions.models.
+	Catalog map[string]*Catalog `json:"catalog,omitempty"`
 }
 type Store struct {
 	mu     sync.Mutex
@@ -197,6 +224,11 @@ func Open(root string) (*Store, error) {
 	}
 	// A restart never replays a message whose delivery might have reached the agent.
 	for _, c := range s.state.Chats {
+		if len(c.Allowed) > 0 {
+			// Item 3's allow-always rules, in the rules' place now.
+			c.Rules = append(c.Rules, c.Allowed...)
+			c.Allowed = nil
+		}
 		if c.Status == "running" || c.Status == "queued" || c.Status == "stopping" {
 			c.Status = "interrupted"
 			c.Error = "Warden restarted. Send a new message to resume."

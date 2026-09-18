@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"warden/chat/internal/conversation"
@@ -100,6 +101,15 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(h.Engine.View())
 		return
 	}
+	if r.Method == "GET" && path == "chats/search" {
+		// A search across every chat's title and transcript (search.go).
+		limit := 0
+		if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+			limit = n
+		}
+		json.NewEncoder(w).Encode(h.Engine.Search(r.URL.Query().Get("q"), limit))
+		return
+	}
 	if r.Method == "GET" && path == "environments" {
 		result, err := h.Engine.Environments(r.Context())
 		respond(w, result, err)
@@ -112,6 +122,12 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" && (path == "cluster" || path == "cluster/logs") {
 		// Owner-only at the edge (ownerOnly lists api/cluster).
 		h.clusterHTTP(w, r, path)
+		return
+	}
+	if r.Method == "GET" && path == "spend" {
+		// The admin console's spend totals (spend.go); owner-only at the
+		// edge (ownerOnly lists api/spend).
+		json.NewEncoder(w).Encode(h.Engine.Spend())
 		return
 	}
 	if path == "me/instructions" {
@@ -137,6 +153,17 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "paths" {
 		h.pathsHTTP(w, r, parts[1])
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && (parts[0] == "environments" || parts[0] == "chats") && parts[2] == "rules" {
+		// A workspace's permission rules and its chats' (rules.go).
+		view, err := h.Engine.Rules(parts[1])
+		respond(w, view, err)
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "permissions" {
+		events, err := h.Engine.Permissions(parts[1])
+		respond(w, map[string]any{"events": events}, err)
 		return
 	}
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "diff" {
@@ -220,15 +247,22 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Effort   *string `json:"effort"`
 		Fast     *bool   `json:"fast"`
 		// TurnID and What are a rewind's target and scope (rewind.go);
-		// TurnID is also where a fork cuts (fork.go).
+		// TurnID is also where a fork cuts (fork.go). Code asks an
+		// undo-rewind to restore the workspace too.
 		TurnID string `json:"turnID"`
 		What   string `json:"what"`
+		Code   bool   `json:"code"`
 		// Scope and Path name the memory file a chats/{id}/memory/write
-		// replaces with Text (memory.go).
+		// replaces with Text (memory.go); Scope is also where an "allow
+		// always" answer remembers its rule ("chat" or "workspace").
 		Scope string `json:"scope"`
 		Path  string `json:"path"`
 		// Style is the body of chats/{id}/style (style.go).
 		Style string `json:"style"`
+		// Kind and Pattern are a permission rule, the body of
+		// environments/{id}/rules and chats/{id}/rules (rules.go).
+		Kind    string `json:"kind"`
+		Pattern string `json:"pattern"`
 	}
 	// Room for a memory file (1 MiB of text, JSON-escaped); every other
 	// body is bounded far below by its own validation.
@@ -293,6 +327,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			result, err = h.Engine.Withdraw(parts[1], body.ID, requester(r))
 		case "send-queued":
 			err = h.Engine.SendQueued(parts[1])
+		case "undo-rewind":
+			// The last conversation rewind's removed transcript back in
+			// place (rewind.go); ID names its marker.
+			result, err = h.Engine.UndoRewind(r.Context(), parts[1], body.ID, body.Code, requester(r))
 		case "fork":
 			// A sibling chat copied from this one up to a message (fork.go).
 			result, err = h.Engine.Fork(r.Context(), parts[1], body.TurnID, requester(r))
@@ -301,6 +339,9 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			result, err = h.Engine.Aside(r.Context(), parts[1], body.Text, requester(r))
 		case "style":
 			err = h.Engine.SetOutputStyle(r.Context(), parts[1], body.Style)
+		case "rules":
+			// A permission rule added to the chat (rules.go).
+			result, err = h.Engine.AddRule(parts[1], body.Kind, body.Pattern, requester(r))
 		case "bug":
 			// /bug text: a user bug report with this chat's ids (bugs.go).
 			result, err = h.Engine.Bug(parts[1], body.Text, requester(r))
@@ -309,11 +350,20 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "approvals":
-		err = h.Engine.Answer(parts[1], parts[3], Answer{Allow: body.Allow, Answers: body.Answers, Always: body.Always, Message: body.Message, Mode: body.Mode}, requester(r))
+		err = h.Engine.Answer(parts[1], parts[3], Answer{Allow: body.Allow, Answers: body.Answers, Always: body.Always, Scope: body.Scope, Message: body.Message, Mode: body.Mode}, requester(r))
+	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "rules":
+		// A permission rule added to the workspace (rules.go).
+		result, err = h.Engine.AddRule(parts[1], body.Kind, body.Pattern, requester(r))
+	case len(parts) == 5 && (parts[0] == "environments" || parts[0] == "chats") && parts[2] == "rules" && parts[4] == "remove":
+		err = h.Engine.RemoveRule(parts[1], parts[3])
 	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "attachments" && parts[4] == "remove":
 		err = h.Engine.removeAttachment(parts[1], parts[3])
 	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "memory" && parts[3] == "write":
 		err = h.Engine.WriteMemory(r.Context(), parts[1], body.Scope, body.Path, body.Text, requester(r))
+	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "queued" && parts[4] == "edit":
+		// A queued message's text and attachments replaced in place
+		// (queue.go); the edited entry comes back.
+		result, err = h.Engine.EditQueued(parts[1], parts[3], body.Text, body.Attachments, requester(r))
 	default:
 		http.Error(w, "not found", 404)
 		return

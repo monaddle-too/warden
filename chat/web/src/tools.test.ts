@@ -171,10 +171,33 @@ describe("subagent and todo cards", () => {
       entry({ kind: "read", status: "running" }, { id: "c2" }),
       entry(undefined, { id: "m", role: "assistant" }),
     ];
-    expect(subagentProgress(children)).toEqual({ steps: 2, running: true });
+    expect(subagentProgress(children)).toEqual({
+      steps: 2,
+      running: true,
+      step: "",
+    });
     expect(subagentProgress([children[0]])).toEqual({
       steps: 1,
       running: false,
+      step: "",
+    });
+    // The agent's own account (task_progress) when it runs ahead of the
+    // entries, and what it says the subagent is doing: its words, else
+    // the tool it used last.
+    expect(
+      subagentProgress(children, { toolCalls: 5, lastTool: "Grep" }),
+    ).toEqual({ steps: 5, running: true, step: "using Grep" });
+    expect(
+      subagentProgress(children, {
+        toolCalls: 1,
+        lastTool: "Read",
+        activity: "Reading hello.txt",
+      }),
+    ).toEqual({ steps: 2, running: true, step: "Reading hello.txt" });
+    expect(subagentProgress(children, { toolCalls: 1 })).toEqual({
+      steps: 2,
+      running: true,
+      step: "",
     });
   });
   it("measures a subagent's time to its end, or to now while it runs", () => {
@@ -183,9 +206,14 @@ describe("subagent and todo cards", () => {
       { createdAt: 100, endedAt: 163 },
     );
     expect(taskElapsed(done, 999)).toBe(63);
-    const running = entry({ kind: "task", status: "running" }, { createdAt: 100 });
+    const running = entry(
+      { kind: "task", status: "running" },
+      { createdAt: 100 },
+    );
     expect(taskElapsed(running, 130)).toBe(30);
-    expect(taskElapsed(entry({ kind: "task", status: "completed" }), 5)).toBe(0);
+    expect(taskElapsed(entry({ kind: "task", status: "completed" }), 5)).toBe(
+      0,
+    );
     expect(formatElapsed(4.4)).toBe("4s");
     expect(formatElapsed(72)).toBe("1m 12s");
     expect(formatElapsed(7500)).toBe("2h 5m");

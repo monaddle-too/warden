@@ -99,21 +99,32 @@ describe("thinking and effort commands", () => {
     expect(def?.kind === "effort" && def.effort.value).toBe("");
     expect(exactCommand("/effort ultra", models)).toBeUndefined();
   });
-  it("offers the 1M-context models only when the service allows them", () => {
+  it("lists the 1M-context models, disabled with a hint until the service allows them", () => {
     expect(modelOptions("claude").map((m) => m.value)).toEqual([
       "",
       "sonnet",
       "opus",
       "haiku",
+      "sonnet[1m]",
+      "opus[1m]",
     ]);
     expect(
-      modelOptions("claude", { fastMode: false, longContext: true }).map(
-        (m) => m.value,
+      modelOptions("claude")
+        .filter((m) => m.disabled)
+        .map((m) => m.value),
+    ).toEqual(["sonnet[1m]", "opus[1m]"]);
+    expect(
+      modelOptions("claude", { fastMode: false, longContext: true }).some(
+        (m) => m.disabled,
       ),
-    ).toEqual(["", "sonnet", "opus", "haiku", "sonnet[1m]", "opus[1m]"]);
+    ).toBe(false);
     expect(
       modelOptions("codex", { fastMode: true, longContext: true }),
     ).toHaveLength(6);
+    // The /model rows carry the hint and the disabled state.
+    const items = commandItems("model opus[", modelOptions("claude"));
+    expect(items).toHaveLength(1);
+    expect(items[0].kind === "model" && items[0].model.disabled).toBe(true);
   });
 });
 
@@ -380,7 +391,9 @@ describe("side questions and output styles", () => {
     expect(isBugTest("/testing bugreporting")).toBe(false);
   });
   it("reads the question after /btw", () => {
-    expect(sideQuestion("/btw what did we decide?")).toBe("what did we decide?");
+    expect(sideQuestion("/btw what did we decide?")).toBe(
+      "what did we decide?",
+    );
     expect(sideQuestion("/BTW  two\nlines ")).toBe("two\nlines");
     expect(sideQuestion("/btw")).toBeUndefined();
     expect(sideQuestion("/btw   ")).toBeUndefined();

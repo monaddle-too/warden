@@ -192,10 +192,10 @@ no attachment names; `context` carries ids only.
 ## Steps
 
 Server track (`.local/warden-bugs-server`):
-1. Config + chart values + `warden.config` rendering; chart goldens.
-2. Edge receiver (`POST /api/bug-reports`), storage, limits, retention; tests.
-3. Admin routes + console page; tests.
-4. Merge to main; deploy to GKE (`gke-deploy`); `curl` a sample report
+1. ✓ Config + chart values + `warden.config` rendering; chart goldens.
+2. ✓ Edge receiver (`POST /api/bug-reports`), storage, limits, retention; tests.
+3. ✓ Admin routes + console page; tests.
+4. ✓ Merge to main; deploy to GKE (`gke-deploy`); `curl` a sample report
    (`docs/bug-report-sample.json`) at the cloud URL and see it in the
    console.
 
@@ -227,25 +227,70 @@ Client track (`.local/warden-bugs-client`):
    write.
 5. `kind: error` reports are drafted only when reporting is enabled;
    disabled means no files, no page, nothing.
-6. (client) A recovered panic is captured and then raised again, so a
+6. Server: a report whose `id` is not 32 hex is stored under the
+   server-assigned id *and* its `id` field is rewritten to it, so the file
+   name and the document always agree. Unknown `before` cursors on the
+   list route are `400`, not an empty page. The list route answers a bare
+   JSON array (the contract's "list of"); `DELETE` answers `204`. The
+   source address behind the ingress is `X-Forwarded-For`'s **last** entry,
+   taken only when the connection's peer is a private or loopback address
+   (ingress-nginx on GKE runs without `use-forwarded-headers`, so it
+   replaces the header with what it saw; a public peer's header is
+   ignored). The daily cap is a sliding 24 h over the stored files (the
+   index is rebuilt from disk at start, so a restart does not reset it).
+   The admin list/get/delete routes answer `404` where the receiver is
+   disabled, and the console hides the section on that.
+7. (client) A recovered panic is captured and then raised again, so a
    process fails exactly as before (net/http logs a handler's, a worker
    op's or run goroutine's takes the service down); only the deliberate
    `/test bugreporting` panic is kept in the process. The launcher skips
    its `service-exit` draft when that service drafted a `panic` within
    the last 30 s: the panic draft has the stack, the exit would only
    repeat it.
-7. (client) "Was the question asked?" is the presence of a `reporting`
+8. (client) "Was the question asked?" is the presence of a `reporting`
    section in `warden.json` (install always writes one, `warden bugs
    on|off` too), so a re-run keeps the answer without another record;
    without a terminal and without the flag the answer is no, printed with
    the way to change it.
-8. (client) The chat's `/bug` notice is a line in the composer (not a
+9. (client) The chat's `/bug` notice is a line in the composer (not a
    transcript entry) and the TUI's status notice; the route answers
    `{drafted, id, notice}` so both surfaces show the same words.
 
 ## Progress log
 
 - 2026-09-18: plan written; tracks start.
+- 2026-09-18 (server track, `feat/bug-reports-server`): steps 1–3 done.
+  Config `edge.bugReports` + chart values + `warden.config` rendering
+  (goldens updated, `helm_test.go` checks both states; GKE values enable
+  it); the receiver `chat/internal/edge/bugreports.go` (validation,
+  storage, per-IP hour / global day limits, retention + 10 000 cap, the
+  owner's list/get/delete) with `bugreports_test.go` against
+  `docs/bug-report-sample.json`; the console section `BugReports.tsx` +
+  `bugreports.ts` (vitest). Live-checked on a cloned home
+  (`.local/clone-warden-home.sh bugs 18820`, receiver enabled by hand):
+  `curl` of the sample → 202, resend → same id/time, 300 KB → 413,
+  unknown kind → 400; the section listed both reports, opened the error
+  one (stack, two log files, environment, raw JSON); `DELETE` through the
+  edge → 204 then 404. Left: merge, GKE deploy, the cloud `curl` check.
+- 2026-09-18 (server track landed): merged to main as **c86ae18**
+  (fast-forward; conflicts only in the feature map's Admin console row,
+  unioned with round 2 A's spend section). Deployed to GKE as image
+  `v0.1.0-alpha.12-326-gc86ae18` (helm revision 23); the rendered
+  `warden.json` on the cluster has `edge.bugReports.enabled: true`. At
+  `https://cloud.warden.monaddle.com/api/bug-reports`: the sample → `202
+  {"id":"3f2a…5e6f","received":"2026-09-18T13:40:23Z"}`, the same body
+  again → `202` with the same id and time (one file on the edge PVC,
+  `bug-reports/2026-09-18/<id>.json`, mode 0600, `source` a 64-hex hash),
+  300 KB → `413`, `{"schema":1}` → `400 kind is required`, `GET` → `405`,
+  `/api/admin/bug-reports` signed out → `403`. The cloud admin console
+  (owner session) lists the report and opens it. Server step 4 done.
+  Finding: ingress-nginx runs with the default `externalTrafficPolicy:
+  Cluster`, so the address it forwards is often a node-internal
+  `10.128.x.x` (kube-proxy SNAT) rather than the client's; the per-IP
+  hourly limit and the source hash are therefore coarse on GKE. The fix
+  is `--set controller.service.externalTrafficPolicy=Local` on the
+  ingress-nginx release in `scripts/k8s-gke.sh` (`up`); not applied, an
+  operator decision.
 - 2026-09-18 (client, `.local/warden-bugs-client`, `feat/bug-reports-client`):
   steps 1–5 implemented and unit-tested. `chat/internal/bugreport` (schema,
   gatherers, `Redact` with the table test, `Capture` → pending only while

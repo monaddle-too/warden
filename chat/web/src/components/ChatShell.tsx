@@ -66,6 +66,7 @@ import { ExportDialog } from "./ExportDialog";
 import { RewindDialog } from "./RewindDialog";
 import { SessionDiff } from "./SessionDiff";
 import { InstructionsDialog } from "./InstructionsDialog";
+import { PermissionHistory } from "./PermissionHistory";
 import { SearchPalette } from "./SearchPalette";
 import { modifierKey, type FindRequest } from "./FindBar";
 
@@ -103,6 +104,7 @@ export function ChatShell({
   const [workspaceState, setWorkspaceState] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
   // The rewind chooser (the message it opens on, "" for the last) and the
   // session diff (rewind.ts).
   const [rewinding, setRewinding] = useState<string | null>(null);
@@ -729,6 +731,18 @@ export function ChatShell({
                     <GitFork size={15} />
                     Fork…
                   </button>
+                  {chat.provider === "claude" && (
+                    <button
+                      role="menuitem"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        setPermissionsOpen(true);
+                      }}
+                    >
+                      <ShieldCheck size={15} />
+                      Permissions…
+                    </button>
+                  )}
                   <button
                     role="menuitem"
                     disabled={chatBusy}
@@ -800,6 +814,13 @@ export function ChatShell({
                 key={chat.id + "export"}
                 chat={chat}
                 onClose={() => setExporting(false)}
+              />
+            )}
+            {permissionsOpen && (
+              <PermissionHistory
+                key={chat.id + "permissions"}
+                chat={chat}
+                onClose={() => setPermissionsOpen(false)}
               />
             )}
             {rewinding !== null && (
@@ -959,7 +980,8 @@ export function ChatShell({
                 Name
                 <input
                   autoFocus
-                  placeholder="What are we working on?"
+                  placeholder="Optional: named from the first reply"
+                  title="Leave it empty and the chat is named from its first exchange; a name you give, or a rename, always wins"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   maxLength={160}
@@ -985,6 +1007,7 @@ export function ChatShell({
                   value={model}
                   onChange={setModel}
                   label="New conversation model"
+                  options={state.agentOptions}
                 />
               </label>
               <label>

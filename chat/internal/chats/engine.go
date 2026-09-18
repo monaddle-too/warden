@@ -124,10 +124,12 @@ type Engine struct {
 	startupTrace map[string][]string
 	mu           sync.Mutex
 	active       map[string]*activeRun
-	// asides: chat id -> a side question being answered (aside.go).
-	asides map[string]bool
-	wake   chan struct{}
-	done   chan struct{}
+	// asides: chat id -> a side question being answered (aside.go);
+	// titling: chat id -> a title being made (title.go).
+	asides  map[string]bool
+	titling map[string]bool
+	wake    chan struct{}
+	done    chan struct{}
 }
 
 const runSlots = 2
@@ -334,8 +336,11 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 	id := cv.ID()
 	err := e.Store.update(func(st *State) error {
 		title = strings.TrimSpace(title)
+		// A chat named by its creator keeps that name; one left at the
+		// default is named from its first exchange (title.go).
+		titled := "manual"
 		if title == "" {
-			title = "New chat"
+			title, titled = DefaultTitle, ""
 		}
 		if len(title) > 160 || len(repository) > 300 {
 			return errors.New("title or repository too long")
@@ -360,7 +365,7 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 			}
 		}
 		creator := actor
-		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, SandboxID: sbxID, Repository: repository, Resources: resources, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
+		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, Titled: titled, SandboxID: sbxID, Repository: repository, Resources: resources, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
 		return nil
 	})
 	return id, err
@@ -491,26 +496,42 @@ type View struct {
 }
 
 // AgentOptions are the optional, costlier Claude features an operator
-// enables (config providers.claude.allowFastMode, allowLongContext).
+// enables (config providers.claude.allowFastMode, allowLongContext), and
+// each provider's model catalog as its CLI reported it (catalog.go), by
+// provider; a provider without one is absent and clients fall back to
+// their own rows.
 type AgentOptions struct {
-	FastMode    bool `json:"fastMode"`
-	LongContext bool `json:"longContext"`
+	FastMode    bool                   `json:"fastMode"`
+	LongContext bool                   `json:"longContext"`
+	Models      map[string][]ModelInfo `json:"models,omitempty"`
 }
 
 func (e *Engine) View() View {
-	return View{State: e.state(), Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext}}
+	st := e.state()
+	models := catalogRows(st.Catalog)
+	st.Catalog = nil // clients get it as agentOptions.models
+	return View{State: st, Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models}}
 }
 
-// state is the store with typing indicators filled in and the people's
-// instructions left out (each person reads their own, me/instructions).
+// state is the store with typing indicators and each chat's spend filled
+// in, and the people's instructions left out (each person reads their
+// own through me/instructions); a kept rewind tail becomes the marker it
+// can undo (rewind.go).
 func (e *Engine) state() State {
 	st := e.Store.Snapshot()
 	st.Instructions = nil
 	now := float64(e.now().UnixNano()) / 1e9
 	for _, c := range st.Chats {
+		c.Permissions = nil // chats/{id}/permissions serves the history
 		if c.Status == "queued" || c.Status == "running" {
 			c.Startup = e.startupOf(c.ID)
 		}
+		if c.RewoundTail != nil {
+			c.UndoRewind = c.RewoundTail.MarkerID
+			c.RewoundTail = nil
+		}
+		spend := spendOf(c.Conversation.Turns)
+		c.Spend = &spend
 	}
 	e.typingMu.Lock()
 	defer e.typingMu.Unlock()
@@ -547,6 +568,11 @@ func (e *Engine) Edit(id, title string, archived bool) error {
 		}
 		if !archived && c.Archived && st.deleted(c.SandboxID) {
 			return errors.New("this chat's workspace was deleted; start a new chat")
+		}
+		if title != c.Title {
+			// A person's name for the chat wins over, and ends, the
+			// automatic naming (title.go).
+			c.Titled = "manual"
 		}
 		c.Title = title
 		c.Archived = archived
@@ -1049,6 +1075,9 @@ func (e *Engine) run(parent context.Context, id string) {
 	if err != nil {
 		return
 	}
+	// The provider's model catalog, from the process just started
+	// (catalog.go); a refusal or a slow answer leaves the cached one.
+	e.loadCatalog(ctx, current.Provider, client)
 	if current.Rewind != nil && !e.applyPendingRewind(ctx, id, client, threadID) {
 		// The resumed session could not rewind: this run ends cleanly and
 		// the message stays queued for a fresh session (rewind.go).
@@ -1090,12 +1119,21 @@ func (e *Engine) run(parent context.Context, id string) {
 	// first item of the turn ends the start (turn below).
 	e.setStartup(id, stageFirstResponse, "waiting for the model's first reply")
 	for {
-		if err = e.turn(ctx, id, &current, a, client, frames, threadID, turnID, prep.Directory, turn); err != nil || !a.resident {
+		if err = e.turn(ctx, id, &current, a, client, frames, threadID, turnID, prep.Directory, turn); err != nil {
+			return
+		}
+		if !a.resident {
+			// The run ends with the turn; a chat still at the default
+			// title is named from the transcript alone (title.go).
+			e.autoTitle(parent, id, nil)
 			return
 		}
 		// The turn finished but the session stays open: settle the transcript,
 		// report idle, and wait for the chat's next message.
 		e.settleTurn(parent, id, a)
+		// A chat still at the default title is named from its first
+		// exchange, beside the idle session (title.go).
+		go e.autoTitle(parent, id, a)
 		var agentTurn string
 		message, agentTurn = e.awaitMessage(ctx, id, &current, a, client, frames)
 		if agentTurn != "" {
@@ -1337,6 +1375,7 @@ func (e *Engine) beginAgentTurn(id, turn string) error {
 		c.Status = "running"
 		c.Error = ""
 		c.Conversation.Begin(turn, e.at())
+		dropRewoundTail(c) // a turn started: the last rewind is final (rewind.go)
 		return nil
 	})
 }
@@ -1372,6 +1411,7 @@ func (e *Engine) resume(id string) (*cv.Entry, error) {
 		}
 		c.Status = "running"
 		c.Error = ""
+		dropRewoundTail(c) // a turn starts: the last rewind is final (rewind.go)
 		return nil
 	})
 	return message, err
@@ -1395,6 +1435,9 @@ func (e *Engine) attempt(id, turn string) (*cv.Entry, error) {
 				message = &copy
 				break
 			}
+		}
+		if message != nil {
+			dropRewoundTail(c) // a turn starts: the last rewind is final (rewind.go)
 		}
 		return nil
 	})
@@ -1549,17 +1592,30 @@ func (e *Engine) request(ctx context.Context, c *Chat, client *agent.Client, f a
 		// owner does from a card that shows the call as its transcript
 		// card and, for a plan, the plan (permissions.go).
 		tool, input := agent.String(f.Params["tool"]), agent.Map(f.Params["input"])
-		decision := ""
+		var verdict *Verdict
 		err := e.Store.update(func(st *State) error {
 			chat := st.chat(c.ID)
-			if decision = chat.decide(tool, input); decision != "" {
+			entry := permissionEntry(f.Params)
+			if verdict = st.decide(chat, tool, input); verdict != nil {
+				// Answered by a rule or the mode: history only (rules.go).
+				ev := PermissionEvent{At: e.at(), Tool: tool, Summary: askSummary(tool, input, entry), Decision: "allow", How: "auto"}
+				if verdict.Decision == "decline" {
+					ev.Decision, ev.Message = "deny", verdict.Message
+				}
+				if verdict.Rule != nil {
+					rule := verdict.Rule.Rule
+					ev.How, ev.Rule, ev.Scope = "rule", &rule, verdict.Rule.Scope
+				}
+				chat.record(ev)
 				return nil
 			}
 			params := map[string]any{"tool": tool, "input": input}
 			if tool != "ExitPlanMode" {
-				params["always"] = RuleFor(tool, input).Label() // a plan is never remembered
+				// What "Allow always" would remember; a plan never is.
+				pattern := RuleFor(tool, input)
+				params["rule"], params["always"] = pattern, RuleLabel(pattern)
 			}
-			if entry := permissionEntry(f.Params); entry != nil {
+			if entry != nil {
 				params["entry"] = entry
 			}
 			for _, k := range []string{"description", "plan"} {
@@ -1570,10 +1626,14 @@ func (e *Engine) request(ctx context.Context, c *Chat, client *agent.Client, f a
 			chat.Approvals = append(chat.Approvals, Approval{ID: cv.ID(), RunID: c.RunID, RPCID: append(json.RawMessage(nil), f.ID...), Method: f.Method, Params: params, State: "pending"})
 			return nil
 		})
-		if err != nil || decision == "" {
+		if err != nil || verdict == nil {
 			return err
 		}
-		return client.Reply(f.ID, map[string]any{"decision": decision})
+		reply := map[string]any{"decision": verdict.Decision}
+		if verdict.Message != "" {
+			reply["message"] = verdict.Message
+		}
+		return client.Reply(f.ID, reply)
 	default:
 		return client.Send(agent.Frame{ID: f.ID, Error: &agent.RPCError{Code: -32601, Message: "Unsupported Warden agent request"}})
 	}
@@ -1590,13 +1650,15 @@ func (e *Engine) ResolveAs(chatID, approvalID string, allow bool, answers map[st
 
 // Answer is what the person says to an approval. Allow and Answers (a
 // question's) serve every kind; a tool permission ask also takes Always
-// (allow, and remember the call's rule for the chat), Message (why it is
-// denied, read by the model) and, for a plan, Mode (the permission mode
-// the chat moves to on approval: auto or ask).
+// (allow, and remember the call's rule for the chat, or for every chat of
+// the workspace when Scope is "workspace"), Message (why it is denied,
+// read by the model) and, for a plan, Mode (the permission mode the chat
+// moves to on approval: auto or ask).
 type Answer struct {
 	Allow   bool
 	Answers map[string][]string
 	Always  bool
+	Scope   string
 	Message string
 	Mode    string
 }
@@ -1671,20 +1733,38 @@ func (e *Engine) Answer(chatID, approvalID string, answer Answer, actor cv.Actor
 		}
 		err = e.Store.update(func(st *State) error {
 			c := st.chat(chatID)
+			entry := permissionEntry(approval.Params)
+			ev := PermissionEvent{At: e.at(), Tool: tool, Summary: askSummary(tool, input, entry), Decision: "deny", How: "card", By: &actor, Message: answer.Message}
+			if allow {
+				ev.Decision, ev.Message = "allow", ""
+			}
 			switch {
 			case plan && allow:
 				mode := agent.String(decision["mode"])
 				c.Mode = mode
 				c.Conversation.Entries = append(c.Conversation.Entries, cv.NewEntry("notice", "Plan approved — "+strings.TrimPrefix(modeNotice(mode), "Permission mode: ")))
 			case answer.Always && !plan:
-				rule := RuleFor(tool, input)
-				for _, r := range c.Allowed {
-					if r == rule {
-						return nil
+				// The call's rule, remembered for this chat or, at the
+				// workspace scope, for every chat of the sandbox (rules.go).
+				rule := Rule{Kind: RuleAllow, Pattern: RuleFor(tool, input)}.stamp("always", actor, e.at())
+				ev.Rule, ev.Scope = &rule, "chat"
+				if answer.Scope == "workspace" {
+					rule.ChatID = chatID
+					ev.Scope = "workspace"
+					if st.Environments == nil {
+						st.Environments = map[string]*EnvironmentRecord{}
 					}
+					env := st.Environments[c.SandboxID]
+					if env == nil {
+						env = &EnvironmentRecord{}
+						st.Environments[c.SandboxID] = env
+					}
+					env.Rules, _ = addRule(env.Rules, rule)
+				} else {
+					c.Rules, _ = addRule(c.Rules, rule)
 				}
-				c.Allowed = append(c.Allowed, rule)
 			}
+			c.record(ev)
 			return nil
 		})
 		if err != nil {

@@ -113,7 +113,14 @@ export const STYLES: StyleOption[] = [
   },
 ];
 
-export type ModelOption = { value: string; label: string };
+/* A picker row (models.ts): a hint for its title, and disabled with the
+   hint saying why when the operator has not allowed the model. */
+export type ModelOption = {
+  value: string;
+  label: string;
+  hint?: string;
+  disabled?: boolean;
+};
 
 /* The permission modes of a Claude chat (chats/permissions.go), in the
    order the surfaces cycle through them; the selector and /mode list the

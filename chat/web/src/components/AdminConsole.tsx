@@ -9,8 +9,10 @@ import {
   Users,
 } from "lucide-react";
 import { api } from "../api";
+import { BugReports } from "./BugReports";
 import { ClusterView } from "./ClusterView";
 import { GitHubSignIn } from "./GitHubSignIn";
+import { SpendView } from "./SpendView";
 
 type LoginRecord = {
   email: string;
@@ -520,7 +522,9 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
             )}
           </section>
         )}
+        <SpendView />
         <ClusterView />
+        <BugReports />
         <section aria-labelledby="admin-blocked">
           <h2 id="admin-blocked">
             <ShieldOff size={16} />

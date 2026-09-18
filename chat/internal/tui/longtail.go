@@ -82,7 +82,52 @@ func CostLines(s CostSummary) []string {
 	return out
 }
 
-// cost shows the chat's totals as a notice.
+// WorkspaceCost sums the turns of every chat on the workspace of c
+// (archived ones included) and says how many chats; nowSeconds as for
+// SessionCost.
+func WorkspaceCost(c *Chat, chats []*Chat, nowSeconds float64) (CostSummary, int) {
+	var out CostSummary
+	n := 0
+	for _, other := range chats {
+		if other.SandboxID != c.SandboxID {
+			continue
+		}
+		n++
+		s := SessionCost(other, nowSeconds)
+		out.Turns += s.Turns
+		out.Reported += s.Reported
+		out.Usage.Input += s.Usage.Input
+		out.Usage.Cached += s.Usage.Cached
+		out.Usage.CacheWrite += s.Usage.CacheWrite
+		out.Usage.Output += s.Usage.Output
+		out.Usage.Reasoning += s.Usage.Reasoning
+		out.Usage.Total += s.Usage.Total
+		out.Usage.CostUSD += s.Usage.CostUSD
+		out.Priced = out.Priced || s.Priced
+		out.Seconds += s.Seconds
+	}
+	return out, n
+}
+
+// WorkspaceCostLine is the /cost notice's last line: the workspace's
+// total over its chats (docs/claude-parity.md, R2.2).
+func WorkspaceCostLine(s CostSummary, chats int) string {
+	parts := []string{fmt.Sprintf("%d chat%s", chats, plural(chats)), fmt.Sprintf("%d turn%s", s.Turns, plural(s.Turns)), FormatTokens(s.Usage.Total) + " tokens"}
+	if s.Priced {
+		parts = append(parts, FormatCost(s.Usage.CostUSD))
+	}
+	return "this workspace: " + strings.Join(parts, " · ")
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// cost shows the chat's totals as a notice, with the workspace's under
+// them.
 func (a *App) cost(c *Chat) {
 	if c == nil {
 		a.setNotice("no chat selected")
@@ -92,7 +137,15 @@ func (a *App) cost(c *Chat) {
 	if c.Running() {
 		now = float64(a.now().UnixMilli()) / 1000
 	}
-	a.setNotice(strings.Join(CostLines(SessionCost(c, now)), "\n"))
+	lines := CostLines(SessionCost(c, now))
+	var all []*Chat
+	if a.state != nil {
+		all = a.state.Chats
+	}
+	if total, n := WorkspaceCost(c, all, now); n > 1 {
+		lines = append(lines, WorkspaceCostLine(total, n))
+	}
+	a.setNotice(strings.Join(lines, "\n"))
 }
 
 // fork lists the messages (no argument) or forks the chat: before

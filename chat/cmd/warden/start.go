@@ -36,7 +36,7 @@ func (c *cli) start(args []string) error {
 	template := fs.String("policy-template", "", "sandbox policy template when warden.json has no paths.sandboxPolicyTemplate")
 	withoutEdge := fs.Bool("without-edge", false, "do not start the edge (no previews; the app is reachable on the chat port only)")
 	detach := fs.Bool("detach", false, "run in the background; logs to <state>/warden.log, stop with `warden stop`")
-	popupsMode := fs.String("popups", popupsAuto, "how pending approvals are surfaced: auto (browser when detached, notify otherwise), browser, notify, none")
+	popupsMode := fs.String("popups", popupsNone, "how pending approvals are surfaced: none (default: they wait in the app and the terminal client), notify (desktop notification), browser (notification and the chat opened in the browser), auto (browser when detached, notify otherwise)")
 	detachedChild := fs.Bool("detached-child", false, "internal: this process was started by --detach")
 	if err := fs.Parse(args); err != nil {
 		return errUsage

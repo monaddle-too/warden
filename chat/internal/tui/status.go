@@ -5,7 +5,6 @@ import (
 	"math"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -154,8 +153,9 @@ const StatusMaxRows = 4
 
 // StatusParts are the pieces of the status bar in order of importance,
 // which is what a narrow screen keeps first: the connection and the
-// chat's title, provider and model, what the agent is doing (with the
-// startup stage or the run's elapsed time) — always these three — then
+// chat's title, provider and model, what the agent is doing (the startup
+// stage, then the step it is on, with the run's elapsed time; activity.go)
+// — always these three — then
 // pending approvals, the chat's error, the turn's tokens and cost, the
 // context and previews. Each part is one styled string that is kept whole.
 func StatusParts(c *Chat, ports []Port, live bool, now time.Time) []string {
@@ -177,6 +177,12 @@ func StatusParts(c *Chat, ports []Port, live bool, now time.Time) []string {
 			stage += ": " + sanitize(c.Startup.Detail)
 		}
 		status = yellow + stage + reset
+	} else if c.Status == "running" {
+		// What the agent is doing (activity.go): the step it is on, the
+		// subagent it waits for, its thinking; "running" when nothing says.
+		if what := ActivityLabel(c.Conversation.Entries); what != "" {
+			status = yellow + sanitize(what) + reset
+		}
 	}
 	if ind := RunIndicator(c, now); ind != "" {
 		status = ind + " " + status
@@ -270,8 +276,8 @@ func LayoutStatus(parts []string, width, maxRows int) []string {
 	return rows
 }
 
-// visibleWidth counts the runes of s that reach the screen: the styling
-// (escape sequences) takes no columns.
+// visibleWidth is the columns s takes on the screen: the styling (escape
+// sequences) takes none, a wide rune two (width.go).
 func visibleWidth(s string) int {
-	return utf8.RuneCountInString(plainText(s))
+	return textWidth(plainText(s))
 }

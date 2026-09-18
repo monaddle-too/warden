@@ -221,6 +221,101 @@ func TestAsideOpRunsThroughTheRuntime(t *testing.T) {
 	}
 }
 
+// A one-shot's launch (docs/claude-parity.md, R2.1): the brokered
+// environment and the guest script as a side question's, but a fresh CLI
+// that resumes nothing, writes no session, makes one model call on the
+// named model with the given system prompt in place of the CLI's own;
+// the script still disables every tool.
+func TestOneShotCommand(t *testing.T) {
+	run := RunSpec{Directory: "/home/agent/workspace", Broker: BrokerConfig{Provider: "claude", APIKeyPlaceholder: "k", ProviderBaseURL: "http://p/anthropic", ProxyURL: "http://p", Model: "haiku"}}
+	args := OneShotCommand(run, "User: hi\n\nAssistant: hello", "You name chats.")
+	joined := strings.Join(args, "\n")
+	rest := args[len(claudeEnvironment(run.Broker)):]
+	if args[0] != "env" || rest[0] != "python3" || rest[2] != asideScript || rest[3] != "User: hi\n\nAssistant: hello" || rest[4] != "60" || rest[6] != defaultClaudePath || rest[7] != "-p" {
+		t.Fatalf("launch: %q", rest[:8])
+	}
+	for _, want := range []string{"\n--output-format\nstream-json\n", "\n--max-turns\n1\n", "\n--no-session-persistence\n", "\n--system-prompt\nYou name chats.\n", "\n--model\nhaiku", "\n--strict-mcp-config\n", "\n--setting-sources=\n"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in %s", want, joined)
+		}
+	}
+	for _, bad := range []string{"--resume", "--fork-session", "--settings", "--append-system-prompt", "--input-format", "--mcp-config"} {
+		if strings.Contains(joined, bad) {
+			t.Fatalf("%s in a one-shot launch: %s", bad, joined)
+		}
+	}
+	for _, a := range args {
+		if a == "" {
+			t.Fatal("an empty argument would be refused by the SBX exec API")
+		}
+	}
+	// No system prompt: the flag is left out; no model: the CLI's default.
+	if joined := strings.Join(OneShotCommand(RunSpec{Broker: BrokerConfig{Provider: "claude"}}, "p", ""), "\n"); strings.Contains(joined, "--system-prompt") || strings.Contains(joined, "--model") {
+		t.Fatalf("empty options rendered: %s", joined)
+	}
+}
+
+// The oneshot operation runs beside the chat's active, streaming Claude
+// run like a side question but needs no session, takes its model from
+// the request and its system prompt from Instructions, and answers what
+// the CLI's result said.
+func TestOneShotOpRunsThroughTheRuntime(t *testing.T) {
+	w, d, _, r := managedFixture(t)
+	prepareFixture(t, w, r)
+	r.Operation = "oneshot"
+	r.Command = "User: fix the build\n\nAssistant: done"
+	r.Instructions = "You name chats."
+	r.Model = "haiku"
+	if _, err := w.dispatch(context.Background(), r); err == nil || !strings.Contains(err.Error(), "not running") {
+		t.Fatalf("oneshot without a streaming run: %v", err)
+	}
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	s.Active.Streaming = true
+	s.Active.broker = BrokerConfig{Provider: "claude", APIKeyPlaceholder: "k", ProviderBaseURL: "http://p/anthropic", ProxyURL: "http://p", ThreadID: "sess-1", ForkSession: false, Model: "claude-opus-5", OutputStyle: "Learning"}
+	w.mu.Unlock()
+	for _, bad := range []struct{ command, system string }{{"", ""}, {strings.Repeat("x", MaxAsideQuestion+1), ""}, {"a\x00b", ""}, {"ok", "s\x00"}} {
+		req := r
+		req.Command, req.Instructions = bad.command, bad.system
+		if _, err := w.dispatch(context.Background(), req); err == nil {
+			t.Fatalf("accepted %+v", bad)
+		}
+	}
+	d.mu.Lock()
+	d.execOutput = `{"output":"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"Fixing the build\",\"total_cost_usd\":0.0004,\"usage\":{\"input_tokens\":50,\"output_tokens\":4}}\n","stderr":"","exitCode":0}`
+	before := len(d.calls)
+	d.mu.Unlock()
+	res, err := w.dispatch(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Aside == nil || res.Aside.Text != "Fixing the build" || res.Aside.CostUSD != 0.0004 || res.Aside.Input != 50 || res.Aside.Error != "" {
+		t.Fatalf("%+v", res.Aside)
+	}
+	d.mu.Lock()
+	call := d.calls[before]
+	d.mu.Unlock()
+	name := w.managed.Sandboxes[r.SandboxID].RuntimeName
+	for _, want := range []string{"exec:" + name + ":env -u ANTHROPIC_API_KEY", " CLAUDE_CODE_OAUTH_TOKEN=k ", " python3 -c " + asideScript + " User: fix the build\n\nAssistant: done 60 ", " --max-turns 1 --no-session-persistence --system-prompt You name chats. --model haiku"} {
+		if !strings.Contains(call, want) {
+			t.Fatalf("missing %q in %q", want, call)
+		}
+	}
+	for _, bad := range []string{"--resume", "--fork-session", "--settings", "Learning"} {
+		if strings.Contains(call, bad) {
+			t.Fatalf("%s in a one-shot: %q", bad, call)
+		}
+	}
+	// A timed-out one-shot reports it.
+	d.mu.Lock()
+	d.execOutput = `{"output":"","stderr":"","exitCode":-1,"timedOut":true}`
+	d.mu.Unlock()
+	res, err = w.dispatch(context.Background(), r)
+	if err != nil || res.Aside == nil || !strings.Contains(res.Aside.Error, "did not arrive within 1m0s") {
+		t.Fatalf("%+v %v", res.Aside, err)
+	}
+}
+
 // A forked chat's first run: prepare with ForkSession records no thread
 // (the source's is the request's), the stream resumes the source's
 // session as a copy with the chat's output style, and the run keeps its

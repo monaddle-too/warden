@@ -1,0 +1,893 @@
+[
+ {
+  "name": "nothing runs",
+  "entries": [],
+  "want": ""
+ },
+ {
+  "name": "a command",
+  "entries": [
+   {
+    "id": "b1",
+    "role": "activity",
+    "text": "go test ./...\n",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "running"
+    }
+   }
+  ],
+  "want": "Running go test ./..."
+ },
+ {
+  "name": "a long command is cut",
+  "entries": [
+   {
+    "id": "b1",
+    "role": "activity",
+    "text": "for f in $(ls); do   echo \"$f\"; done && go build ./... && go vet ./... && echo done",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "running"
+    }
+   }
+  ],
+  "want": "Running for f in $(ls); do echo \"$f\"; done && go build …"
+ },
+ {
+  "name": "an edit",
+  "entries": [
+   {
+    "id": "e1",
+    "role": "activity",
+    "text": "Edit /home/agent/workspace/chat/internal/chats/engine.go",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "edit",
+     "name": "Edit",
+     "status": "running",
+     "paths": [
+      "/home/agent/workspace/chat/internal/chats/engine.go"
+     ]
+    }
+   }
+  ],
+  "want": "Editing engine.go"
+ },
+ {
+  "name": "a write",
+  "entries": [
+   {
+    "id": "w1",
+    "role": "activity",
+    "text": "Write hello.txt",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "edit",
+     "name": "Write",
+     "status": "running",
+     "paths": [
+      "hello.txt"
+     ]
+    }
+   }
+  ],
+  "want": "Writing hello.txt"
+ },
+ {
+  "name": "an edit of several files",
+  "entries": [
+   {
+    "id": "e2",
+    "role": "activity",
+    "text": "Updated 2 files",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "edit",
+     "name": "MultiEdit",
+     "status": "running",
+     "paths": [
+      "a.go",
+      "b.go"
+     ]
+    }
+   }
+  ],
+  "want": "Editing 2 files"
+ },
+ {
+  "name": "a read",
+  "entries": [
+   {
+    "id": "r1",
+    "role": "activity",
+    "text": "Read /home/agent/workspace/chat/internal/agent/claude.go (lines 1–40)",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "read",
+     "name": "Read",
+     "status": "running",
+     "paths": [
+      "/home/agent/workspace/chat/internal/agent/claude.go"
+     ]
+    }
+   }
+  ],
+  "want": "Reading claude.go"
+ },
+ {
+  "name": "a search",
+  "entries": [
+   {
+    "id": "g1",
+    "role": "activity",
+    "text": "Grep \"task_progress\" in .",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "search",
+     "name": "Grep",
+     "status": "running",
+     "paths": [
+      "."
+     ],
+     "query": "task_progress"
+    }
+   }
+  ],
+  "want": "Searching for task_progress"
+ },
+ {
+  "name": "a listing",
+  "entries": [
+   {
+    "id": "l1",
+    "role": "activity",
+    "text": "List chat",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "search",
+     "name": "LS",
+     "status": "running",
+     "paths": [
+      "/home/agent/workspace/chat"
+     ]
+    }
+   }
+  ],
+  "want": "Listing chat"
+ },
+ {
+  "name": "a web search",
+  "entries": [
+   {
+    "id": "s1",
+    "role": "activity",
+    "text": "Search: go 1.26 release notes",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "webSearch",
+     "name": "WebSearch",
+     "status": "running",
+     "query": "go 1.26 release notes"
+    }
+   }
+  ],
+  "want": "Searching the web for go 1.26 release notes"
+ },
+ {
+  "name": "a fetch",
+  "entries": [
+   {
+    "id": "f1",
+    "role": "activity",
+    "text": "Fetch https://example.com/docs/x?y=1",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "fetch",
+     "name": "WebFetch",
+     "status": "running",
+     "query": "https://example.com/docs/x?y=1"
+    }
+   }
+  ],
+  "want": "Fetching example.com"
+ },
+ {
+  "name": "an MCP call",
+  "entries": [
+   {
+    "id": "m1",
+    "role": "activity",
+    "text": "warden · request_network_access",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "mcp",
+     "name": "request_network_access",
+     "server": "warden",
+     "status": "running"
+    }
+   }
+  ],
+  "want": "Calling request_network_access"
+ },
+ {
+  "name": "another tool",
+  "entries": [
+   {
+    "id": "o1",
+    "role": "activity",
+    "text": "Skill /commit",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "other",
+     "name": "Skill",
+     "status": "running"
+    }
+   }
+  ],
+  "want": "Skill /commit"
+ },
+ {
+  "name": "a step recorded before tools were typed",
+  "entries": [
+   {
+    "id": "x1",
+    "role": "activity",
+    "text": "Running command",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": ""
+   }
+  ],
+  "want": "Running command"
+ },
+ {
+  "name": "thinking",
+  "entries": [
+   {
+    "id": "r1",
+    "role": "activity",
+    "text": "Read a.go",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": false,
+    "delivery": "",
+    "tool": {
+     "kind": "read",
+     "status": "completed"
+    }
+   },
+   {
+    "id": "t1",
+    "role": "thinking",
+    "text": "",
+    "detail": "",
+    "createdAt": 2,
+    "isStreaming": true,
+    "delivery": ""
+   }
+  ],
+  "want": "Agent is thinking"
+ },
+ {
+  "name": "thinking that ended",
+  "entries": [
+   {
+    "id": "t1",
+    "role": "thinking",
+    "text": "",
+    "detail": "",
+    "createdAt": 2,
+    "isStreaming": false,
+    "delivery": ""
+   }
+  ],
+  "want": ""
+ },
+ {
+  "name": "compacting",
+  "entries": [
+   {
+    "id": "c1",
+    "role": "compaction",
+    "text": "Compacting context…",
+    "detail": "",
+    "createdAt": 2,
+    "isStreaming": true,
+    "delivery": "",
+    "compaction": {
+     "status": "running"
+    }
+   }
+  ],
+  "want": "Compacting context"
+ },
+ {
+  "name": "a reply streaming",
+  "entries": [
+   {
+    "id": "r1",
+    "role": "activity",
+    "text": "Read a.go",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": false,
+    "delivery": "",
+    "tool": {
+     "kind": "read",
+     "status": "completed"
+    }
+   },
+   {
+    "id": "a1",
+    "role": "assistant",
+    "text": "So",
+    "detail": "",
+    "createdAt": 2,
+    "isStreaming": true,
+    "delivery": ""
+   }
+  ],
+  "want": ""
+ },
+ {
+  "name": "the person's own command",
+  "entries": [
+   {
+    "id": "p1",
+    "role": "activity",
+    "text": "echo hi",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "running"
+    },
+    "sender": {
+     "principalID": "owner"
+    }
+   }
+  ],
+  "want": ""
+ },
+ {
+  "name": "a background command waits, not the agent",
+  "entries": [
+   {
+    "id": "b1",
+    "role": "activity",
+    "text": "sleep 90",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "running",
+     "background": true
+    }
+   },
+   {
+    "id": "r1",
+    "role": "activity",
+    "text": "Read a.go",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": false,
+    "delivery": "",
+    "tool": {
+     "kind": "read",
+     "status": "completed"
+    }
+   }
+  ],
+  "want": ""
+ },
+ {
+  "name": "a newer step past a background command",
+  "entries": [
+   {
+    "id": "b1",
+    "role": "activity",
+    "text": "sleep 90",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "running",
+     "background": true
+    }
+   },
+   {
+    "id": "r1",
+    "role": "activity",
+    "text": "Read a.go",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "read",
+     "name": "Read",
+     "status": "running",
+     "paths": [
+      "a.go"
+     ]
+    }
+   }
+  ],
+  "want": "Reading a.go"
+ },
+ {
+  "name": "a subagent at work",
+  "entries": [
+   {
+    "id": "ag1",
+    "role": "activity",
+    "text": "Agent: List files (Explore)",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "task",
+     "name": "Agent",
+     "status": "running",
+     "input": {
+      "subagent_type": "Explore",
+      "prompt": "List"
+     }
+    }
+   },
+   {
+    "id": "k1",
+    "role": "activity",
+    "text": "ls",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": false,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "completed"
+    },
+    "parentID": "ag1"
+   },
+   {
+    "id": "k2",
+    "role": "activity",
+    "text": "Read a.go",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": false,
+    "delivery": "",
+    "tool": {
+     "kind": "read",
+     "name": "Read",
+     "status": "completed",
+     "paths": [
+      "a.go"
+     ]
+    },
+    "parentID": "ag1"
+   },
+   {
+    "id": "k3",
+    "role": "activity",
+    "text": "Grep \"x\" in .",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "search",
+     "name": "Grep",
+     "status": "running",
+     "query": "x"
+    },
+    "parentID": "ag1"
+   }
+  ],
+  "want": "Explore agent: 3 tool calls"
+ },
+ {
+  "name": "a subagent's own count when further",
+  "entries": [
+   {
+    "id": "ag1",
+    "role": "activity",
+    "text": "Agent: List files (Explore)",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "task",
+     "name": "Agent",
+     "status": "running",
+     "input": {
+      "subagent_type": "Explore"
+     },
+     "progress": {
+      "toolCalls": 5,
+      "lastTool": "Grep",
+      "activity": "Running Search current directory for zebrafish-quokka"
+     }
+    }
+   },
+   {
+    "id": "k1",
+    "role": "activity",
+    "text": "ls",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": false,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "completed"
+    },
+    "parentID": "ag1"
+   }
+  ],
+  "want": "Explore agent: 5 tool calls · Running Search current directory for zebrafish-…"
+ },
+ {
+  "name": "a subagent starting",
+  "entries": [
+   {
+    "id": "ag1",
+    "role": "activity",
+    "text": "Agent: List files (Explore)",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "task",
+     "name": "Agent",
+     "status": "running",
+     "input": {
+      "subagent_type": "Explore"
+     }
+    }
+   }
+  ],
+  "want": "Explore agent: starting"
+ },
+ {
+  "name": "a subagent of no type",
+  "entries": [
+   {
+    "id": "ag1",
+    "role": "activity",
+    "text": "Agent: List files",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "task",
+     "name": "Agent",
+     "status": "running"
+    }
+   },
+   {
+    "id": "k1",
+    "role": "activity",
+    "text": "ls",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "running"
+    },
+    "parentID": "ag1"
+   }
+  ],
+  "want": "Subagent: 1 tool call"
+ },
+ {
+  "name": "a subagent's subagent names the outer one",
+  "entries": [
+   {
+    "id": "ag1",
+    "role": "activity",
+    "text": "Agent: Plan (Explore)",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "task",
+     "name": "Agent",
+     "status": "running",
+     "input": {
+      "subagent_type": "Explore"
+     }
+    }
+   },
+   {
+    "id": "ag2",
+    "role": "activity",
+    "text": "Agent: Dig (Plan)",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "task",
+     "name": "Agent",
+     "status": "running",
+     "input": {
+      "subagent_type": "Plan"
+     }
+    },
+    "parentID": "ag1"
+   },
+   {
+    "id": "k1",
+    "role": "activity",
+    "text": "ls",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "running"
+    },
+    "parentID": "ag2"
+   }
+  ],
+  "want": "Explore agent: 1 tool call"
+ },
+ {
+  "name": "a background subagent's child still counts",
+  "entries": [
+   {
+    "id": "ag1",
+    "role": "activity",
+    "text": "Agent: List files (Explore)",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "task",
+     "name": "Agent",
+     "status": "running",
+     "background": true,
+     "input": {
+      "subagent_type": "Explore"
+     }
+    }
+   },
+   {
+    "id": "k1",
+    "role": "activity",
+    "text": "ls",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "running"
+    },
+    "parentID": "ag1"
+   }
+  ],
+  "want": "Explore agent: 1 tool call"
+ },
+ {
+  "name": "a finished subagent's child stands alone",
+  "entries": [
+   {
+    "id": "ag1",
+    "role": "activity",
+    "text": "Agent: List files (Explore)",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": false,
+    "delivery": "",
+    "tool": {
+     "kind": "task",
+     "name": "Agent",
+     "status": "completed",
+     "input": {
+      "subagent_type": "Explore"
+     }
+    }
+   },
+   {
+    "id": "k1",
+    "role": "activity",
+    "text": "ls",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "running"
+    },
+    "parentID": "ag1"
+   }
+  ],
+  "want": "Running ls"
+ },
+ {
+  "name": "the newest running step wins",
+  "entries": [
+   {
+    "id": "r1",
+    "role": "activity",
+    "text": "Read a.go",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "read",
+     "name": "Read",
+     "status": "running",
+     "paths": [
+      "a.go"
+     ]
+    }
+   },
+   {
+    "id": "b1",
+    "role": "activity",
+    "text": "make",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "running"
+    }
+   },
+   {
+    "id": "r2",
+    "role": "activity",
+    "text": "Read b.go",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": false,
+    "delivery": "",
+    "tool": {
+     "kind": "read",
+     "status": "completed",
+     "name": "Read",
+     "paths": [
+      "b.go"
+     ]
+    }
+   }
+  ],
+  "want": "Running make"
+ },
+ {
+  "name": "what the subagent is doing, in its agent's words (2.1.272 task_progress)",
+  "entries": [
+   {
+    "id": "ag1",
+    "role": "activity",
+    "text": "Agent: Read hello.txt and grep for word (Explore)",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "task",
+     "name": "Agent",
+     "status": "running",
+     "input": {
+      "subagent_type": "Explore"
+     },
+     "progress": {
+      "activity": "Reading hello.txt",
+      "toolCalls": 2,
+      "lastTool": "Read",
+      "durationMS": 3384,
+      "tokens": 25500
+     }
+    }
+   },
+   {
+    "id": "k1",
+    "role": "activity",
+    "text": "ls -la",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": false,
+    "delivery": "",
+    "tool": {
+     "kind": "command",
+     "name": "Bash",
+     "status": "completed"
+    },
+    "parentID": "ag1"
+   },
+   {
+    "id": "k2",
+    "role": "activity",
+    "text": "Read /home/agent/workspace/hello.txt",
+    "detail": "",
+    "createdAt": 1,
+    "isStreaming": true,
+    "delivery": "",
+    "tool": {
+     "kind": "read",
+     "name": "Read",
+     "status": "running",
+     "paths": [
+      "/home/agent/workspace/hello.txt"
+     ]
+    },
+    "parentID": "ag1"
+   }
+  ],
+  "want": "Explore agent: 2 tool calls · Reading hello.txt"
+ }
+]

@@ -82,6 +82,9 @@ type Config struct {
 	// chat.
 	Services Services `json:"services,omitzero"`
 	TLS      *TLS     `json:"tls,omitempty"`
+	// Edge is what the edge does beyond sign-in and previews (which it
+	// derives from auth.* and previews.*): today the bug-report receiver.
+	Edge Edge `json:"edge,omitzero"`
 	// Reporting is bug reporting (docs/bug-reporting-plan.md): off unless
 	// the person opted in at install or with `warden bugs on`; every report
 	// is shown to them before it is sent to URL.
@@ -281,6 +284,24 @@ type GoogleSignIn struct {
 	SignInLedger   string   `json:"signInLedger,omitempty"`
 }
 
+// Edge is the edge's own section: the bug-report receiver
+// (docs/bug-reporting-plan.md).
+type Edge struct {
+	BugReports BugReports `json:"bugReports"`
+}
+
+// BugReports configures POST /api/bug-reports on the edge: off unless
+// enabled (a local install never receives; the cloud chart values turn it
+// on), reports kept under <edge state>/bug-reports for retentionDays and
+// at most 10 000 files, at most maxPerHour reports per source IP and
+// maxPerDay overall.
+type BugReports struct {
+	Enabled       bool `json:"enabled"`
+	RetentionDays int  `json:"retentionDays,omitempty"`
+	MaxPerHour    int  `json:"maxPerHour,omitempty"`
+	MaxPerDay     int  `json:"maxPerDay,omitempty"`
+}
+
 // Providers are the accounts Warden brokers for agents.
 type Providers struct {
 	Codex  *AuthFile `json:"codex,omitempty"`
@@ -361,6 +382,7 @@ func Defaults(state string) Config {
 	c.Chat.Listen = "127.0.0.1:18780"
 	c.Previews = Previews{Mode: PreviewLoopback, HostSuffix: "localhost", EdgeListen: "127.0.0.1:18781"}
 	c.Auth = Auth{Mode: AuthOwner, PublicURL: "http://" + c.Previews.EdgeListen}
+	c.Edge.BugReports = BugReports{RetentionDays: 90, MaxPerHour: 30, MaxPerDay: 500}
 	provider := filepath.Join(state, "provider")
 	c.Providers = Providers{
 		Codex:  &AuthFile{AuthFile: filepath.Join(provider, "auth.json")},
@@ -686,6 +708,12 @@ func merge(c *Config, file Config) {
 		}
 		c.Auth.Google = &g
 	}
+	if file.Edge.BugReports.Enabled {
+		c.Edge.BugReports.Enabled = true
+	}
+	setInt(&c.Edge.BugReports.RetentionDays, file.Edge.BugReports.RetentionDays)
+	setInt(&c.Edge.BugReports.MaxPerHour, file.Edge.BugReports.MaxPerHour)
+	setInt(&c.Edge.BugReports.MaxPerDay, file.Edge.BugReports.MaxPerDay)
 	// Providers: a section present in the file replaces the default section;
 	// a JSON null removes it (hides that integration).
 	if file.Providers.Codex != nil {
@@ -822,6 +850,9 @@ func (c Config) Validate() error {
 	}
 	if g := c.Providers.Google; g != nil && g.DocsClient == "" {
 		return errors.New("providers.google.docsClient must be \"builtin\" or a file path")
+	}
+	if b := c.Edge.BugReports; b.RetentionDays < 1 || b.RetentionDays > 3650 || b.MaxPerHour < 1 || b.MaxPerDay < 1 {
+		return errors.New("edge.bugReports: retentionDays 1–3650, maxPerHour ≥ 1, maxPerDay ≥ 1")
 	}
 	if err := c.Reporting.validate(); err != nil {
 		return err

@@ -1,41 +1,9 @@
-import { EFFORTS, THINKING, thinkingLabel } from "../composer";
+import { THINKING, thinkingLabel } from "../composer";
 import type { ModelOption } from "../composer";
+import { effortOptions, fastModeFor, modelOptions } from "../models";
 import type { AgentOptions, SessionSettings } from "../types";
 
-const models: Record<string, ModelOption[]> = {
-  codex: [
-    { value: "gpt-6-astra", label: "GPT-6 Astra" },
-    { value: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
-    { value: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-    { value: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
-    { value: "gpt-5.5", label: "GPT-5.5" },
-  ],
-  claude: [
-    { value: "sonnet", label: "Claude Sonnet" },
-    { value: "opus", label: "Claude Opus" },
-    { value: "haiku", label: "Claude Haiku" },
-  ],
-};
-
-/* The 1M-context variants, offered when the service allows them
-   (agentOptions.longContext): they cost more per token. */
-const longContext: ModelOption[] = [
-  { value: "sonnet[1m]", label: "Claude Sonnet 1M" },
-  { value: "opus[1m]", label: "Claude Opus 1M" },
-];
-
-/* The choices the picker offers for a provider, the default first; the
-   composer's /model command lists the same. */
-export function modelOptions(
-  provider: string,
-  options?: AgentOptions,
-): ModelOption[] {
-  return [
-    { value: "", label: "Provider default" },
-    ...(models[provider] || []),
-    ...(provider === "claude" && options?.longContext ? longContext : []),
-  ];
-}
+export { modelOptions } from "../models";
 
 /* The model picker, and on Claude chats the session settings beside it:
    the thinking budget, the effort level and, when the service allows it,
@@ -63,7 +31,8 @@ export function ModelSelect({
   options?: AgentOptions;
   onSettings?: (change: SessionSettings) => void;
 }) {
-  const choices = modelOptions(provider, options).slice(1);
+  const rows = modelOptions(provider, options);
+  const choices = rows.slice(1);
   const reported = session?.model;
   const withReported = (option: ModelOption) =>
     reported && option.value === value
@@ -72,24 +41,39 @@ export function ModelSelect({
   const claude = provider === "claude" && settings && onSettings;
   const thinking = settings?.thinking || "";
   const effort = settings?.effort || "";
+  const efforts = effortOptions(provider, value, options);
+  // A model the catalog says takes no effort level: the select shows the
+  // default alone and says so.
+  const noEffort = efforts.length === 1;
+  const fast = fastModeFor(provider, value, options, session?.fastMode);
+  const chosen = rows.find((option) => option.value === value);
   return (
     <>
       <select
         aria-label={label}
-        title={reported ? `The session runs ${reported}` : undefined}
+        title={
+          reported ? `The session runs ${reported}` : chosen?.hint || undefined
+        }
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
       >
-        <option value="">
-          {withReported({ value: "", label: "Provider default" })}
+        <option value="" title={rows[0].hint}>
+          {withReported(rows[0])}
         </option>
         {value && !choices.some((option) => option.value === value) && (
           <option value={value}>{value} (current)</option>
         )}
         {choices.map((option) => (
-          <option key={option.value} value={option.value}>
-            {withReported(option)}
+          <option
+            key={option.value}
+            value={option.value}
+            title={option.hint}
+            disabled={option.disabled && option.value !== value}
+          >
+            {option.disabled
+              ? `${option.label} (not allowed)`
+              : withReported(option)}
           </option>
         ))}
       </select>
@@ -115,34 +99,36 @@ export function ModelSelect({
           </select>
           <select
             aria-label="Effort"
-            title="How hard the model works on each answer"
+            title={
+              noEffort
+                ? "The chosen model takes no effort level"
+                : "How hard the model works on each answer"
+            }
             value={effort}
-            disabled={disabled}
+            disabled={disabled || (noEffort && !effort)}
             onChange={(e) => onSettings({ effort: e.target.value })}
           >
-            {EFFORTS.map((e) => (
+            {effort && !efforts.some((e) => e.value === effort) && (
+              <option value={effort}>Effort {effort}</option>
+            )}
+            {efforts.map((e) => (
               <option key={e.value} value={e.value} title={e.hint}>
                 {e.label}
               </option>
             ))}
           </select>
-          {options?.fastMode && (
-            <label
-              className="composer-fast"
-              title={
-                "Fast mode: quicker answers at a higher price, on the models that offer it" +
-                (session?.fastMode ? ` (now ${session.fastMode})` : "")
-              }
-            >
-              <input
-                type="checkbox"
-                checked={!!settings?.fast}
-                disabled={disabled}
-                onChange={(e) => onSettings({ fast: e.target.checked })}
-              />
-              Fast
-            </label>
-          )}
+          <label
+            className={"composer-fast" + (fast.allowed ? "" : " disallowed")}
+            title={fast.title}
+          >
+            <input
+              type="checkbox"
+              checked={!!settings?.fast}
+              disabled={disabled || !fast.allowed}
+              onChange={(e) => onSettings({ fast: e.target.checked })}
+            />
+            Fast
+          </label>
         </>
       )}
     </>

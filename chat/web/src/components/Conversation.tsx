@@ -45,11 +45,13 @@ import {
 import {
   api,
   askAside,
+  editQueued as editQueuedMessage,
   me,
   newID,
   downloadFile,
   rewindChat,
   sendQueued,
+  undoRewind,
   uploadAttachment,
   withdrawMessage,
 } from "../api";
@@ -105,6 +107,7 @@ import {
   canEditAndResend,
   canWithdraw,
   editingScope,
+  heldHint,
   lastQueued,
   queueHeld,
   queueHint,
@@ -112,7 +115,7 @@ import {
   queuedLast,
   type Editing,
 } from "../queue";
-import { canRewind, doubleEscape, excerpt } from "../rewind";
+import { canRewind, canUndoRewind, doubleEscape, excerpt } from "../rewind";
 import { sameFooter, turnFooters, type TurnFooter } from "../turns";
 import type { AgentOptions, Chat, Entry, SessionSettings } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
@@ -124,6 +127,7 @@ import { ApprovalCard } from "./Approvals";
 import { FindBar, isFindKey, modifierKey, type FindRequest } from "./FindBar";
 import { HistorySearch } from "./HistorySearch";
 import { ModelSelect, modelOptions } from "./ModelSelect";
+import { SpendChip } from "./SpendChip";
 import { ModeSelect } from "./ModeSelect";
 import { StyleSelect } from "./StyleSelect";
 import { CostCard } from "./CostCard";
@@ -578,25 +582,62 @@ export function Conversation({
     setPending([]);
     input.current?.focus();
   }
-  // A queued message edited: it leaves the queue for the composer (nothing
-  // is sent while it is being edited) and goes at the end when sent again.
-  const editQueued = useCallback(
-    async (entry: Entry) => {
+  // A queued message edited on its card (queue.ts): the draft lives here
+  // so it survives the card, and the save keeps the message's slot. A
+  // message the agent gets meanwhile ends the edit with the draft moved
+  // into the composer, to send as a new message.
+  const [queuedEdit, setQueuedEdit] = useState<{
+    id: string;
+    text: string;
+  } | null>(null);
+  const editQueued = useCallback((entry: Entry) => {
+    setError("");
+    setQueuedEdit({ id: entry.id, text: entry.text });
+  }, []);
+  const overtaken = useCallback(
+    (draft: string) => {
+      setQueuedEdit(null);
+      if (draft.trim())
+        setText((text) => (text.trim() ? text + "\n" : "") + draft);
+      setError(
+        "The agent got the message before your edit was saved; the edit is in the composer to send as a new message",
+      );
+    },
+    [],
+  );
+  const saveQueued = useCallback(
+    async (entry: Entry, text: string, attachments: string[]) => {
+      try {
+        await editQueuedMessage(chat.id, entry.id, text, attachments);
+        setQueuedEdit(null);
+      } catch (e) {
+        if (/already sent/.test(String(e))) {
+          overtaken(text);
+          return;
+        }
+        throw e;
+      }
+    },
+    [chat.id, overtaken],
+  );
+  useEffect(() => {
+    if (!queuedEdit) return;
+    const entry = chat.conversation.entries.find((e) => e.id === queuedEdit.id);
+    if (entry && entry.delivery === "queued") return;
+    // Withdrawn elsewhere, or handed to the agent: the card is gone.
+    overtaken(entry ? queuedEdit.text : "");
+  }, [chat.conversation.entries, queuedEdit, overtaken]);
+  const undo = useCallback(
+    async (entry: Entry, code: boolean) => {
       setError("");
       try {
-        const withdrawn = await withdrawMessage(chat.id, entry.id);
-        if (!load(withdrawn)) {
-          // The draft stays: the withdrawn text is lost unless kept here.
-          setText(
-            (text) => (text.trim() ? text + "\n" : "") + withdrawn.text,
-          );
-        }
-        setEditing(null);
+        await undoRewind(chat.id, entry.id, code);
+        setFollow(true);
       } catch (e) {
         setError(String(e));
       }
     },
-    [chat.id, load],
+    [chat.id, setFollow],
   );
   const withdraw = useCallback(
     async (entry: Entry) => {
@@ -618,6 +659,11 @@ export function Conversation({
       setError(String(e));
     }
   }, [chat.id, setFollow]);
+  const changeQueuedEdit = useCallback(
+    (text: string) => setQueuedEdit((q) => (q ? { ...q, text } : q)),
+    [],
+  );
+  const cancelQueuedEdit = useCallback(() => setQueuedEdit(null), []);
   // The message a rewind went back to before, into an empty composer.
   useEffect(() => {
     if (!prefill || current.current.text.trim() !== "") return;
@@ -748,9 +794,9 @@ export function Conversation({
                     ? {
                         id: "model:" + item.model.value,
                         label: item.model.label,
-                        hint: item.model.value,
+                        hint: item.model.hint || item.model.value,
                         icon: <Cpu size={15} />,
-                        disabled: modelLocked,
+                        disabled: modelLocked || item.model.disabled,
                       }
                     : {
                         id: "agent:" + item.command.name,
@@ -1266,6 +1312,7 @@ export function Conversation({
           root={transcript}
           scroller={scroll}
           request={finding}
+          entries={all}
           onClose={() => {
             setFinding(undefined);
             input.current?.focus();
@@ -1347,6 +1394,16 @@ export function Conversation({
                       onEditQueued={editQueued}
                       onWithdraw={withdraw}
                       onSendQueued={sendQueuedNow}
+                      queuedEdit={
+                        queuedEdit?.id === item.entry.id
+                          ? queuedEdit.text
+                          : undefined
+                      }
+                      onQueuedEditChange={changeQueuedEdit}
+                      onSaveQueued={saveQueued}
+                      onCancelQueuedEdit={cancelQueuedEdit}
+                      onUndoRewind={undo}
+                      undoable={canUndoRewind(item.entry, chat)}
                       queue={
                         item.entry.delivery === "queued"
                           ? {
@@ -1653,7 +1710,7 @@ export function Conversation({
                 const last = lastQueued(all, me);
                 if (last) {
                   e.preventDefault();
-                  void editQueued(last);
+                  editQueued(last);
                   return;
                 }
               }
@@ -1752,6 +1809,7 @@ export function Conversation({
               {chat.conversation.context && (
                 <ContextMeter context={chat.conversation.context} />
               )}
+              <SpendChip chat={chat} />
               <span
                 className={`status-dot ${chat.startup && running ? "starting" : chat.status}`}
               />
@@ -1842,11 +1900,13 @@ export function Conversation({
           {!live
             ? "Reconnecting · your draft is preserved"
             : prefix?.kind === "shell"
-              ? "Runs as a shell command in the workspace, by you — the agent sees it only if you send the result to it"
+              ? heldHint(chat, "shell") ||
+                "Runs as a shell command in the workspace, by you — the agent sees it only if you send the result to it"
               : prefix?.kind === "memory"
-                ? chat.provider === "codex"
-                  ? "Appends a note to CLAUDE.md in the workspace (Codex reads AGENTS.md, not CLAUDE.md)"
-                  : "Appends a note to CLAUDE.md in the workspace — the agent reads it only once the workspace's settings are loaded"
+                ? heldHint(chat, "memory") ||
+                  (chat.provider === "codex"
+                    ? "Appends a note to CLAUDE.md in the workspace (Codex reads AGENTS.md, not CLAUDE.md)"
+                    : "Appends a note to CLAUDE.md in the workspace — the agent reads it only once the workspace's settings are loaded")
                 : question !== undefined
                   ? asides
                     ? "Asks a copy of the agent's session, from this chat's context — the agent never sees the question or the answer"

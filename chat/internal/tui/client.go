@@ -45,7 +45,11 @@ type Entry struct {
 	Fork *Fork `json:"fork,omitempty"`
 	// Aside is what an aside entry records (conversation.Aside): a side
 	// question (Text) answered from a copy of the session (Detail).
-	Aside  *Aside `json:"aside,omitempty"`
+	Aside *Aside `json:"aside,omitempty"`
+	// Rewind is what a rewind marker records (conversation.Rewind): the
+	// message the chat went back to before, the scope, how the session
+	// followed and the checkpoint of the workspace before a code rewind.
+	Rewind *RewindMark `json:"rewind,omitempty"`
 	Sender *struct {
 		PrincipalID string `json:"principalID"`
 		Email       string `json:"email"`
@@ -224,6 +228,9 @@ type Chat struct {
 	// OutputStyle is a Claude chat's output style for its next launch ("":
 	// the default); Session.OutputStyle is what the running one has.
 	OutputStyle string `json:"outputStyle"`
+	// UndoRewind is the rewind marker whose conversation rewind can still
+	// be undone (/undo-rewind; rewind.go), "" when none.
+	UndoRewind string `json:"undoRewind"`
 	// Startup is where the chat's start is while its message waits for the
 	// agent: the stage and the runtime's detail.
 	Startup *struct {
@@ -249,6 +256,7 @@ type Permission struct {
 	Tool        string `json:"tool"`
 	Description string `json:"description"`
 	Always      string `json:"always"`
+	Rule        string `json:"rule"` // the pattern "allow always" records (rules.go)
 	Plan        string `json:"plan"`
 	Entry       *Entry `json:"entry"`
 }
@@ -312,6 +320,28 @@ type State struct {
 	Version int     `json:"version"`
 	Chats   []*Chat `json:"chats"`
 	Ports   []Port  `json:"ports"`
+	// AgentOptions mirrors chats.AgentOptions: the costlier Claude
+	// features this Warden allows and each provider's model catalog.
+	AgentOptions AgentOptions `json:"agentOptions"`
+}
+
+// AgentOptions mirrors chats.AgentOptions.
+type AgentOptions struct {
+	FastMode    bool                   `json:"fastMode"`
+	LongContext bool                   `json:"longContext"`
+	Models      map[string][]ModelInfo `json:"models"`
+}
+
+// ModelInfo mirrors chats.ModelInfo: one row of a provider's catalog as
+// its CLI reported it.
+type ModelInfo struct {
+	Value            string   `json:"value"`
+	Resolved         string   `json:"resolved"`
+	Label            string   `json:"label"`
+	Description      string   `json:"description"`
+	Efforts          []string `json:"efforts"`
+	AdaptiveThinking bool     `json:"adaptiveThinking"`
+	FastMode         bool     `json:"fastMode"`
 }
 
 // Chat finds a chat by id.
@@ -526,11 +556,11 @@ func (c *Client) Resolve(ctx context.Context, chatID, approvalID string, allow b
 }
 
 // Answer resolves a tool permission ask: allow, allow always (the call's
-// rule is remembered for the chat), or deny with a message the model
-// reads; for a plan, allow with the mode the chat moves to (auto or ask)
-// or deny with feedback.
-func (c *Client) Answer(ctx context.Context, chatID, approvalID string, allow, always bool, message, mode string) error {
-	return c.do(ctx, "POST", "chats/"+chatID+"/approvals/"+approvalID, map[string]any{"allow": allow, "always": always, "message": message, "mode": mode, "answers": map[string][]string{}}, nil)
+// rule is remembered for the chat, or for the workspace when scope is
+// "workspace"), or deny with a message the model reads; for a plan, allow
+// with the mode the chat moves to (auto or ask) or deny with feedback.
+func (c *Client) Answer(ctx context.Context, chatID, approvalID string, allow, always bool, scope, message, mode string) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/approvals/"+approvalID, map[string]any{"allow": allow, "always": always, "scope": scope, "message": message, "mode": mode, "answers": map[string][]string{}}, nil)
 }
 
 // Mode sets a Claude chat's permission mode (auto, ask or plan).
@@ -709,6 +739,43 @@ type RewindResult struct {
 	// Withdrawn counts the queued messages a conversation rewind took
 	// out of the queue (queue.go).
 	Withdrawn int `json:"withdrawn"`
+}
+
+// RewindMark mirrors conversation.Rewind.
+type RewindMark struct {
+	MessageID    string `json:"messageID"`
+	What         string `json:"what"`
+	Conversation string `json:"conversation"`
+	Before       string `json:"before"`
+}
+
+// UndoResult is what undoing a rewind did (chats.UndoResult).
+type UndoResult struct {
+	MessageID string   `json:"messageID"`
+	What      string   `json:"what"`
+	Entries   int      `json:"entries"`
+	Requeued  int      `json:"requeued"`
+	Session   string   `json:"session"`
+	Code      string   `json:"code"`
+	Restored  []string `json:"restored"`
+	Removed   []string `json:"removed"`
+}
+
+// EditQueued replaces a queued message's text in place, keeping its slot
+// and ID (queue.go); the edited entry comes back. A message the agent got
+// meanwhile is refused.
+func (c *Client) EditQueued(ctx context.Context, chatID, messageID, text string) (Entry, error) {
+	var out Entry
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/queued/"+url.PathEscape(messageID)+"/edit", map[string]string{"text": text}, &out)
+	return out, err
+}
+
+// UndoRewind puts back what the rewind marked by markerID removed; code
+// asks for the workspace as it was before the rewind too (rewind.go).
+func (c *Client) UndoRewind(ctx context.Context, chatID, markerID string, code bool) (UndoResult, error) {
+	var out UndoResult
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/undo-rewind", map[string]any{"id": markerID, "code": code}, &out)
+	return out, err
 }
 
 // Withdraw takes a queued message out of the chat before the agent gets

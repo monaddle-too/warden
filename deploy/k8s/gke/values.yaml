@@ -40,6 +40,13 @@ previews:
     annotations:
       cert-manager.io/cluster-issuer: letsencrypt-staging
 
+edge:
+  # This is the Warden other installs report bugs to
+  # (docs/bug-reporting-plan.md): the edge receives POST /api/bug-reports
+  # and the owner reads them in the admin console.
+  bugReports:
+    enabled: true
+
 tls:
   # The four service certificates from cert-manager (a chart-created CA).
   certManager:

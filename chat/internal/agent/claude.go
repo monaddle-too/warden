@@ -265,6 +265,15 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						req["last_seen_user_message_uuid"] = last
 					}
 					_ = cliWrite(map[string]any{"type": "control_request", "request_id": id, "request": req})
+				case "models/list":
+					// The account's model catalog (list_models): the rows
+					// the CLI offers, each with its effort levels and
+					// whether it has adaptive thinking and fast mode. The
+					// CLI's answer ({models: […]}) is the command's reply
+					// (docs/claude-parity.md, R2.3).
+					id := "warden-models-" + claudeID()
+					awaiting[id] = f.ID
+					_ = cliWrite(map[string]any{"type": "control_request", "request_id": id, "request": map[string]any{"subtype": "list_models"}})
 				case "turn/interrupt":
 					// Claude Code's SDK interrupt: the query aborts where it is
 					// (mid-thought, mid-tool) and reports a result; the process
@@ -550,6 +559,22 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 								t.task = taskID
 								t.background = t.background || v["is_backgrounded"] == true
 								toolCalls[id] = t
+							}
+						}
+					case "task_progress":
+						// A subagent's account of its work so far: the
+						// Agent call's card carries it while the subagent
+						// runs (the card's own count is its child entries;
+						// this is the CLI's, with the last tool it used).
+						id := String(v["tool_use_id"])
+						if id == "" {
+							id = tasks[String(v["task_id"])]
+						}
+						if t, ok := toolCalls[id]; ok {
+							if p := claudeTaskProgress(v); p != nil {
+								t.progress = p
+								toolCalls[id] = t
+								event("item/started", map[string]any{"turnId": t.turn, "item": claudeToolItem(id, t, nil, nil)})
 							}
 						}
 					case "task_notification":
