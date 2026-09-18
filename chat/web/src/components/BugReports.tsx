@@ -165,6 +165,10 @@ export function BugReports() {
   useEffect(() => {
     void load();
   }, [load]);
+  // A refresh that no longer lists the open report closes it.
+  useEffect(() => {
+    if (open && rows && !rows.some((r) => r.id === open)) setOpen(undefined);
+  }, [rows, open]);
   if (!available) return null;
   const last = rows?.[rows.length - 1];
   return (
@@ -215,7 +219,7 @@ export function BugReports() {
                   className={open === r.id ? "selected" : ""}
                   onClick={() => setOpen(open === r.id ? undefined : r.id)}
                 >
-                  <td>{when(r.receivedAt)}</td>
+                  <td className="bug-when">{when(r.receivedAt)}</td>
                   <td>
                     <span className={"bug-kind " + r.kind}>
                       {kindLabel(r.kind)}
@@ -226,7 +230,7 @@ export function BugReports() {
                     {v.tag}
                     {v.sha && <small className="muted"> · {v.sha}</small>}
                   </td>
-                  <td>{platform(r.os, r.arch)}</td>
+                  <td className="bug-platform">{platform(r.os, r.arch)}</td>
                   <td className="bug-summary">{r.summary}</td>
                 </tr>
               );
