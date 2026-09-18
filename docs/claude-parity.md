@@ -504,6 +504,38 @@ Design (as implemented):
    always" made, a denial's message), when. "Permissions…" in the chat
    menu opens it newest first; TUI `/permissions`.
 
+Verified (2026-09-18): `gofmt -l`, `go vet ./...`, `go test ./...`
+(`chats/rules_test.go`: the matcher table — prefixes, globs, chained
+commands per kind, redirections, path globs with tails, absolute and
+`~/`, domains, tool globs, bad patterns; a workspace rule from chat one's
+"Allow always" answering a sibling created later, with its origin,
+author and both chats' history; deny and ask rules in auto with the
+model's denial text and the history in order; precedence and the history
+cap; the routes; `chats/permissions_test.go`: item 3's `allowed` entries
+converted on load; `tui/tui_test.go`: `A`, `/allow`, `/rules`, `/rules
+add`, `/rules rm N` across scopes, `/permissions`); `pnpm build`, `pnpm
+test` (195 tests; `rules.test.ts`, `permissions.test.ts`). Live on a
+cloned home (`~/.warden-p14`, CLI 2.1.275): chat one in ask mode asked
+for `touch`, denied once with a message (the model split its chained
+command as told), then allowed always for the workspace — the rule
+`allow Bash(touch *)` on the environment with the chat and the owner;
+chat two on the same workspace, in ask mode, ran `touch` with no card
+and its history says "workspace rule allow Bash(touch *)"; `deny
+Bash(rm *)` added from the API, chat two in auto: `rm` refused without a
+card, the model replied "a workspace permission rule denies Bash(rm *),
+and I won't retry it or route around it"; `ask Edit(*)` in auto made a
+card for a Write, with "Always allow file edits in this chat / in this
+workspace" beside Deny and Allow; the panel's Permissions section listed
+the three rules with their origins, refused `TodoWrite(x)` with the
+service's wording before sending, added and removed
+`WebFetch(domain:example.com)`; "Permissions…" listed the three
+decisions newest first; the TUI in a pty: `/rules`, `/rules add ask
+"WebFetch(domain:example.com)"`, `/rules rm 4`, `/permissions`, and `A`
+on a `mkdir` card ("allowed always for this workspace: `mkdir`
+commands", the rule on the workspace). Seen: `warden start --detach`
+opens the browser on every pending card (popups), which answered one
+card before the API did — `--popups none` for scripted runs.
+
 Left: rules for what the CLI never asks about would need the CLI's own
 rule channel (`updatedPermissions` per session or its settings), which
 this round keeps out; the collaborator policy of item 3 still applies to
