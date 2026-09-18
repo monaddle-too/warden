@@ -279,9 +279,9 @@ E–G after.
 - [ ] R2.9 **TUI search across chats**: `/search <text>` over titles and transcripts of every chat, with a jump.
 
 ### D. Queue and rewind polish (`feat/parity-r2-d-queue-rewind`)
-- [ ] R2.10 **Edit a queued message in place**: inline on the queued card (web) and back into its slot (TUI `/edit N`).
-- [ ] R2.11 **Queue semantics**: `!` and `#` release a held queue; `warden chat send --wait` waits for its own message's turn only (item 10's leftovers).
-- [ ] R2.12 **Undo a conversation rewind**: the removed tail is kept and can be restored until the next turn (restore the entries; a session that cannot un-rewind starts fresh with the recap, as item 11's fallback does).
+- [x] R2.10 **Edit a queued message in place**: inline on the queued card (web) and back into its slot (TUI `/edit N`). Merged to main MERGE_SHA_D (2026-09-18); "### Round 2 D" below.
+- [x] R2.11 **Queue semantics**: `!` and `#` leave a held queue held, explicitly (the reason in "### Round 2 D"); `warden chat send --wait` waits for its own message's turn only, `--wait-all` for the chat (item 10's leftovers). Merged to main MERGE_SHA_D.
+- [x] R2.12 **Undo a conversation rewind**: the removed tail is kept and can be restored until the next turn (restore the entries; a session that cannot un-rewind starts fresh with the recap, as item 11's fallback does). Merged to main MERGE_SHA_D.
 
 ### E. Workspace fork, resource mentions, rich reads (`feat/parity-r2-e-fork-mentions`)
 - [ ] R2.13 **Fork with a copy of the workspace**: "Fork…" gains "copy the workspace" — a new environment cloned from the sandbox (the runner's clone path on both drivers) plus the forked session; markers link both.
@@ -435,6 +435,189 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 13 Per-user instructions and memory — merged to main a5012c0 (2026-09-18); verified as the Item 13 section says.
 - [ ] 14 Project MCP, OAuth, plugins.
 - [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
+
+### Round 2 D: queue and rewind polish
+
+Branch `feat/parity-r2-d-queue-rewind`, worktree
+`.local/warden-parity-r2-d-queue-rewind`, from main adbf4f5 (2026-09-18).
+R2.10 edit a queued message in place, R2.11 queue semantics, R2.12 undo a
+conversation rewind.
+
+Design:
+
+1. **Edit in place** (`POST chats/{id}/queued/{entryID}/edit {text,
+   attachments?}` → the entry; `EditQueued`): the queued entry keeps its
+   slot and ID, its text is replaced and, when `attachments` is given,
+   its attachment set (IDs of the chat's uploads; absent keeps the set);
+   the sender or the owner; a message the agent has meanwhile answers
+   409 "already sent". Web: the pencil (and ↑ in an empty composer, for
+   the last queued message of this person's) opens an editor on the card
+   itself (`QueuedEditor`: Enter saves, Shift-Enter a newline, Esc leaves
+   it as it was, each attachment removable); the draft lives in
+   `Conversation.tsx` (`queuedEdit`) so a card that stops being queued —
+   handed to the agent, or withdrawn elsewhere — moves the draft into the
+   composer with a notice instead of losing it. TUI: `/edit N` (and ↑)
+   loads the message into the composer as an `editing` (the same state
+   `/memory edit` uses): Enter saves it back into its slot, Esc or Ctrl+C
+   leaves it, an empty save is refused (`/withdraw` drops it), and the
+   "already sent" conflict ends the edit with the draft kept to send as a
+   new message. Item 10's withdraw-into-composer edit is gone from both
+   surfaces (Withdraw stays).
+2. **The held queue is explicit** — `!` and `#` do not release it. The
+   plan's wording ("`!` and `#` release a held queue") was found
+   surprising: Stop is the person's decision to keep the agent from
+   continuing, and a `!` command (`!git status`, `!cat file`) is the very
+   thing they run after stopping to decide what to do next; restarting
+   the agent as a side effect would defeat the stop. A `#` note writes
+   `CLAUDE.md`, which the agent reads at launch — after a stop it is
+   often the fix the person wants in place *before* the held messages go.
+   Neither is addressed to the agent (item 12's decision 1), so nothing
+   is out of order when they leave the queue alone; a new message
+   releases it because it *is* addressed to the agent and would otherwise
+   jump the queue. Claude Code's own `!` never touches its queue either.
+   So `Exec` and `AppendMemory` run beside a held queue and never fail
+   (they never did), and both surfaces say so: the web composer's hint
+   for a `!`/`#` draft while held ("The command runs beside the held
+   queue: N messages stay held until Send on a card or your next
+   message", `heldHint`), the TUI's notices ("… · N queued message(s)
+   still held (/queue send lets them go)", `heldNote`); the card's Send
+   and the status hint were already there.
+3. **`warden chat send --wait` follows its own message** (`Follow` with a
+   message ID, `followMessage`): it prints the message (with "(queued: N
+   message(s) ahead)" or "(queued: sends when the agent finishes)"),
+   then the entries of the turn the message opens (`TurnID` once
+   confirmed) and returns when that turn's record has ended and nothing
+   of it streams — "idle" when the queue moved on to the next message,
+   the chat's status otherwise. The wait ends with an error when the
+   message is withdrawn, fails for good (the hand-over's transient
+   "Delivery unconfirmed" mark, `attempt` before `confirm`, is not final
+   while the run is on), or is held in a stopped chat's queue ("the
+   message is held in the queue; send it from the app, with `warden chat
+   send`, or withdraw it", exit 1). `--wait-all` is the old whole-chat
+   wait.
+4. **Undo a rewind.** A conversation or both rewind keeps what it removed
+   as `Chat.RewoundTail` — the entries from the target on (the queued
+   ones the rewind withdrew last), their turn records, the marker's ID,
+   how the session followed, what the session had before (the pending
+   rewind it replaced; the thread, `NewSession` and `Recap` a fresh
+   fallback dropped), the diff base a code rewind moved and the
+   checkpoint recorded of the workspace before the restore. Clients
+   never get the tail: `state()` turns it into `chat.undoRewind`, the
+   marker's ID, and the marker carries `entry.rewind` `{messageID, what,
+   conversation, before}`. The tail is dropped when a turn starts
+   (`attempt`, `resume`, `beginAgentTurn`: `dropRewoundTail`) and by the
+   next rewind (only the latest is undoable); a `!` command, a `#` note
+   or a side question leave it (they start no turn) and their entries
+   stay after the restored ones, since the undo splices the tail in
+   place of the marker. `POST chats/{id}/undo-rewind {id, code}` →
+   `UndoResult {messageID, what, entries, requeued, session, code,
+   restored, removed}`, chat idle: the entries and turns go back, the
+   marker goes, queued messages come back held (as after a stop), and
+   the session follows as far as it can — "cancelled" when the rewind
+   was still pending (`c.Rewind` back to the one it replaced), "resumed"
+   when the fresh fallback had dropped the thread (the CLI refused the
+   rewind, so the session still knows everything: thread, flag and recap
+   restored, the next message `--resume`s it), "fresh" when the live
+   session rewound (the CLI cannot un-rewind: item 11's fallback, the
+   restored transcript as recap, the idle session released). A `system`
+   entry says what was done ("Rewind undone: N entries restored; …").
+   A code rewind is one-way in the checkpoints, so the runner's `restore`
+   now records the workspace as it is under `Request.Before` — the
+   marker's ID — before writing the checkpoint back (`restoreScript`
+   commits the snapshot it takes anyway; `WorkspaceRestore.Before`), for
+   every code and both rewind; undo with `code: true` restores that
+   checkpoint and puts the diff base back (offered only when the marker's
+   `before` is set: web "Undo and restore the files", TUI `/undo-rewind
+   code`); otherwise the notice says the workspace stays as the rewind
+   left it. A code-only rewind keeps no tail (nothing to undo). Seen on
+   the way: a rewind on a chat owed a fresh session (thread dropped,
+   recap kept — the state an undo of a live rewind leaves) answered
+   "rewound" and left the old recap describing the pre-rewind
+   transcript; `Rewind` now re-renders the recap from what it leaves.
+5. Web: `EntryView.tsx` (`QueuedEditor`, the marker's `rewind-actions`),
+   `Conversation.tsx` (`queuedEdit`, `saveQueued`, `overtaken`, `undo`),
+   `rewind.ts` (`UndoResult`, `canUndoRewind`, `undoOffersCode`,
+   `undoHint`, `undoOutcome`), `queue.ts` (`heldHint`), `api.ts`
+   (`editQueued`, `undoRewind`). TUI: `tui/queue.go` (`takeQueued` in
+   place, `heldNote`), `tui/rewind.go` (`/undo-rewind`, `undoHint`,
+   `undoNotice`), `tui/render.go` (the marker's hint), `tui/client.go`
+   (`EditQueued`, `UndoRewind`, `Chat.UndoRewind`, `Entry.Rewind`).
+
+Verified (2026-09-18): `gofmt -l`, `go vet ./...`, `go test ./...`
+(`chats/queue_edit_test.go`: edit in place keeping order, ID and
+attachments, the sender/owner refusals, the conflict once sent; `!`/`#`
+leaving a held queue held; undo of a pending rewind (cancelled, the
+resumed session gets no `conversation/rewind`), of a live one (fresh
+with the recap, the notice by the actor), of a refused one (the thread
+resumed without a recap); the tail dropped by a turn and by another
+rewind; a both-rewind's restore carrying `Before`, its undo restoring
+the marker's checkpoint and the diff base, the withdrawn message
+requeued and held, "kept" without the code; the refusals; the routes;
+`sandbox/checkpoint_test.go`: `restore` with `Before` writing the ref
+and the record on the local git store, restoring it afterwards, a bad
+ID refused; `tui/tui_test.go`: `Follow` on one message printing its own
+turn only and returning while a later turn runs, held / withdrawn /
+unconfirmed-then-confirmed / failed-for-good; `/edit` and ↑ in place
+with Esc, save, the empty edit and the conflict; `/undo-rewind [code]`
+with the marker's hint, the confirmation, the conversation-only
+refusal, and the `!`/`#` held notes), `pnpm build`, `pnpm test` (196;
+`rewind.test.ts`, `queue.test.ts`). Live on a cloned home
+(`~/.warden-p16`, builds e83cb84 and abdd2ad, CLI 2.1.272) through the
+API and `warden chat send`: two messages queued behind a `sleep 30`,
+the second edited in place (same ID and slot), the queue then going
+Q1, Q2-edited (the agent answered the edited text), Q3; `send --wait`
+behind two queued messages printed "(queued: 2 message(s) ahead)" and
+only its own turn (39 s), and `send --wait` with a `sleep 15` message
+queued *behind* it returned at its own turn's end while that later turn
+ran; Stop with a message queued, then `!ls -a` and `#note` — the queue
+stayed held 10 s+ (their card and line after the queued entry), then
+`send-queued` released it; `--wait` on a message Stop held ended with
+"interrupted: the message is held in the queue" (exit 1); `--wait-all`
+printed the whole queue. Undo: a live conversation rewind (`rewound`)
+undone → `session: fresh`, entries back in place after the `!` card and
+the note, and the new session (a new thread) answered
+"CODEWORD=ALPHA, LAST=HELD-ONE" from the recap; a pending rewind
+(session released by a style change) undone → `cancelled`, `rewind`
+cleared, the same thread resumed and answered all three codewords and
+"LAST=THREAD-UP", `conversation/rewind` never sent; a both rewind (a
+file edited and one created by the agent, restored/removed) recorded
+`before` = the marker's ID, and its undo with `code: true` restored
+both files (`!cat r2d.txt; ls`) and 5 entries; the kept tail survived a
+service restart. Browser: the pencil opening the card's editor (dashed
+accent box, "Enter saves it in its place · Shift-Enter newline · Esc
+cancels", Cancel/Save), the save keeping the card queued with the new
+text while the earlier queued message went as its own turn; the marker
+with "Undo" and its hint, the undo putting the two entries back with the
+notice line; a both marker with "Undo" and "Undo and restore the files"
+("the files can come back too"), the latter's notice; the held card
+("Held · the agent was stopped; send or withdraw it", Send) with the
+composer hint for a `!ls` draft ("The command runs beside the held
+queue: 1 message stays held …"), the `!` card landing while
+"interrupted · 1 message held", Send releasing it. TUI in a pty
+(`scratchpad/p16-tui.py`): `/edit` on the queued message → "editing the
+queued message in place", Esc → "edit of queued message cancelled"
+(still queued as it was), ↑ then Ctrl+A Ctrl+K and a new text, Enter →
+"saved queued message" (same ID, still queued, the agent later answered
+the edited text); Esc on a running turn → "the queued messages are
+held", the held marker, `!ls` → "… · 1 queued message(s) still held
+(/queue send lets them go)" and "command finished · …", `#note` →
+"added to CLAUDE.md · 1 queued message(s) still held", `/queue send` →
+the answer; `/undo-rewind` with nothing → "nothing to undo", `/rewind N
+conv` + `y`, the marker's "/undo-rewind puts the removed messages back
+(until the next turn)", `/undo-rewind code` refused on a conversation
+rewind, `/undo-rewind` + `y` → "rewind undone: 2 entries restored; …"
+and the `!` line.
+
+Left: the web editor edits text and drops attachments but cannot add
+one (the composer's uploads are not offered to the card); the TUI's
+in-place edit leaves the message's attachments as they are; a code-only
+rewind is still not undoable (its `before` checkpoint is recorded, so a
+later item could offer it); a fresh session after an undo knows the
+restored transcript only through the recap (item 11's limit); the
+pre-restore snapshot costs one more `commit-tree` per code rewind.
+
+Progress: started 2026-09-18; implemented and live-verified 2026-09-18
+(abdd2ad); merged to main MERGE_SHA_D (2026-09-18).
 
 ### Item 15: the long tail
 
