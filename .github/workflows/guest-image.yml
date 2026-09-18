@@ -17,8 +17,8 @@ jobs:
     name: ${{ matrix.image }}
     # Self-hosted macOS runner (docs/ci-mac-runner.md); Docker is its Lima
     # VM. The amd64 half runs under QEMU on the arm64 daemon; the Dockerfiles
-    # only download, verify, unpack and (for the base image) apt-get
-    # install, so emulation costs minutes, not hours.
+    # only download, verify, unpack and apt-get install, so emulation costs
+    # minutes, not hours.
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 90
     strategy:
