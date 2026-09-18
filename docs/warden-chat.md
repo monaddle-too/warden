@@ -65,7 +65,7 @@ for all five.
   environment preserves separate chat/provider histories while sharing files.
 - The local workspace runs one chat at a time. Other chats wait in the durable
   queue. The worker caps come from `warden.json` (`sandboxes.maxRunning`,
-  `keepStopped`, `stopAfterIdleMinutes`; local defaults 2, 32 and 15 minutes,
+  `keepStopped`, `stopAfterIdleMinutes`; local defaults 2, 32 and 30 minutes,
   with `maxRunning` sized by `warden install` from the host's memory and
   cores) or the equivalent runner flags.
 - Messages, streaming transcript, provider thread IDs and approval decisions

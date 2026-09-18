@@ -335,10 +335,15 @@ helm upgrade warden oci://ghcr.io/monaddle-too/charts/warden --version <chart ve
 
 - Each Deployment uses `Recreate`: the old pod stops before the new one
   starts, so each service is down for the restart. An edge restart signs
-  viewers out (chat and agent work stay server-side); a runner restart
-  reconciles the sandbox pods and PVCs it finds by label (every registered
-  sandbox is stopped, spares are removed and recreated, unregistered claims
-  are kept and logged; seen on every runner restart on the dev cluster).
+  viewers out (chat and agent work stay server-side); a chat restart ends
+  the agent turns in flight (each chat says "Warden restarted. Send a new
+  message to resume."); a runner restart reconciles the sandbox pods and
+  PVCs it finds by label: the pod of a registered workspace that was
+  running, at the generation the registry recorded, is kept and the
+  workspace stays running with a fresh idle window (the next message
+  resumes on it in seconds rather than waiting for a new sandbox node),
+  every other pod is deleted, spares are removed and recreated,
+  unregistered claims are kept and logged.
 - The pods carry a checksum of the rendered `warden.json`, so a values
   change that alters it rolls the pods; a change that does not (for
   example `resources`) rolls only what Kubernetes needs to.
@@ -391,7 +396,7 @@ when the two differ.
 | `guestImage` | The guest base image sandboxes run: `repository` and `digest`. The digest is required and must be a platform manifest digest; the runner pins it and the policy service checks each pod's `imageID` against it. | `ghcr.io/monaddle-too/warden-guest-base`, `""` |
 | `runtime` | `tier` (`kata` or `gvisor`); `runtimeClassName` (empty selects the tier default, `gvisor` or `kata-qemu`; the admission policy refuses any other class); `handlers.{gvisor,kata}` (used only when the chart creates the RuntimeClass); `createRuntimeClasses` (off: clusters usually own theirs); `overhead.{memoryMi,cpuMillis}` (the RuntimeClass pod overhead the sandbox quota must allow, typically 160Mi and 250m on Kata; written into the RuntimeClass when the chart creates it). | `gvisor`, `""`, `runsc`/`kata-qemu`, `false`, `0`/`0` |
 | `sandboxNamespace` | `name` of the sandbox namespace, whether the chart creates it, and whether it is kept on uninstall. | `warden-sandboxes`, `true`, `true` |
-| `sandboxes` | Sandbox sizing, mirrored into `warden.json` and into the namespace quota and LimitRange: `memoryMB` and `cpus` (the default size of a fresh workspace; CPUs in quarters), `maxMemoryMB` and `maxCPUs` (the most any one workspace may be resized to: the quota allows every sandbox at this size and the LimitRange caps containers at it), `maxRunning`, `warmSpares`, `stopAfterIdleMinutes`, `keepStopped` (stopped workspaces kept), `extraPods` (quota headroom for the two canaries), `extraPVCs` (headroom for a fork clone in flight), `nodeSelector` and `tolerations` for sandbox pods (rendered into `warden.json` only when set). | `1536`, `1`, `8192`, `4`, `2`, `1`, `15`, `32`, `2`, `2`, `{}`, `[]` |
+| `sandboxes` | Sandbox sizing, mirrored into `warden.json` and into the namespace quota and LimitRange: `memoryMB` and `cpus` (the default size of a fresh workspace; CPUs in quarters), `maxMemoryMB` and `maxCPUs` (the most any one workspace may be resized to: the quota allows every sandbox at this size and the LimitRange caps containers at it), `maxRunning`, `warmSpares`, `stopAfterIdleMinutes` (minutes after the last chat activity), `keepStopped` (stopped workspaces kept), `extraPods` (quota headroom for the two canaries), `extraPVCs` (headroom for a fork clone in flight), `nodeSelector` and `tolerations` for sandbox pods (rendered into `warden.json` only when set). | `1536`, `1`, `8192`, `4`, `2`, `1`, `30`, `32`, `2`, `2`, `{}`, `[]` |
 | `egress` | `restricted` (the policy template's destination list) or `open` (any public HTTP/HTTPS host); enforced at the gateway, same NetworkPolicies either way. | `restricted` |
 | `auth` | `mode` (`owner` or `google`); `publicURL` (the URL browsers open: `http://127.0.0.1:<edge.port>` by default in owner mode, the Ingress URL in Google mode); `google.signInClientID`, `google.owners`, `google.demoDomains`. | `owner`, `""`, `""`, `[]`, `[]` |
 | `previews` | `mode` (`loopback` or `public`); `hostSuffix` (public only); `ingress.enabled`, `ingress.className`, `ingress.annotations`, `ingress.host` (empty derives the app host from `auth.publicURL`), `ingress.tls.enabled`, `ingress.tls.secretName` (the certificate for the app host and `*.<hostSuffix>`). | `loopback`, `""`, `true`, `""`, `{}`, `""`, `true`, `warden-edge-public-tls` |

@@ -176,24 +176,41 @@ func TestLiveDriverAgainstTheDevCluster(t *testing.T) {
 	if out, err := d.Exec(ctx, name+"-fork", spec.Directory, "cat", "note.txt"); err != nil || strings.TrimSpace(out) != "persisted" {
 		t.Fatalf("fork did not carry the workspace: %q %v", out, err)
 	}
-	// Reconcile from a fresh driver deletes the pods and keeps the claims.
+	// Reconcile from a fresh driver keeps the resident pod at its
+	// generation, rebuilding the record, deletes the other pod and keeps
+	// both claims.
 	fresh, err := New(client, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fresh.Reconcile(ctx, []string{name, name + "-fork"}); err != nil {
+	resident, err := fresh.Reconcile(ctx, []sandbox.RegisteredRuntime{{Name: name, Generation: "gen-2", Resident: true}, {Name: name + "-fork", Generation: "gen-1"}})
+	if err != nil {
 		t.Fatalf("reconcile: %v", err)
+	}
+	if strings.Join(resident, ",") != name {
+		t.Fatalf("resident after reconcile: %v", resident)
+	}
+	if kept, ok := fresh.Runtime(name); !ok || kept.PodUID != again.PodUID || kept.ClaimUID != again.ClaimUID || kept.Generation != "gen-2" {
+		t.Fatalf("kept record %+v (was %+v)", kept, again)
+	}
+	if out, err := fresh.Exec(ctx, name, spec.Directory, "cat", "note.txt"); err != nil || strings.TrimSpace(out) != "persisted" {
+		t.Fatalf("kept pod not usable: %q %v", out, err)
 	}
 	deadline := time.Now().Add(time.Minute)
 	for time.Now().Before(deadline) {
-		if err := client.Get(ctx, kube.Pods, opts.Namespace, name, &pod); kube.IsNotFound(err) {
+		if err := client.Get(ctx, kube.Pods, opts.Namespace, name+"-fork", &pod); kube.IsNotFound(err) {
 			break
 		}
 		time.Sleep(time.Second)
 	}
+	if err := client.Get(ctx, kube.Pods, opts.Namespace, name+"-fork", &pod); !kube.IsNotFound(err) {
+		t.Fatalf("fork pod after reconcile: %v", err)
+	}
 	var claim kube.PersistentVolumeClaim
-	if err := client.Get(ctx, kube.PersistentVolumeClaims, opts.Namespace, name, &claim); err != nil {
-		t.Fatalf("claim after reconcile: %v", err)
+	for _, n := range []string{name, name + "-fork"} {
+		if err := client.Get(ctx, kube.PersistentVolumeClaims, opts.Namespace, n, &claim); err != nil {
+			t.Fatalf("claim %s after reconcile: %v", n, err)
+		}
 	}
 	if err := d.Remove(ctx, name+"-fork"); err != nil {
 		t.Fatalf("remove fork: %v", err)

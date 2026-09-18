@@ -186,14 +186,26 @@ type NoResidency struct{}
 
 func (NoResidency) Close() error { return nil }
 
+// RegisteredRuntime is what a restarted worker knows about one registered
+// sandbox's runtime when it hands it to Reconcile: its name, the
+// generation its guest was made for, and whether the registry had it
+// resident (running or starting) when the previous worker last saved.
+type RegisteredRuntime struct {
+	Name       string
+	Generation string
+	Resident   bool
+}
+
 // Reconciler is implemented by a driver whose guests outlive the worker
-// process (pods do, SBX VMs stop with their keep-alive session). At startup,
-// after the worker has stopped every registered sandbox and removed every
-// registered spare, it is handed the runtime names of the registered
-// sandboxes, whose workspaces must be kept; anything else it finds under its
-// labels is stale.
+// process (pods do, SBX VMs stop with their keep-alive session), and it
+// settles them at startup, after the worker has removed every registered
+// spare: handed the registered sandboxes' runtimes, whose workspaces must
+// be kept, it keeps a guest it finds still running for a resident runtime
+// at its generation and returns its name, so the worker keeps that sandbox
+// running across the restart, and stops every other guest it finds under
+// its labels; the worker stops nothing itself on such a driver.
 type Reconciler interface {
-	Reconcile(ctx context.Context, registered []string) error
+	Reconcile(ctx context.Context, registered []RegisteredRuntime) (resident []string, err error)
 }
 
 // LaunchOptions vary the agent command line per driver.

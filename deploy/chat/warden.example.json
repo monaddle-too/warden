@@ -21,7 +21,7 @@
     "memoryMB": 1536,
     "maxRunning": 2,
     "warmSpares": 1,
-    "stopAfterIdleMinutes": 15,
+    "stopAfterIdleMinutes": 30,
     "keepStopped": 32
   },
   "chat": { "listen": "127.0.0.1:18780" },

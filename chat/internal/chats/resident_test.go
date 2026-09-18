@@ -6,6 +6,7 @@ import (
 	"time"
 	"warden/chat/internal/agent"
 	cv "warden/chat/internal/conversation"
+	"warden/chat/internal/sandbox"
 )
 
 func (f *fakeWorker) count(op string) int {
@@ -57,6 +58,64 @@ func sendAndDeliver(t *testing.T, e *Engine, id, text string) {
 		entries := c.Conversation.Entries
 		return c.Status == "running" && len(entries) > 0 && entries[len(entries)-1].Delivery == "sent"
 	})
+}
+
+// Every turn's end is reported to the runner as chat activity, stamped
+// with its time, whether the session stays resident (the workspace's idle
+// window then counts from the reply, not from the session's later
+// release) or the run ends with the turn; the report never delays the
+// run and never repeats for a turn.
+func TestTurnEndReportsActivityToTheRunner(t *testing.T) {
+	activityAfter := func(t *testing.T, w *fakeWorker, want int, notBefore time.Time) {
+		t.Helper()
+		until(t, func() bool { return w.count("activity") == want })
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		var seen []sandbox.Request
+		for _, r := range w.requests {
+			if r.Operation == "activity" {
+				seen = append(seen, r)
+			}
+		}
+		last := seen[len(seen)-1]
+		if last.At.IsZero() || last.At.Before(notBefore) || last.At.After(time.Now()) || last.ChatID == "" || last.SandboxID == "" {
+			t.Fatalf("activity report: %+v (not before %v)", last, notBefore)
+		}
+	}
+	e, w := residentSetup(t)
+	id, _ := e.Create("Resident", "", "", nil)
+	started := time.Now()
+	sendAndDeliver(t, e, id, "first")
+	if n := w.count("activity"); n != 0 {
+		t.Fatalf("%d activity reports before the turn ended", n)
+	}
+	completeTurn(t, e, w, id)
+	activityAfter(t, w, 1, started)
+	until(t, func() bool { return e.sessionIdle(id) })
+	time.Sleep(50 * time.Millisecond)
+	if n := w.count("activity"); n != 1 {
+		t.Fatalf("%d activity reports for one turn", n)
+	}
+	second := time.Now()
+	sendAndDeliver(t, e, id, "second")
+	completeTurn(t, e, w, id)
+	activityAfter(t, w, 2, second)
+	// The session's release is not activity.
+	e.releaseChat(context.Background(), id)
+	until(t, func() bool { return !e.sessionAlive(id) })
+	time.Sleep(50 * time.Millisecond)
+	if n := w.count("activity"); n != 2 {
+		t.Fatalf("%d activity reports after the release", n)
+	}
+
+	// One run per message: the turn's end is reported as the run ends.
+	e2, w2, _ := setup(t)
+	id2, _ := e2.Create("Once", "", "", nil)
+	started = time.Now()
+	sendAndDeliver(t, e2, id2, "hello")
+	w2.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
+	until(t, func() bool { return e2.Store.Snapshot().chat(id2).Status == "idle" })
+	activityAfter(t, w2, 1, started)
 }
 
 func TestResidentSessionReusedAcrossTurns(t *testing.T) {
