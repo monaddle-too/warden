@@ -293,6 +293,20 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 - [x] Design discussion, inventory and priority order (this document).
 - [x] 1 Typed tool cards and diffs — merged to main 5715a02 (2026-09-17); verified as the Item 1 section says.
+- [ ] 2 Subagents and background tasks — in progress on `feat/parity-2-subagents`.
+- [ ] 3 Permission model.
+- [ ] 4 Plan mode.
+- [ ] 5 Slash-command pass-through.
+- [x] 6 TUI catch-up — merged to main c60d938 (2026-09-17); verified as the Item 6 section says.
+- [ ] 7 Workspace `.claude/` loading and policy.
+- [ ] 8 Compaction and context.
+- [ ] 9 Mid-session model, effort, thinking.
+- [ ] 10 Queueing and rewind.
+- [ ] 11 Checkpoints and session diff.
+- [ ] 12 Composer polish.
+- [ ] 13 Per-user instructions and memory.
+- [ ] 14 Project MCP, OAuth, plugins.
+- [ ] 15 Long tail.
 
 ### Item 1: typed tool cards and diffs
 
@@ -351,7 +365,6 @@ inspected through `GET state`, the web UI (diffs with line numbers,
 (collapsed and Tab-expanded); a Codex chat's command renders through the
 same model (its file edit could not run: the account's Codex usage limit
 was exhausted; the `fileChange` mapping is unit-tested).
-- [ ] 2 Subagents and background tasks — in progress on `feat/parity-2-subagents`.
 
 ### Item 2: subagents, background tasks, todo list
 
@@ -443,16 +456,73 @@ Decisions:
    behind "n steps · elapsed"; the card shows the prompt, the child
    transcript and the result. Turn footers, unread and jump counts skip
    children. TUI: children indent under the card, Tab expands them.
-- [ ] 3 Permission model.
-- [ ] 4 Plan mode.
-- [ ] 5 Slash-command pass-through.
-- [ ] 6 TUI catch-up.
-- [ ] 7 Workspace `.claude/` loading and policy.
-- [ ] 8 Compaction and context.
-- [ ] 9 Mid-session model, effort, thinking.
-- [ ] 10 Queueing and rewind.
-- [ ] 11 Checkpoints and session diff.
-- [ ] 12 Composer polish.
-- [ ] 13 Per-user instructions and memory.
-- [ ] 14 Project MCP, OAuth, plugins.
-- [ ] 15 Long tail.
+
+### Item 6: TUI catch-up
+
+Branch `feat/parity-6-tui`, worktree `.local/warden-parity-6-tui`, from
+main 5ff4767 (2026-09-17). TUI only; `render.go`'s entry rendering is item
+1's and is left alone.
+
+Steps:
+
+1. Composer completion: `@path` from the `paths` route, a `/` menu with
+   hints (fuzzy prefix match as `composer.ts`), Tab/Enter accept.
+2. Attachments: `/attach PATH` uploads through `chats/{id}/attachments`,
+   sent with the next message; `/attachments`, `/detach N`.
+3. `/export [md|json] [all] [FILE]`, the same content as `export.ts`.
+4. `/rename`, `/archive`, `/restore`, `/delete` (confirmed).
+5. Keys: Ctrl-C (clear, twice quits), Ctrl-D (quit on empty), Esc
+   (interrupt), Ctrl-O (verbose), Ctrl-L (redraw), Ctrl-U/K/W/A/E, Ctrl-R,
+   Up/Down history; history persisted per chat under `<state>/tui/`.
+6. Status line: model, provider, running/idle with elapsed, pending
+   approvals, the turn's tokens and cost.
+7. Tests, feature map, live smoke, merge.
+
+Decisions:
+
+- `/delete` deletes the chat's workspace (`environments/{id}/delete`, what
+  the web's Delete does; there is no per-chat delete route) after a typed
+  confirmation.
+- Prompt history lives in `<state>/tui/history/<chatID>` (the CLI kept no
+  client state before; `<state>/app/` is the service's).
+- The JSON export keeps each entry's JSON as the service sent it, so
+  fields the client does not model (item 1's typed cards) survive.
+
+Also decided while building:
+
+- Ctrl+O hides tool steps and thinking altogether ("steps hidden" in the
+  status); the default keeps them, as before, with Tab/`/expand` for full
+  output. `/verbose` is the same toggle.
+- Up/Down move between the draft's lines and recall history from its
+  first/last line (Ctrl+P/N always recall); transcript scrolling is the
+  wheel, PgUp/PgDn and Home/End on an empty draft.
+- A lone Escape is reported after 60 ms (the decoder used to wait for the
+  next key), so Esc interrupts on its own. Shift+Tab is decoded and left
+  for item 3.
+- `ChatCommands` on `tui.App` is the hook for commands the chat offers
+  (item 5's `slash_commands`); nil today.
+
+Verified: `go test ./internal/tui` (`-race` too), `go vet`, `gofmt`;
+live on a cloned home (`~/.warden-p2`, build 66c3e37) driving the real
+TUI under a pty (`scratchpad/tui_smoke.py`): `/att` → menu → Tab →
+`/attach note.txt` uploaded and showed above the status; the message
+carried it (Claude read the file); status line `idle 3.6s · 94k tokens
+(94k in, 226 out) · $0.02`; `see @hel` listed `hello-from-tui.txt` and
+Tab completed it; `/export json all FILE` (format `warden-chat`, the
+attachment in the entry); `/rename` seen by `warden chat list`; Esc on a
+running `sleep 90` turn → "interrupting the agent" → `interrupted 7.9s
+· 46k tokens`; Up recalled the prompt, Ctrl+R found an earlier one,
+Ctrl+O hid the steps, Ctrl+C twice quit; `/delete` asked, `n` cancelled,
+`y` deleted the workspace and archived the chat.
+
+Seen on the way (not this item): Claude Code emits a `result` for a
+background-task notification, so the engine ends the turn (status idle,
+turn record closed) while a foreground Bash of that turn is still
+streaming; item 2 (background tasks) should handle that.
+
+Left: long commands (`/delete` stops the sandbox first) block the redraw
+for a few seconds; `/attach` accepts one file per command; vim mode.
+
+Progress: started 2026-09-17; implemented and live-verified 2026-09-17
+(66c3e37); merged to main c60d938 (2026-09-17) after merging item 1's
+typed tool cards in (tui_test.go's append-append conflict kept both).

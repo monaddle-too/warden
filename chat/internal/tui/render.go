@@ -480,48 +480,6 @@ func RenderApprovals(c *Chat, width int) []string {
 	return out
 }
 
-// RenderStatus is the one-line status bar.
-func RenderStatus(c *Chat, ports []Port, live bool, width int) string {
-	link := green + "●" + reset
-	if !live {
-		link = red + "○" + reset
-	}
-	status := c.Status
-	switch c.Status {
-	case "running", "stopping":
-		status = yellow + c.Status + reset
-	case "failed", "interrupted":
-		status = red + c.Status + reset
-	}
-	if c.Startup != nil && (c.Status == "running" || c.Status == "queued") {
-		// The startup stage, with the runtime's detail, until the turn runs.
-		stage := c.Startup.Stage
-		if c.Startup.Detail != "" {
-			stage += ": " + sanitize(c.Startup.Detail)
-		}
-		status = yellow + stage + reset
-	}
-	published := 0
-	for _, p := range ports {
-		if p.ChatID == c.ID && p.State == "approved" {
-			published++
-		}
-	}
-	extra := ""
-	if published > 0 {
-		extra = fmt.Sprintf("  previews:%d", published)
-	}
-	if c.Error != "" {
-		extra += "  " + red + sanitize(c.Error) + reset
-	}
-	model := c.Model
-	if model == "" {
-		model = "default"
-	}
-	line := fmt.Sprintf("%s %s%s%s  %s · %s  %s%s  %s/help%s", link, bold, sanitize(c.Title), reset, c.Provider, model, status, extra, dim, reset)
-	return line
-}
-
 // ChatLine is one row of a chat listing.
 func ChatLine(i int, c *Chat) string {
 	status := c.Status
