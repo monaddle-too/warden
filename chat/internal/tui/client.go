@@ -469,13 +469,20 @@ func (c *Client) State(ctx context.Context) (*State, error) {
 
 // Create starts a chat; resources sizes a fresh workspace (nil is the
 // runner's default) and must be nil when sandboxID shares an existing one.
-func (c *Client) Create(ctx context.Context, title, provider, model, sandboxID string, resources *sandbox.Resources) (string, error) {
+// Create starts a chat: on a fresh workspace of the given size (nil is the
+// runner's default) and, when network is "restricted" or "open", with that
+// network access of its own (the owner's choice; "" follows the install),
+// or sharing sandboxID's workspace.
+func (c *Client) Create(ctx context.Context, title, provider, model, sandboxID string, resources *sandbox.Resources, network ...string) (string, error) {
 	var res struct {
 		ID string `json:"id"`
 	}
 	body := map[string]any{"title": title, "provider": provider, "model": model, "sandboxID": sandboxID}
 	if resources != nil {
 		body["resources"] = resources
+	}
+	if len(network) > 0 && network[0] != "" {
+		body["network"] = network[0]
 	}
 	if err := c.do(ctx, "POST", "chats", body, &res); err != nil {
 		return "", err
