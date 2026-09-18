@@ -151,19 +151,19 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
 | Multi-line editing, newline chord | ✅ | ✅ | |
-| Prompt history, Ctrl-R search | ✗ | ✗ | |
+| Prompt history, Ctrl-R search | ✅ | ✅ | item 12 (web: from the transcript), item 6 (TUI) |
 | `@path` completion | ✅ | ✗ | `paths` op |
 | `@server:resource` | ✗ | ✗ | needs MCP resources |
 | `/` menu with fuzzy match | ✅ (4) | ◐ typed | |
-| Long paste collapsed | ✗ | ✗ | |
+| Long paste collapsed | ✅ | ✅ | item 12: `[Pasted text #N — M lines]`, sent in full |
 | Image paste, drop, picker | ✅ | ✗ | |
 | File attachments into the workspace | ✅ | ✗ | |
 | Queue a message during a turn | ◐ | ◐ | the CLI queues it (item 7); Warden's engine serialises turns itself; Codex steers |
 | Edit a queued message | ✗ | ✗ | |
 | Esc to interrupt | ✅ | ✅ | `turn/interrupt` |
 | Esc-Esc / edit-and-resend | ◐ | ✗ | resident-session semantics to check |
-| `!` shell command | ✗ | ✗ | policy |
-| `#` append to `CLAUDE.md` | ✗ | ✗ | |
+| `!` shell command | ✅ | ✅ | item 12: by the person, transcript-only, `chats/{id}/exec` |
+| `#` append to `CLAUDE.md` | ✅ | ✅ | item 12: `chats/{id}/memory`; read by the agent only once item 7's flag change lands |
 | Prompt suggestions | ✗ | ✗ | |
 | Vim mode | — | ✗ | |
 
@@ -284,7 +284,11 @@ until the owner confirms.
 - **Permission modes per role.** Not probed here (item 3). `permissionMode`
   is in `system/init` and `set_permission_mode` is a control request in
   this CLI, so a selector needs no relaunch.
-- **`!` shell commands.** Not probed; item 12.
+- **`!` shell commands.** Item 12 runs them as the sandbox's agent user
+  through the runner, attributed to the requester and open to anyone
+  the edge admits to the chat (who could already have the agent run
+  anything); an owner-only rule at the edge (`ownerOnly`) is one line if
+  wanted.
 - **Per-principal instructions and memory.** The CLI reports
   `memory_paths.auto` = `~/.claude/projects/<cwd>/memory/` in the sandbox
   home, so auto-memory is per sandbox; a per-principal layout needs
@@ -380,7 +384,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [ ] 9 Mid-session model, effort, thinking.
 - [ ] 10 Queueing and rewind.
 - [ ] 11 Checkpoints and session diff.
-- [ ] 12 Composer polish.
+- [ ] 12 Composer polish — implemented and live-verified 2026-09-17 (a19cc28); merge pending.
 - [ ] 13 Per-user instructions and memory.
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
@@ -429,6 +433,44 @@ Decisions:
    through a host shell. It runs outside the registry lock and on its own
    request slots, so a slow command blocks neither the turn nor the
    workspace panel.
+4. The web's history comes from the transcript (this principal's user
+   entries), not from local storage: every device sees the same list and
+   nothing new is stored. The TUI keeps item 6's per-chat file.
+5. The paste thresholds (8 lines or 1000 characters) and the placeholder
+   text are the same on both surfaces; a placeholder deleted from the
+   draft drops its paste, a placeholder typed by hand stays text.
+6. "#" for Codex chats still writes CLAUDE.md (the note is for Claude);
+   the system line says Codex reads AGENTS.md instead.
+
+Verified 2026-09-17 on a cloned home (`~/.warden-p8`, build a19cc28, CLI
+2.1.272): unit — `go test ./...` (`sandbox/exec_test.go` runs the guest
+scripts locally: cwd, merged stderr, exit codes, the output tail, the
+timeout killing the group, a background child not holding the answer,
+CLAUDE.md created/appended/never through a symlink; the ops through the
+fake guest; `chats/composer_test.go` both routes; `tui/tui_test.go`
+`!`/`#`/placeholders), `pnpm test` (144: `history.test.ts`,
+`paste.test.ts`, prefixes, grouping). Live through the API: `ls -la`,
+`git status` in a workspace the agent had `git init`ed, `exit 7` with
+stderr, two `#` notes then `cat CLAUDE.md` showing the bullets (with the
+indented continuation line), a `!` command answering in 0 s while a 25 s
+agent turn ran, and the agent's next reply confirming it never saw the
+person's commands. In the browser: Up/Down walked three prompts and back
+to the empty draft, Ctrl-R + "hello" + Enter recalled the first prompt, a
+240-line paste became `[Pasted text #1 — 240 lines]` with its chip,
+survived a reload, opened in the dialog and was sent in full (241 lines
+in `GET state`; Claude answered "log line 137"), `!git status --short;
+git log --oneline` from the composer (hint, terminal send icon, the "You"
+card open with `?? CLAUDE.md`), "Send to agent" quoting it into the
+draft, `#prefer small commits` → the system line and `!cat CLAUDE.md`
+showing it, a `!` card landing while the agent's turn ran. TUI in a pty:
+`!echo …; exit 4` → "you $ …" card with `exit 4` and the notices, `#`
+→ the system line, a 14-line bracketed paste → the placeholder.
+
+Left: the runner's `exec` has no per-role policy (see "Decisions
+needed"); a `!` command's card is not searched by the transcript find
+(activity entries never were); the TUI's paste placeholder is not a
+chip (no preview), and a `!` command with a paste placeholder expands it
+on the TUI too but the TUI shows no chip to inspect first.
 
 ### Item 1: typed tool cards and diffs
 

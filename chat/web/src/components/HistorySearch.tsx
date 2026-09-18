@@ -53,7 +53,7 @@ export function HistorySearch({
         onHover={setActive}
         onPick={(item) => onPick(matches[Number(item.id.slice(8))])}
       />
-      <label className="history-query">
+      <div className="history-query">
         <span className="muted">reverse-i-search</span>
         <input
           ref={input}
@@ -90,7 +90,7 @@ export function HistorySearch({
             }
           }}
         />
-      </label>
+      </div>
     </div>
   );
 }
