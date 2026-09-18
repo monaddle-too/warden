@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,7 +37,7 @@ func (c *cli) start(args []string) error {
 	template := fs.String("policy-template", "", "sandbox policy template when warden.json has no paths.sandboxPolicyTemplate")
 	withoutEdge := fs.Bool("without-edge", false, "do not start the edge (no previews; the app is reachable on the chat port only)")
 	detach := fs.Bool("detach", false, "run in the background; logs to <state>/warden.log, stop with `warden stop`")
-	popupsMode := fs.String("popups", popupsNone, "how pending approvals are surfaced: none (default: they wait in the app and the terminal client), notify (desktop notification), browser (notification and the chat opened in the browser), auto (browser when detached, notify otherwise)")
+	popupsMode := fs.String("popups", popupsNone, "how pending approvals are surfaced: none (default: they wait in the app and the terminal client), notify (desktop notification), browser (notification and the chat opened in the browser), auto (browser when detached, notify otherwise), silent (nothing at all). A review only the app can do (a pull request proposal, document suggestions, a document choice) opens the app under every mode but silent")
 	detachedChild := fs.Bool("detached-child", false, "internal: this process was started by --detach")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
@@ -58,10 +59,8 @@ func (c *cli) start(args []string) error {
 	if exe, err = filepath.EvalSymlinks(exe); err != nil {
 		return err
 	}
-	switch *popupsMode {
-	case popupsAuto, popupsBrowser, popupsNotify, popupsNone:
-	default:
-		return fmt.Errorf("--popups must be auto, browser, notify or none, not %q", *popupsMode)
+	if !slices.Contains(popupModes, *popupsMode) {
+		return fmt.Errorf("--popups must be auto, browser, notify, none or silent, not %q", *popupsMode)
 	}
 	l := &launcher{c: c, cfg: cfg, configPath: path, exe: exe, withoutEdge: *withoutEdge, popups: *popupsMode, detached: *detachedChild}
 	if l.assets, err = locateAssets(cfg, filepath.Dir(exe), *webDir, *vendorDir, *template); err != nil {
@@ -450,9 +449,15 @@ func copyToClipboard(text string) error {
 	return errors.New("no clipboard command found")
 }
 
+// openBrowser opens url in the person's browser: the command $BROWSER
+// names when set (the convention xdg-open and gh follow; a script that
+// records the URL serves a headless machine or a test), else /usr/bin/open
+// on macOS or xdg-open.
 func openBrowser(url string) error {
 	var cmd *exec.Cmd
 	switch {
+	case os.Getenv("BROWSER") != "":
+		cmd = exec.Command(os.Getenv("BROWSER"), url)
 	case executableFile("/usr/bin/open") == nil:
 		cmd = exec.Command("/usr/bin/open", url)
 	default:

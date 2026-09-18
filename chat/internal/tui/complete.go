@@ -72,6 +72,7 @@ var Commands = []Command{
 	{"expand", "", "toggle full tool output and diffs (Tab)"},
 	{"verbose", "", "show or hide tool steps and thinking (Ctrl+O)"},
 	{"open", "", "open this chat in the browser"},
+	{"review", "[N]", "open the app on this chat's pending review (a pull request proposal, document suggestions, a document choice)"},
 	{"previews", "", "list published previews"},
 	{"preview", "N", "open preview N in the browser"},
 	{"unpublish", "N", "take preview N down"},

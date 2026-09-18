@@ -59,6 +59,11 @@ type Chat struct {
 	Archived     bool                      `json:"archived"`
 	Conversation conversation.Conversation `json:"conversation"`
 	Approvals    []Approval                `json:"approvals"`
+	// Reviews are the agent's requests that only the app can settle (a
+	// pull request proposal, suggested document edits, a document
+	// selection or creation), kept while they wait in the policy service
+	// (reviews.go); the other clients point at the app for them.
+	Reviews []Review `json:"reviews,omitempty"`
 	// Commands is what the agent's session offers as slash commands (Claude
 	// Code's built-ins and the workspace's own commands and skills, from its
 	// `system/init`), for the composer's "/" menu. A message "/name …" is

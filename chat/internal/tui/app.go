@@ -147,6 +147,7 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /new [title] /chats /switch N · /rename TITLE /archive /restore /delete
            /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
            /stop /model M /provider P /mode M · /open /previews /preview N /unpublish N
+           /review [N] opens the app on this chat for a pull request proposal, document suggestions or a document choice
            /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
            /queue (list) /queue send · /withdraw N · /edit [N] [both] (N from /rewind)
            /fork (list) /fork N|all copies the chat into a sibling · /cost totals so far
@@ -1444,6 +1445,8 @@ func (a *App) command(ctx context.Context, line string) {
 		} else {
 			a.setNotice("opened in the browser")
 		}
+	case "review":
+		a.review(c, arg)
 	case "expand":
 		a.expanded = !a.expanded
 		a.setNotice(map[bool]string{true: "showing full tool output and diffs", false: "showing the last lines of tool output"}[a.expanded])
@@ -1895,7 +1898,7 @@ func (a *App) visible(c *Chat) *Chat {
 }
 
 // compose lays out the body for the given width: the transcript, the
-// pending approvals and the session diff. final is how many leading lines
+// pending reviews and approvals and the session diff. final is how many leading lines
 // belong to entries that are final (render.go's Block) — what the painter
 // may write to the scrollback and never touch again; approvals and the
 // diff are never final.
@@ -1920,6 +1923,8 @@ func (a *App) compose(width int) (body []string, final int) {
 				allFinal = false
 			}
 		}
+		// Reviews and approvals wait for the person: never final.
+		body = append(body, RenderReviews(c, width)...)
 		body = append(body, RenderApprovals(c, width)...)
 		if a.diff != nil {
 			body = append(body, "")
