@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { arrowStep, isKey } from "../shortcuts";
 import { Archive, MessageSquare, Search, TextSearch } from "lucide-react";
 import { authorLabel, localTime, providerName, senderLabel } from "../export";
 import { subagentInput } from "../tools";
@@ -123,15 +124,14 @@ export function SearchPalette({
       aria-label="Search chats"
       onClose={onClose}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
+        if (isKey(event, "dialog-close")) {
           event.preventDefault();
           dialog.current?.close();
-        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        } else if (isKey(event, "search-move")) {
           event.preventDefault();
           if (!rows.length) return;
-          const by = event.key === "ArrowDown" ? 1 : -1;
-          setActive((selected + by + rows.length) % rows.length);
-        } else if (event.key === "Enter") {
+          setActive((selected + arrowStep(event) + rows.length) % rows.length);
+        } else if (isKey(event, "search-open")) {
           event.preventDefault();
           if (rows[selected]) choose(rows[selected]);
         }

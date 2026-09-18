@@ -329,6 +329,16 @@ export type AsideResult = {
   costUSD?: number;
 };
 
+/* A side question asked in chat: its question goes as the person's
+   message with the answer quoted, so the agent can build on it. */
+export function promoteAside(chatID: string, entryID: string): Promise<PromoteResult> {
+  return api<PromoteResult>(
+    `chats/${encodeURIComponent(chatID)}/aside/${encodeURIComponent(entryID)}/promote`,
+    {},
+  );
+}
+export type PromoteResult = { messageID: string; text: string };
+
 /* The output style a Claude chat launches with next ("" for the default). */
 export function setOutputStyle(chatID: string, style: string) {
   return api(`chats/${encodeURIComponent(chatID)}/style`, { style });

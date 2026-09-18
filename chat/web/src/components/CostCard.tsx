@@ -1,18 +1,21 @@
 import { useEffect, useState } from "react";
 import { Receipt, X } from "lucide-react";
 import { costRows, sessionCost } from "../cost";
-import type { Turn } from "../types";
+import type { Entry, Turn } from "../types";
 
 /* The /cost card: this chat's turns, tokens and cost so far, from the
    service's turn records, shown to the reader who asked and never sent
    to the agent. A running turn keeps the time counting. */
 export function CostCard({
   turns,
+  entries,
   provider,
   running,
   onClose,
 }: {
   turns?: Turn[];
+  /* The transcript, for the side questions in it. */
+  entries?: Entry[];
   provider?: string;
   running: boolean;
   onClose: () => void;
@@ -23,7 +26,7 @@ export function CostCard({
     const id = setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => clearInterval(id);
   }, [running]);
-  const summary = sessionCost(turns, running ? now : undefined);
+  const summary = sessionCost(turns, running ? now : undefined, entries);
   return (
     <section className="cost-card" aria-label="Chat cost">
       <header>

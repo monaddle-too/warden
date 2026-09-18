@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { isKey } from "../shortcuts";
 import { chatCheckpoints, rewindChat } from "../api";
 import { senderLabel } from "../export";
 import {
@@ -93,7 +94,7 @@ export function RewindDialog({
       aria-labelledby="rewind-title"
       onClose={() => onClose(result?.done, result?.entry)}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
+        if (isKey(event, "dialog-close")) {
           event.stopPropagation();
           close();
         }

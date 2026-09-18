@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { isKey } from "../shortcuts";
 import { api } from "../api";
 import { formatSize } from "../attachments";
 import { memoryDescription, memoryPathError } from "../memory";
@@ -58,7 +59,7 @@ export function MemoryDialog({
       aria-labelledby="memory-title"
       onClose={onClose}
       onKeyDown={(event) => {
-        if (event.key === "Escape") dialog.current?.close();
+        if (isKey(event, "dialog-close")) dialog.current?.close();
       }}
     >
       <form onSubmit={save}>
@@ -89,7 +90,7 @@ export function MemoryDialog({
           disabled={busy || !!file.truncated}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter")
+            if (isKey(e, "dialog-save"))
               e.currentTarget.form?.requestSubmit();
           }}
         />

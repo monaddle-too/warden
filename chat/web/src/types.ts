@@ -57,12 +57,16 @@ export type Fork = {
   into?: boolean;
 };
 export type Aside = {
-  status: "running" | "completed" | "failed";
+  /* "starting" while the chat's released session is brought up for the
+     question (the chat shows its startup stages meanwhile). */
+  status: "starting" | "running" | "completed" | "failed";
   error?: string;
   costUSD?: number;
   input?: number;
   output?: number;
   durationMS?: number;
+  /* The user message the question was asked in chat as ("Ask in chat"). */
+  promoted?: string;
 };
 /* One compaction of the agent's context (conversation.Compaction):
    `trigger` is "manual" (the owner's /compact) or "auto" (the agent near
@@ -329,6 +333,10 @@ export type Spend = {
   total: number;
   costUSD: number;
   priced: boolean;
+  /* Answered side questions, counted in the totals above and marked
+     here (their share of costUSD in asideCostUSD). */
+  asides?: number;
+  asideCostUSD?: number;
 };
 /* The admin console's totals (GET spend): today, the last seven days and
    all time, each the sum, by provider, and the chats that had a turn. */

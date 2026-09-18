@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"warden/chat/internal/agent"
 	cv "warden/chat/internal/conversation"
 	"warden/chat/internal/sandbox"
@@ -244,32 +245,214 @@ func TestAsideAnswersFromAnIdleSession(t *testing.T) {
 	if entry := c.Conversation.Entries[len(c.Conversation.Entries)-1]; entry.Aside.Status != "failed" || entry.Aside.Error != "API Error: 503" {
 		t.Fatalf("failed aside: %+v", entry)
 	}
-	// While a turn runs the question is refused, not queued.
+	// While a turn runs the question is refused for after the turn, not
+	// queued.
 	w.mu.Lock()
 	w.hold = make(chan struct{})
 	hold := w.hold
+	w.aside = nil
 	w.mu.Unlock()
 	if err := e.Message(id, "work", cv.ID()); err != nil {
 		t.Fatal(err)
 	}
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "running" })
-	if _, err := e.Aside(context.Background(), id, "now?", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "wait for the agent") {
+	if _, err := e.Aside(context.Background(), id, "now?", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "after this turn") {
 		t.Fatalf("aside during a turn: %v", err)
+	}
+	if entries := e.Store.Snapshot().chat(id).Conversation.Entries; entries[len(entries)-1].Role == "aside" && entries[len(entries)-1].Text == "now?" {
+		t.Fatal("a refused question left an entry")
 	}
 	close(hold)
 	idle(t, e, id)
-	// Without a live session (released) the question is refused too.
-	e.releaseChat(context.Background(), id)
-	until(t, func() bool { return !e.sessionAlive(id) })
-	if _, err := e.Aside(context.Background(), id, "later?", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "not running") {
-		t.Fatalf("aside without a session: %v", err)
-	}
-	if entries := e.Store.Snapshot().chat(id).Conversation.Entries; entries[len(entries)-1].Role == "aside" && entries[len(entries)-1].Text == "later?" {
-		t.Fatal("a refused question left an entry")
-	}
 	codex, _ := e.Create("Codex", "", "", nil, "codex", "")
 	if _, err := e.Aside(context.Background(), codex, "hm?", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "Claude chat") {
 		t.Fatalf("aside on Codex: %v", err)
+	}
+}
+
+// A side question on a chat whose session was released (idle past its
+// timeout) starts the session for it — a run with nothing to send that
+// resumes the session and waits idle, the chat showing its startup
+// stages and the entry "starting" meanwhile — and is answered from it;
+// no turn is made. A start that fails fails the question with the
+// reason; a held queue (messages the start would send) is refused.
+func TestAsideStartsAReleasedSession(t *testing.T) {
+	e, w, id := claudeResidentSetup(t)
+	oneTurn(t, e, id, "hello")
+	until(t, func() bool { return e.sessionIdle(id) })
+	e.releaseChat(context.Background(), id)
+	until(t, func() bool { return !e.sessionAlive(id) })
+	gate := make(chan struct{})
+	w.mu.Lock()
+	w.prepareGate = gate
+	w.mu.Unlock()
+	streams := len(w.requestsOf("stream"))
+	type outcome struct {
+		result AsideResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		r, err := e.Aside(context.Background(), id, "still there?", cv.Actor{PrincipalID: "user-2", Name: "Ann"})
+		done <- outcome{r, err}
+	}()
+	until(t, func() bool {
+		c := e.Store.Snapshot().chat(id)
+		last := c.Conversation.Entries[len(c.Conversation.Entries)-1]
+		return c.Status == "running" && last.Role == "aside" && last.Aside != nil && last.Aside.Status == "starting" && last.IsStreaming
+	})
+	var startup *Startup
+	for _, c := range e.View().Chats {
+		if c.ID == id {
+			startup = c.Startup
+		}
+	}
+	if startup == nil || startup.Stage != stagePreparing {
+		t.Fatalf("startup while the session starts: %+v", startup)
+	}
+	close(gate)
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("the side question did not finish")
+	}
+	if got.err != nil || got.result.Text != "the answer" || got.result.Cost != 0.01 {
+		t.Fatalf("%+v %v", got.result, got.err)
+	}
+	if n := len(w.requestsOf("stream")); n != streams+1 {
+		t.Fatalf("%d sessions started, want 1", n-streams)
+	}
+	if prepares := w.requestsOf("prepare"); prepares[len(prepares)-1].ThreadID != "claude-session" {
+		t.Fatalf("the session was not resumed: %+v", prepares[len(prepares)-1])
+	}
+	if asides := w.requestsOf("aside"); len(asides) != 1 || asides[0].ThreadID != "claude-session" || asides[0].PrincipalID != "user-2" {
+		t.Fatalf("aside request: %+v", asides)
+	}
+	c := e.Store.Snapshot().chat(id)
+	last := c.Conversation.Entries[len(c.Conversation.Entries)-1]
+	if last.Role != "aside" || last.Aside.Status != "completed" || last.Detail != "the answer" || last.IsStreaming || last.Sender == nil || last.Sender.Name != "Ann" {
+		t.Fatalf("aside entry: %+v", last)
+	}
+	if c.Status != "idle" || !e.sessionIdle(id) || w.turns != 1 || len(c.Conversation.Turns) != 1 {
+		t.Fatalf("after the aside: status %s, alive %v, %d turns", c.Status, e.sessionIdle(id), w.turns)
+	}
+	if c.Startup != nil {
+		t.Fatalf("startup left on the chat: %+v", c.Startup)
+	}
+	// The session started for the question takes the next message as any
+	// resident session does.
+	oneTurn(t, e, id, "and now a turn")
+	if len(w.requestsOf("stream")) != streams+1 || w.turns != 2 {
+		t.Fatalf("the next message started another session: %d streams, %d turns", len(w.requestsOf("stream")), w.turns)
+	}
+	// A start that fails fails the question with the chat's error.
+	e.releaseChat(context.Background(), id)
+	until(t, func() bool { return !e.sessionAlive(id) })
+	w.mu.Lock()
+	w.prepareGate = nil
+	w.prepareErr = errors.New("no sandbox for you")
+	w.mu.Unlock()
+	result, err := e.Aside(context.Background(), id, "again?", cv.Actor{})
+	if err != nil || !strings.Contains(result.Error, "could not start") || !strings.Contains(result.Error, "no sandbox for you") {
+		t.Fatalf("aside on a failed start: %+v %v", result, err)
+	}
+	c = e.Store.Snapshot().chat(id)
+	if last := c.Conversation.Entries[len(c.Conversation.Entries)-1]; last.Role != "aside" || last.Aside.Status != "failed" || !strings.Contains(last.Aside.Error, "no sandbox for you") || last.IsStreaming {
+		t.Fatalf("failed aside: %+v", last)
+	}
+	if c.Status != "failed" {
+		t.Fatalf("chat after the failed start: %s", c.Status)
+	}
+	w.mu.Lock()
+	w.prepareErr = nil
+	w.mu.Unlock()
+	// A held queue on a released session: the start would send the held
+	// messages, so the question is refused until they are sent or
+	// withdrawn.
+	_ = e.Store.update(func(st *State) error {
+		c := st.chat(id)
+		c.Status = "interrupted"
+		v := cv.NewEntry("user", "held one")
+		v.Delivery = "queued"
+		c.Conversation.Entries = append(c.Conversation.Entries, v)
+		return nil
+	})
+	if _, err := e.Aside(context.Background(), id, "held?", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "1 message is held") {
+		t.Fatalf("aside with a held queue: %v", err)
+	}
+	if c := e.Store.Snapshot().chat(id); c.Status != "interrupted" {
+		t.Fatalf("the refusal changed the chat: %s", c.Status)
+	}
+}
+
+// A completed side question can be asked in chat: its question goes as a
+// message of the person's with the answer quoted, and the entry records
+// the message; a running, failed or already promoted one is refused.
+func TestPromoteAside(t *testing.T) {
+	e, w, id := claudeResidentSetup(t)
+	oneTurn(t, e, id, "hello")
+	until(t, func() bool { return e.sessionIdle(id) })
+	w.mu.Lock()
+	w.aside = &sandbox.AsideResult{Text: "Two things:\n- a\n- b", CostUSD: 0.01}
+	w.mu.Unlock()
+	result, err := e.Aside(context.Background(), id, "what next?", cv.Actor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.PromoteAside(id, "nope", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "no such") {
+		t.Fatalf("promote of nothing: %v", err)
+	}
+	promoted, err := e.PromoteAside(id, result.ID, cv.Actor{PrincipalID: "user-2", Name: "Ann"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "what next?\n\n(I asked this as a side question of a copy of your session; its answer, to build on:)\n> Two things:\n> - a\n> - b"
+	if promoted.Text != want || len(promoted.MessageID) != 32 {
+		t.Fatalf("%+v", promoted)
+	}
+	idle(t, e, id)
+	c := e.Store.Snapshot().chat(id)
+	var message, aside *cv.Entry
+	for i := range c.Conversation.Entries {
+		v := &c.Conversation.Entries[i]
+		switch v.ID {
+		case promoted.MessageID:
+			message = v
+		case result.ID:
+			aside = v
+		}
+	}
+	if message == nil || message.Role != "user" || message.Text != want || message.Sender == nil || message.Sender.Name != "Ann" || message.Delivery != "sent" {
+		t.Fatalf("promoted message: %+v", message)
+	}
+	if aside == nil || aside.Aside.Promoted != promoted.MessageID {
+		t.Fatalf("aside after the promotion: %+v", aside)
+	}
+	if w.turns != 2 {
+		t.Fatalf("%d turns, want the promoted message's", w.turns)
+	}
+	if _, err := e.PromoteAside(id, result.ID, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "already") {
+		t.Fatalf("second promotion: %v", err)
+	}
+	w.mu.Lock()
+	w.aside = &sandbox.AsideResult{Error: "API Error: 503"}
+	w.mu.Unlock()
+	failed, _ := e.Aside(context.Background(), id, "hm?", cv.Actor{})
+	if _, err := e.PromoteAside(id, failed.ID, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "no answer") {
+		t.Fatalf("promotion of a failed aside: %v", err)
+	}
+	_ = e.Store.update(func(st *State) error {
+		c := st.chat(id)
+		for i := range c.Conversation.Entries {
+			if v := &c.Conversation.Entries[i]; v.ID == failed.ID {
+				v.Aside.Status = "running"
+			}
+		}
+		return nil
+	})
+	if _, err := e.PromoteAside(id, failed.ID, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "still being answered") {
+		t.Fatalf("promotion of a running aside: %v", err)
 	}
 }
 
@@ -327,6 +510,11 @@ func TestForkAsideAndStyleRoutes(t *testing.T) {
 	if code != 200 || v["text"] != "the answer" || v["id"] == "" {
 		t.Fatalf("aside route: %d %v", code, v)
 	}
+	code, v = call("chats/"+id+"/aside/"+agent.String(v["id"])+"/promote", `{}`)
+	if code != 200 || len(agent.String(v["messageID"])) != 32 || !strings.HasPrefix(agent.String(v["text"]), "why?\n\n(I asked this") {
+		t.Fatalf("promote route: %d %v", code, v)
+	}
+	idle(t, e, id)
 	code, v = call("chats/"+id+"/style", `{"style":"Learning"}`)
 	if code != 200 || e.Store.Snapshot().chat(id).OutputStyle != "Learning" {
 		t.Fatalf("style route: %d %v", code, v)

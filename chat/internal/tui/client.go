@@ -86,6 +86,8 @@ type Aside struct {
 	Input      int64   `json:"input"`
 	Output     int64   `json:"output"`
 	DurationMS int64   `json:"durationMS"`
+	// Promoted is the user message the question was asked in chat as.
+	Promoted string `json:"promoted"`
 }
 
 // Compaction mirrors conversation.Compaction: how the agent's context was
@@ -892,6 +894,21 @@ type AsideResult struct {
 func (c *Client) Aside(ctx context.Context, chatID, question string) (AsideResult, error) {
 	var out AsideResult
 	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/aside", map[string]string{"text": question}, &out)
+	return out, err
+}
+
+// PromoteResult is what promoting a side question came to
+// (chats.PromoteResult): the message it went as and its text.
+type PromoteResult struct {
+	MessageID string `json:"messageID"`
+	Text      string `json:"text"`
+}
+
+// PromoteAside asks a side question in chat: its question goes as the
+// person's message with the answer quoted.
+func (c *Client) PromoteAside(ctx context.Context, chatID, entryID string) (PromoteResult, error) {
+	var out PromoteResult
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/aside/"+url.PathEscape(entryID)+"/promote", map[string]string{}, &out)
 	return out, err
 }
 

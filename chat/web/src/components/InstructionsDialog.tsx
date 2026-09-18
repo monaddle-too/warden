@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { isKey } from "../shortcuts";
 import { api } from "../api";
 import type { Instructions } from "../types";
 
@@ -49,7 +50,7 @@ export function InstructionsDialog({ onClose }: { onClose: () => void }) {
       aria-labelledby="instructions-title"
       onClose={onClose}
       onKeyDown={(event) => {
-        if (event.key === "Escape") dialog.current?.close();
+        if (isKey(event, "dialog-close")) dialog.current?.close();
       }}
     >
       <form onSubmit={save}>
@@ -72,7 +73,7 @@ export function InstructionsDialog({ onClose }: { onClose: () => void }) {
           maxLength={16 * 1024}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter")
+            if (isKey(e, "dialog-save"))
               e.currentTarget.form?.requestSubmit();
           }}
         />

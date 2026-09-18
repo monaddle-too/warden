@@ -5,6 +5,7 @@ import {
   useState,
   type RefObject,
 } from "react";
+import { isKey, modifierKey } from "../shortcuts";
 import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
 import { entryHits, findMatches, locate } from "../search";
 import type { Entry } from "../types";
@@ -14,16 +15,11 @@ import type { Entry } from "../types";
    a new object asks again even with the same query. */
 export type FindRequest = { chatID: string; query: string; entryID?: string };
 
-/* Whether ⌘F / Ctrl+F was pressed, on either platform's modifier. */
-export const isFindKey = (event: KeyboardEvent) =>
-  (event.metaKey || event.ctrlKey) &&
-  !event.altKey &&
-  !event.shiftKey &&
-  event.key.toLowerCase() === "f";
+/* Whether ⌘F / Ctrl+F was pressed, on either platform's modifier
+   (shortcuts.ts). */
+export const isFindKey = (event: KeyboardEvent) => isKey(event, "find");
 
-export const modifierKey = /Mac|iPhone|iPad/.test(navigator.platform)
-  ? "⌘"
-  : "Ctrl+";
+export { modifierKey };
 
 // Matches are painted with the CSS Custom Highlight API (`::highlight()` in
 // conversation.css), which styles ranges of the rendered text without
@@ -348,10 +344,13 @@ export function FindBar({
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") {
+          if (isKey(e, "find-prev")) {
             e.preventDefault();
-            (e.shiftKey ? prev : next)();
-          } else if (e.key === "Escape") {
+            prev();
+          } else if (isKey(e, "find-next")) {
+            e.preventDefault();
+            next();
+          } else if (isKey(e, "find-close")) {
             e.preventDefault();
             onClose();
           }

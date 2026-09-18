@@ -170,7 +170,7 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
            /queue (list) /queue send · /withdraw N · /edit [N] [both] (N from /rewind)
            /fork (list) /fork N|all [copy] copies the chat into a sibling (copy: the workspace too) · /cost totals so far
-           /btw QUESTION asks a copy of the session (never sent to the agent)
+           /btw QUESTION asks a copy of the session (never sent to the agent) · /btw promote [N] asks it in chat
            /bug TEXT reports a bug to Monaddle (you review it first) · /test bugreporting
            /style [default|Explanatory|Learning] · /bell [on|off]
            /find TEXT (this chat) · /search TEXT (every chat; /search N opens hit N)
@@ -180,27 +180,13 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /rules (list) /rules add allow|deny|ask PATTERN · /rules rm N — permission rules of the workspace
            /permissions how this chat's tool asks were decided and by whom · /allow [chat] answers the first ask always
            /compact [what to keep] asks Claude to replace the history with a summary
-composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
-           a long paste becomes [Pasted text #N — M lines] and is sent in full; Ctrl+P on it previews, /paste N prints it
-           !cmd runs a shell command in the workspace as you (not the agent)
-           #note appends a bullet to the workspace's CLAUDE.md
-           @path completes a workspace path (Tab or Enter accepts) · @./file or @~/file attaches a local file when sent
+composer   a long paste becomes [Pasted text #N — M lines] and is sent in full; Ctrl+P on it previews, /paste N prints it
+           @./file or @~/file attaches a local file when sent
            /chats and /switch mark chats with unread messages (• N); switching prints ── new ── before them
-           Up/Down recall prompts (or move between lines) · Ctrl+R searches them
-           a message sent while the agent runs is queued: ↑ (empty draft) edits the last one
-           Esc Esc (empty draft, agent idle) edits your last message: the conversation rewinds to before it
-           Ctrl+A/E line start/end · Ctrl+U/K delete to line start/end · Ctrl+W a word
-keys       y / n answer the first pending approval; typed text answers a question
-           tool asks: y allow · a allow always (this chat) · A allow always (this workspace) · n [message] deny
-           plans: y approve (auto) · a approve, ask before edits · n [feedback] keep planning
-           Shift+Tab cycles a Claude chat's permission mode (auto → ask → plan)
-           Esc interrupts the agent · Ctrl+C clears the draft (twice quits) · Ctrl+D quits
-           Ctrl+O shows or hides tool steps and thinking · Tab (empty draft) expands output
-           Ctrl+L clears the screen and reprints the chat · /bottom (End on an empty draft) does the same, to its end
+           a message sent while the agent runs is queued (↑ on an empty draft edits the last one)
            the transcript is your terminal's: scroll, search and select text as you always do
-vim        /vim on: Esc enters normal mode (-- NORMAL --), i a I A o O insert · h j k l w b e 0 $ ^ gg G with counts
-           d c y over a motion, dd cc yy x X p P · u undoes, Ctrl+R redoes, . repeats · Enter or :w sends
-           :q quits · :wq · :set novim · /TEXT searches the transcript (n again) · G on an empty draft reprints to the end`
+keys       /keys lists every key by area (composer, transcript, approvals, menus and search, vim mode), from the table the keys are handled with
+vim        /vim on: Esc enters normal mode, Enter or :w sends, :q quits, :set novim turns it off · /keys lists the motions and operators`
 
 // NewMessageID is a fresh client message id (retries reuse it).
 func NewMessageID() string {
@@ -513,105 +499,14 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 		return
 	}
 	c := a.chat()
-	switch k.Kind {
-	case KeyEOF:
-		a.quit = true
-	case KeyCtrlD:
-		if a.editor.Text() == "" {
-			a.quit = true
-			return
-		}
-		a.editor.Handle(Key{Kind: KeyDelete})
+	// The app's own keys are the table's (keys.go, which /keys prints);
+	// everything else is the editor's.
+	if b := bindingFor(k.Kind); b != nil {
+		b.run(a, ctx, k, c)
+		return
+	}
+	if a.editor.Handle(k) {
 		a.refreshMenu(ctx)
-	case KeyCtrlC:
-		a.confirm = nil
-		now := a.now()
-		if ed := a.editing; ed != nil {
-			a.editing = nil
-			a.editor.Clear()
-			a.vim.Reset()
-			a.menu = nil
-			a.ctrlC = now
-			a.setNotice("edit of " + ed.label + " cancelled · Ctrl+C again to quit")
-			return
-		}
-		if a.editor.Text() != "" || a.menu != nil {
-			a.editor.Clear()
-			a.vim.Reset()
-			a.preview = nil
-			a.menu = nil
-			a.ctrlC = now
-			a.setNotice("draft cleared · Ctrl+C again to quit")
-			return
-		}
-		if !a.ctrlC.IsZero() && now.Sub(a.ctrlC) < ctrlCQuit {
-			a.quit = true
-			return
-		}
-		a.ctrlC = now
-		if c != nil && c.Running() {
-			a.setNotice("Ctrl+C again to quit · Esc interrupts the agent")
-		} else {
-			a.setNotice("Ctrl+C again to quit")
-		}
-	case KeyCtrlL:
-		a.redraw = true
-	case KeyEscape:
-		a.escape(ctx, c)
-	case KeyCtrlO:
-		a.quiet = !a.quiet
-		if a.quiet {
-			a.setNotice("hiding tool steps and thinking (Ctrl+O shows them)")
-		} else {
-			a.setNotice("showing tool steps and thinking")
-		}
-	case KeyCtrlR:
-		a.search = &searchState{index: -1}
-	case KeyPageUp, KeyPageDown, KeyWheelUp, KeyWheelDown:
-		// The transcript is the terminal's: it scrolls it (these keys
-		// reach the terminal, not the app, when nothing asks for mouse
-		// reports; a stray report is dropped here rather than typed).
-	case KeyEnd:
-		// With nothing typed, End goes back to the transcript's end (the
-		// reprint lands the terminal there); while composing it moves the
-		// cursor.
-		if a.editor.Text() == "" {
-			a.bottom()
-			return
-		}
-		a.editor.Handle(k)
-	case KeyShiftTab:
-		a.cycleMode(ctx)
-	case KeyTab:
-		if a.editor.Text() == "" {
-			a.expanded = !a.expanded
-			if a.expanded {
-				a.setNotice("showing full tool output and diffs (Tab to collapse)")
-			} else {
-				a.setNotice("showing the last lines of tool output (Tab to expand)")
-			}
-			return
-		}
-		a.menuOff = ""
-		a.refreshMenu(ctx)
-		if a.menu != nil && len(a.menu.Items) == 1 {
-			a.acceptMenu(ctx, false)
-		}
-	case KeyEnter:
-		a.send(ctx)
-	case KeyUp:
-		// On an empty draft with a message queued, ↑ edits the last one
-		// (Claude Code's); otherwise the line above, or the history.
-		if a.editor.Text() == "" && a.editLastQueued(ctx, c) {
-			return
-		}
-		if a.editor.Handle(k) {
-			a.refreshMenu(ctx)
-		}
-	default:
-		if a.editor.Handle(k) {
-			a.refreshMenu(ctx)
-		}
 	}
 }
 
@@ -1376,6 +1271,8 @@ func (a *App) command(ctx context.Context, line string) {
 	switch name {
 	case "help", "?":
 		a.setNotice(helpText)
+	case "keys":
+		a.keys()
 	case "quit", "exit", "q":
 		a.quit = true
 	case "chats":

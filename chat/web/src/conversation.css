@@ -410,6 +410,19 @@
   margin: 0;
   font-size: 12px;
   color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* "Ask in chat" / "Asked in chat" on an answered side question. */
+.aside-facts button.aside-promote {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--accent-text);
 }
 
 /* The /cost card: this chat's totals, for the reader who asked. */

@@ -72,7 +72,7 @@ func TestAsideCommand(t *testing.T) {
 	if rest[0] != "python3" || rest[1] != "-c" || rest[2] != asideScript || rest[3] != "what did we decide?" || rest[4] != "180" || rest[6] != defaultClaudePath || rest[7] != "-p" {
 		t.Fatalf("script arguments: %q", rest[:8])
 	}
-	for _, want := range []string{"\n--output-format\nstream-json\n", "\n--resume\nsess-1\n--fork-session\n", "\n--model\nclaude-opus-5\n", "\n--settings\n{\"outputStyle\":\"Learning\"}", "\n--strict-mcp-config\n", "\n--setting-sources=\n"} {
+	for _, want := range []string{"\n--output-format\nstream-json\n", "\n--resume\nsess-1\n--fork-session\n", "\n--model\nclaude-opus-5\n", "\n--settings\n{\"outputStyle\":\"Learning\"}", "\n--strict-mcp-config\n", "\n--setting-sources=\n", "\n--no-session-persistence\n"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in %s", want, joined)
 		}
@@ -98,8 +98,17 @@ func TestAsideCommand(t *testing.T) {
 func TestAsideScriptRunsTheOneShot(t *testing.T) {
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "claude")
-	os.WriteFile(fake, []byte("#!/bin/sh\nq=$(cat)\necho \"arg:$*\" >&2\nprintf '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s2\"}\\n'\nprintf '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"you asked: %s\",\"total_cost_usd\":0.02,\"duration_ms\":1200,\"session_id\":\"s2\",\"usage\":{\"input_tokens\":2,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":10,\"output_tokens\":7}}\\n' \"$q\"\nexit 0\n"), 0755)
-	raw, err := exec.Command("python3", "-c", asideScript, "hello there", "10", strconv.Itoa(asideOutputLimit), fake, "-p", "--resume", "s1").Output()
+	// The fake CLI writes the fork's copy beside the resumed session, as
+	// a CLI ignoring --no-session-persistence would (session ids are
+	// uuids; the fake's are short but hex).
+	config := filepath.Join(dir, "config")
+	project := filepath.Join(config, "projects", "-home-agent-workspace")
+	os.MkdirAll(filepath.Join(project, "a1b2"), 0755)
+	os.WriteFile(filepath.Join(project, "a1b2.jsonl"), []byte("source\n"), 0600)
+	os.WriteFile(fake, []byte("#!/bin/sh\nq=$(cat)\necho \"arg:$*\" >&2\nmkdir -p \"$CLAUDE_CONFIG_DIR/projects/-home-agent-workspace/c3d4\"\necho copy > \"$CLAUDE_CONFIG_DIR/projects/-home-agent-workspace/c3d4.jsonl\"\nprintf '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"c3d4\"}\\n'\nprintf '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"you asked: %s\",\"total_cost_usd\":0.02,\"duration_ms\":1200,\"session_id\":\"c3d4\",\"usage\":{\"input_tokens\":2,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":10,\"output_tokens\":7}}\\n' \"$q\"\nexit 0\n"), 0755)
+	cmd := exec.Command("python3", "-c", asideScript, "hello there", "10", strconv.Itoa(asideOutputLimit), fake, "-p", "--resume", "a1b2")
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+config)
+	raw, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,16 +116,48 @@ func TestAsideScriptRunsTheOneShot(t *testing.T) {
 		Output, Stderr string
 		ExitCode       int
 		TimedOut       bool
+		Removed        []string
 	}
 	if err := json.Unmarshal(raw, &report); err != nil {
 		t.Fatalf("%s: %v", raw, err)
 	}
-	if report.ExitCode != 0 || report.TimedOut || !strings.Contains(report.Stderr, "arg:-p --resume s1 --tools ") {
+	if report.ExitCode != 0 || report.TimedOut || !strings.Contains(report.Stderr, "arg:-p --resume a1b2 --tools ") {
 		t.Fatalf("%+v", report)
 	}
 	result := ParseAsideOutput(report.Output)
-	if result.Text != "you asked: hello there" || result.CostUSD != 0.02 || result.Input != 112 || result.Output != 7 || result.DurationMS != 1200 || result.SessionID != "s2" || result.Error != "" {
+	if result.Text != "you asked: hello there" || result.CostUSD != 0.02 || result.Input != 112 || result.Output != 7 || result.DurationMS != 1200 || result.SessionID != "c3d4" || result.Error != "" {
 		t.Fatalf("%+v", result)
+	}
+	// The copy (its file and its directory) is gone, the resumed session
+	// untouched.
+	if len(report.Removed) != 2 {
+		t.Fatalf("removed: %v", report.Removed)
+	}
+	if _, err := os.Stat(filepath.Join(project, "c3d4.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("the copy's file is still there")
+	}
+	if _, err := os.Stat(filepath.Join(project, "c3d4")); !os.IsNotExist(err) {
+		t.Fatal("the copy's directory is still there")
+	}
+	if b, err := os.ReadFile(filepath.Join(project, "a1b2.jsonl")); err != nil || string(b) != "source\n" {
+		t.Fatalf("the resumed session: %q %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(project, "a1b2")); err != nil {
+		t.Fatal("the resumed session's directory is gone")
+	}
+	// A CLI that reports the resumed session's own id (nothing forked)
+	// has nothing removed; so has one that writes nothing.
+	os.WriteFile(fake, []byte("#!/bin/sh\ncat >/dev/null\nprintf '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"same\",\"session_id\":\"a1b2\"}\\n'\n"), 0755)
+	cmd = exec.Command("python3", "-c", asideScript, "q", "10", "1000", fake, "-p", "--resume", "a1b2")
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+config)
+	if raw, err = cmd.Output(); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &report); err != nil || len(report.Removed) != 0 {
+		t.Fatalf("%s: %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(project, "a1b2.jsonl")); err != nil {
+		t.Fatal("the resumed session was removed")
 	}
 	// A one-shot that hangs is killed at the timeout.
 	os.WriteFile(fake, []byte("#!/bin/sh\ncat >/dev/null\nsleep 30\n"), 0755)
@@ -185,21 +226,21 @@ func TestAsideOpRunsThroughTheRuntime(t *testing.T) {
 		}
 	}
 	d.mu.Lock()
-	d.execOutput = `{"output":"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"forty-two\",\"total_cost_usd\":0.03,\"session_id\":\"sess-2\",\"usage\":{\"input_tokens\":5,\"output_tokens\":3}}\n","stderr":"","exitCode":0}`
+	d.execOutput = `{"output":"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"forty-two\",\"total_cost_usd\":0.03,\"session_id\":\"sess-2\",\"usage\":{\"input_tokens\":5,\"output_tokens\":3}}\n","stderr":"","exitCode":0,"removed":["/home/agent/.claude/projects/-home-agent-workspace/sess-2.jsonl"]}`
 	before := len(d.calls)
 	d.mu.Unlock()
 	res, err := w.dispatch(context.Background(), r)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Aside == nil || res.Aside.Text != "forty-two" || res.Aside.CostUSD != 0.03 || res.Aside.SessionID != "sess-2" || res.Aside.Input != 5 || res.Aside.Error != "" {
+	if res.Aside == nil || res.Aside.Text != "forty-two" || res.Aside.CostUSD != 0.03 || res.Aside.SessionID != "sess-2" || res.Aside.Input != 5 || res.Aside.Error != "" || res.Aside.Removed != 1 {
 		t.Fatalf("%+v", res.Aside)
 	}
 	d.mu.Lock()
 	call := d.calls[before]
 	d.mu.Unlock()
 	name := w.managed.Sandboxes[r.SandboxID].RuntimeName
-	for _, want := range []string{"exec:" + name + ":env -u ANTHROPIC_API_KEY", " CLAUDE_CODE_OAUTH_TOKEN=k ", " python3 -c " + asideScript + " what now? 180 ", " --resume sess-1 --fork-session --settings {\"outputStyle\":\"Learning\"}", " --model claude-opus-5 "} {
+	for _, want := range []string{"exec:" + name + ":env -u ANTHROPIC_API_KEY", " CLAUDE_CODE_OAUTH_TOKEN=k ", " python3 -c " + asideScript + " what now? 180 ", " --no-session-persistence ", " --resume sess-1 --fork-session --settings {\"outputStyle\":\"Learning\"}", " --model claude-opus-5 "} {
 		if !strings.Contains(call, want) {
 			t.Fatalf("missing %q in %q", want, call)
 		}
@@ -239,9 +280,12 @@ func TestOneShotCommand(t *testing.T) {
 			t.Fatalf("missing %q in %s", want, joined)
 		}
 	}
+	// The CLI's own arguments (after the script, which mentions --resume
+	// for its cleanup) resume nothing.
+	cli := strings.Join(rest[6:], "\n")
 	for _, bad := range []string{"--resume", "--fork-session", "--settings", "--append-system-prompt", "--input-format", "--mcp-config"} {
-		if strings.Contains(joined, bad) {
-			t.Fatalf("%s in a one-shot launch: %s", bad, joined)
+		if strings.Contains(cli, bad) {
+			t.Fatalf("%s in a one-shot launch: %s", bad, cli)
 		}
 	}
 	for _, a := range args {
@@ -301,9 +345,10 @@ func TestOneShotOpRunsThroughTheRuntime(t *testing.T) {
 			t.Fatalf("missing %q in %q", want, call)
 		}
 	}
+	cli := call[strings.Index(call, " /tmp/warden-claude "):]
 	for _, bad := range []string{"--resume", "--fork-session", "--settings", "Learning"} {
-		if strings.Contains(call, bad) {
-			t.Fatalf("%s in a one-shot: %q", bad, call)
+		if strings.Contains(cli, bad) {
+			t.Fatalf("%s in a one-shot: %q", bad, cli)
 		}
 	}
 	// A timed-out one-shot reports it.

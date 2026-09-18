@@ -29,7 +29,8 @@ type Command struct {
 
 // Commands is the `/` menu, in the order it shows them.
 var Commands = []Command{
-	{"help", "", "show the commands and keys"},
+	{"help", "", "show the commands"},
+	{"keys", "", "list every key by area, from the table the keys are handled with"},
 	{"new", "[TITLE]", "start a chat on a fresh workspace"},
 	{"chats", "", "list chats"},
 	{"switch", "N", "open chat N"},
@@ -58,7 +59,7 @@ var Commands = []Command{
 	{"instructions", "[edit|clear]", "your standing instructions for the agent, in every chat"},
 	{"memory", "[FILE | edit FILE]", "the workspace's CLAUDE.md, rules and auto-memory files"},
 	{"fork", "[N|all] [copy]", "copy this chat into a sibling (before message N, or the whole of it); copy takes a copy of the workspace too"},
-	{"btw", "QUESTION", "a side question answered from this chat's context, never sent to the agent"},
+	{"btw", "QUESTION", "a side question answered from this chat's context, never sent to the agent (promote N asks it in chat)"},
 	{"cost", "", "this chat's turns, tokens and cost so far"},
 	{"rules", "[add allow|deny|ask PATTERN | rm N]", "the workspace's permission rules (Bash(git *), Edit(src/**)…) and this chat's"},
 	{"permissions", "", "how this chat's tool asks were decided and by whom"},

@@ -24,6 +24,7 @@ import {
   PanelRight,
   Pencil,
   Plus,
+  Keyboard,
   RefreshCw,
   Search,
   Shield,
@@ -67,6 +68,8 @@ import { RewindDialog } from "./RewindDialog";
 import { SessionDiff } from "./SessionDiff";
 import { InstructionsDialog } from "./InstructionsDialog";
 import { PermissionHistory } from "./PermissionHistory";
+import { ShortcutsDialog } from "./ShortcutsDialog";
+import { isKey, typingIn } from "../shortcuts";
 import { SearchPalette } from "./SearchPalette";
 import { modifierKey, type FindRequest } from "./FindBar";
 
@@ -105,6 +108,7 @@ export function ChatShell({
   const [menuOpen, setMenuOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // The rewind chooser (the message it opens on, "" for the last) and the
   // session diff (rewind.ts).
   const [rewinding, setRewinding] = useState<string | null>(null);
@@ -169,17 +173,16 @@ export function ChatShell({
     sessionStorage.setItem("warden-workspace-open", workspaceOpen ? "1" : "0");
   }, [workspaceOpen]);
   // ⌘K / Ctrl+K opens the search palette from anywhere; again closes it.
+  // `?` outside an input opens the shortcuts overlay (shortcuts.ts).
   useEffect(() => {
     if (!signedIn()) return;
     const onKey = (event: KeyboardEvent) => {
-      if (
-        (event.metaKey || event.ctrlKey) &&
-        !event.altKey &&
-        !event.shiftKey &&
-        event.key.toLowerCase() === "k"
-      ) {
+      if (isKey(event, "search")) {
         event.preventDefault();
         setSearching((open) => !open);
+      } else if (isKey(event, "help") && !typingIn(event.target)) {
+        event.preventDefault();
+        setShortcutsOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -669,7 +672,7 @@ export function ChatShell({
                     setMenuOpen(false);
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === "Escape") setMenuOpen(false);
+                  if (isKey(e, "dialog-close")) setMenuOpen(false);
                 }}
               >
                 <summary aria-label="Chat actions" role="button">
@@ -766,6 +769,16 @@ export function ChatShell({
                     role="menuitem"
                     onClick={() => {
                       setMenuOpen(false);
+                      setShortcutsOpen(true);
+                    }}
+                  >
+                    <Keyboard size={15} />
+                    Keyboard shortcuts
+                  </button>
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
                       refresh();
                     }}
                   >
@@ -815,6 +828,9 @@ export function ChatShell({
                 chat={chat}
                 onClose={() => setExporting(false)}
               />
+            )}
+            {shortcutsOpen && (
+              <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />
             )}
             {permissionsOpen && (
               <PermissionHistory

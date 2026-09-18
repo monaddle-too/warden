@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -48,6 +49,9 @@ type AsideResult struct {
 	DurationMS int64   `json:"durationMS,omitempty"`
 	SessionID  string  `json:"sessionID,omitempty"`
 	Error      string  `json:"error,omitempty"`
+	// Removed counts the session files the guest script removed after
+	// the run (the fork's copy), for the log.
+	Removed int `json:"removed,omitempty"`
 }
 
 // asideScript runs the one-shot CLI (its path and arguments after the
@@ -55,10 +59,16 @@ type AsideResult struct {
 // empty value the SBX exec API would refuse as an argument) with the
 // question on stdin, the output kept to the cap, the process group
 // killed at the timeout, and reports stdout, the last of stderr, the
-// exit code and whether the timeout struck as one JSON line.
-const asideScript = `import sys,os,json,subprocess,signal
+// exit code and whether the timeout struck as one JSON line. A session
+// the CLI wrote for the run (a fork's copy: the `system/init` or
+// `result` frame names it, and it is not the one `--resume` named) is
+// removed from the CLI's project directory once the answer is captured,
+// so side questions leave no copies behind (R2.19); the report lists
+// what was removed.
+const asideScript = `import sys,os,json,subprocess,signal,glob,shutil
 question,timeout,cap=sys.argv[1],float(sys.argv[2]),int(sys.argv[3])
-p=subprocess.Popen(sys.argv[4:]+['--tools',''],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+argv=sys.argv[4:]
+p=subprocess.Popen(argv+['--tools',''],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
 timed=False
 try:
  out,err=p.communicate(question.encode(),timeout=timeout)
@@ -69,18 +79,37 @@ except subprocess.TimeoutExpired:
  out,err=p.communicate()
 code=p.returncode
 if code is None or code<0: code=-1
-print(json.dumps({'output':out[-cap:].decode('utf-8','replace'),'stderr':err[-4000:].decode('utf-8','replace'),'exitCode':code,'timedOut':timed}))
+text=out[-cap:].decode('utf-8','replace')
+keep=argv[argv.index('--resume')+1] if '--resume' in argv[:-1] else ''
+sid=''
+for line in text.splitlines():
+ try: v=json.loads(line)
+ except ValueError: continue
+ if isinstance(v,dict) and v.get('type') in ('system','result') and isinstance(v.get('session_id'),str): sid=v['session_id']
+removed=[]
+if sid and sid!=keep and all(c in '0123456789abcdef-' for c in sid):
+ root=os.environ.get('CLAUDE_CONFIG_DIR') or os.path.join(os.path.expanduser('~'),'.claude')
+ for f in glob.glob(os.path.join(root,'projects','*',sid+'.jsonl')):
+  try: os.remove(f); removed.append(f)
+  except OSError: pass
+ for d in glob.glob(os.path.join(root,'projects','*',sid)):
+  if os.path.isdir(d): shutil.rmtree(d,ignore_errors=True); removed.append(d)
+print(json.dumps({'output':text,'stderr':err[-4000:].decode('utf-8','replace'),'exitCode':code,'timedOut':timed,'removed':removed}))
 `
 
 // AsideCommand is the one-shot launch a side question runs in the guest's
 // working directory: the brokered environment, then the guest script
 // feeding the question to the CLI, which resumes the session as a copy
 // with every tool disabled by the script (it answers, it does not act),
-// in the chat's model and output style. Every value is data.
+// in the chat's model and output style, and writes the copy nowhere
+// (`--no-session-persistence`, which the pinned CLI honours with
+// `--fork-session`: it answers from the resumed context and leaves no
+// file; the script removes a copy anyway should one appear). Every
+// value is data.
 func AsideCommand(run RunSpec, question string) []string {
 	broker := run.Broker
 	paths := run.Paths.orDefaults()
-	args := append(claudeEnvironment(broker), "python3", "-c", asideScript, question, strconv.Itoa(int(AsideTimeout/time.Second)), strconv.Itoa(asideOutputLimit), paths.Claude, "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--strict-mcp-config", "--setting-sources=", "--append-system-prompt", "This is a side question asked beside the conversation above; answer it from what you know of the conversation and the workspace, briefly. You cannot run tools or change files here, and nothing you say enters the conversation.")
+	args := append(claudeEnvironment(broker), "python3", "-c", asideScript, question, strconv.Itoa(int(AsideTimeout/time.Second)), strconv.Itoa(asideOutputLimit), paths.Claude, "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--strict-mcp-config", "--setting-sources=", "--no-session-persistence", "--append-system-prompt", "This is a side question asked beside the conversation above; answer it from what you know of the conversation and the workspace, briefly. You cannot run tools or change files here, and nothing you say enters the conversation.")
 	if broker.Model != "" {
 		args = append(args, "--model", broker.Model)
 	}
@@ -188,15 +217,20 @@ func (w *Worker) oneShotRun(ctx context.Context, r Request, timeout time.Duratio
 		return Response{}, errors.New("could not run the " + what + " in the sandbox")
 	}
 	var report struct {
-		Output   string `json:"output"`
-		Stderr   string `json:"stderr"`
-		ExitCode int    `json:"exitCode"`
-		TimedOut bool   `json:"timedOut"`
+		Output   string   `json:"output"`
+		Stderr   string   `json:"stderr"`
+		ExitCode int      `json:"exitCode"`
+		TimedOut bool     `json:"timedOut"`
+		Removed  []string `json:"removed"`
 	}
 	if err = json.Unmarshal([]byte(raw), &report); err != nil {
 		return Response{}, errors.New("invalid sandbox " + what + " response")
 	}
 	result := ParseAsideOutput(report.Output)
+	result.Removed = len(report.Removed)
+	if result.Removed > 0 {
+		log.Printf("sandbox %s: the %s's session copy removed from the guest (%d files)", name, what, result.Removed)
+	}
 	switch {
 	case report.TimedOut:
 		result.Error = "the answer did not arrive within " + timeout.String()

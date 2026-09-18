@@ -2147,3 +2147,59 @@ button.danger:hover {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* The `?` overlay: every shortcut by area (shortcuts.ts). */
+.shortcuts-dialog {
+  width: min(820px, 100%);
+}
+.shortcuts-dialog h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.shortcuts-areas {
+  max-height: 65vh;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  column-gap: 24px;
+  row-gap: 4px;
+}
+.shortcuts-areas h3 {
+  margin: 10px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.shortcuts-areas table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.shortcuts-areas th {
+  text-align: left;
+  font-weight: normal;
+  white-space: nowrap;
+  vertical-align: top;
+  padding: 4px 12px 4px 0;
+  width: 1%;
+}
+.shortcuts-areas td {
+  padding: 4px 0;
+  vertical-align: top;
+}
+.shortcuts-areas tr + tr th,
+.shortcuts-areas tr + tr td {
+  border-top: 1px solid var(--line);
+}
+.shortcuts-areas kbd {
+  display: inline-block;
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--surface);
+}
