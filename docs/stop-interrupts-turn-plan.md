@@ -52,9 +52,36 @@ sandbox, not for the turn.
    implement it, and it is the only way to leave the guest running with
    nothing orphaned.
 2. The fallback keeps the old semantics rather than leaving a run hung:
-   an agent that ignores the interrupt for 10 s is cancelled and its
-   sandbox stopped, as before.
+   an agent that ignores the interrupt for 10 s (`interruptGrace`) is
+   cancelled and its sandbox stopped, as before. A run whose agent is not
+   up yet (the sandbox still preparing) has nothing to interrupt and takes
+   the same path; a live agent without a turn (session starting, or
+   between turns) is ended the way an idle release ends it, with no
+   cancel tombstone, so the sandbox stays.
+3. Stop on a chat that is not running is a no-op: an idle resident
+   session is worth keeping for the next message. A chat queued with no
+   run is taken off the queue without touching the runner.
+4. `Stop` decides how to stop from the run (turn in flight, no turn, idle,
+   no run) and then marks the chat in one store update that checks the
+   status agrees; the two are read apart, so a run ending or resuming in
+   between is retried. The run's `interrupting` flag is set before the
+   mark, so the Codex steering tick (which fails the run when `attempt`
+   finds the chat not running) stands down instead.
+5. `turn` treats any end of a turn whose interruption was requested as
+   the stop done (interrupted, or completed when the turn was ending
+   anyway) and marks the chat `interrupted`; `resume` no longer ends a
+   session on `interrupted`, so the next message runs on it.
+6. Workspace-level stops (`stopChats`: the panel's Stop, Archive, a
+   restarting resize) still end the sessions, via `endSession` after the
+   turn is interrupted, and `StopEnvironment` now waits out the runner's
+   run cleanup (`stopSandbox`) the way the chat's Stop used to.
 
 ## Progress log
 
-- 2026-09-17: plan.
+- 2026-09-17: implemented steps 1–4. `go vet`, `go test ./...` (chats
+  also with `-race`; `TestAttributionAndTypingIndicators` has a
+  pre-existing racy `now` closure the detector sometimes reports), web
+  build and tests pass. Not yet exercised against a live agent: the
+  Claude Code abort result's shape is taken as "whatever result follows
+  the interrupt", so any result ends the turn as interrupted; if the CLI
+  sends none, the 10 s fallback applies.

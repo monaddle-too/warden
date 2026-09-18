@@ -90,6 +90,9 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		// as it arrives so the transcript can show the model at work; each
 		// block (one per model call, so one before every tool) is its own.
 		thinkingID, thinking := "", ""
+		// An interrupt asked of the CLI: its next result ends the turn as
+		// interrupted, whatever the CLI calls the abort.
+		interrupting := false
 		flushThinking := func() {
 			if thinkingID == "" {
 				return
@@ -144,6 +147,15 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						}
 					}
 					_ = cli.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil})
+				case "turn/interrupt":
+					// Claude Code's SDK interrupt: the query aborts where it is
+					// (mid-thought, mid-tool) and reports a result; the process
+					// stays up for the next message.
+					if turn != "" && String(f.Params["turnId"]) == turn {
+						interrupting = true
+						_ = cli.Encode(map[string]any{"type": "control_request", "request_id": "warden-interrupt-" + claudeID(), "request": map[string]any{"subtype": "interrupt"}})
+					}
+					reply(f.ID, map[string]any{})
 				case "":
 					key := string(f.ID)
 					p := pending[key]
@@ -327,7 +339,10 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 					flushThinking()
 					flushText()
 					status := "completed"
-					if v["is_error"] == true {
+					if interrupting {
+						status = "interrupted"
+						interrupting = false
+					} else if v["is_error"] == true {
 						status = "failed"
 						event("error", map[string]any{"error": map[string]any{"message": claudeResultError(v)}})
 					}

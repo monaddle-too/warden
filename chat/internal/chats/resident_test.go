@@ -98,7 +98,9 @@ func TestResidentSessionEndsAfterIdleTimeoutAndNextMessageStartsFresh(t *testing
 	until(t, func() bool { return w.count("prepare") == 2 })
 }
 
-func TestStopEndsIdleResidentSession(t *testing.T) {
+// Stop on a chat idle between turns has nothing to stop: the session stays
+// resident for the next message and the sandbox is not touched.
+func TestStopOnIdleChatLeavesSession(t *testing.T) {
 	e, w := residentSetup(t)
 	id, _ := e.Create("Stop", "", "", nil)
 	sendAndDeliver(t, e, id, "first")
@@ -107,12 +109,61 @@ func TestStopEndsIdleResidentSession(t *testing.T) {
 	if err := e.Stop(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
-	until(t, func() bool { return !e.sessionAlive(id) })
-	if c := e.Store.Snapshot().chat(id); c.Status != "interrupted" {
-		t.Fatalf("status after stop: %s", c.Status)
+	if c := e.Store.Snapshot().chat(id); c.Status != "idle" || c.Error != "" || !e.sessionIdle(id) {
+		t.Fatalf("after stop: %s %q, session idle %v", c.Status, c.Error, e.sessionIdle(id))
 	}
-	if w.count("stop") != 1 {
-		t.Fatal("worker stop not requested")
+	if w.count("stop") != 0 || w.count("cancel") != 0 {
+		t.Fatal("stop touched the sandbox")
+	}
+	sendAndDeliver(t, e, id, "second")
+	until(t, func() bool { return w.turnCount() == 2 })
+}
+
+// Stop mid-turn on a resident session interrupts the turn and keeps the
+// session: the next message runs on it, with no second prepare.
+func TestStopInterruptsResidentTurnAndKeepsSession(t *testing.T) {
+	e, w := residentSetup(t)
+	id, _ := e.Create("Interrupt", "", "", nil)
+	sendAndDeliver(t, e, id, "first")
+	if err := e.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if c := e.Store.Snapshot().chat(id); c.Status != "interrupted" || c.Error != "" {
+		t.Fatalf("status after stop: %s %q", c.Status, c.Error)
+	}
+	until(t, func() bool { return e.sessionIdle(id) })
+	if w.count("stop") != 0 || w.count("cancel") != 0 {
+		t.Fatal("stop touched the sandbox")
+	}
+	sendAndDeliver(t, e, id, "second")
+	until(t, func() bool { return w.turnCount() == 2 })
+	if got := w.count("prepare"); got != 1 {
+		t.Fatalf("the interrupted session was not reused (%d prepares)", got)
+	}
+	completeTurn(t, e, w, id)
+	if e.sessionAlive(id) != true {
+		t.Fatal("session ended with the turn")
+	}
+}
+
+// Stopping the workspace ends the sessions Stop leaves resident, so the
+// runner's stop finds the sandbox free.
+func TestStopEnvironmentEndsSessionsAfterInterrupt(t *testing.T) {
+	e, w := residentSetup(t)
+	id, _ := e.Create("Workspace", "", "", nil)
+	sendAndDeliver(t, e, id, "first")
+	c := e.Store.Snapshot().chat(id)
+	if err := e.StopEnvironment(context.Background(), c.SandboxID); err != nil {
+		t.Fatal(err)
+	}
+	if e.sessionAlive(id) {
+		t.Fatal("session survived the workspace stop")
+	}
+	if w.count("stop") != 1 || w.count("cancel") != 0 {
+		t.Fatalf("workspace stop: %d stops, %d cancels", w.count("stop"), w.count("cancel"))
+	}
+	if c = e.Store.Snapshot().chat(id); c.Status != "interrupted" {
+		t.Fatalf("status after the workspace stop: %s", c.Status)
 	}
 }
 

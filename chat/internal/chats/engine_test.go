@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -37,6 +38,12 @@ type fakeWorker struct {
 	// what the progress operation answers meanwhile (startup_test.go).
 	prepareGate chan struct{}
 	progress    *sandbox.Progress
+	// threadGate, when set, holds the thread/start reply until it is
+	// closed: the agent is live but has no turn yet.
+	threadGate chan struct{}
+	// ignoreInterrupt answers turn/interrupt without ending the turn, as an
+	// agent that hangs would.
+	ignoreInterrupt bool
 }
 
 func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
@@ -106,7 +113,23 @@ func (f *fakeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWriteC
 			var result any = map[string]any{}
 			switch frame.Method {
 			case "thread/start", "thread/resume":
+				f.mu.Lock()
+				gate := f.threadGate
+				f.mu.Unlock()
+				if gate != nil {
+					<-gate
+				}
 				result = map[string]any{"thread": map[string]any{"id": "thread-one", "turns": []any{}}}
+			case "turn/interrupt":
+				// Codex answers at once and ends the turn as interrupted.
+				f.send(map[string]any{"id": frame.ID, "result": map[string]any{}})
+				f.mu.Lock()
+				ignore := f.ignoreInterrupt
+				f.mu.Unlock()
+				if !ignore {
+					f.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": frame.Params["turnId"], "status": "interrupted"}}})
+				}
+				continue
 			case "turn/start":
 				f.mu.Lock()
 				f.turns++
@@ -469,26 +492,41 @@ func TestPreviewURLsAndIdentity(t *testing.T) {
 // has been acknowledged and the active reservation has gone away.
 type orderedWorker struct {
 	fakeWorker
+	orderMu   sync.Mutex
 	cancelled bool
 	stops     int
 }
 
 func (w *orderedWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
+	w.orderMu.Lock()
 	if r.Operation == "cancel" {
 		w.cancelled = true
+		w.orderMu.Unlock()
 		return sandbox.Response{}, nil
 	}
 	if r.Operation == "stop" {
 		w.stops++
 		if !w.cancelled {
+			w.orderMu.Unlock()
 			return sandbox.Response{}, errors.New("cancel must precede stop")
 		}
 		if w.stops == 1 {
+			w.orderMu.Unlock()
 			return sandbox.Response{}, errors.New("sandbox has an active run")
 		}
 	}
+	w.orderMu.Unlock()
 	return w.fakeWorker.Call(ctx, r)
 }
+func (w *orderedWorker) outcome() (bool, int) {
+	w.orderMu.Lock()
+	defer w.orderMu.Unlock()
+	return w.cancelled, w.stops
+}
+
+// A run whose agent is not up yet (the sandbox still preparing) has nothing
+// to interrupt: Stop falls back to cancelling the run, tombstoning it on
+// the runner before the stop, and waits out the runner's cleanup.
 func TestStopCancelsBeforeStoppingAndWaitsForCleanup(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -496,14 +534,134 @@ func TestStopCancelsBeforeStoppingAndWaitsForCleanup(t *testing.T) {
 	}
 	defer s.Close()
 	w := &orderedWorker{}
+	w.prepareGate = make(chan struct{})
 	e := NewEngine(s, w)
+	e.ResidentProviders = []string{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Serve(ctx)
 	id, _ := e.Create("Stop", "", "", nil)
-	_ = s.update(func(st *State) error { c := st.chat(id); c.Status = "running"; c.RunID = cv.ID(); return nil })
+	if err = e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return w.count("prepare") == 1 })
 	if err = e.Stop(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
-	if !w.cancelled || w.stops != 2 || s.Snapshot().chat(id).Status != "interrupted" {
-		t.Fatal("stop did not wait for cancelled run cleanup")
+	cancelled, stops := w.outcome()
+	if !cancelled || stops != 2 || s.Snapshot().chat(id).Status != "interrupted" {
+		t.Fatalf("stop did not wait for cancelled run cleanup: cancelled %v, stops %d, status %s", cancelled, stops, s.Snapshot().chat(id).Status)
+	}
+	until(t, func() bool { return !e.sessionAlive(id) })
+	cancel()
+	<-e.done
+}
+
+// Stop on a turn in flight interrupts it through the agent's protocol: the
+// chat is handed back as interrupted with what streamed so far, the run
+// ends cleanly (no cancel tombstone, so the runner keeps the sandbox) and
+// the next message runs as usual.
+func TestStopInterruptsTurnWithoutStoppingSandbox(t *testing.T) {
+	e, w, _ := setup(t)
+	id, _ := e.Create("Interrupt", "", "", nil)
+	sendAndDeliver(t, e, id, "think hard")
+	w.send(agent.Frame{Method: "item/agentMessage/delta", Params: map[string]any{"itemId": "answer", "turnId": "turn-one", "delta": "Half an"}})
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 2 })
+	if err := e.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	c := e.Store.Snapshot().chat(id)
+	if c.Status != "interrupted" || c.Error != "" {
+		t.Fatalf("after stop: %s %q", c.Status, c.Error)
+	}
+	until(t, func() bool { return !e.sessionAlive(id) })
+	w.mu.Lock()
+	methods := append([]string(nil), w.methods...)
+	w.mu.Unlock()
+	if !slices.Contains(methods, "turn/interrupt") {
+		t.Fatalf("turn not interrupted: %v", methods)
+	}
+	if w.count("cancel") != 0 || w.count("stop") != 0 {
+		t.Fatalf("stop touched the sandbox: %d cancels, %d stops", w.count("cancel"), w.count("stop"))
+	}
+	c = e.Store.Snapshot().chat(id)
+	if len(c.Conversation.Entries) != 2 || c.Conversation.Entries[1].Text != "Half an" || c.Conversation.Entries[1].IsStreaming {
+		t.Fatalf("interrupted transcript: %+v", c.Conversation.Entries)
+	}
+	sendAndDeliver(t, e, id, "carry on")
+	until(t, func() bool { return w.turnCount() == 2 })
+}
+
+// An agent that answers the interrupt but never ends the turn is cancelled
+// after the grace, as before: the run is tombstoned and the sandbox stopped.
+func TestStopFallsBackToCancelWhenAgentIgnoresInterrupt(t *testing.T) {
+	e, w, _ := setup(t)
+	w.ignoreInterrupt = true
+	grace := interruptGrace
+	interruptGrace = 300 * time.Millisecond
+	t.Cleanup(func() { interruptGrace = grace })
+	id, _ := e.Create("Hung", "", "", nil)
+	sendAndDeliver(t, e, id, "hang")
+	if err := e.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if c := e.Store.Snapshot().chat(id); c.Status != "interrupted" {
+		t.Fatalf("after stop: %s %q", c.Status, c.Error)
+	}
+	if w.count("cancel") == 0 || w.count("stop") == 0 {
+		t.Fatalf("the hung run was not cancelled: %d cancels, %d stops", w.count("cancel"), w.count("stop"))
+	}
+}
+
+// Stop while the agent is up but has no turn yet (its session starting)
+// ends the run cleanly rather than tombstoning it: nothing runs in the
+// guest that a cancel would need to kill.
+func TestStopBeforeFirstTurnEndsRunWithoutCancel(t *testing.T) {
+	e, w, _ := setup(t)
+	gate := make(chan struct{})
+	w.threadGate = gate
+	id, _ := e.Create("Starting", "", "", nil)
+	if err := e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return slices.Contains(w.methods, "thread/start")
+	})
+	if err := e.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	close(gate)
+	c := e.Store.Snapshot().chat(id)
+	if c.Status != "interrupted" || c.Error != "" {
+		t.Fatalf("after stop: %s %q", c.Status, c.Error)
+	}
+	if w.count("cancel") != 0 || w.count("stop") != 0 {
+		t.Fatalf("stop touched the sandbox: %d cancels, %d stops", w.count("cancel"), w.count("stop"))
+	}
+}
+
+// A chat waiting for its run (queued, nothing started) is just taken off
+// the queue; the sandbox is not touched.
+func TestStopQueuedChatTouchesNothing(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	w := &fakeWorker{}
+	e := NewEngine(s, w)
+	id, _ := e.Create("Queued", "", "", nil)
+	if err = e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	c := s.Snapshot().chat(id)
+	if c.Status != "interrupted" || c.Conversation.Entries[0].Delivery != "failed" || len(w.requests) != 0 {
+		t.Fatalf("after stop: %s, delivery %s, runner calls %d", c.Status, c.Conversation.Entries[0].Delivery, len(w.requests))
 	}
 }
 

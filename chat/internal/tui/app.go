@@ -51,7 +51,7 @@ func (a *App) page() int {
 
 const helpText = `commands   /new [title]   start a chat on a fresh environment
            /chats         list chats      /switch N   open chat N
-           /stop          stop the run    /model M    set the model for the next run
+           /stop          interrupt agent /model M    set the model for the next run
            /provider P    codex or claude /open       open this chat in the browser
            /previews      list published previews    /unpublish N
            /preview N     open preview N in the browser

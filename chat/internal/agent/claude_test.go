@@ -348,3 +348,112 @@ func TestClaudeThinkingBlocksAreReasoningItems(t *testing.T) {
 		}
 	}
 }
+
+// A turn/interrupt becomes the CLI's interrupt control request; the result
+// that follows the abort ends the turn as interrupted, keeping whatever text
+// streamed before it and raising no error, and the process stays up for the
+// next turn.
+func TestClaudeInterruptEndsTurnAsInterrupted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	raw, fake := net.Pipe()
+	defer fake.Close()
+	done := make(chan Frame, 40)
+	interrupts := make(chan map[string]any, 1)
+	go func() {
+		d := json.NewDecoder(fake)
+		e := json.NewEncoder(fake)
+		var v map[string]any
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "stream_event", "event": map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": "Working on"}}})
+		if d.Decode(&v) != nil {
+			return
+		}
+		interrupts <- v
+		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{}}})
+		// What the CLI reports for an aborted query: an error result.
+		_ = e.Encode(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "result": "Request was aborted."})
+		// The next turn runs on the same process.
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "result", "is_error": false, "result": "Again."})
+	}()
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(_ *Client, f Frame) { done <- f })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err = c.Call(ctx, "thread/start", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	started, err := c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "go"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnID := String(Map(started["turn"])["id"])
+	for {
+		f := <-done
+		if f.Method == "item/agentMessage/delta" {
+			break
+		}
+	}
+	if _, err = c.Call(ctx, "turn/interrupt", map[string]any{"turnId": turnID}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case v := <-interrupts:
+		if v["type"] != "control_request" || Map(v["request"])["subtype"] != "interrupt" {
+			t.Fatalf("interrupt not forwarded as the SDK control request: %v", v)
+		}
+	case <-ctx.Done():
+		t.Fatal("interrupt not forwarded")
+	}
+	var text string
+	for {
+		select {
+		case f := <-done:
+			switch f.Method {
+			case "error":
+				t.Fatal("an interrupted turn is not an error")
+			case "item/completed":
+				text = String(Map(f.Params["item"])["text"])
+			case "turn/completed":
+				turn := Map(f.Params["turn"])
+				if turn["id"] != turnID || turn["status"] != "interrupted" {
+					t.Fatalf("turn ended %v", turn)
+				}
+				if text != "Working on" {
+					t.Fatalf("streamed text lost: %q", text)
+				}
+				goto next
+			}
+		case <-ctx.Done():
+			t.Fatal("interrupted turn never completed")
+		}
+	}
+next:
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "again"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		select {
+		case f := <-done:
+			if f.Method == "turn/completed" {
+				if Map(f.Params["turn"])["status"] != "completed" {
+					t.Fatalf("next turn ended %v", f.Params)
+				}
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal("next turn never completed")
+		}
+	}
+}

@@ -998,6 +998,7 @@ export function Conversation({
               {running && (
                 <button
                   type="button"
+                  title="Interrupt the agent's turn; the workspace stays up"
                   disabled={busy || chat.status === "stopping"}
                   onClick={stop}
                 >

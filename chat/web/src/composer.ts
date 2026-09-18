@@ -19,7 +19,7 @@ export type Trigger = {
 export type Command = { name: string; label: string; hint: string };
 
 export const COMMANDS: Command[] = [
-  { name: "stop", label: "Stop", hint: "Stop the running agent" },
+  { name: "stop", label: "Stop", hint: "Interrupt the agent's turn" },
   { name: "model", label: "Model", hint: "Choose the model for the next turn" },
   { name: "export", label: "Export…", hint: "Download this chat as a file" },
   {

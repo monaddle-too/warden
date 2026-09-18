@@ -447,11 +447,11 @@ type Sharing struct {
 	GitHub           GitHubCredentials
 	// SignIn is the console's GitHub device-flow sign-in for the user-token
 	// source ("github_login_start" and friends).
-	SignIn GitHubSignIn
-	DB     *sql.DB
-	Images           *Images
-	PullRequests     *PullRequests
-	Documents        *DocumentProposals
+	SignIn       GitHubSignIn
+	DB           *sql.DB
+	Images       *Images
+	PullRequests *PullRequests
+	Documents    *DocumentProposals
 	// Egress, when set, is the registry's runtime egress switch exposed to
 	// the console (the "egress" and "egress_set" operations).
 	Egress EgressSwitch
