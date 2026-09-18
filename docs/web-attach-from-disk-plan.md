@@ -97,4 +97,4 @@ single-owner install that is not the Kubernetes shape). Elsewhere
   and cleared the line. Not verified in the browser: a bare `/attach`
   opening the picker (the paperclip's code path) and the off-install
   notes (`localFiles` false), both unit-level.
-- Step 4: feature map and parity note done; merge next.
+- 2026-09-18: merged to main as 929c39c (main merged in first, 7e62464: the feature-map route index took both sides). Remaining: deploy to `~/.warden/release`; the two browser-unverified paths above.
