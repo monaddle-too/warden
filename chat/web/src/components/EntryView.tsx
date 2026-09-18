@@ -21,7 +21,12 @@ import { hasDiff, parseDiff } from "../diff";
 import { senderLabel } from "../export";
 import { subagentInput, subagentProgress } from "../tools";
 import { groupEntries } from "../transcript";
-import { formatCost, formatDuration, formatTokens, type TurnFooter } from "../turns";
+import {
+  formatCost,
+  formatDuration,
+  formatTokens,
+  type TurnFooter,
+} from "../turns";
 import type { Entry } from "../types";
 import { EntryAttachments } from "./Attachments";
 import { DiffView } from "./DiffView";
@@ -693,7 +698,8 @@ function AsideCard({
   onFile: (href: string) => void;
 }) {
   const a = entry.aside ?? { status: "completed" as const };
-  const running = a.status === "running" || (entry.isStreaming && !entry.detail);
+  const running =
+    a.status === "running" || (entry.isStreaming && !entry.detail);
   const failed = a.status === "failed";
   const facts: string[] = [];
   if (a.durationMS) facts.push(formatDuration(a.durationMS / 1000));

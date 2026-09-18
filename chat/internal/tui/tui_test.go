@@ -845,6 +845,57 @@ func TestMultilineComposerAndPaste(t *testing.T) {
 	}
 }
 
+// /find reaches what the rendered transcript hides: a subagent's entries
+// under its collapsed card, a person's command output past the fold, and
+// steps Ctrl+O hid, by expanding (Tab) or showing the steps first.
+func TestFindReachesNestedAndFoldedEntries(t *testing.T) {
+	c := sampleChat()
+	c.Status = "idle"
+	c.Conversation.Entries[2].IsStreaming = false
+	c.Conversation.Entries = append(c.Conversation.Entries,
+		Entry{ID: "agent", Role: "activity", Text: "Agent: look around (Explore)", Detail: "It is in lex.go.", Tool: &Tool{Kind: "task", Name: "Agent", Status: "completed", Input: map[string]any{"subagent_type": "Explore"}}},
+		Entry{ID: "grep", Role: "activity", Text: "Grep \"tokenizer\" in .", Detail: "lex.go:12: func tokenizer()\n", ParentID: "agent", Tool: &Tool{Kind: "search", Name: "Grep", Status: "completed", Query: "tokenizer"}},
+		Entry{ID: "said", Role: "assistant", Text: "The tokenizer is in lex.go, under the lexer heading.", ParentID: "agent"},
+		Entry{ID: "mine", Role: "activity", Text: "git status", Detail: "?? scratch-marker.txt\n" + strings.Repeat("modified: x.go\n", 20), Sender: &struct {
+			PrincipalID string `json:"principalID"`
+			Email       string `json:"email"`
+			Name        string `json:"name"`
+		}{PrincipalID: "owner"}, Tool: &Tool{Kind: "command", Name: "Bash", Status: "completed"}},
+		Entry{ID: "tail", Role: "assistant", Text: strings.Repeat("filler line\n", 40)},
+	)
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Size: func() (int, int) { return 80, 30 }}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+	app.frame(80, 30)
+	// The subagent's message, collapsed behind the card's count line.
+	app.submit(ctx, "/find lexer heading")
+	if !app.expanded || !strings.Contains(app.notice, "found") || !strings.Contains(app.notice, "output expanded") || app.scroll == 0 {
+		t.Fatalf("nested find: expanded %v scroll %d notice %q", app.expanded, app.scroll, app.notice)
+	}
+	// The person's command output past the fold (a command shows its last
+	// lines; the marker is on its first).
+	app.expanded = false
+	app.scroll = 0
+	app.submit(ctx, "/find scratch-marker")
+	if !app.expanded || !strings.Contains(app.notice, "found") {
+		t.Fatalf("folded find: expanded %v notice %q", app.expanded, app.notice)
+	}
+	// A step hidden by Ctrl+O.
+	app.expanded, app.quiet, app.scroll = false, true, 0
+	app.submit(ctx, "/find func tokenizer")
+	if app.quiet || !app.expanded || !strings.Contains(app.notice, "steps shown") {
+		t.Fatalf("quiet find: quiet %v expanded %v notice %q", app.quiet, app.expanded, app.notice)
+	}
+	// Still nothing for a term the chat does not have; nothing expands.
+	app.expanded, app.scroll = false, 0
+	app.submit(ctx, "/find zzzz-not-there")
+	if app.expanded || !strings.Contains(app.notice, "not found") {
+		t.Fatalf("missing: expanded %v notice %q", app.expanded, app.notice)
+	}
+}
+
 func TestTabExpandsFindAndCopy(t *testing.T) {
 	c := sampleChat()
 	c.Conversation.Entries[1].Detail = strings.Repeat("output line\n", 20) + "needle here\n"
@@ -1353,6 +1404,92 @@ func TestExportMatchesTheWeb(t *testing.T) {
 		if tc.got != tc.want {
 			t.Fatalf("%q, want %q", tc.got, tc.want)
 		}
+	}
+}
+
+// The export nests a subagent's work under its card (quoted in markdown,
+// `children` in JSON, fields the client does not model kept) and keeps a
+// command the person ran, attributed to them, with or without the steps —
+// the same file export.ts writes.
+func TestExportNestsSubagentsAndKeepsPersonsCommands(t *testing.T) {
+	raw := `{"id":"c9","title":"Nested","provider":"claude","model":"","sandboxID":"s","status":"idle","archived":false,"approvals":[],"conversation":{"entries":[
+	{"id":"u","role":"user","text":"Look","detail":"","createdAt":1789000000,"isStreaming":false,"delivery":""},
+	{"id":"agent","role":"activity","text":"Agent: look around (Explore)","detail":"It is in lex.go.","createdAt":1789000000,"isStreaming":false,"delivery":"","tool":{"kind":"task","name":"Agent","status":"completed"},"future":1},
+	{"id":"grep","role":"activity","text":"Grep \"tokenizer\" in .","detail":"lex.go:12\n","createdAt":1789000000,"isStreaming":false,"delivery":"","parentID":"agent","tool":{"kind":"search","name":"Grep","status":"completed"}},
+	{"id":"inner","role":"activity","text":"Agent: dig (Plan)","detail":"","createdAt":1789000000,"isStreaming":false,"delivery":"","parentID":"agent","tool":{"kind":"task","name":"Agent","status":"completed"}},
+	{"id":"deep","role":"activity","text":"Read lex.go","detail":"` + "```\\nx\\n```" + `","createdAt":1789000000,"isStreaming":false,"delivery":"","parentID":"inner","tool":{"kind":"read","name":"Read","status":"completed"}},
+	{"id":"said","role":"assistant","text":"Found it.","detail":"","createdAt":1789000000,"isStreaming":false,"delivery":"","parentID":"agent"},
+	{"id":"r","role":"assistant","text":"It is in lex.go.","detail":"","createdAt":1789000000,"isStreaming":false,"delivery":""},
+	{"id":"mine","role":"activity","text":"git status","detail":"clean\n","createdAt":1789000000,"isStreaming":false,"delivery":"","sender":{"principalID":"owner"},"tool":{"kind":"command","name":"Bash","status":"completed"}}
+	]}}`
+	var c Chat
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 17, 13, 5, 0, 0, time.UTC)
+	stamp := func(s float64) string { return fmt.Sprintf("T%v", s) }
+	md := ExportMarkdown(&c, true, at, stamp)
+	want := strings.Join([]string{
+		"### Activity — Agent: look around (Explore)", "",
+		"> ### Activity — Grep \"tokenizer\" in .", ">",
+		"> ```", "> lex.go:12", "> ```", ">",
+		"> ### Activity — Agent: dig (Plan)", ">",
+		"> > ### Activity — Read lex.go", "> >",
+		"> > ````", "> > ```", "> > x", "> > ```", "> > ````", "> >",
+		">",
+		"> ## Claude — T1.789e+09", ">",
+		"> Found it.", ">",
+		"",
+		"```", "It is in lex.go.", "```", "",
+		"## Claude — T1.789e+09", "",
+		"It is in lex.go.", "",
+		"### Command by You — git status", "",
+		"```", "clean", "```", "",
+	}, "\n")
+	if !strings.Contains(md, want) {
+		t.Fatalf("markdown:\n%s\nwant:\n%s", md, want)
+	}
+	plain := ExportMarkdown(&c, false, at, stamp)
+	if strings.Contains(plain, "Explore") || !strings.Contains(plain, "### Command by You — git status") {
+		t.Fatalf("without steps:\n%s", plain)
+	}
+	if n := exportCount(exportTree(&c, true)); n != 8 {
+		t.Fatalf("count all: %d", n)
+	}
+	if n := exportCount(exportTree(&c, false)); n != 3 {
+		t.Fatalf("count messages: %d", n)
+	}
+	out, err := ExportJSON(&c, true, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Entries []struct {
+			ID       string `json:"id"`
+			Future   int    `json:"future"`
+			Children []struct {
+				ID       string `json:"id"`
+				ParentID string `json:"parentID"`
+				Children []struct {
+					ID string `json:"id"`
+				} `json:"children"`
+			} `json:"children"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("%v:\n%s", err, out)
+	}
+	if len(parsed.Entries) != 4 || parsed.Entries[1].ID != "agent" || parsed.Entries[1].Future != 1 || len(parsed.Entries[1].Children) != 3 || parsed.Entries[1].Children[0].ParentID != "agent" || len(parsed.Entries[1].Children[1].Children) != 1 || parsed.Entries[1].Children[1].Children[0].ID != "deep" || parsed.Entries[3].ID != "mine" {
+		t.Fatalf("json nesting:\n%s", out)
+	}
+	if !strings.Contains(string(out), "\n      \"children\": [\n") {
+		t.Fatalf("not indented:\n%s", out)
+	}
+	// A chat built by hand (no raw records) nests the same way.
+	c.Conversation.Raw = nil
+	out, err = ExportJSON(&c, false, at)
+	if err != nil || !strings.Contains(string(out), `"id": "mine"`) || strings.Contains(string(out), "children") {
+		t.Fatalf("hand-built: %v\n%s", err, out)
 	}
 }
 

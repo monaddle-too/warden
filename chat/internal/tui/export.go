@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -65,9 +66,55 @@ func fenceFor(text string) string {
 }
 
 // exportable says whether an entry goes into the file: tool steps and the
-// model's thinking are the agent's working, kept out unless asked for.
-func exportable(role string, activity bool) bool {
-	return activity || (role != "activity" && role != "thinking")
+// model's thinking are the agent's working, kept out unless asked for; a
+// command the person ran themselves ("!cmd") is theirs, not the agent's,
+// and stays.
+func exportable(e Entry, activity bool) bool {
+	return activity || (e.Role != "activity" && e.Role != "thinking") || (e.Role == "activity" && e.Sender != nil)
+}
+
+// exportNode is an entry with, under it, the entries a subagent produced
+// for it (the transcript's nesting, nestEntries); raw is the entry's JSON
+// as the service sent it, when the chat came from the service. A
+// subagent's own subagent nests the same way.
+type exportNode struct {
+	entry    Entry
+	raw      json.RawMessage
+	children []exportNode
+}
+
+// exportTree is what goes into the file, as the transcript nests it: the
+// conversation's own entries, a subagent's under its Agent card. A card
+// left out takes its subagent's work with it.
+func exportTree(c *Chat, activity bool) []exportNode {
+	top, children := nestEntries(c.Conversation.Entries)
+	raw := map[string]json.RawMessage{}
+	for i, e := range c.Conversation.Entries {
+		if i < len(c.Conversation.Raw) {
+			raw[e.ID] = c.Conversation.Raw[i]
+		}
+	}
+	var build func(list []Entry) []exportNode
+	build = func(list []Entry) []exportNode {
+		var out []exportNode
+		for _, e := range list {
+			if !exportable(e, activity) {
+				continue
+			}
+			out = append(out, exportNode{entry: e, raw: raw[e.ID], children: build(children[e.ID])})
+		}
+		return out
+	}
+	return build(top)
+}
+
+// exportCount is how many entries the file holds, nested ones included.
+func exportCount(nodes []exportNode) int {
+	n := 0
+	for _, node := range nodes {
+		n += 1 + exportCount(node.children)
+	}
+	return n
 }
 
 // FormatDuration is "0.8s", "12s", "1m 05s", "1h 02m".
@@ -145,12 +192,13 @@ func (f turnFooter) text() string {
 }
 
 // turnFooters keys each finished turn's footer by the ID of its last agent
-// entry. A turn without a record and without an end has no line.
-func turnFooters(c *Chat) map[string]turnFooter {
+// entry among entries (the conversation's own, not a subagent's nested
+// ones). A turn without a record and without an end has no line.
+func turnFooters(c *Chat, entries []Entry) map[string]turnFooter {
 	last := map[string]string{}
 	sent := map[string]float64{}
 	var order []string
-	for _, e := range c.Conversation.Entries {
+	for _, e := range entries {
 		if e.TurnID == nil {
 			continue
 		}
@@ -191,8 +239,10 @@ func quote(text string) string {
 }
 
 // entryMarkdown is one entry as markdown; a message keeps its text
-// verbatim (it is markdown already), everything else is described.
-func entryMarkdown(e Entry, provider string, at func(float64) string) []string {
+// verbatim (it is markdown already), everything else is described. inner
+// is a subagent's work, set under its card's title before the card's
+// result.
+func entryMarkdown(e Entry, provider string, at func(float64) string, inner []string) []string {
 	var lines []string
 	switch e.Role {
 	case "user", "assistant":
@@ -222,7 +272,13 @@ func entryMarkdown(e Entry, provider string, at func(float64) string) []string {
 		if title == "" {
 			title = "Agent activity"
 		}
-		lines = append(lines, "### Activity — "+title, "")
+		if e.Sender != nil {
+			// A command the person ran is theirs; the agent's steps are its.
+			lines = append(lines, "### Command by "+SenderLabel(e)+" — "+e.Text, "")
+		} else {
+			lines = append(lines, "### Activity — "+title, "")
+		}
+		lines = append(lines, inner...)
 		if e.Detail != "" {
 			fence := fenceFor(e.Detail)
 			lines = append(lines, fence, strings.TrimSuffix(e.Detail, "\n"), fence, "")
@@ -273,14 +329,34 @@ func ExportMarkdown(c *Chat, activity bool, now time.Time, at func(float64) stri
 		head = append(head, "- "+f)
 	}
 	head = append(head, "", "---", "")
-	footers := turnFooters(c)
-	body := head
-	for _, e := range c.Conversation.Entries {
-		if !exportable(e.Role, activity) {
-			continue
+	top, _ := nestEntries(c.Conversation.Entries)
+	footers := turnFooters(c, top)
+	// A subagent's work goes under its card as a quotation, so its own
+	// headings and fences stay inside the card; a nested subagent's is
+	// quoted twice.
+	var nodeMarkdown func(node exportNode) []string
+	nodeMarkdown = func(node exportNode) []string {
+		var inner []string
+		for _, child := range node.children {
+			for _, block := range nodeMarkdown(child) {
+				for _, line := range strings.Split(block, "\n") {
+					if line == "" {
+						inner = append(inner, ">")
+					} else {
+						inner = append(inner, "> "+line)
+					}
+				}
+			}
 		}
-		body = append(body, entryMarkdown(e, c.Provider, at)...)
-		if f, ok := footers[e.ID]; ok {
+		if len(inner) > 0 {
+			inner = append(inner, "")
+		}
+		return entryMarkdown(node.entry, c.Provider, at, inner)
+	}
+	body := head
+	for _, node := range exportTree(c, activity) {
+		body = append(body, nodeMarkdown(node)...)
+		if f, ok := footers[node.entry.ID]; ok {
 			if took := f.text(); took != "" {
 				body = append(body, "_Turn: "+took+"_", "")
 			}
@@ -289,19 +365,51 @@ func ExportMarkdown(c *Chat, activity bool, now time.Time, at func(float64) stri
 	return strings.TrimRight(strings.Join(body, "\n"), "\n") + "\n"
 }
 
+// nodeJSON is an entry's record — as the service sent it where the chat
+// came from the service, so fields the client does not model survive —
+// with a subagent's entries under it as `children`.
+func nodeJSON(node exportNode) (json.RawMessage, error) {
+	raw := node.raw
+	if raw == nil {
+		b, err := json.Marshal(node.entry)
+		if err != nil {
+			return nil, err
+		}
+		raw = b
+	}
+	if len(node.children) == 0 {
+		return raw, nil
+	}
+	children := make([]json.RawMessage, 0, len(node.children))
+	for _, child := range node.children {
+		c, err := nodeJSON(child)
+		if err != nil {
+			return nil, err
+		}
+		children = append(children, c)
+	}
+	list, err := json.Marshal(children)
+	if err != nil {
+		return nil, err
+	}
+	// The record's own object with one more field at its end.
+	trimmed := bytes.TrimRight(raw, " \t\r\n")
+	if !bytes.HasSuffix(trimmed, []byte("}")) {
+		return nil, fmt.Errorf("entry %s is not a JSON object", node.entry.ID)
+	}
+	out := append([]byte{}, trimmed[:len(trimmed)-1]...)
+	out = append(out, []byte(`,"children":`)...)
+	out = append(out, list...)
+	return append(out, '}'), nil
+}
+
 // ExportJSON is the chat's own records, as the service sent them, under a
-// header that names the format.
+// header that names the format; a subagent's entries nest under their
+// card as `children`.
 func ExportJSON(c *Chat, activity bool, now time.Time) ([]byte, error) {
 	entries := []json.RawMessage{}
-	for i, e := range c.Conversation.Entries {
-		if !exportable(e.Role, activity) {
-			continue
-		}
-		if i < len(c.Conversation.Raw) {
-			entries = append(entries, c.Conversation.Raw[i])
-			continue
-		}
-		raw, err := json.Marshal(e)
+	for _, node := range exportTree(c, activity) {
+		raw, err := nodeJSON(node)
 		if err != nil {
 			return nil, err
 		}

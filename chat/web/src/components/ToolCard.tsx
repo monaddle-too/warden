@@ -304,8 +304,7 @@ export const ToolBody = memo(function ToolBody({
       )}
       {tool.kind === "command" && running && tool.background && (
         <p className="tool-meta muted">
-          Running in the background; the output arrives when the agent
-          reads it.
+          Running in the background; the output arrives when the agent reads it.
         </p>
       )}
       {tool.kind === "command" && !running && !entry.detail && (

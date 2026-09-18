@@ -129,7 +129,51 @@ export type Hit =
       entry: Entry;
       field: "text" | "detail";
       match: Match;
+      /* The subagent's card (its Agent call) the entry belongs to, when
+         it is one of a subagent's; the palette says so and the find bar
+         opens the card to land on it. */
+      parent?: Entry;
     };
+
+/* The first match of `query` in an entry: in its text, else in a tool
+   step's output (or a side question's answer). Every entry counts, a
+   subagent's nested ones and a command the person ran included. */
+export function entryMatch(
+  entry: Entry,
+  query: string,
+): { field: "text" | "detail"; match: Match } | undefined {
+  // A message still streaming is a new string every chunk; caching each
+  // would fill the cache with one message's drafts.
+  const hay = entry.isStreaming ? fold(entry.text) : folded(entry.text);
+  const [inText] = findMatches(entry.text, query, 1, hay);
+  if (inText) return { field: "text", match: inText };
+  if ((entry.role !== "activity" && entry.role !== "aside") || !entry.detail)
+    return undefined;
+  const [inDetail] = findMatches(
+    entry.detail,
+    query,
+    1,
+    entry.isStreaming ? fold(entry.detail) : folded(entry.detail),
+  );
+  return inDetail ? { field: "detail", match: inDetail } : undefined;
+}
+
+/* The IDs of the entries `query` matches, with the field it matched in:
+   what the find bar has to bring into view (a subagent's entry inside its
+   collapsed card, a command's output past its fold) before the rendered
+   text can show the match. */
+export function entryHits(
+  entries: Entry[],
+  query: string,
+): { id: string; field: "text" | "detail" }[] {
+  const out: { id: string; field: "text" | "detail" }[] = [];
+  if (!fold(query).trim()) return out;
+  for (const entry of entries) {
+    const hit = entryMatch(entry, query);
+    if (hit) out.push({ id: entry.id, field: hit.field });
+  }
+  return out;
+}
 
 const lastActivity = (chat: Chat) => {
   const entries = chat.conversation.entries;
@@ -147,8 +191,9 @@ export function recentChats(chats: Chat[]): Chat[] {
 }
 
 /* Title matches first, then entries, newest chat and newest entry first;
-   one hit per entry (its text, else a tool step's output). `more` counts
-   the hits past `limit`. */
+   one hit per entry (its text, else a tool step's output), a subagent's
+   entries and the person's own commands among them. `more` counts the
+   hits past `limit`. */
 export function searchChats(
   chats: Chat[],
   query: string,
@@ -168,25 +213,13 @@ export function searchChats(
   }
   for (const chat of ordered) {
     const entries = chat.conversation.entries;
+    const byID = new Map(entries.map((e) => [e.id, e]));
     for (let i = entries.length - 1; i >= 0; i--) {
       const entry = entries[i];
-      // A message still streaming is a new string every chunk; caching each
-      // would fill the cache with one message's drafts.
-      const hay = entry.isStreaming ? fold(entry.text) : folded(entry.text);
-      const [inText] = findMatches(entry.text, query, 1, hay);
-      if (inText) {
-        add({ kind: "entry", chat, entry, field: "text", match: inText });
-        continue;
-      }
-      if (entry.role !== "activity" || !entry.detail) continue;
-      const [inDetail] = findMatches(
-        entry.detail,
-        query,
-        1,
-        folded(entry.detail),
-      );
-      if (inDetail)
-        add({ kind: "entry", chat, entry, field: "detail", match: inDetail });
+      const hit = entryMatch(entry, query);
+      if (!hit) continue;
+      const parent = entry.parentID ? byID.get(entry.parentID) : undefined;
+      add({ kind: "entry", chat, entry, ...hit, parent });
     }
   }
   return { hits, more: total - hits.length };

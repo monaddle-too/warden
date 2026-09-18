@@ -149,4 +149,3 @@ export function activityLabel(entries: ActivityEntry[]): string {
 export function runningLabel(entries: ActivityEntry[]): string {
   return activityLabel(entries) || WORKING;
 }
-

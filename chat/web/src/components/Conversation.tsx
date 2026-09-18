@@ -1182,6 +1182,7 @@ export function Conversation({
           root={transcript}
           scroller={scroll}
           request={finding}
+          entries={all}
           onClose={() => {
             setFinding(undefined);
             input.current?.focus();

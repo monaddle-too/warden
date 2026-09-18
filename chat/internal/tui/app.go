@@ -1717,12 +1717,7 @@ named:
 		a.setNotice(err.Error())
 		return
 	}
-	n := 0
-	for _, e := range c.Conversation.Entries {
-		if exportable(e.Role, all) {
-			n++
-		}
-	}
+	n := exportCount(exportTree(c, all))
 	what := "messages"
 	if all {
 		what = "entries (tool steps included)"
@@ -2024,7 +2019,11 @@ func clip(s string, width int) string {
 }
 
 // find scrolls so the nearest earlier line containing term (case-insensitive)
-// is at the top of the view, searching upward from what is visible.
+// is at the top of the view, searching upward from what is visible. A
+// match the rendered lines hide — inside a subagent's collapsed card,
+// past a card's folded output, in a step Ctrl+O hides — is reached by
+// expanding the transcript (Tab) or showing the steps again first, when
+// the chat's entries themselves contain the term.
 func (a *App) find(term string) {
 	width := 100
 	if a.Size != nil {
@@ -2032,32 +2031,90 @@ func (a *App) find(term string) {
 			width = w
 		}
 	}
-	body := a.compose(width)
 	rows := a.rows
 	if rows <= 0 {
 		rows = 20
 	}
-	top := len(body) - a.scroll - rows // index of the first visible line
 	needle := strings.ToLower(term)
-	for i := min(top-1, len(body)-1); i >= 0; i-- {
-		if strings.Contains(strings.ToLower(plainText(body[i])), needle) {
-			a.scroll = len(body) - rows - i
-			if a.scroll < 0 {
-				a.scroll = 0
+	body := a.compose(width)
+	top := len(body) - a.scroll - rows // index of the first visible line
+	if i := findAbove(body, needle, top); i < 0 && findOnScreen(body, needle, top) < 0 {
+		// Not on the screen: is it in the entries at all?
+		if c := a.chat(); c != nil && entriesContain(c.Conversation.Entries, needle) {
+			opened := []string{}
+			if a.quiet {
+				a.quiet = false
+				opened = append(opened, "steps shown")
 			}
-			a.setNotice(fmt.Sprintf("found %q %d lines up; /find again for the previous one", term, len(body)-i))
-			return
+			if !a.expanded {
+				a.expanded = true
+				opened = append(opened, "output expanded")
+			}
+			if len(opened) > 0 {
+				body = a.compose(width)
+				top = len(body) - a.scroll - rows
+				if i := findAbove(body, needle, top); i >= 0 {
+					a.scroll = max(0, len(body)-rows-i)
+					a.setNotice(fmt.Sprintf("found %q %d lines up (%s); /find again for the previous one", term, len(body)-i, strings.Join(opened, ", ")))
+					return
+				}
+				if findOnScreen(body, needle, top) >= 0 {
+					a.setNotice(fmt.Sprintf("%q is on screen (%s)", term, strings.Join(opened, ", ")))
+					return
+				}
+			}
 		}
+	}
+	if i := findAbove(body, needle, top); i >= 0 {
+		a.scroll = max(0, len(body)-rows-i)
+		a.setNotice(fmt.Sprintf("found %q %d lines up; /find again for the previous one", term, len(body)-i))
+		return
 	}
 	// Nothing above: say whether it is on screen, so a search that "fails"
 	// on a visible match is not confusing.
-	for i := max(top, 0); i < len(body); i++ {
-		if strings.Contains(strings.ToLower(plainText(body[i])), needle) {
-			a.setNotice(fmt.Sprintf("%q is on screen; nothing earlier matches", term))
-			return
-		}
+	if findOnScreen(body, needle, top) >= 0 {
+		a.setNotice(fmt.Sprintf("%q is on screen; nothing earlier matches", term))
+		return
 	}
 	a.setNotice(fmt.Sprintf("%q not found; End then /find searches from the bottom", term))
+}
+
+// findAbove is the index of the nearest line above top containing needle
+// (lower-cased), -1 for none.
+func findAbove(body []string, needle string, top int) int {
+	for i := min(top-1, len(body)-1); i >= 0; i-- {
+		if strings.Contains(strings.ToLower(plainText(body[i])), needle) {
+			return i
+		}
+	}
+	return -1
+}
+
+// findOnScreen is the index of the first line from top on containing
+// needle, -1 for none.
+func findOnScreen(body []string, needle string, top int) int {
+	for i := max(top, 0); i < len(body); i++ {
+		if strings.Contains(strings.ToLower(plainText(body[i])), needle) {
+			return i
+		}
+	}
+	return -1
+}
+
+// entriesContain says whether any entry's text or detail (a step's
+// output, a side question's answer) contains needle, a subagent's nested
+// entries and the person's own commands included — what /find can reach
+// once the transcript shows everything.
+func entriesContain(entries []Entry, needle string) bool {
+	for _, e := range entries {
+		if strings.Contains(strings.ToLower(e.Text), needle) {
+			return true
+		}
+		if (e.Role == "activity" || e.Role == "aside") && strings.Contains(strings.ToLower(e.Detail), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // plainText strips styling for searching.
