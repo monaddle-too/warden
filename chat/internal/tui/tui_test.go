@@ -211,6 +211,8 @@ func TestFrameShowsTailAndScrolls(t *testing.T) {
 // fakeServer is a minimal warden-chat: state, chats, messages, approvals,
 // and an event stream that emits the current state whenever it changes.
 type fakeServer struct {
+	// tail is what an undo-rewind puts back (the rewind tests set it).
+	tail    []Entry
 	mu      sync.Mutex
 	state   State
 	calls   []string
@@ -227,6 +229,11 @@ type fakeServer struct {
 	memory       MemoryView
 	writes       []string
 	searches     []string // the query strings /search sent
+	// rules is what environments|chats/{id}/rules answer (the workspace's
+	// then the chats'); adds and removes edit it; events is the chat's
+	// permission history.
+	rules  RulesView
+	events []PermissionEvent
 }
 
 func newFakeServer(t *testing.T, initial State) *fakeServer {
@@ -337,8 +344,53 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		id := fmt.Sprintf("%032d", len(f.uploads))
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(Attachment{ID: id, Name: header.Filename, Kind: kind, Size: int64(len(data)), Path: ".warden/attachments/" + id + ".bin"})
+	case strings.Contains(path, "/rules/") && strings.HasSuffix(path, "/remove"):
+		parts := strings.Split(path, "/")
+		f.mu.Lock()
+		drop := func(rules []Rule) []Rule {
+			var out []Rule
+			for _, r := range rules {
+				if r.ID != parts[3] {
+					out = append(out, r)
+				}
+			}
+			return out
+		}
+		if parts[0] == "environments" {
+			f.rules.Rules = drop(f.rules.Rules)
+		} else {
+			for i := range f.rules.Chats {
+				f.rules.Chats[i].Rules = drop(f.rules.Chats[i].Rules)
+			}
+		}
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/remove"):
 		w.Write([]byte(`{"ok":true}`))
+	case strings.Contains(path, "/queued/") && strings.HasSuffix(path, "/edit"):
+		// A queued message's text replaced in place; a sent one refused.
+		var body struct{ Text string }
+		json.NewDecoder(r.Body).Decode(&body)
+		parts := strings.Split(path, "/")
+		f.mu.Lock()
+		c := f.state.Chat(parts[1])
+		for i := range c.Conversation.Entries {
+			e := &c.Conversation.Entries[i]
+			if e.ID != parts[3] {
+				continue
+			}
+			if e.Delivery != "queued" {
+				f.mu.Unlock()
+				http.Error(w, `{"error":"that message was already sent to the agent"}`, 409)
+				return
+			}
+			e.Text = body.Text
+			f.mu.Unlock()
+			json.NewEncoder(w).Encode(*e)
+			return
+		}
+		f.mu.Unlock()
+		http.Error(w, `{"error":"no such message in this chat"}`, 409)
 	case strings.HasSuffix(path, "/edit"):
 		var body struct {
 			Title    string `json:"title"`
@@ -391,6 +443,38 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			f.mu.Unlock()
 		}()
 		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/rules") && r.Method == "GET":
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		json.NewEncoder(w).Encode(f.rules)
+	case strings.HasSuffix(path, "/rules") && r.Method == "POST":
+		var body struct {
+			Kind, Pattern string
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if !strings.Contains(body.Pattern, "(") && body.Pattern != "Read" {
+			w.WriteHeader(409)
+			w.Write([]byte(`{"error":"rule pattern: missing the tool name"}`))
+			return
+		}
+		parts := strings.Split(path, "/")
+		f.mu.Lock()
+		rule := Rule{ID: fmt.Sprintf("r%d", len(f.rules.Rules)+1), Kind: body.Kind, Pattern: body.Pattern, Origin: "editor", By: &Actor{PrincipalID: "owner"}}
+		if parts[0] == "environments" {
+			f.rules.Rules = append(f.rules.Rules, rule)
+		} else {
+			for i := range f.rules.Chats {
+				if f.rules.Chats[i].ID == parts[1] {
+					f.rules.Chats[i].Rules = append(f.rules.Chats[i].Rules, rule)
+				}
+			}
+		}
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(rule)
+	case strings.HasSuffix(path, "/permissions") && r.Method == "GET":
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"events": f.events})
 	case strings.Contains(path, "/approvals/"):
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -405,7 +489,7 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 					c.Approvals[i].State = "declined"
 				}
 				c.Approvals[i].Params["answers"] = body["answers"]
-				for _, k := range []string{"always", "message", "mode"} {
+				for _, k := range []string{"always", "scope", "message", "mode"} {
 					if v, ok := body[k]; ok {
 						c.Approvals[i].Params[k] = v
 					}
@@ -518,7 +602,17 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))
-	case strings.HasSuffix(path, "/agent"), strings.HasSuffix(path, "/revoke"):
+	case strings.HasSuffix(path, "/agent"):
+		// The chat's provider and model for the next turn.
+		var body struct{ Provider, Model string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		if c := f.state.Chat(strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/agent")); c != nil {
+			c.Provider, c.Model = body.Provider, body.Model
+		}
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/revoke"):
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/checkpoints"):
 		// Every user message but the first has a checkpoint.
@@ -621,6 +715,39 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mu.Unlock()
 		http.Error(w, `{"error":"no such message in this chat"}`, 409)
+	case strings.HasSuffix(path, "/undo-rewind"):
+		// The last rewind's removed entries back in place of the marker.
+		var body struct {
+			ID   string
+			Code bool
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/undo-rewind")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		if c.UndoRewind == "" || c.UndoRewind != body.ID {
+			f.mu.Unlock()
+			http.Error(w, `{"error":"this rewind can no longer be undone"}`, 409)
+			return
+		}
+		var kept []Entry
+		for _, e := range c.Conversation.Entries {
+			if e.ID == body.ID {
+				kept = append(kept, f.tail...)
+				continue
+			}
+			kept = append(kept, e)
+		}
+		c.Conversation.Entries = append(kept, Entry{ID: "undone", Role: "system", Text: "Rewind undone"})
+		c.UndoRewind = ""
+		n := len(f.tail)
+		f.tail = nil
+		f.mu.Unlock()
+		code := "kept"
+		if body.Code {
+			code = "restored"
+		}
+		json.NewEncoder(w).Encode(UndoResult{MessageID: "u2", What: "both", Entries: n, Session: "fresh", Code: code, Restored: []string{"a.txt"}})
 	case strings.HasSuffix(path, "/send-queued"):
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/send-queued")
 		f.mu.Lock()
@@ -653,12 +780,148 @@ func TestFollowPrintsRepliesUntilIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	status, err := Follow(ctx, client, "c1", &out, nil)
+	status, err := Follow(ctx, client, "c1", &out, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if status != "idle" || !strings.Contains(out.String(), "you: hello there") || !strings.Contains(out.String(), "codex: echo: hello there") {
 		t.Fatalf("status %q output:\n%s", status, out.String())
+	}
+}
+
+// Following one message (`warden chat send --wait`) prints that message's
+// own turn and returns when it ends, however many messages are queued
+// before or after it; the queue's other turns are not waited for.
+func TestFollowOneMessageWaitsForItsOwnTurnOnly(t *testing.T) {
+	t0, t1, t2 := "t0", "t1", "t2"
+	chat := &Chat{ID: "c1", Title: "one", Provider: "codex", Status: "running", Conversation: Conversation{
+		Entries: []Entry{
+			{ID: "u0", Role: "user", Text: "earlier", Delivery: "sent", TurnID: &t0},
+			{ID: "q1", Role: "user", Text: "mine", Delivery: "queued"},
+			{ID: "q2", Role: "user", Text: "later", Delivery: "queued"},
+		},
+		Turns: []Turn{{ID: t0, StartedAt: 1}},
+	}}
+	f := newFakeServer(t, State{Chats: []*Chat{chat}})
+	go func() {
+		step := func(d time.Duration, fn func(c *Chat)) {
+			time.Sleep(d)
+			f.mu.Lock()
+			fn(f.state.Chats[0])
+			f.mu.Unlock()
+		}
+		// The earlier turn answers and ends; "mine" opens its turn (the
+		// service moves it to the end), answers with a step and a reply,
+		// then "later" opens a turn that never ends.
+		step(60*time.Millisecond, func(c *Chat) {
+			c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "a0", Role: "assistant", Text: "reply to earlier", TurnID: &t0})
+			c.Conversation.Turns[0].EndedAt = 2
+		})
+		step(60*time.Millisecond, func(c *Chat) {
+			c.Conversation.Entries = []Entry{c.Conversation.Entries[0], c.Conversation.Entries[3], c.Conversation.Entries[2], {ID: "q1", Role: "user", Text: "mine", Delivery: "sent", TurnID: &t1}}
+			c.Conversation.Turns = append(c.Conversation.Turns, Turn{ID: t1, StartedAt: 3})
+		})
+		step(60*time.Millisecond, func(c *Chat) {
+			c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "s1", Role: "activity", Text: "ls", Detail: "a.txt", TurnID: &t1}, Entry{ID: "a1", Role: "assistant", Text: "reply to mine", TurnID: &t1, IsStreaming: true})
+		})
+		step(60*time.Millisecond, func(c *Chat) {
+			c.Conversation.Entries[len(c.Conversation.Entries)-1].IsStreaming = false
+			c.Conversation.Turns[1].EndedAt = 4
+			c.Conversation.Entries = []Entry{c.Conversation.Entries[0], c.Conversation.Entries[1], c.Conversation.Entries[3], c.Conversation.Entries[4], c.Conversation.Entries[5], {ID: "q2", Role: "user", Text: "later", Delivery: "sent", TurnID: &t2}}
+			c.Conversation.Turns = append(c.Conversation.Turns, Turn{ID: t2, StartedAt: 5})
+		})
+		step(60*time.Millisecond, func(c *Chat) {
+			c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "a2", Role: "assistant", Text: "reply to later", TurnID: &t2})
+		})
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	status, err := Follow(ctx, f.client(), "c1", &out, map[string]bool{"u0": true}, "q1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"you: mine\n", "(queued: sends when the agent finishes)", "· ls", "codex: reply to mine"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output lacks %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"earlier", "later"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("output carries another turn's entries (%q):\n%s", unwanted, got)
+		}
+	}
+	if status != "idle" {
+		t.Fatalf("status %q: the message's turn ended while the queue went on", status)
+	}
+	if s, _ := f.client().State(ctx); s.Chats[0].Status != "running" {
+		t.Fatal("the fake chat should still be running the later turn")
+	}
+}
+
+// A followed message held in a stopped chat's queue, or withdrawn, ends
+// the wait with an error saying so; one queued behind others says how
+// many are ahead.
+func TestFollowOneMessageHeldOrWithdrawn(t *testing.T) {
+	held := &Chat{ID: "c1", Provider: "codex", Status: "interrupted", Conversation: Conversation{Entries: []Entry{
+		{ID: "q0", Role: "user", Text: "first", Delivery: "queued"},
+		{ID: "q1", Role: "user", Text: "mine", Delivery: "queued"},
+	}}}
+	f := newFakeServer(t, State{Chats: []*Chat{held}})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	status, err := Follow(ctx, f.client(), "c1", &out, nil, "q1")
+	if err == nil || !strings.Contains(err.Error(), "held in the queue") || status != "interrupted" || !strings.Contains(out.String(), "(queued: 1 message(s) ahead)") {
+		t.Fatalf("held: %q %v\n%s", status, err, out.String())
+	}
+	// The hand-over marks the message "sending" until its turn confirms
+	// it: the wait goes on through it.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.state.Chats[0].Conversation.Entries = f.state.Chats[0].Conversation.Entries[1:]
+	f.state.Chats[0].Conversation.Entries[0].Delivery = "sending"
+	f.mu.Unlock()
+	tid := "t9"
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		f.mu.Lock()
+		c := f.state.Chats[0]
+		c.Conversation.Entries[0].Delivery, c.Conversation.Entries[0].TurnID = "sent", &tid
+		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "a9", Role: "assistant", Text: "confirmed reply", TurnID: &tid})
+		c.Conversation.Turns = []Turn{{ID: tid, StartedAt: 1, EndedAt: 2}}
+		c.Status = "idle"
+		f.mu.Unlock()
+	}()
+	out.Reset()
+	if status, err := Follow(ctx, f.client(), "c1", &out, nil, "q1"); err != nil || status != "idle" || !strings.Contains(out.String(), "confirmed reply") {
+		t.Fatalf("sending then confirmed: %q %v\n%s", status, err, out.String())
+	}
+	// A message that failed for good, with the run over, ends the wait.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "failed"
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "q3", Role: "user", Text: "mine", Delivery: "failed", Detail: "Not delivered"})
+	f.mu.Unlock()
+	if _, err := Follow(ctx, f.client(), "c1", &out, nil, "q3"); err == nil || !strings.Contains(err.Error(), "Not delivered") {
+		t.Fatalf("failed for good: %v", err)
+	}
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.state.Chats[0].Conversation.Entries = []Entry{{ID: "u0", Role: "user", Text: "earlier", Delivery: "sent"}, {ID: "q1", Role: "user", Text: "mine", Delivery: "queued"}}
+	f.mu.Unlock()
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		f.mu.Lock()
+		f.state.Chats[0].Conversation.Entries = f.state.Chats[0].Conversation.Entries[:1]
+		f.mu.Unlock()
+	}()
+	out.Reset()
+	if _, err := Follow(ctx, f.client(), "c1", &out, nil, "q1"); err == nil || !strings.Contains(err.Error(), "withdrawn") {
+		t.Fatalf("withdrawn: %v", err)
+	}
+	if _, err := Follow(ctx, f.client(), "c1", &out, nil, "nope"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("unknown message: %v", err)
 	}
 }
 
@@ -788,8 +1051,8 @@ func TestScrollKeysAndWheel(t *testing.T) {
 		t.Fatalf("page: %d (page %d)", app.scroll, app.page())
 	}
 	f := app.frame(80, 22)
-	if !strings.Contains(plain(f.Status), "lines below") {
-		t.Fatalf("status lacks scroll indicator: %q", plain(f.Status))
+	if !strings.Contains(plain(strings.Join(f.Status, "\n")), "lines below") {
+		t.Fatalf("status lacks scroll indicator: %q", f.Status)
 	}
 	app.handleKey(ctx, Key{Kind: KeyEnd})
 	if app.scroll != 0 {
@@ -1808,7 +2071,7 @@ func TestKeyboardSet(t *testing.T) {
 	if !app.quiet || !strings.Contains(before, "http.server") || strings.Contains(after, "http.server") || strings.Contains(after, "Thought") || !strings.Contains(after, "Create a counter page") {
 		t.Fatalf("ctrl-o:\n%s", after)
 	}
-	if !strings.Contains(plain(app.frame(80, 24).Status), "steps hidden") {
+	if !strings.Contains(plain(strings.Join(app.frame(80, 24).Status, "\n")), "steps hidden") {
 		t.Fatal("status lacks the hidden marker")
 	}
 	app.submit(ctx, "/verbose")
@@ -2137,7 +2400,7 @@ func TestPermissionCardsAndAnswers(t *testing.T) {
 		permissionAsk("p3", "ExitPlanMode", nil, map[string]any{"plan": "# Plan\n\n1. Write notes.md"}),
 	}
 	joined := plain(strings.Join(RenderApprovals(c, 80), "\n"))
-	for _, want := range []string{"run a command: Create x", "y = allow · a = allow always (`touch` commands) · n [message] = deny", "$ touch x", "Write notes.md", "+1 −0", "+hello", "Claude has a plan", "1. Write notes.md"} {
+	for _, want := range []string{"run a command: Create x", "y = allow · a = allow always (`touch` commands) · A = for the workspace · n [message] = deny", "$ touch x", "Write notes.md", "+1 −0", "+hello", "Claude has a plan", "1. Write notes.md"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in:\n%s", want, joined)
 		}
@@ -2160,7 +2423,7 @@ func TestPermissionCardsAndAnswers(t *testing.T) {
 	app.submit(ctx, "a")
 	refresh()
 	s := app.state
-	if got := s.Chats[0].Approvals[0]; got.State != "allowed" || got.Params["always"] != true || !strings.Contains(app.notice, "allowed always: `touch` commands") {
+	if got := s.Chats[0].Approvals[0]; got.State != "allowed" || got.Params["always"] != true || got.Params["scope"] != "chat" || !strings.Contains(app.notice, "allowed always for this chat: `touch` commands") {
 		t.Fatalf("allow always: %+v %q", got, app.notice)
 	}
 	app.submit(ctx, "n keep the notes in docs/")
@@ -2746,23 +3009,57 @@ func TestQueueMarkersWithdrawAndEditLastQueued(t *testing.T) {
 	if app.notice != "withdrawn: second, while it runs" || len(queuedMessages(app.chat())) != 1 {
 		t.Fatalf("/withdraw 1: %q, %d queued", app.notice, len(queuedMessages(app.chat())))
 	}
-	// ↑ on an empty draft takes the last queued message into the editor.
+	// ↑ on an empty draft loads the last queued message into the editor
+	// in place: it stays queued (its file with it) while edited.
 	app.handleKey(ctx, Key{Kind: KeyUp})
-	if app.editor.Text() != "third\nwith a file" || len(queuedMessages(app.chat())) != 0 || len(app.attachments["chat1"]) != 1 || app.attachments["chat1"][0].ID != "att1" {
-		t.Fatalf("↑: draft %q, %d queued, files %+v", app.editor.Text(), len(queuedMessages(app.chat())), app.attachments["chat1"])
+	if app.editor.Text() != "third\nwith a file" || len(queuedMessages(app.chat())) != 1 || app.editing == nil || app.attachments["chat1"] != nil {
+		t.Fatalf("↑: draft %q, %d queued, editing %v, files %+v", app.editor.Text(), len(queuedMessages(app.chat())), app.editing != nil, app.attachments["chat1"])
 	}
-	if !strings.HasPrefix(app.notice, "editing the queued message") {
+	if !strings.HasPrefix(app.notice, "editing the queued message in place") {
 		t.Fatalf("notice: %q", app.notice)
 	}
-	// Sent again (Enter), it carries the files.
+	// Esc leaves it as it was.
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if app.editing != nil || app.editor.Text() != "" || !strings.Contains(app.notice, "cancelled") {
+		t.Fatalf("Esc: editing %v draft %q notice %q", app.editing != nil, app.editor.Text(), app.notice)
+	}
+	app.refreshState(ctx)
+	if q := queuedMessages(app.chat()); len(q) != 1 || q[0].Text != "third\nwith a file" {
+		t.Fatalf("after the cancelled edit: %+v", q)
+	}
+	// Enter saves the edit into the message's slot: same ID, same file.
+	app.handleKey(ctx, Key{Kind: KeyUp})
+	app.editor.Set("third, edited\nwith a file")
 	app.send(ctx)
+	if app.editing != nil || app.editor.Text() != "" || app.notice != "saved queued message" {
+		t.Fatalf("save: editing %v draft %q notice %q", app.editing != nil, app.editor.Text(), app.notice)
+	}
 	f.mu.Lock()
 	entries := f.state.Chats[0].Conversation.Entries
 	f.mu.Unlock()
-	last := entries[len(entries)-1]
-	if last.Text != "third\nwith a file" || len(last.Attachments) != 1 || last.Attachments[0].ID != "att1" || app.attachments["chat1"] != nil {
-		t.Fatalf("resent: %+v, waiting %+v", last, app.attachments["chat1"])
+	edited := entries[1] // its slot: after the first message, before the reply that came later
+	if edited.ID != "q2" || edited.Text != "third, edited\nwith a file" || edited.Delivery != "queued" || len(edited.Attachments) != 1 || edited.Attachments[0].ID != "att1" {
+		t.Fatalf("edited in place: %+v", edited)
 	}
+	// An empty edit is refused (withdraw is the way to drop it).
+	app.handleKey(ctx, Key{Kind: KeyUp})
+	app.editor.Set("  ")
+	app.send(ctx)
+	if app.editing == nil || !strings.Contains(app.notice, "would be empty") {
+		t.Fatalf("empty edit: editing %v notice %q", app.editing != nil, app.notice)
+	}
+	// The agent got the message meanwhile: the save is refused, the edit
+	// ends and the draft stays to send as a new message.
+	app.editor.Set("third, again")
+	f.mu.Lock()
+	f.state.Chats[0].Conversation.Entries[1].Delivery = "sent"
+	f.mu.Unlock()
+	app.send(ctx)
+	if app.editing != nil || app.editor.Text() != "third, again" || !strings.Contains(app.notice, "got the message before the edit was saved") {
+		t.Fatalf("conflict: editing %v draft %q notice %q", app.editing != nil, app.editor.Text(), app.notice)
+	}
+	app.editor.Clear()
+	app.refreshState(ctx)
 	// With nothing queued, ↑ recalls the history as before.
 	app.editor.SetHistory([]string{"older prompt"})
 	app.handleKey(ctx, Key{Kind: KeyUp})
@@ -2791,7 +3088,7 @@ func TestQueueMarkersWithdrawAndEditLastQueued(t *testing.T) {
 	f.mu.Lock()
 	calls := strings.Join(f.calls, "\n")
 	f.mu.Unlock()
-	if !strings.Contains(calls, "POST chats/chat1/withdraw") || !strings.Contains(calls, "POST chats/chat1/send-queued") {
+	if !strings.Contains(calls, "POST chats/chat1/withdraw") || !strings.Contains(calls, "POST chats/chat1/send-queued") || strings.Count(calls, "POST chats/chat1/queued/q2/edit") != 2 {
 		t.Fatalf("calls:\n%s", calls)
 	}
 	app.submit(ctx, "/queue nonsense")
@@ -2888,11 +3185,95 @@ func TestEditCommandRewindsAndPrefills(t *testing.T) {
 	if app.confirm != nil || app.notice != "stop the agent first (Esc)" {
 		t.Fatalf("running: %+v %q", app.confirm, app.notice)
 	}
-	// A queued message: no rewind, it just leaves the queue.
+	// A queued message: no rewind, it is edited in place and stays queued.
 	n := len(rewindTargets(app.chat()))
 	app.submit(ctx, "/edit "+strconv.Itoa(n))
-	if app.confirm != nil || app.editor.Text() != "queued one" || len(queuedMessages(app.chat())) != 0 {
-		t.Fatalf("/edit of a queued message: %+v %q", app.confirm, app.editor.Text())
+	if app.confirm != nil || app.editor.Text() != "queued one" || len(queuedMessages(app.chat())) != 1 || app.editing == nil {
+		t.Fatalf("/edit of a queued message: %+v %q editing %v", app.confirm, app.editor.Text(), app.editing != nil)
+	}
+	app.handleKey(ctx, Key{Kind: KeyCtrlC})
+	if app.editing != nil || !strings.Contains(app.notice, "cancelled") {
+		t.Fatalf("Ctrl+C: %q", app.notice)
+	}
+}
+
+// /undo-rewind puts back what the last rewind removed (the marker says
+// so while it can), after confirmation; `code` restores the workspace
+// too when the rewind recorded it; a `!` command while the queue is held
+// says the queue stays held.
+func TestUndoRewindCommandAndHeldNotes(t *testing.T) {
+	f := newFakeServer(t, State{Chats: []*Chat{{ID: "chat1", Title: "Undo", Provider: "claude", Status: "idle", UndoRewind: "marker", Conversation: Conversation{Entries: []Entry{
+		{ID: "u1", Role: "user", Text: "first", Delivery: "sent"},
+		{ID: "marker", Role: "rewind", Text: "Rewound to before “second” (code and conversation)", Detail: "1 file restored, 0 files removed", Rewind: &RewindMark{MessageID: "u2", What: "both", Conversation: "rewound", Before: "marker"}},
+	}}}}})
+	f.tail = []Entry{{ID: "u2", Role: "user", Text: "second", Delivery: "sent"}, {ID: "a2", Role: "assistant", Text: "done"}}
+	ctx := context.Background()
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	app.refreshState(ctx)
+	joined := plain(strings.Join(RenderTranscript(app.chat(), 120, false), "\n"))
+	if !strings.Contains(joined, "/undo-rewind puts the removed messages back") || !strings.Contains(joined, "/undo-rewind code restores the workspace") {
+		t.Fatalf("marker hint: %s", joined)
+	}
+	app.submit(ctx, "/undo-rewind nonsense")
+	if app.notice != "/undo-rewind [code]" {
+		t.Fatalf("bad argument: %q", app.notice)
+	}
+	app.submit(ctx, "/undo-rewind code")
+	if app.confirm == nil || !strings.Contains(app.confirm.prompt, "the conversation and the workspace") {
+		t.Fatalf("confirmation: %+v", app.confirm)
+	}
+	app.submit(ctx, "n")
+	if app.confirm != nil || app.notice != "cancelled" {
+		t.Fatalf("n: %+v %q", app.confirm, app.notice)
+	}
+	app.submit(ctx, "/undo-rewind code")
+	app.submit(ctx, "y")
+	if !strings.Contains(app.notice, "rewind undone: 2 entries restored") || !strings.Contains(app.notice, "cannot take the messages back") || !strings.Contains(app.notice, "back as it was before the rewind (1 file(s) restored") {
+		t.Fatalf("undo notice: %q", app.notice)
+	}
+	joined = plain(strings.Join(RenderTranscript(app.chat(), 120, false), "\n"))
+	if strings.Contains(joined, "Rewound to before") || !strings.Contains(joined, "second") || !strings.Contains(joined, "Rewind undone") {
+		t.Fatalf("transcript after the undo: %s", joined)
+	}
+	app.submit(ctx, "/undo-rewind")
+	if app.notice != "nothing to undo: no rewind since the last turn" {
+		t.Fatalf("nothing to undo: %q", app.notice)
+	}
+	// A conversation-only rewind offers no workspace restore.
+	f.mu.Lock()
+	f.state.Chats[0].UndoRewind = "m2"
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "m2", Role: "rewind", Text: "Rewound to before “x” (conversation)", Rewind: &RewindMark{MessageID: "x", What: "conversation", Conversation: "pending"}})
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	joined = plain(strings.Join(RenderTranscript(app.chat(), 120, false), "\n"))
+	if !strings.Contains(joined, "/undo-rewind puts the removed messages back (until the next turn)") || strings.Contains(joined, "restores the workspace") {
+		t.Fatalf("conversation marker hint: %s", joined)
+	}
+	app.submit(ctx, "/undo-rewind code")
+	if app.confirm != nil || !strings.Contains(app.notice, "no checkpoint of the workspace before the rewind") {
+		t.Fatalf("code on a conversation rewind: %+v %q", app.confirm, app.notice)
+	}
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.submit(ctx, "/undo-rewind")
+	if app.notice != "stop the agent first (Esc)" {
+		t.Fatalf("while running: %q", app.notice)
+	}
+	// A held queue: `!` and `#` say it stays held.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "interrupted"
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "q1", Role: "user", Text: "held", Delivery: "queued"})
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.submit(ctx, "#keep it small")
+	if !strings.Contains(app.notice, "added to CLAUDE.md · 1 queued message(s) still held (/queue send lets them go)") {
+		t.Fatalf("# while held: %q", app.notice)
+	}
+	app.submit(ctx, "!ls")
+	if !strings.Contains(app.notice, "running in the workspace: ls · 1 queued message(s) still held") {
+		t.Fatalf("! while held: %q", app.notice)
 	}
 }
 
@@ -3271,5 +3652,386 @@ func TestTitleAndBellEvents(t *testing.T) {
 	app.bellForEvents()
 	if strings.Contains(out.String(), "\a") {
 		t.Fatal("the bell rang while off")
+	}
+}
+
+// `A` (or /allow) on a tool ask allows it always for the whole workspace
+// where `a` does for the chat; /rules lists, adds and removes the
+// workspace's rules and the chats' by number; /permissions lists how the
+// chat's asks were decided.
+func TestWorkspaceAllowRulesAndPermissions(t *testing.T) {
+	c := &Chat{ID: "chat1", Title: "Claude", Provider: "claude", Status: "running", Mode: "ask", SandboxID: "sbx1"}
+	command := &Entry{ID: "toolu_1", Role: "activity", Text: "touch x", Tool: &Tool{Kind: "command", Name: "Bash", Status: "running"}}
+	c.Approvals = []Approval{
+		permissionAsk("p1", "Bash", command, map[string]any{"always": "`touch` commands", "rule": "Bash(touch *)"}),
+		permissionAsk("p2", "Bash", command, map[string]any{"always": "`touch` commands", "rule": "Bash(touch *)"}),
+		permissionAsk("p3", "ExitPlanMode", nil, map[string]any{"plan": "# Plan"}),
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	f.rules = RulesView{Workspace: "sbx1", Rules: []Rule{{ID: "w1", Kind: "deny", Pattern: "Bash(rm *)", Origin: "editor", By: &Actor{PrincipalID: "owner"}}}, Chats: []ChatRules{{ID: "chat1", Title: "Claude", Rules: []Rule{{ID: "c1", Kind: "allow", Pattern: "Bash(touch *)", Origin: "always", By: &Actor{Name: "Dan"}}}}}}
+	f.events = []PermissionEvent{
+		{At: 1_000_000, Tool: "Bash", Summary: "rm -rf build", Decision: "deny", How: "rule", Scope: "workspace", Rule: &Rule{Kind: "deny", Pattern: "Bash(rm *)"}},
+		{At: 1_000_060, Tool: "Write", Summary: "notes.md", Decision: "allow", How: "card", By: &Actor{Name: "Dan"}, Rule: &Rule{Pattern: "Edit"}, Scope: "workspace"},
+		{At: 1_000_120, Tool: "Bash", Summary: "touch y", Decision: "allow", How: "auto"},
+		{At: 1_000_180, Tool: "Bash", Summary: "curl x", Decision: "deny", How: "card", By: &Actor{PrincipalID: "owner"}, Message: "use the proxy"},
+	}
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard}
+	ctx := context.Background()
+	refresh := func() { s, _ := app.Client.State(ctx); app.state = s }
+	refresh()
+	app.submit(ctx, "A")
+	refresh()
+	if got := app.state.Chats[0].Approvals[0]; got.State != "allowed" || got.Params["always"] != true || got.Params["scope"] != "workspace" || app.notice != "allowed always for this workspace: `touch` commands" {
+		t.Fatalf("A: %+v %q", got, app.notice)
+	}
+	app.submit(ctx, "/allow")
+	refresh()
+	if got := app.state.Chats[0].Approvals[1]; got.State != "allowed" || got.Params["scope"] != "workspace" {
+		t.Fatalf("/allow: %+v %q", got, app.notice)
+	}
+	// A plan is never remembered: A is not an answer to it, /allow finds
+	// no tool ask.
+	app.submit(ctx, "/allow")
+	if app.notice != "no tool ask pending" {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/rules")
+	listing := plain(app.notice)
+	for _, want := range []string{"workspace rules", " 1  deny  Bash(rm *)", "from the editor by the owner", "chat Claude (this chat)", " 2  allow Bash(touch *)", "allow always by Dan", "/rules add allow|deny|ask PATTERN"} {
+		if !strings.Contains(listing, want) {
+			t.Fatalf("missing %q in:\n%s", want, listing)
+		}
+	}
+	app.submit(ctx, `/rules add ask "Edit(src/**)"`)
+	if app.notice != "workspace rule added: ask Edit(src/**)" || len(f.rules.Rules) != 2 || f.rules.Rules[1].Pattern != "Edit(src/**)" {
+		t.Fatalf("%q %+v", app.notice, f.rules.Rules)
+	}
+	app.submit(ctx, "/rules add deny nonsense")
+	if !strings.Contains(app.notice, "missing the tool name") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/rules add")
+	if !strings.HasPrefix(app.notice, "/rules add allow|deny|ask PATTERN") {
+		t.Fatal(app.notice)
+	}
+	// rm by the listing's numbers: 3 is the chat's rule (after the two
+	// workspace rules), and the listing is fetched when stale.
+	app.submit(ctx, "/rules rm 3")
+	if app.notice != "rule 3 removed" || len(f.rules.Chats[0].Rules) != 0 || len(f.rules.Rules) != 2 {
+		t.Fatalf("%q %+v", app.notice, f.rules)
+	}
+	app.submit(ctx, "/rules rm 9")
+	if app.notice != "/rules rm N with N from /rules" {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/rules rm 1")
+	if app.notice != "rule 1 removed" || len(f.rules.Rules) != 1 || f.rules.Rules[0].Pattern != "Edit(src/**)" {
+		t.Fatalf("%q %+v", app.notice, f.rules.Rules)
+	}
+	app.submit(ctx, "/permissions")
+	lines := strings.Split(plain(app.notice), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("%q", app.notice)
+	}
+	for i, want := range []string{"deny  Bash         rm -rf build  — workspace rule deny Bash(rm *)", "allow Write        notes.md  — Dan, always for the workspace (Edit)", "allow Bash         touch y  — auto mode", "deny  Bash         curl x  — the owner: use the proxy"} {
+		if !strings.HasSuffix(lines[i], want) {
+			t.Errorf("line %d: %q, want suffix %q", i, lines[i], want)
+		}
+	}
+	f.events = nil
+	app.submit(ctx, "/permissions")
+	if app.notice != "no tool asks decided in this chat yet" {
+		t.Fatal(app.notice)
+	}
+	// The / menu offers the commands.
+	if !strings.Contains(strings.Join(commandNames(), " "), "rules permissions allow") {
+		t.Fatal(commandNames())
+	}
+}
+
+func commandNames() []string {
+	var out []string
+	for _, c := range Commands {
+		out = append(out, c.Name)
+	}
+	return out
+}
+
+// The /model menu lists the provider's rows: the CLI's catalog when the
+// service reported one (the default row first, a 1M row the operator has
+// not allowed with its hint), else the static rows; picking the default
+// row sends the provider default. /effort lists the model's levels from
+// the catalog, and a model without any refuses a level.
+func TestModelAndEffortMenusFromTheCatalog(t *testing.T) {
+	claude := &Chat{ID: "c1", Title: "Claude", Provider: "claude", Model: "haiku", Status: "idle"}
+	codex := &Chat{ID: "c2", Title: "Codex", Provider: "codex", Status: "idle"}
+	catalog := []ModelInfo{
+		{Value: "default", Resolved: "claude-sonnet-5", Label: "Default (recommended)", Description: "Sonnet 5 · Efficient", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, AdaptiveThinking: true},
+		{Value: "sonnet", Resolved: "claude-sonnet-5", Label: "Sonnet", Description: "Sonnet 5 · Efficient", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, AdaptiveThinking: true},
+		{Value: "opus[1m]", Resolved: "claude-opus-5[1m]", Label: "Opus (1M context)", Efforts: []string{"low", "max"}, FastMode: true},
+		{Value: "haiku", Resolved: "claude-haiku-4-5", Label: "Haiku"},
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{claude, codex}, AgentOptions: AgentOptions{Models: map[string][]ModelInfo{"claude": catalog}}})
+	app := &App{Client: f.client(), ChatID: "c1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	ctx := context.Background()
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/model ")
+	if app.menu == nil || app.menu.Trigger.Kind != "model" || len(app.menu.Items) != 4 {
+		t.Fatalf("model menu: %+v", app.menu)
+	}
+	items := app.menu.Items
+	if items[0].Insert != "default" || !strings.Contains(items[0].Label, "Provider default") || !strings.Contains(items[0].Hint, "claude-sonnet-5") {
+		t.Fatalf("default row: %+v", items[0])
+	}
+	if items[1].Insert != "sonnet" || !strings.Contains(items[1].Label, "Sonnet") || items[2].Insert != "opus[1m]" || items[2].Hint != LongContextHint || items[3].Insert != "haiku" {
+		t.Fatalf("rows: %+v", items)
+	}
+	// Typing narrows by value or label; Enter picks and runs.
+	typeText(app, ctx, "son")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Insert != "sonnet" {
+		t.Fatalf("narrowed: %+v", app.menu)
+	}
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	app.state, _ = app.Client.State(ctx)
+	if app.state.Chats[0].Model != "sonnet" || app.editor.Text() != "" {
+		t.Fatalf("picked: %q draft %q", app.state.Chats[0].Model, app.editor.Text())
+	}
+	// The default row sends "" (the provider default).
+	typeText(app, ctx, "/model def")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	app.state, _ = app.Client.State(ctx)
+	if app.state.Chats[0].Model != "" {
+		t.Fatalf("default row sent %q", app.state.Chats[0].Model)
+	}
+	// With the operator's leave the 1M row has its own hint.
+	f.mu.Lock()
+	f.state.AgentOptions.LongContext = true
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/model 1m")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Hint == LongContextHint || !strings.Contains(app.menu.Items[0].Hint, "claude-opus-5[1m]") {
+		t.Fatalf("allowed 1M row: %+v", app.menu)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	// /effort on the default model lists the default row's levels; on
+	// Haiku (no levels) it refuses one.
+	typeText(app, ctx, "/effort ")
+	if app.menu == nil || app.menu.Trigger.Kind != "effort" || len(app.menu.Items) != 6 || app.menu.Items[0].Insert != "default" || app.menu.Items[5].Insert != "max" {
+		t.Fatalf("effort menu: %+v", app.menu)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	app.submit(ctx, "/model haiku")
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/effort ")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Insert != "default" {
+		t.Fatalf("effort menu on haiku: %+v", app.menu)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	app.submit(ctx, "/effort high")
+	if !strings.Contains(app.notice, "takes no effort level") {
+		t.Fatalf("effort on haiku: %q", app.notice)
+	}
+	app.submit(ctx, "/effort")
+	if !strings.Contains(app.notice, "takes no effort level") {
+		t.Fatalf("effort on haiku: %q", app.notice)
+	}
+	// Without a catalog the static rows serve, every level offered.
+	f.mu.Lock()
+	f.state.AgentOptions.Models = nil
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/model ")
+	if app.menu == nil || len(app.menu.Items) != 6 || app.menu.Items[1].Insert != "sonnet" || app.menu.Items[4].Insert != "sonnet[1m]" {
+		t.Fatalf("static rows: %+v", app.menu)
+	}
+	if levels := EffortsFor(app.chat(), app.agentOptions()); len(levels) != 5 {
+		t.Fatalf("static efforts: %v", levels)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	// Codex has its own static rows.
+	app.selectChat("c2")
+	typeText(app, ctx, "/model ")
+	if app.menu == nil || len(app.menu.Items) != 6 || app.menu.Items[1].Insert != "gpt-6-astra" {
+		t.Fatalf("codex rows: %+v", app.menu)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	typeText(app, ctx, "/effort ")
+	if app.menu != nil {
+		t.Fatalf("effort menu on codex: %+v", app.menu)
+	}
+}
+
+// /cost ends with the workspace's total when the chat shares it: every
+// chat's turns summed, archived ones included.
+func TestCostShowsTheWorkspaceTotal(t *testing.T) {
+	turns := func(cost float64, total int64) Conversation {
+		return Conversation{Turns: []Turn{{ID: "t", StartedAt: 1, EndedAt: 2, Usage: &Usage{Input: total - 10, Output: 10, Total: total, CostUSD: cost}}}}
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{
+		{ID: "a", Title: "A", Provider: "claude", SandboxID: "ws", Status: "idle", Conversation: turns(0.10, 1000)},
+		{ID: "b", Title: "B", Provider: "claude", SandboxID: "ws", Status: "idle", Archived: true, Conversation: turns(0.20, 2000)},
+		{ID: "c", Title: "C", Provider: "claude", SandboxID: "other", Status: "idle", Conversation: turns(5, 50000)},
+	}})
+	app := &App{Client: f.client(), ChatID: "a", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	ctx := context.Background()
+	app.refreshState(ctx)
+	app.submit(ctx, "/cost")
+	notice := plain(app.notice)
+	if !strings.Contains(notice, "cost                 $0.10") || !strings.Contains(notice, "this workspace: 2 chats · 2 turns · 3.0k tokens · $0.30") {
+		t.Fatalf("/cost:\n%s", notice)
+	}
+	// Alone on its workspace: no total line.
+	app.selectChat("c")
+	app.submit(ctx, "/cost")
+	if strings.Contains(plain(app.notice), "this workspace") {
+		t.Fatalf("/cost alone:\n%s", app.notice)
+	}
+	codex, n := WorkspaceCost(&Chat{SandboxID: "x"}, []*Chat{{SandboxID: "x", Conversation: turns(0, 15)}, {SandboxID: "x"}}, 0)
+	if n != 2 || codex.Priced || WorkspaceCostLine(codex, n) != "this workspace: 2 chats · 1 turn · 15 tokens" {
+		t.Fatalf("codex: %q", WorkspaceCostLine(codex, n))
+	}
+}
+
+// The status bar keeps every part on a narrow terminal by taking more
+// rows, never splitting a part, and the transcript gives those rows up.
+func TestStatusWrapsToRows(t *testing.T) {
+	parts := []string{"● " + bold + "title" + reset, "claude · opus · auto", yellow + "running" + reset, "3.3s · 12k tokens (12k in, 226 out) · $0.20", "ctx 46k/200k (23%)", dim + "/help" + reset}
+	one := LayoutStatus(parts, 200, StatusMaxRows)
+	if len(one) != 1 || plain(one[0]) != strings.Join([]string{"● title", "claude · opus · auto", "running", "3.3s · 12k tokens (12k in, 226 out) · $0.20", "ctx 46k/200k (23%)", "/help"}, "  ") {
+		t.Fatalf("wide layout: %q", one)
+	}
+	rows := LayoutStatus(parts, 48, StatusMaxRows)
+	if len(rows) != 3 {
+		t.Fatalf("48 columns: want 3 rows, got %d: %q", len(rows), rows)
+	}
+	for i, r := range rows {
+		if w := visibleWidth(r); w > 48 {
+			t.Fatalf("row %d is %d wide: %q", i, w, plain(r))
+		}
+	}
+	joined := plain(strings.Join(rows, "\n"))
+	for _, part := range parts {
+		if !strings.Contains(joined, plain(part)) {
+			t.Fatalf("part %q lost:\n%s", plain(part), joined)
+		}
+	}
+	// A part wider than the row stands alone; the cap drops the tail.
+	capped := LayoutStatus(parts, 20, 2)
+	if len(capped) != 2 || plain(capped[0]) != "● title" || plain(capped[1]) != "claude · opus · auto" {
+		t.Fatalf("capped layout: %q", capped)
+	}
+	if got := LayoutStatus(nil, 40, 2); len(got) != 1 || got[0] != "" {
+		t.Fatalf("empty layout: %q", got)
+	}
+}
+
+func TestFrameBudgetsStatusRows(t *testing.T) {
+	app := &App{Now: func() time.Time { return time.Unix(100, 0) }}
+	c := sampleChat()
+	c.Status = "idle"
+	c.Conversation.Turns = []Turn{{ID: "t1", StartedAt: 90, EndedAt: 93.3, Usage: &Usage{Input: 12000, Output: 226, Total: 12226, CostUSD: 0.1975}}}
+	c.Conversation.Context = &Context{Used: 46449, Window: 200000, Threshold: 167000, Model: "claude-sonnet-5"}
+	for i := 0; i < 40; i++ {
+		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: fmt.Sprint("e", i), Role: "assistant", Text: fmt.Sprintf("line %d", i), TurnID: ptr("t1")})
+	}
+	app.state = &State{Chats: []*Chat{c}}
+	app.ChatID = "chat1"
+	app.live = true
+	wide := app.frame(200, 24)
+	if len(wide.Status) != 1 || len(wide.Lines) != 24-1-len(wide.PromptLines) {
+		t.Fatalf("wide frame: %d status rows, %d lines", len(wide.Status), len(wide.Lines))
+	}
+	narrow := app.frame(50, 24)
+	if len(narrow.Status) < 2 || len(narrow.Status) > StatusMaxRows {
+		t.Fatalf("narrow frame: %d status rows: %q", len(narrow.Status), narrow.Status)
+	}
+	if len(narrow.Lines)+len(narrow.Status)+len(narrow.PromptLines)+len(narrow.Extra) != 24 {
+		t.Fatalf("narrow frame does not fill the screen: %d lines, %d status, %d prompt, %d extra", len(narrow.Lines), len(narrow.Status), len(narrow.PromptLines), len(narrow.Extra))
+	}
+	joined := plain(strings.Join(narrow.Status, "\n"))
+	for _, want := range []string{"Local preview test", "codex", "12k tokens", "$0.20", "ctx 46k/200k (23%)", "1 approval", "/help"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("narrow status lost %q:\n%s", want, joined)
+		}
+	}
+	for i, r := range narrow.Status {
+		if w := visibleWidth(r); w > 50 {
+			t.Fatalf("status row %d is %d wide: %q", i, w, plain(r))
+		}
+	}
+	// A short screen caps the bar at a quarter of its rows.
+	short := app.frame(30, 8)
+	if len(short.Status) != 2 {
+		t.Fatalf("short screen: %d status rows: %q", len(short.Status), short.Status)
+	}
+	// The scroll hint is a part too; it goes away once the scroll is clamped.
+	app.scroll = 10000
+	f := app.frame(50, 24)
+	if strings.Contains(plain(strings.Join(f.Status, "\n")), "lines below") == (app.scroll == 0) {
+		t.Fatalf("scroll hint disagrees with scroll %d: %q", app.scroll, f.Status)
+	}
+}
+
+// Styling takes no columns: a styled line wraps where its plain text
+// would, and a style that is open at a break carries onto the next line.
+func TestWrapMeasuresVisibleWidth(t *testing.T) {
+	head := "Write hello.txt  " + green + "+1" + reset + " " + red + "−0" + reset
+	got := wrap(head, 50, dim+"  · "+reset, "    ")
+	if len(got) != 1 || plain(got[0]) != "  · Write hello.txt  +1 −0" {
+		t.Fatalf("styled head wrapped: %q", got)
+	}
+	plainWords := strings.Repeat("word ", 20)
+	styledWords := yellow + plainWords + reset
+	p, s := wrap(strings.TrimSpace(plainWords), 30, "  ", "  "), wrap(strings.TrimSpace(styledWords), 30, "  ", "  ")
+	if len(p) != len(s) {
+		t.Fatalf("styled text wraps differently: %d vs %d lines\n%q\n%q", len(p), len(s), p, s)
+	}
+	for i := range p {
+		if plain(s[i]) != p[i] {
+			t.Fatalf("line %d differs: %q vs %q", i, plain(s[i]), p[i])
+		}
+		if w := visibleWidth(s[i]); w > 30 {
+			t.Fatalf("line %d is %d wide", i, w)
+		}
+	}
+	if !strings.HasPrefix(s[1], "  "+yellow) || !strings.HasSuffix(s[0], reset) {
+		t.Fatalf("style not carried across the break: %q", s)
+	}
+	// A single over-long styled token is cut by visible runes.
+	long := cyan + strings.Repeat("x", 40) + reset
+	cut := wrap(long, 20, "", "")
+	if len(cut) != 2 || plain(cut[0]) != strings.Repeat("x", 20) || plain(cut[1]) != strings.Repeat("x", 20) {
+		t.Fatalf("over-long token: %q", cut)
+	}
+}
+
+// A message's delivery shows only when there is something to say: the
+// queue marker while held, a red not-delivered line with the reason when
+// it failed, nothing while it is being handed over or once it is sent.
+func TestDeliveryMarks(t *testing.T) {
+	c := &Chat{Provider: "claude", Status: "running"}
+	// Lines are joined with single spaces so the check does not depend on
+	// where the width wraps the detail.
+	render := func(delivery, detail string) string {
+		return strings.Join(strings.Fields(plain(strings.Join(renderEntry(c, Entry{ID: "u", Role: "user", Text: "hi", Delivery: delivery, Detail: detail}, 80, false, nil, ""), "\n"))), " ")
+	}
+	for _, d := range []string{"", "sending", "sent"} {
+		if got := render(d, ""); got != "you › hi" {
+			t.Fatalf("%q: %q", d, got)
+		}
+	}
+	if got := render("queued", ""); !strings.Contains(got, "queued") {
+		t.Fatalf("queued: %q", got)
+	}
+	if got := render("failed", "Delivery unconfirmed. Check the agent response before retrying."); got != "you › hi ! not delivered: Delivery unconfirmed. Check the agent response before retrying." {
+		t.Fatalf("failed: %q", got)
+	}
+	if got := render("failed", ""); got != "you › hi ! not delivered" {
+		t.Fatalf("failed without detail: %q", got)
 	}
 }

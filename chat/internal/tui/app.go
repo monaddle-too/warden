@@ -84,6 +84,7 @@ type App struct {
 	// so /memory N can name a file by number.
 	editing     *editing
 	memoryFiles map[string][]MemoryFile
+	ruleRefs    []ruleRef               // the last /rules listing's numbers (rules.go)
 	attachments map[string][]Attachment // uploads waiting for the next message, per chat
 	histories   map[string][]string     // in-memory history per chat when HistoryDir is empty
 	historyChat string                  // chat whose history the editor holds
@@ -159,6 +160,8 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /copy /expand /verbose /clear /quit
            /instructions [edit|clear] your standing instructions, given to the agent in every chat
            /memory [FILE] [edit FILE] the workspace's CLAUDE.md, rules and auto-memory files
+           /rules (list) /rules add allow|deny|ask PATTERN · /rules rm N — permission rules of the workspace
+           /permissions how this chat's tool asks were decided and by whom · /allow [chat] answers the first ask always
            /compact [what to keep] asks Claude to replace the history with a summary
 composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
            a long paste becomes [Pasted text #N — M lines] and is sent in full
@@ -170,7 +173,7 @@ composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste ke
            Esc Esc (empty draft, agent idle) edits your last message: the conversation rewinds to before it
            Ctrl+A/E line start/end · Ctrl+U/K delete to line start/end · Ctrl+W a word
 keys       y / n answer the first pending approval; typed text answers a question
-           tool asks: y allow · a allow always · n [message] deny
+           tool asks: y allow · a allow always (this chat) · A allow always (this workspace) · n [message] deny
            plans: y approve (auto) · a approve, ask before edits · n [feedback] keep planning
            Shift+Tab cycles a Claude chat's permission mode (auto → ask → plan)
            Esc interrupts the agent · Ctrl+C clears the draft (twice quits) · Ctrl+D quits
@@ -383,12 +386,17 @@ func (a *App) saveHistory() {
 func (a *App) send(ctx context.Context) {
 	var text string
 	if ed := a.editing; ed != nil {
-		// The composer holds a file: Enter saves it as typed (no trimming,
-		// no history), and the draft stays if the save fails.
+		// The composer holds a file or a queued message: Enter saves it as
+		// typed (no trimming, no history), and the draft stays if the save
+		// fails; a queued message the agent got meanwhile ends the edit
+		// with the draft kept, to send as a new message.
 		text = a.editor.Text()
 		a.menu = nil
 		a.scroll = 0
 		if err := ed.save(ctx, text); err != nil {
+			if strings.Contains(err.Error(), "before the edit was saved") {
+				a.editing = nil
+			}
 			a.setNotice(err.Error())
 			return
 		}
@@ -680,6 +688,21 @@ func (a *App) refreshMenu(ctx context.Context) {
 		}
 	case "chat":
 		m.Items = chatItems(a.sortedChats(), t.Query)
+	case "model":
+		provider := a.Provider
+		if c != nil {
+			provider = c.Provider
+		}
+		if provider == "" {
+			provider = "codex"
+		}
+		m.Items = modelItems(provider, a.agentOptions(), t.Query)
+	case "effort":
+		if c == nil || c.Provider != "claude" {
+			a.menu = nil
+			return
+		}
+		m.Items = effortItems(c, a.agentOptions(), t.Query)
 	}
 	if len(m.Items) == 0 && m.Note == "" {
 		a.menu = nil
@@ -783,7 +806,7 @@ func (a *App) submit(ctx context.Context, text string) {
 			a.editor.Set(text)
 			return
 		}
-		a.setNotice("added to CLAUDE.md")
+		a.setNotice("added to CLAUDE.md" + heldNote(c))
 		return
 	}
 	pending := c.Pending()
@@ -833,19 +856,20 @@ func (a *App) sendMessage(ctx context.Context, c *Chat, text string) {
 // reports how it ended when it does; the command card itself arrives with
 // the state stream (running, then with its output).
 func (a *App) shell(ctx context.Context, chatID, command string) {
-	a.setNotice("running in the workspace: " + truncate(command, 60))
+	a.setNotice("running in the workspace: " + truncate(command, 60) + heldNote(a.chat()))
 	go func() {
 		result, err := a.Client.Exec(ctx, chatID, command)
 		report := func(context.Context) {
+			held := heldNote(a.chat())
 			switch {
 			case err != nil:
 				a.setNotice(err.Error())
 			case result.TimedOut:
-				a.setNotice("command timed out after 60s")
+				a.setNotice("command timed out after 60s" + held)
 			case result.ExitCode != 0:
-				a.setNotice(fmt.Sprintf("command exited %d", result.ExitCode))
+				a.setNotice(fmt.Sprintf("command exited %d", result.ExitCode) + held)
 			default:
-				a.setNotice("command finished")
+				a.setNotice("command finished" + held)
 			}
 		}
 		select {
@@ -856,12 +880,17 @@ func (a *App) shell(ctx context.Context, chatID, command string) {
 }
 
 // answerPermission reads a typed answer to a tool ask: y allows, a allows
-// always, n denies with the rest of the line as the message to the model;
-// for a plan, y approves into auto, a approves into ask, n keeps planning
-// with the rest of the line as feedback. Other text is not an answer.
+// always for the chat, A allows always for the whole workspace, n denies
+// with the rest of the line as the message to the model; for a plan, y
+// approves into auto, a approves into ask, n keeps planning with the rest
+// of the line as feedback. Other text is not an answer.
 func (a *App) answerPermission(ctx context.Context, chatID string, ap Approval, p *Permission, text string) bool {
 	word, rest, _ := strings.Cut(strings.TrimSpace(text), " ")
 	rest = strings.TrimSpace(rest)
+	if (word == "A" || strings.EqualFold(word, "workspace")) && !p.IsPlan() {
+		a.answerAlways(ctx, chatID, ap, p, "workspace")
+		return true
+	}
 	var allow, always bool
 	message, mode, said := "", "", ""
 	switch strings.ToLower(word) {
@@ -877,7 +906,7 @@ func (a *App) answerPermission(ctx context.Context, chatID string, ap Approval, 
 		if p.IsPlan() {
 			mode, said = "ask", "plan approved; mode ask"
 		} else {
-			always, said = true, "allowed always: "+p.Always
+			always, said = true, "allowed always for this chat: "+p.Always
 		}
 	case "n", "no", "deny", "decline":
 		message = rest
@@ -892,7 +921,7 @@ func (a *App) answerPermission(ctx context.Context, chatID string, ap Approval, 
 	default:
 		return false
 	}
-	if err := a.Client.Answer(ctx, chatID, ap.ID, allow, always, message, mode); err != nil {
+	if err := a.Client.Answer(ctx, chatID, ap.ID, allow, always, "chat", message, mode); err != nil {
 		a.setNotice(err.Error())
 	} else {
 		a.setNotice(said)
@@ -957,15 +986,24 @@ func (a *App) setSetting(ctx context.Context, c *Chat, name, arg string) {
 		}
 		change["thinking"] = v
 	case "effort":
+		levels := EffortsFor(c, a.agentOptions())
 		if arg == "" {
-			a.setNotice("effort " + orDefault(c.Effort) + " · /effort " + strings.Join(chats.Efforts, "|") + "|default")
+			if len(levels) == 0 {
+				a.setNotice("effort " + orDefault(c.Effort) + " · this model takes no effort level")
+			} else {
+				a.setNotice("effort " + orDefault(c.Effort) + " · /effort " + strings.Join(levels, "|") + "|default")
+			}
 			return
 		}
 		if arg == "default" {
 			arg = ""
 		}
-		if !chats.ValidEffort(arg) {
-			a.setNotice("/effort " + strings.Join(chats.Efforts, "|") + "|default")
+		if !chats.ValidEffort(arg) || (arg != "" && len(levels) == 0) {
+			if len(levels) == 0 {
+				a.setNotice("this model takes no effort level (/effort default)")
+			} else {
+				a.setNotice("/effort " + strings.Join(levels, "|") + "|default")
+			}
 			return
 		}
 		change["effort"] = arg
@@ -1054,6 +1092,14 @@ func (a *App) resolve(ctx context.Context, chatID string, ap Approval, allow boo
 
 // sortedChats lists non-archived chats, most recently created last, as the
 // web sidebar does (the store keeps creation order).
+// agentOptions is what the service allows and offers (the catalog).
+func (a *App) agentOptions() AgentOptions {
+	if a.state == nil {
+		return AgentOptions{}
+	}
+	return a.state.AgentOptions
+}
+
 func (a *App) sortedChats() []*Chat {
 	if a.state == nil {
 		return nil
@@ -1146,10 +1192,8 @@ func (a *App) command(ctx context.Context, line string) {
 		a.selectChat(chats[n-1].ID)
 		a.setNotice("switched to " + sanitize(chats[n-1].Title))
 	case "new":
+		// No title: the service names the chat from its first exchange.
 		title := arg
-		if title == "" {
-			title = "Terminal chat " + a.now().Format("Jan 2 15:04")
-		}
 		provider := a.Provider
 		if c != nil && provider == "" {
 			provider = c.Provider
@@ -1164,7 +1208,11 @@ func (a *App) command(ctx context.Context, line string) {
 		}
 		a.refreshState(ctx)
 		a.selectChat(id)
-		a.setNotice("new chat " + sanitize(title) + " (" + provider + ")")
+		if title == "" {
+			a.setNotice("new chat (" + provider + ") · named after its first reply; /rename TITLE to choose")
+		} else {
+			a.setNotice("new chat " + sanitize(title) + " (" + provider + ")")
+		}
 	case "rename":
 		if c == nil {
 			a.setNotice("no chat selected")
@@ -1252,6 +1300,9 @@ func (a *App) command(ctx context.Context, line string) {
 		provider, model := c.Provider, c.Model
 		if name == "model" {
 			model = arg
+			if model == "default" {
+				model = "" // the menu's row for the provider default
+			}
 		} else {
 			provider = arg
 		}
@@ -1334,6 +1385,8 @@ func (a *App) command(ctx context.Context, line string) {
 		a.withdraw(ctx, c, arg)
 	case "edit":
 		a.edit(ctx, c, arg)
+	case "undo-rewind", "undo":
+		a.undoRewind(ctx, c, arg)
 	case "diff":
 		a.showDiff(ctx, c, arg)
 	case "instructions":
@@ -1346,6 +1399,12 @@ func (a *App) command(ctx context.Context, line string) {
 		a.btw(ctx, c, arg)
 	case "cost":
 		a.cost(c)
+	case "rules":
+		a.rules(ctx, c, arg)
+	case "permissions":
+		a.permissions(ctx, c)
+	case "allow":
+		a.allowAlways(ctx, c, arg)
 	case "style":
 		a.style(ctx, c, arg)
 	case "bell":
@@ -1757,7 +1816,7 @@ func (a *App) ports() []Port {
 type Frame struct {
 	Lines       []string // transcript viewport, exactly the rows available
 	Extra       []string // completion menu, waiting attachments, a confirmation: between the transcript and the status
-	Status      string
+	Status      []string // the status bar, laid out over the rows it needs (StatusMaxRows at most)
 	PromptLines []string // the composer, one screen line each
 	CursorRow   int      // cursor position within PromptLines
 	CursorCol   int      // in runes, including the prompt marker
@@ -1945,35 +2004,58 @@ func (a *App) frame(width, height int) Frame {
 		extra = extra[:height/2]
 	}
 	prompt, cursorRow, cursorCol := a.promptLines(width, min(6, height/3))
-	rows := height - 1 - len(prompt) - len(extra) // status + composer
-	if rows < 1 {
-		rows = 1
-	}
-	a.rows = rows
-	if a.scroll > len(body)-rows {
+	// The status bar takes the rows its parts need at this width, and the
+	// transcript gets the rest. The scroll hint is one of its parts, so
+	// the bar is laid out again once the scroll is clamped to the rows
+	// that leaves; a hint that goes away can only free a row.
+	var status []string
+	rows := 0
+	for pass := 0; pass < 2; pass++ {
+		status = a.statusRows(width, height)
+		rows = height - len(status) - len(prompt) - len(extra)
+		if rows < 1 {
+			rows = 1
+		}
+		if a.scroll <= len(body)-rows {
+			break
+		}
 		a.scroll = max(0, len(body)-rows)
 	}
+	a.rows = rows
 	end := len(body) - a.scroll
 	start := max(0, end-rows)
 	view := body[start:end]
 	for len(view) < rows {
 		view = append(view, "")
 	}
-	status := ""
-	c := a.chat()
-	if c != nil {
-		status = StatusLine(c, a.stateports(), a.live, a.now())
-		if a.quiet {
-			status += "  " + dim + "steps hidden" + reset
-		}
-		if a.scroll > 0 {
-			status += fmt.Sprintf("  %s↑ %d lines below · End to follow%s", yellow, a.scroll, reset)
-		}
-		status += "  " + dim + "/help" + reset
-	} else if a.state != nil {
-		status = dim + "Warden · no chat selected · /help" + reset
-	}
 	return Frame{Lines: view, Extra: extra, Status: status, PromptLines: prompt, CursorRow: cursorRow, CursorCol: cursorCol}
+}
+
+// statusRows is the status bar for the screen: the chat's parts plus the
+// screen's own — the scroll position right after what the agent is doing
+// (a reader must know the view is not following), steps hidden and the
+// help hint last — laid out over the rows they need at this width, at
+// most StatusMaxRows and never more than a quarter of the screen.
+func (a *App) statusRows(width, height int) []string {
+	var parts []string
+	c := a.chat()
+	switch {
+	case c != nil:
+		parts = StatusParts(c, a.stateports(), a.live, a.now())
+		if a.scroll > 0 {
+			hint := fmt.Sprintf("%s↑ %d lines below · End to follow%s", yellow, a.scroll, reset)
+			parts = append(parts[:3], append([]string{hint}, parts[3:]...)...)
+		}
+		if a.quiet {
+			parts = append(parts, dim+"steps hidden"+reset)
+		}
+		parts = append(parts, dim+"/help"+reset)
+	case a.state != nil:
+		parts = []string{dim + "Warden · no chat selected · /help" + reset}
+	default:
+		return []string{""}
+	}
+	return LayoutStatus(parts, width, max(1, min(StatusMaxRows, height/4)))
 }
 
 func (a *App) stateports() []Port {
@@ -2007,7 +2089,9 @@ func (a *App) draw() {
 	for _, l := range f.Extra {
 		b.WriteString(clip(l, width) + "\x1b[K\r\n")
 	}
-	b.WriteString(clip(f.Status, width) + "\x1b[K\r\n")
+	for _, l := range f.Status {
+		b.WriteString(clip(l, width) + "\x1b[K\r\n")
+	}
 	for i, l := range f.PromptLines {
 		b.WriteString(clip(l, width) + "\x1b[K")
 		if i < len(f.PromptLines)-1 {
@@ -2016,7 +2100,7 @@ func (a *App) draw() {
 	}
 	b.WriteString("\x1b[J") // clear anything left below a shrinking composer
 	// Place the cursor inside the composer (rows are 1-based).
-	row := len(f.Lines) + len(f.Extra) + 1 + f.CursorRow + 1
+	row := len(f.Lines) + len(f.Extra) + len(f.Status) + f.CursorRow + 1
 	b.WriteString(fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", row, f.CursorCol+1))
 	io.WriteString(a.Output, b.String())
 }

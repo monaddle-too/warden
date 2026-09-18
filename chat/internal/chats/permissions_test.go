@@ -44,6 +44,14 @@ type claudeWorker struct {
 	requests []sandbox.Request
 	rewinds  []map[string]any
 	aside    *sandbox.AsideResult
+	// oneshot is what a "oneshot" call answers (nil: a title); catalog
+	// is what list_models answers (nil: two rows; an empty list: a
+	// refusal).
+	oneshot *sandbox.AsideResult
+	catalog []map[string]any
+	listed  int // list_models requests received
+	// oneshotGate, when set, holds a "oneshot" answer until it is closed.
+	oneshotGate chan struct{}
 }
 
 // initModel is the model the scripted CLI reports in its system/init: the
@@ -67,13 +75,22 @@ func (w *claudeWorker) initModel() string {
 func (w *claudeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
 	w.mu.Lock()
 	w.requests = append(w.requests, r)
-	aside := w.aside
+	aside, oneshot, gate := w.aside, w.oneshot, w.oneshotGate
 	w.mu.Unlock()
+	if r.Operation == "oneshot" && gate != nil {
+		<-gate
+	}
 	if r.Operation == "aside" {
 		if aside == nil {
 			aside = &sandbox.AsideResult{Text: "the answer", CostUSD: 0.01, Input: 100, Output: 5}
 		}
 		return sandbox.Response{Version: 2, Aside: aside}, nil
+	}
+	if r.Operation == "oneshot" {
+		if oneshot == nil {
+			oneshot = &sandbox.AsideResult{Text: "\"Greeting the assistant.\"\n", CostUSD: 0.0004, Input: 60, Output: 4}
+		}
+		return sandbox.Response{Version: 2, Aside: oneshot}, nil
 	}
 	return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID}}, nil
 }
@@ -113,6 +130,28 @@ func (w *claudeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWrit
 				switch req["subtype"] {
 				case "initialize":
 					send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{}}})
+				case "list_models":
+					// The catalog (catalog.go): two rows unless the test
+					// scripted others; an empty script is a refusal.
+					w.mu.Lock()
+					catalog := w.catalog
+					w.listed++
+					w.mu.Unlock()
+					if catalog == nil {
+						catalog = []map[string]any{
+							{"value": "sonnet", "resolvedModel": "claude-sonnet-5", "displayName": "Sonnet", "description": "Sonnet 5 · Efficient", "supportsEffort": true, "supportedEffortLevels": []any{"low", "medium", "high"}, "supportsAdaptiveThinking": true},
+							{"value": "haiku", "resolvedModel": "claude-haiku-4-5", "displayName": "Haiku", "description": "Haiku 4.5 · Fastest"},
+						}
+					}
+					if len(catalog) == 0 {
+						send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": v["request_id"], "error": "list_models is not available"}})
+						continue
+					}
+					rows := []any{}
+					for _, row := range catalog {
+						rows = append(rows, row)
+					}
+					send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{"models": rows}}})
 				case "set_permission_mode":
 					w.mu.Lock()
 					w.controls = append(w.controls, req)
@@ -263,38 +302,120 @@ func notices(c *Chat) []string {
 
 func TestPermissionRules(t *testing.T) {
 	cases := []struct {
-		tool, command string
-		rule          PermissionRule
+		tool, command, pattern, label string
 	}{
-		{"Bash", "touch x", PermissionRule{Tool: "Bash", Command: "touch"}},
-		{"Bash", "git commit -m x", PermissionRule{Tool: "Bash", Command: "git commit"}},
-		{"Bash", "git --no-pager log", PermissionRule{Tool: "Bash", Command: "git"}},
-		{"Bash", "FOO=1 make test", PermissionRule{Tool: "Bash", Command: "make test"}},
-		{"Bash", "touch x && rm x", PermissionRule{Tool: "Bash", Command: "touch x && rm x"}},
-		{"Bash", "cat a | head", PermissionRule{Tool: "Bash", Command: "cat a | head"}},
-		{"Write", "", PermissionRule{Tool: "edit"}},
-		{"NotebookEdit", "", PermissionRule{Tool: "edit"}},
-		{"WebFetch", "", PermissionRule{Tool: "WebFetch"}},
+		{"Bash", "touch x", "Bash(touch *)", "`touch` commands"},
+		{"Bash", "git commit -m x", "Bash(git commit *)", "`git commit` commands"},
+		{"Bash", "git --no-pager log", "Bash(git *)", "`git` commands"},
+		{"Bash", "FOO=1 make test", "Bash(make test *)", "`make test` commands"},
+		{"Bash", "touch x && rm x", "Bash(touch x && rm x)", "`touch x && rm x` commands"},
+		{"Bash", "cat a | head", "Bash(cat a | head)", "`cat a | head` commands"},
+		{"Write", "", "Edit", "file edits"},
+		{"NotebookEdit", "", "Edit", "file edits"},
+		{"WebFetch", "", "WebFetch", "WebFetch calls"},
 	}
 	for _, c := range cases {
-		if r := RuleFor(c.tool, map[string]any{"command": c.command}); r != c.rule {
-			t.Errorf("%s %q: %+v", c.tool, c.command, r)
+		if r := RuleFor(c.tool, map[string]any{"command": c.command}); r != c.pattern {
+			t.Errorf("%s %q: %q", c.tool, c.command, r)
+		} else if l := RuleLabel(r); l != c.label {
+			t.Errorf("%s label %q", r, l)
 		}
 	}
-	git := PermissionRule{Tool: "Bash", Command: "git commit"}
-	for command, want := range map[string]bool{"git commit -m x": true, "git commit": true, "git commits": false, "git push": false, "git commit -m x && rm -rf /": false} {
-		if git.Matches("Bash", map[string]any{"command": command}) != want {
-			t.Errorf("git commit vs %q: want %v", command, want)
+	// A chat stored by item 3 comes back with its rules converted.
+	var legacy Chat
+	if err := json.Unmarshal([]byte(`{"allowed":[{"tool":"Bash","command":"git commit"},{"tool":"edit"},{"tool":"Bash","command":"touch x && rm x"},{"tool":"WebFetch"}]}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range legacy.Allowed {
+		got = append(got, r.Kind+" "+r.Pattern+" "+r.Origin)
+	}
+	if strings.Join(got, ", ") != "allow Bash(git commit *) always, allow Edit always, allow Bash(touch x && rm x) always, allow WebFetch always" {
+		t.Fatal(got)
+	}
+}
+
+// The matcher, in Claude Code's rule syntax: command prefixes and globs
+// (chained commands covered part by part for an allow, any part for a
+// deny or ask), path globs against the call's path, domains, bare and
+// globbed tool names.
+func TestRuleMatcher(t *testing.T) {
+	bash := func(c string) map[string]any { return map[string]any{"command": c} }
+	file := func(p string) map[string]any { return map[string]any{"file_path": p} }
+	cases := []struct {
+		kind, pattern, tool string
+		input               map[string]any
+		want                bool
+	}{
+		{"allow", "Bash(git *)", "Bash", bash("git commit -m x"), true},
+		{"allow", "Bash(git *)", "Bash", bash("git"), true},
+		{"allow", "Bash(git *)", "Bash", bash("gitk"), false},
+		{"allow", "Bash(git *)", "Bash", bash("FOO=1 git status"), true},
+		{"allow", "Bash(git *)", "Bash", bash("git status && rm -rf /"), false},
+		{"allow", "Bash(git *)", "Bash", bash("git status && git log"), true},
+		{"allow", "Bash(git *)", "Bash", bash("git log | head"), false},
+		{"allow", "Bash(git *)", "Bash", bash("git log $(cat x)"), false},
+		{"allow", "Bash(go *)", "Bash", bash("go test ./... 2>&1"), true},
+		{"deny", "Bash(rm *)", "Bash", bash("rm -rf x"), true},
+		{"deny", "Bash(rm *)", "Bash", bash("git status && rm -rf x"), true},
+		{"deny", "Bash(rm *)", "Bash", bash("echo rm"), false},
+		{"deny", "Bash(rm *)", "Bash", bash("rmdir x"), false},
+		{"ask", "Bash(*sudo*)", "Bash", bash("echo hi && sudo ls"), true},
+		{"allow", "Bash(npm run test:*)", "Bash", bash("npm run test:unit"), true},
+		{"allow", "Bash(npm run test:*)", "Bash", bash("npm run test"), true},
+		{"allow", "Bash(npm run test:*)", "Bash", bash("npm run build"), false},
+		{"allow", "Bash(npm test)", "Bash", bash("npm test"), true},
+		{"allow", "Bash(npm test)", "Bash", bash("npm test -- x"), false},
+		{"allow", "Bash(git * main)", "Bash", bash("git checkout main"), true},
+		{"allow", "Bash(git * main)", "Bash", bash("git checkout dev"), false},
+		{"allow", "Bash", "Bash", bash("anything"), true},
+		{"allow", "Bash", "Write", file("x"), false},
+		{"allow", "Edit", "Write", file("x"), true},
+		{"allow", "Edit", "NotebookEdit", map[string]any{"notebook_path": "n.ipynb"}, true},
+		{"allow", "Edit", "Read", file("x"), false},
+		{"allow", "Edit(src/**)", "Edit", file("/home/agent/workspace/src/a/b.go"), true},
+		{"allow", "Edit(src/**)", "Write", file("src/a.go"), true},
+		{"allow", "Edit(src/**)", "Write", file("/home/agent/workspace/docs/a.md"), false},
+		{"allow", "Edit(src/*.go)", "Edit", file("src/a.go"), true},
+		{"allow", "Edit(src/*.go)", "Edit", file("src/a/b.go"), false},
+		{"allow", "Edit(**/*.md)", "Edit", file("/home/agent/workspace/docs/a.md"), true},
+		{"deny", "Edit(/etc/**)", "Write", file("/etc/hosts"), true},
+		{"deny", "Edit(//etc/**)", "Write", file("/etc/hosts"), true},
+		{"deny", "Edit(/etc/**)", "Write", file("/home/agent/etc/hosts"), false},
+		{"deny", "Edit(~/.ssh/**)", "Write", file("/home/agent/.ssh/config"), true},
+		{"deny", "Edit(~/.ssh/**)", "Write", file("/root/.ssh/config"), true},
+		{"deny", "Edit(~/.ssh/**)", "Write", file("/home/agent/workspace/.ssh/config"), false},
+		{"allow", "Read", "Grep", map[string]any{"pattern": "x"}, true},
+		{"allow", "Read(docs/**)", "Read", file("docs/a.md"), true},
+		{"allow", "Read(docs/**)", "Glob", map[string]any{"pattern": "*.md"}, false},
+		{"allow", "WebFetch(domain:example.com)", "WebFetch", map[string]any{"url": "https://example.com/a"}, true},
+		{"allow", "WebFetch(domain:example.com)", "WebFetch", map[string]any{"url": "https://docs.example.com/a"}, true},
+		{"allow", "WebFetch(domain:example.com)", "WebFetch", map[string]any{"url": "https://example.com.evil.net/"}, false},
+		{"allow", "WebFetch", "WebFetch", map[string]any{"url": "https://x/"}, true},
+		{"allow", "mcp__warden__*", "mcp__warden__request_network_access", nil, true},
+		{"allow", "mcp__warden__*", "mcp__other__tool", nil, false},
+		{"allow", "mcp__warden__request_network_access", "mcp__warden__request_network_access", nil, true},
+		{"allow", "*", "Bash", bash("x"), true},
+	}
+	for _, c := range cases {
+		r, err := NewRule(c.kind, c.pattern)
+		if err != nil {
+			t.Fatalf("%s: %v", c.pattern, err)
+		}
+		if got := r.Matches(c.tool, c.input); got != c.want {
+			t.Errorf("%s %s vs %s %v: got %v", c.kind, c.pattern, c.tool, c.input, got)
 		}
 	}
-	if !(PermissionRule{Tool: "edit"}).Matches("Edit", nil) || (PermissionRule{Tool: "edit"}).Matches("Bash", map[string]any{"command": "ls"}) {
-		t.Error("edit rule")
+	for _, bad := range []string{"", "Bash(", "Bash()", "(x)", "Bash x", "WebFetch(example.com)", "TodoWrite(x)", "Bash(a\nb)"} {
+		if _, err := NewRule("allow", bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
 	}
-	if l := git.Label(); l != "`git commit` commands" {
-		t.Error(l)
+	if _, err := NewRule("maybe", "Bash"); err == nil {
+		t.Error("kind accepted")
 	}
-	if l := (PermissionRule{Tool: "edit"}).Label(); l != "file edits" {
-		t.Error(l)
+	if r, err := NewRule(" DENY ", " Bash(rm *) "); err != nil || r.Kind != "deny" || r.Pattern != "Bash(rm *)" {
+		t.Errorf("%+v %v", r, err)
 	}
 }
 
@@ -382,8 +503,8 @@ func TestPermissionAsksPerMode(t *testing.T) {
 		t.Fatalf("ask: %+v", answers)
 	}
 	c := e.Store.Snapshot().chat(id)
-	if len(c.Allowed) != 1 || c.Allowed[0] != (PermissionRule{Tool: "Bash", Command: "touch"}) {
-		t.Fatalf("rules %+v", c.Allowed)
+	if len(c.Rules) != 1 || c.Rules[0].Pattern != "Bash(touch *)" || c.Rules[0].Kind != RuleAllow || c.Rules[0].Origin != "always" || c.Rules[0].By == nil || c.Rules[0].By.PrincipalID != "owner" || c.Rules[0].ID == "" {
+		t.Fatalf("rules %+v", c.Rules)
 	}
 	// Turn 3: the rule answers `touch c`; `rm c` is a card.
 	sendAndDeliver(t, e, id, "three")
@@ -401,7 +522,7 @@ func TestPermissionAsksPerMode(t *testing.T) {
 	}
 	// Rules and mode are on the chat record.
 	b, err := os.ReadFile(filepath.Join(e.Store.dir(), "chats.json"))
-	if err != nil || !strings.Contains(string(b), `"allowed":[{"tool":"Bash","command":"touch"}]`) || !strings.Contains(string(b), `"mode":"ask"`) {
+	if err != nil || !strings.Contains(string(b), `"kind":"allow","pattern":"Bash(touch *)","origin":"always"`) || !strings.Contains(string(b), `"mode":"ask"`) {
 		t.Fatalf("%v %s", err, b)
 	}
 }

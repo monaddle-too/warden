@@ -9,13 +9,15 @@ import (
 )
 
 // The message queue and edit-and-resend (the web's queue.ts;
-// docs/claude-parity.md, item 10). A message sent while the agent's turn
-// runs waits in the transcript as queued and becomes its own turn after
-// it; until then /withdraw N drops it and /edit N (or ↑ on an empty
-// draft) takes it into the editor. Esc holds the queue: /queue send, or
-// the next message, lets it go. /edit N on a message the agent got
-// rewinds the conversation to before it (the code too with `both`) and
-// puts the message in the editor to send again.
+// docs/claude-parity.md, item 10 and round 2 D). A message sent while the
+// agent's turn runs waits in the transcript as queued and becomes its own
+// turn after it; until then /withdraw N drops it and /edit N (or ↑ on an
+// empty draft) loads it into the editor in place: Enter saves it back
+// into its slot, Esc leaves it as it was. Esc on a running turn holds the
+// queue: /queue send, or the next message, lets it go; a `!` command or a
+// `#` note runs beside it and leaves it held. /edit N on a message the
+// agent got rewinds the conversation to before it (the code too with
+// `both`) and puts the message in the editor to send again.
 
 // queuedMessages lists the chat's queued messages in the order they go.
 func queuedMessages(c *Chat) []Entry {
@@ -121,24 +123,33 @@ func (a *App) withdraw(ctx context.Context, c *Chat, arg string) {
 	a.setNotice(fmt.Sprintf("withdrawn: %s", truncate(excerptOf(list[n-1].Text), 60)))
 }
 
-// takeQueued withdraws a queued message into the editor: its text is the
-// draft and its files wait for the next message again. Nothing is sent
-// while it is edited; sent again, it goes at the end of the queue.
+// takeQueued loads a queued message into the editor to edit in place:
+// the message stays in its slot of the queue (its files with it) while
+// it is edited, Enter saves the text back into it, Esc or Ctrl+C leaves
+// it as it was. A message the agent got meanwhile refuses the save and
+// the draft stays, to send as a new message.
 func (a *App) takeQueued(ctx context.Context, c *Chat, e Entry) bool {
-	entry, err := a.Client.Withdraw(ctx, c.ID, e.ID)
-	if err != nil {
-		a.setNotice(err.Error())
+	if a.editing != nil {
+		a.setNotice("finish or cancel the current edit first (Esc)")
 		return false
 	}
-	a.refreshState(ctx)
-	a.editor.Set(entry.Text)
-	if len(entry.Attachments) > 0 {
-		if a.attachments == nil {
-			a.attachments = map[string][]Attachment{}
+	chatID, messageID := c.ID, e.ID
+	a.editing = &editing{label: "queued message", save: func(ctx context.Context, text string) error {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return fmt.Errorf("the message would be empty; /withdraw drops it instead")
 		}
-		a.attachments[c.ID] = append(a.attachments[c.ID], entry.Attachments...)
-	}
-	a.setNotice("editing the queued message; Enter sends it again (at the end of the queue), Ctrl+C drops it")
+		if _, err := a.Client.EditQueued(ctx, chatID, messageID, text); err != nil {
+			if strings.Contains(err.Error(), "already sent") {
+				return fmt.Errorf("the agent got the message before the edit was saved; Enter sends the draft as a new message, Ctrl+C drops it")
+			}
+			return err
+		}
+		a.refreshState(ctx)
+		return nil
+	}}
+	a.editor.Set(e.Text)
+	a.setNotice("editing the queued message in place; Enter saves it into its slot, Esc leaves it as it was")
 	return true
 }
 
@@ -153,6 +164,16 @@ func (a *App) editLastQueued(ctx context.Context, c *Chat) bool {
 		return false
 	}
 	return a.takeQueued(ctx, c, list[len(list)-1])
+}
+
+// heldNote is what a `!` command's or `#` note's notice adds while the
+// queue is held: the command ran beside it and left it so.
+func heldNote(c *Chat) string {
+	if c == nil || !queueHeld(c) {
+		return ""
+	}
+	n := len(queuedMessages(c))
+	return fmt.Sprintf(" · %d queued message(s) still held (/queue send lets them go)", n)
 }
 
 // edit is /edit N [both]: message N (as /rewind numbers them) into the

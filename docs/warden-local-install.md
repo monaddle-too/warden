@@ -415,8 +415,8 @@ own sbx namespace is unaffected by any of this.
 ## What an agent can ask for
 
 Besides sharing documents and repositories yourself, an agent can ask, and
-every request becomes an approval card in the chat, a popup and a
-`warden chat approve` item. Nothing happens until you answer, and the
+every request becomes an approval card in the app and the terminal client
+and a `warden chat approve` item. Nothing happens until you answer, and the
 answer and who gave it land in the workspace's Access history.
 
 - **Network access** (`request_network_access`): one public host over
@@ -674,15 +674,17 @@ warden status
 `send --wait` prints each transcript entry once it is complete and announces
 pending approvals; answer them with `warden chat approve` or in the app.
 
-**Approval popups.** While Warden runs it watches for approvals and surfaces
-each one once: a desktop notification (macOS Notification Center, or
-`notify-send` on Linux) naming the chat and the request, and, when started
-with `--detach`, the app opened in your browser on that chat so the card is
-in front of you. `warden start --popups browser|notify|none` overrides the
-default (`auto`: browser when detached, notification when in the
-foreground). Popups never answer anything; the app, `warden chat` or
-`warden chat approve` do. The terminal client also rings the bell when an
-approval appears on the open chat.
+**Approval popups.** By default a pending approval waits where it is: the
+app and the terminal client both show the card and answer it, and whichever
+answers first settles it everywhere. `warden start --popups notify` adds a
+desktop notification (macOS Notification Center, or `notify-send` on Linux)
+naming the chat and the request; `--popups browser` also opens the app in
+your browser on that chat; `--popups auto` is browser when detached and
+notify otherwise. Popups never answer anything; the app, `warden chat` or
+`warden chat approve` do. The terminal client rings the bell when an
+approval appears on the open chat (`/bell`), and the app can show a browser
+notification when its tab is hidden (the chat menu's "Desktop
+notifications").
 
 ## Optional: a guest image so new sandboxes start faster
 

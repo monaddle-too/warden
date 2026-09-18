@@ -227,10 +227,12 @@ func TestRewindConversationFallsBackToAFreshSessionWithARecap(t *testing.T) {
 	if len(input) != 2 || !strings.HasPrefix(agent.String(agent.Map(input[0])["text"]), "Context:") || !strings.Contains(agent.String(agent.Map(input[0])["text"]), "User: first") || agent.String(agent.Map(input[1])["text"]) != "third" {
 		t.Fatalf("the recap must precede the message once: %v", input)
 	}
-	c = e.Store.Snapshot().chat(id)
-	if c.Recap != "" || c.NewSession {
-		t.Fatal("the recap must be consumed by the turn")
-	}
+	// The worker counted the turn on receiving turn/start; the engine
+	// consumes the recap when it confirms the turn from the reply.
+	until(t, func() bool {
+		c := e.Store.Snapshot().chat(id)
+		return c.Recap == "" && !c.NewSession
+	})
 }
 
 func TestRewindConversationWithoutALiveSessionIsAppliedOnResume(t *testing.T) {
@@ -316,13 +318,16 @@ func TestTruncateCutsFromTheTargetQueueIncluded(t *testing.T) {
 		{ID: "d", Role: "activity", TurnID: cv.Ptr("t2"), ParentID: ""},
 		{ID: "e", Role: "user", Delivery: "queued"},
 	}, Turns: []cv.Turn{{ID: "t1"}, {ID: "t2"}}}, Approvals: []Approval{{ID: "p", State: "pending"}}}
-	truncate(c, "c")
+	removed, removedTurns := truncate(c, "c")
 	ids := []string{}
 	for _, v := range c.Conversation.Entries {
 		ids = append(ids, v.ID)
 	}
 	if strings.Join(ids, ",") != "a,b" || len(c.Conversation.Turns) != 1 || c.Approvals[0].State != "expired" {
 		t.Fatalf("truncate: %v turns %v approvals %v", ids, c.Conversation.Turns, c.Approvals)
+	}
+	if len(removed) != 3 || removed[0].ID != "c" || removed[2].ID != "e" || len(removedTurns) != 1 || removedTurns[0].ID != "t2" {
+		t.Fatalf("truncate must hand back what it dropped: %+v %+v", removed, removedTurns)
 	}
 }
 

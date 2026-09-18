@@ -1,5 +1,5 @@
 // Adapted from Panta Conversation.tsx at bf61d5b; presentation retained, app dependencies removed.
-import { memo, useCallback, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
   Check,
@@ -13,12 +13,14 @@ import {
   Pencil,
   RotateCcw,
   Send,
+  Undo2,
   User,
   X,
 } from "lucide-react";
 import { compactionLabel } from "../context";
 import { hasDiff, parseDiff } from "../diff";
 import { senderLabel } from "../export";
+import { undoHint, undoOffersCode } from "../rewind";
 import { subagentInput, subagentProgress, toolRunning } from "../tools";
 import { groupEntries } from "../transcript";
 import {
@@ -235,9 +237,118 @@ export const ActivityGroup = memo(function ActivityGroup({
     </details>
   );
 });
-/* Under a queued message (queue.ts): edit takes it out of the queue into
-   the composer, withdraw drops it, and Send lets a held queue go. Always
-   shown: the queue is something to act on, not to discover on hover. */
+/* A queued message edited on its card (queue.ts): the text in a
+   textarea (Enter saves, Shift-Enter a newline, Esc leaves the message
+   as it was) and its attachments, each removable; the save keeps the
+   message's slot and ID. The text is the parent's, so a message the
+   agent gets while it is edited is not lost with the card. */
+function QueuedEditor({
+  entry,
+  text,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  entry: Entry;
+  text: string;
+  onChange: (text: string) => void;
+  onSave: (text: string, attachments: string[]) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [kept, setKept] = useState(() => entry.attachments ?? []);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, []);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 320) + "px";
+  }, [text]);
+  async function save() {
+    if (busy) return;
+    if (!text.trim() && !kept.length) {
+      setError("A message needs text or an attachment; withdraw it instead");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await onSave(text, kept.map((a) => a.id));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="queued-editor" data-entry={entry.id}>
+      <textarea
+        ref={ref}
+        value={text}
+        rows={1}
+        aria-label="Edit the queued message"
+        disabled={busy}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          } else if (e.key === "Enter" && !e.shiftKey && !e.altKey) {
+            e.preventDefault();
+            void save();
+          }
+        }}
+      />
+      {kept.length > 0 && (
+        <ul className="queued-editor-files">
+          {kept.map((a) => (
+            <li key={a.id}>
+              <FileText size={13} aria-hidden="true" /> {a.name}
+              <button
+                type="button"
+                className="ghost icon"
+                aria-label={`Remove ${a.name}`}
+                title="Send the message without this file"
+                onClick={() => setKept(kept.filter((k) => k.id !== a.id))}
+              >
+                <X size={12} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="queued-editor-bar">
+        <span className="muted">
+          {error || "Enter saves it in its place · Shift-Enter newline · Esc cancels"}
+        </span>
+        <span>
+          <button type="button" className="ghost" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={() => void save()}
+          >
+            Save
+          </button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* Under a queued message (queue.ts): edit opens the card's editor,
+   withdraw drops it, and Send lets a held queue go. Always shown: the
+   queue is something to act on, not to discover on hover. */
 function QueuedActions({
   entry,
   queue,
@@ -274,7 +385,7 @@ function QueuedActions({
           aria-label="Edit this queued message"
           title={
             queue.mine
-              ? "Edit: takes it out of the queue and into the composer"
+              ? "Edit it here; it keeps its place in the queue"
               : "Only its sender or the owner can edit it"
           }
           disabled={!queue.mine}
@@ -425,6 +536,12 @@ export const EntryView = memo(function EntryView({
   onWithdraw,
   onSendQueued,
   queue,
+  queuedEdit,
+  onQueuedEditChange,
+  onSaveQueued,
+  onCancelQueuedEdit,
+  onUndoRewind,
+  undoable = false,
   actions = false,
   editable = false,
   rewindable = false,
@@ -448,6 +565,17 @@ export const EntryView = memo(function EntryView({
   onWithdraw?: (entry: Entry) => void;
   onSendQueued?: () => void;
   queue?: QueueState;
+  /* For a queued message being edited on its card: the draft (the
+     parent's), its changes, the save (text and the attachments kept) and
+     the cancel. */
+  queuedEdit?: string;
+  onQueuedEditChange?: (text: string) => void;
+  onSaveQueued?: (entry: Entry, text: string, attachments: string[]) => Promise<void>;
+  onCancelQueuedEdit?: () => void;
+  /* For a rewind marker whose rewind can still be undone (rewind.ts):
+     the undo, with or without the workspace. */
+  onUndoRewind?: (entry: Entry, code: boolean) => void;
+  undoable?: boolean;
   /* Whether retry would be accepted right now. */
   actions?: boolean;
   /* Whether edit-and-resend would be (a rewind is possible). */
@@ -499,7 +627,8 @@ export const EntryView = memo(function EntryView({
     );
   if (entry.role === "rewind")
     // The marker a rewind leaves: which message the chat went back to
-    // before and what was taken back (rewind.ts).
+    // before and what was taken back, and Undo while the removed
+    // transcript is still kept (rewind.ts).
     return (
       <div
         className="system-entry rewind-entry"
@@ -511,6 +640,29 @@ export const EntryView = memo(function EntryView({
           <History size={13} aria-hidden="true" /> {entry.text}
         </span>
         {entry.detail && <small>{entry.detail}</small>}
+        {undoable && onUndoRewind && (
+          <div className="rewind-actions">
+            <button
+              type="button"
+              className="ghost"
+              title={undoHint(entry)}
+              onClick={() => onUndoRewind(entry, false)}
+            >
+              <Undo2 size={13} aria-hidden="true" /> Undo
+            </button>
+            {undoOffersCode(entry) && (
+              <button
+                type="button"
+                className="ghost"
+                title="Undo, and put the workspace back as it was before the rewind"
+                onClick={() => onUndoRewind(entry, true)}
+              >
+                <Undo2 size={13} aria-hidden="true" /> Undo and restore the files
+              </button>
+            )}
+            <small>{undoHint(entry)}</small>
+          </div>
+        )}
       </div>
     );
   if (entry.role === "compaction")
@@ -570,26 +722,38 @@ export const EntryView = memo(function EntryView({
   );
   if (user) {
     const queued = entry.delivery === "queued" && !!queue;
+    const editingHere =
+      queued && queuedEdit !== undefined && !!onSaveQueued && !!onQueuedEditChange && !!onCancelQueuedEdit;
     return (
       <article
-        className={`message message-user${queued ? " message-queued" : ""}`}
+        className={`message message-user${queued ? " message-queued" : ""}${editingHere ? " message-editing" : ""}`}
         data-entry={entry.id}
       >
         {header}
-        <div className="message-body">
-          {entry.text && (
-            <RichText
-              text={entry.text}
-              chatID={chatID}
-              entryID={entry.id}
-              onFile={onFile}
-            />
-          )}
-          {!!entry.attachments?.length && (
-            <EntryAttachments chatID={chatID} attachments={entry.attachments} />
-          )}
-        </div>
-        {queued ? (
+        {editingHere ? (
+          <QueuedEditor
+            entry={entry}
+            text={queuedEdit}
+            onChange={onQueuedEditChange}
+            onSave={(text, attachments) => onSaveQueued(entry, text, attachments)}
+            onCancel={onCancelQueuedEdit}
+          />
+        ) : (
+          <div className="message-body">
+            {entry.text && (
+              <RichText
+                text={entry.text}
+                chatID={chatID}
+                entryID={entry.id}
+                onFile={onFile}
+              />
+            )}
+            {!!entry.attachments?.length && (
+              <EntryAttachments chatID={chatID} attachments={entry.attachments} />
+            )}
+          </div>
+        )}
+        {editingHere ? null : queued ? (
           <QueuedActions
             entry={entry}
             queue={queue}
