@@ -13,14 +13,15 @@ import (
 // them; everything the agent produced is untrusted text and is printed as
 // text, never interpreted (escape sequences are stripped).
 const (
-	reset  = "\x1b[0m"
-	bold   = "\x1b[1m"
-	dim    = "\x1b[2m"
-	cyan   = "\x1b[36m"
-	green  = "\x1b[32m"
-	yellow = "\x1b[33m"
-	red    = "\x1b[31m"
-	blue   = "\x1b[34m"
+	reset   = "\x1b[0m"
+	bold    = "\x1b[1m"
+	dim     = "\x1b[2m"
+	cyan    = "\x1b[36m"
+	green   = "\x1b[32m"
+	yellow  = "\x1b[33m"
+	red     = "\x1b[31m"
+	magenta = "\x1b[35m"
+	blue    = "\x1b[34m"
 )
 
 // sanitize removes control characters and escape sequences from text the
@@ -235,6 +236,14 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 			}
 		case "notice":
 			out = append(out, wrap(dim+text+reset, width, dim+"  · ", "    ")...)
+		case "fork":
+			// The marker at the top of a forked chat: where it came from.
+			out = append(out, wrap(yellow+text+reset, width, yellow+"  ⑂ "+reset, "    ")...)
+			if e.Detail != "" {
+				out = append(out, wrap(dim+e.Detail+reset, width, "    ", "    ")...)
+			}
+		case "aside":
+			out = append(out, renderAside(c, e, width)...)
 		case "compaction":
 			// The agent compacted its context here: a divider with the
 			// trigger and the token counts, the summary it continues from
@@ -802,6 +811,46 @@ func renderCompaction(e Entry, width int, expanded bool) []string {
 	out[len(out)-1] += " " + rule + reset
 	if expanded && strings.TrimSpace(e.Detail) != "" && (e.Compaction == nil || e.Compaction.Status == "completed") {
 		out = append(out, wrap(dim+sanitize(e.Detail)+reset, width, "     ", "     ")...)
+	}
+	return out
+}
+
+// renderAside lays out a side question and its answer: the question by
+// the person, the answer from a copy of the session (never part of the
+// conversation), and what it cost.
+func renderAside(c *Chat, e Entry, width int) []string {
+	label := senderLabel(e) + " (aside)"
+	out := wrap(sanitize(e.Text), width, bold+magenta+label+" › "+reset, strings.Repeat(" ", utf8.RuneCountInString(label)+3))
+	a := e.Aside
+	switch {
+	case a != nil && a.Status == "running", e.IsStreaming && e.Detail == "":
+		out = append(out, dim+"  ⋯ answering from a copy of the session"+reset)
+	case a != nil && a.Status == "failed":
+		msg := "could not answer"
+		if a.Error != "" {
+			msg += ": " + sanitize(a.Error)
+		}
+		out = append(out, wrap(red+msg+reset, width, red+"  ! "+reset, "    ")...)
+	default:
+		name := c.Provider
+		if name == "" {
+			name = "agent"
+		}
+		name += " (aside)"
+		out = append(out, renderMarkdown(sanitize(e.Detail), width, bold+magenta+name+" › "+reset, strings.Repeat(" ", utf8.RuneCountInString(name)+3))...)
+	}
+	if a != nil && (a.CostUSD > 0 || a.Input+a.Output > 0 || a.DurationMS > 0) {
+		var facts []string
+		if a.DurationMS > 0 {
+			facts = append(facts, FormatDuration(float64(a.DurationMS)/1000))
+		}
+		if a.Input+a.Output > 0 {
+			facts = append(facts, FormatTokens(a.Input+a.Output)+" tokens")
+		}
+		if a.CostUSD > 0 {
+			facts = append(facts, FormatCost(a.CostUSD))
+		}
+		out = append(out, dim+"    "+strings.Join(facts, " · ")+" · not sent to the agent"+reset)
 	}
 	return out
 }

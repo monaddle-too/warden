@@ -440,6 +440,47 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]any{"checkpoints": list})
+	case strings.HasSuffix(path, "/fork"):
+		var body struct{ TurnID string }
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/fork")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		if c.Status == "running" {
+			f.mu.Unlock()
+			w.WriteHeader(400)
+			w.Write([]byte(`{"error":"wait for the agent to finish, or stop it, before forking"}`))
+			return
+		}
+		var kept []Entry
+		for _, e := range c.Conversation.Entries {
+			if e.ID == body.TurnID {
+				break
+			}
+			kept = append(kept, e)
+		}
+		kept = append(kept, Entry{ID: "fork-marker", Role: "fork", Text: "Forked from “" + c.Title + "”", Detail: "the agent continues from a copy of its session", Fork: &Fork{ChatID: c.ID, Title: c.Title, MessageID: body.TurnID}})
+		fork := &Chat{ID: c.ID + "-fork", Title: c.Title + " (fork)", Provider: c.Provider, SandboxID: c.SandboxID, Status: "idle", Conversation: Conversation{Entries: kept}}
+		f.state.Chats = append(f.state.Chats, fork)
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(ForkResult{ID: fork.ID, Title: fork.Title, Session: "forked"})
+	case strings.HasSuffix(path, "/aside"):
+		var body struct{ Text string }
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/aside")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "aside1", Role: "aside", Text: body.Text, Detail: "Forty-two.", Aside: &Aside{Status: "completed", CostUSD: 0.03, Input: 1200, Output: 8, DurationMS: 2600}})
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(AsideResult{ID: "aside1", Text: "Forty-two.", CostUSD: 0.03})
+	case strings.HasSuffix(path, "/style"):
+		var body struct{ Style string }
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/style")
+		f.mu.Lock()
+		f.state.Chat(id).OutputStyle = body.Style
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/rewind"):
 		var body struct{ TurnID, What string }
 		json.NewDecoder(r.Body).Decode(&body)
@@ -2175,5 +2216,243 @@ func TestCompactionDividerContextAndPassthrough(t *testing.T) {
 	app.submit(ctx, "/compact")
 	if !strings.Contains(app.notice, "unknown command /compact") {
 		t.Fatalf("codex notice: %q", app.notice)
+	}
+}
+
+func TestCostForkStyleAndBellCommands(t *testing.T) {
+	f := newFakeServer(t, State{Chats: []*Chat{{ID: "chat1", Title: "Long tail", Provider: "claude", Status: "idle", Conversation: Conversation{
+		Entries: []Entry{
+			{ID: "u1", Role: "user", Text: "Add a counter", TurnID: ptr("t1")},
+			{ID: "a1", Role: "assistant", Text: "Done.", TurnID: ptr("t1")},
+			{ID: "u2", Role: "user", Text: "Make it blue", TurnID: ptr("t2")},
+			{ID: "a2", Role: "assistant", Text: "Blue.", TurnID: ptr("t2")},
+		},
+		Turns: []Turn{
+			{ID: "t1", StartedAt: 100, EndedAt: 112, Usage: &Usage{Input: 10000, Cached: 8000, CacheWrite: 500, Output: 300, Reasoning: 100, Total: 10300, CostUSD: 0.03}},
+			{ID: "t2", StartedAt: 200, EndedAt: 260, Usage: &Usage{Input: 20000, Cached: 15000, Output: 700, Total: 20700, CostUSD: 0.05}},
+		},
+	}}}})
+	ctx := context.Background()
+	dir := t.TempDir()
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }, BellFile: filepath.Join(dir, "bell")}
+	app.refreshState(ctx)
+	// /cost sums the turn records into a notice.
+	app.submit(ctx, "/cost")
+	notice := plain(app.notice)
+	for _, want := range []string{"cost so far", "turns                2", "input tokens         30k", "  read from cache    23k", "  written to cache   500", "output tokens        1.0k", "  thinking           100", "total tokens         31k", "cost                 $0.08", "time in turns        1m 12s"} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("/cost lacks %q:\n%s", want, notice)
+		}
+	}
+	codex := SessionCost(&Chat{Conversation: Conversation{Turns: []Turn{{ID: "t", StartedAt: 1, EndedAt: 2, Usage: &Usage{Input: 10, Output: 5, Total: 15}}}}}, 0)
+	if codex.Priced || !strings.Contains(strings.Join(CostLines(codex), "\n"), "not reported by this agent") {
+		t.Fatalf("codex cost: %+v", codex)
+	}
+	// /style shows and sets the output style.
+	app.submit(ctx, "/style")
+	if !strings.Contains(app.notice, "output style default for the next session") {
+		t.Fatalf("style: %q", app.notice)
+	}
+	app.submit(ctx, "/style nope")
+	if app.notice != "/style default|Explanatory|Learning" {
+		t.Fatalf("bad style: %q", app.notice)
+	}
+	app.submit(ctx, "/style learning")
+	if !strings.Contains(app.notice, "output style Learning applies when the next session starts") || app.chat().OutputStyle != "Learning" {
+		t.Fatalf("set style: %q %q", app.notice, app.chat().OutputStyle)
+	}
+	app.submit(ctx, "/style default")
+	if app.chat().OutputStyle != "" {
+		t.Fatalf("default style: %q", app.chat().OutputStyle)
+	}
+	// /bell shows, sets and persists.
+	app.submit(ctx, "/bell")
+	if !strings.HasPrefix(app.notice, "bell on:") {
+		t.Fatalf("bell: %q", app.notice)
+	}
+	app.submit(ctx, "/bell off")
+	if app.bellOn() || app.notice != "bell off" {
+		t.Fatalf("bell off: %v %q", app.bellOn(), app.notice)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "bell")); err != nil || strings.TrimSpace(string(b)) != "off" {
+		t.Fatalf("bell file: %q %v", b, err)
+	}
+	fresh := &App{BellFile: filepath.Join(dir, "bell")}
+	if fresh.bellOn() {
+		t.Fatal("the bell setting was not read back")
+	}
+	app.submit(ctx, "/bell maybe")
+	if app.notice != "/bell on|off" {
+		t.Fatalf("bad bell: %q", app.notice)
+	}
+	app.submit(ctx, "/bell on")
+	// /fork lists, refuses bad arguments, forks and switches to the fork.
+	app.submit(ctx, "/fork")
+	if !strings.Contains(plain(app.notice), " 2   Make it blue") || !strings.Contains(app.notice, "/fork N") {
+		t.Fatalf("fork listing: %q", app.notice)
+	}
+	for _, bad := range []string{"/fork 3", "/fork x"} {
+		app.submit(ctx, bad)
+		if app.notice != "/fork N (from /fork) or /fork all" {
+			t.Fatalf("%s: %q", bad, app.notice)
+		}
+	}
+	app.submit(ctx, "/fork 2")
+	if app.ChatID != "chat1-fork" || !strings.Contains(app.notice, `forked before message 2 "Make it blue" into "Long tail (fork)"; the agent continues from a copy of its session`) {
+		t.Fatalf("fork: chat %s notice %q", app.ChatID, app.notice)
+	}
+	fork := app.chat()
+	if fork == nil || len(fork.Conversation.Entries) != 3 || fork.Conversation.Entries[2].Role != "fork" {
+		t.Fatalf("fork chat: %+v", fork)
+	}
+	lines := plain(strings.Join(RenderTranscript(fork, 100, false), "\n"))
+	if !strings.Contains(lines, "⑂ Forked from “Long tail”") || !strings.Contains(lines, "copy of its session") {
+		t.Fatalf("fork marker: %s", lines)
+	}
+	app.selectChat("chat1")
+	app.submit(ctx, "/fork all")
+	if !strings.HasPrefix(app.notice, "forked the whole conversation into") {
+		t.Fatalf("fork all: %q", app.notice)
+	}
+	app.selectChat("chat1")
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.submit(ctx, "/fork 1")
+	if app.notice != "stop the agent first (Esc)" {
+		t.Fatalf("fork while running: %q", app.notice)
+	}
+}
+
+func TestSideQuestionAndItsCard(t *testing.T) {
+	f := newFakeServer(t, State{Chats: []*Chat{
+		{ID: "chat1", Title: "Aside", Provider: "claude", Status: "idle"},
+		{ID: "chat2", Title: "Codex", Provider: "codex", Status: "idle"},
+	}})
+	ctx := context.Background()
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }, later: make(chan func(context.Context), 8)}
+	app.refreshState(ctx)
+	app.submit(ctx, "/btw")
+	if !strings.HasPrefix(app.notice, "/btw QUESTION") {
+		t.Fatalf("usage: %q", app.notice)
+	}
+	app.submit(ctx, "/btw what is the answer?")
+	if !strings.HasPrefix(app.notice, "asking a copy of the session: what is the answer?") {
+		t.Fatalf("asking: %q", app.notice)
+	}
+	select {
+	case report := <-app.later:
+		report(ctx)
+	case <-time.After(3 * time.Second):
+		t.Fatal("no report")
+	}
+	if app.notice != "side question answered ($0.03)" {
+		t.Fatalf("answered: %q", app.notice)
+	}
+	app.refreshState(ctx)
+	c := app.chat()
+	if len(c.Conversation.Entries) != 1 || c.Conversation.Entries[0].Role != "aside" {
+		t.Fatalf("entries: %+v", c.Conversation.Entries)
+	}
+	lines := plain(strings.Join(RenderTranscript(c, 100, false), "\n"))
+	for _, want := range []string{"you (aside) › what is the answer?", "claude (aside) › Forty-two.", "2.6s · 1.2k tokens · $0.03 · not sent to the agent"} {
+		if !strings.Contains(lines, want) {
+			t.Fatalf("aside card lacks %q:\n%s", want, lines)
+		}
+	}
+	running := RenderTranscript(&Chat{Provider: "claude", Conversation: Conversation{Entries: []Entry{{ID: "x", Role: "aside", Text: "hm?", IsStreaming: true, Aside: &Aside{Status: "running"}}}}}, 80, false)
+	if !strings.Contains(plain(strings.Join(running, "\n")), "⋯ answering from a copy of the session") {
+		t.Fatalf("running aside: %v", running)
+	}
+	failed := RenderTranscript(&Chat{Provider: "claude", Conversation: Conversation{Entries: []Entry{{ID: "x", Role: "aside", Text: "hm?", Aside: &Aside{Status: "failed", Error: "API Error: 503"}}}}}, 80, false)
+	if !strings.Contains(plain(strings.Join(failed, "\n")), "! could not answer: API Error: 503") {
+		t.Fatalf("failed aside: %v", failed)
+	}
+	// Refused while running, and for Codex.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.submit(ctx, "/btw now?")
+	if !strings.HasPrefix(app.notice, "wait for the agent's turn") {
+		t.Fatalf("running: %q", app.notice)
+	}
+	app.selectChat("chat2")
+	app.submit(ctx, "/btw hm?")
+	if app.notice != "side questions are a Claude chat's" {
+		t.Fatalf("codex: %q", app.notice)
+	}
+}
+
+func TestTitleAndBellEvents(t *testing.T) {
+	if TitleFor(nil) != "Warden" {
+		t.Fatal(TitleFor(nil))
+	}
+	idle := &Chat{ID: "c", Title: "Fix  the\nbuild", Status: "idle"}
+	running := &Chat{ID: "c", Title: "Fix the build", Status: "running"}
+	asking := &Chat{ID: "c", Title: "Fix the build", Status: "running", Approvals: []Approval{{ID: "ap1", State: "pending"}}}
+	failed := &Chat{ID: "c", Title: "Fix the build", Status: "failed", Error: "boom"}
+	if got := TitleFor(idle); got != "Warden · Fix the build · idle" {
+		t.Fatalf("%q", got)
+	}
+	if got := TitleFor(running); got != "Warden · Fix the build · running" {
+		t.Fatalf("%q", got)
+	}
+	if got := TitleFor(asking); got != "Warden · Fix the build · approval" {
+		t.Fatalf("%q", got)
+	}
+	if got := BellEvents(running, idle); len(got) != 1 || got[0] != "completed" {
+		t.Fatalf("%v", got)
+	}
+	if got := BellEvents(running, failed); len(got) != 1 || got[0] != "failed" {
+		t.Fatalf("%v", got)
+	}
+	if got := BellEvents(running, asking); len(got) != 1 || got[0] != "approval" {
+		t.Fatalf("%v", got)
+	}
+	if got := BellEvents(asking, asking); len(got) != 0 {
+		t.Fatalf("a known approval rang again: %v", got)
+	}
+	if got := BellEvents(idle, running); len(got) != 0 {
+		t.Fatalf("a start rang: %v", got)
+	}
+	if got := BellEvents(running, &Chat{ID: "c", Status: "interrupted"}); len(got) != 0 {
+		t.Fatalf("a stop rang: %v", got)
+	}
+	if got := BellEvents(nil, idle); len(got) != 0 {
+		t.Fatalf("the first snapshot rang: %v", got)
+	}
+	if got := BellEvents(running, &Chat{ID: "other", Status: "idle"}); len(got) != 0 {
+		t.Fatalf("another chat rang: %v", got)
+	}
+	// The app writes the title once per change and rings the bell on the
+	// events, not when it is off.
+	var out bytes.Buffer
+	app := &App{Output: &out, ChatID: "c", state: &State{Chats: []*Chat{running}}, Size: func() (int, int) { return 80, 24 }}
+	app.bellForEvents()
+	app.draw()
+	if !strings.Contains(out.String(), "\x1b]0;Warden · Fix the build · running\a") || strings.Count(out.String(), "\x1b]0;") != 1 {
+		t.Fatalf("title: %q", out.String())
+	}
+	out.Reset()
+	app.draw()
+	if strings.Contains(out.String(), "\x1b]0;") {
+		t.Fatal("the title was rewritten without a change")
+	}
+	app.state = &State{Chats: []*Chat{idle}}
+	app.bellForEvents()
+	app.draw()
+	if !strings.Contains(out.String(), "\a\x1b") && !strings.HasPrefix(out.String(), "\a") || !strings.Contains(out.String(), "\x1b]0;Warden · Fix the build · idle\a") {
+		t.Fatalf("bell and title on completion: %q", out.String())
+	}
+	out.Reset()
+	app.setBell(false)
+	app.state = &State{Chats: []*Chat{running}}
+	app.bellForEvents()
+	app.state = &State{Chats: []*Chat{idle}}
+	app.bellForEvents()
+	if strings.Contains(out.String(), "\a") {
+		t.Fatal("the bell rang while off")
 	}
 }

@@ -40,7 +40,13 @@ type Entry struct {
 	// Compaction is what a compaction entry records (conversation.Compaction):
 	// the agent compacted its context here; Detail is the summary.
 	Compaction *Compaction `json:"compaction,omitempty"`
-	Sender     *struct {
+	// Fork is what a fork marker records (conversation.Fork): the chat
+	// this one was copied from and the message the copy stops before.
+	Fork *Fork `json:"fork,omitempty"`
+	// Aside is what an aside entry records (conversation.Aside): a side
+	// question (Text) answered from a copy of the session (Detail).
+	Aside  *Aside `json:"aside,omitempty"`
+	Sender *struct {
 		PrincipalID string `json:"principalID"`
 		Email       string `json:"email"`
 		Name        string `json:"name"`
@@ -55,6 +61,24 @@ type Attachment struct {
 	Path string `json:"path"`
 	Kind string `json:"kind"`
 	Size int64  `json:"size"`
+}
+
+// Fork mirrors conversation.Fork.
+type Fork struct {
+	ChatID    string `json:"chatID"`
+	Title     string `json:"title"`
+	MessageID string `json:"messageID"`
+}
+
+// Aside mirrors conversation.Aside: how a side question went and what it
+// cost.
+type Aside struct {
+	Status     string  `json:"status"`
+	Error      string  `json:"error"`
+	CostUSD    float64 `json:"costUSD"`
+	Input      int64   `json:"input"`
+	Output     int64   `json:"output"`
+	DurationMS int64   `json:"durationMS"`
 }
 
 // Compaction mirrors conversation.Compaction: how the agent's context was
@@ -188,6 +212,14 @@ type Chat struct {
 	// Commands are the slash commands the agent's session offers (Claude
 	// Code's built-ins and the workspace's own), for the / menu.
 	Commands []AgentCommand `json:"commands"`
+	// OutputStyle is a Claude chat's output style for its next launch ("":
+	// the default); Session.OutputStyle is what the running one has.
+	OutputStyle string `json:"outputStyle"`
+	Session     *struct {
+		Model          string `json:"model"`
+		PermissionMode string `json:"permissionMode"`
+		OutputStyle    string `json:"outputStyle"`
+	} `json:"session"`
 	// Startup is where the chat's start is while its message waits for the
 	// agent: the stage and the runtime's detail.
 	Startup *struct {
@@ -609,6 +641,41 @@ func (c *Client) Rewind(ctx context.Context, chatID, messageID, what string) (Re
 	var out RewindResult
 	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/rewind", map[string]string{"turnID": messageID, "what": what}, &out)
 	return out, err
+}
+
+// ForkResult is what a fork made (chats.ForkResult).
+type ForkResult struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Session string `json:"session"`
+}
+
+// Fork copies the chat into a sibling up to messageID ("" for the whole
+// transcript).
+func (c *Client) Fork(ctx context.Context, chatID, messageID string) (ForkResult, error) {
+	var out ForkResult
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/fork", map[string]string{"turnID": messageID}, &out)
+	return out, err
+}
+
+// AsideResult is what a side question came to (chats.AsideResult).
+type AsideResult struct {
+	ID      string  `json:"id"`
+	Text    string  `json:"text"`
+	Error   string  `json:"error"`
+	CostUSD float64 `json:"costUSD"`
+}
+
+// Aside asks a side question of a copy of the chat's session.
+func (c *Client) Aside(ctx context.Context, chatID, question string) (AsideResult, error) {
+	var out AsideResult
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/aside", map[string]string{"text": question}, &out)
+	return out, err
+}
+
+// Style sets a Claude chat's output style for its next launch.
+func (c *Client) Style(ctx context.Context, chatID, style string) error {
+	return c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/style", map[string]string{"style": style}, nil)
 }
 
 func (c *Client) Diff(ctx context.Context, chatID string) (*WorkspaceChanges, error) {

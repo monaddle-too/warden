@@ -39,9 +39,14 @@ type App struct {
 	// ChatCommands lists commands the chat itself offers (the agent's slash
 	// commands, once the chat state carries them) for the / menu; nil today.
 	ChatCommands func(*Chat) []Command
+	// BellFile keeps the /bell setting ("on" or "off"); empty keeps it for
+	// the session.
+	BellFile string
 
 	mu       sync.Mutex
-	rang     map[string]bool // approvals already announced with the bell
+	bell     *bool // the bell setting once read (longtail.go)
+	lastSeen *Chat // the selected chat as of the last snapshot, for the bell's events
+	title    string
 	state    *State
 	live     bool
 	editor   Editor
@@ -127,6 +132,9 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
            /stop /model M /provider P /mode M · /open /previews /preview N /unpublish N
            /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
+           /fork (list) /fork N|all copies the chat into a sibling · /cost totals so far
+           /btw QUESTION asks a copy of the session (never sent to the agent)
+           /style [default|Explanatory|Learning] · /bell [on|off]
            /find TEXT /copy /expand /verbose /clear /quit
            /compact [what to keep] asks Claude to replace the history with a summary
 composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
@@ -266,8 +274,10 @@ func (a *App) Run(ctx context.Context) error {
 	// Alternate screen, cursor hidden while painting, and mouse wheel
 	// reporting (SGR encoding) so the wheel scrolls the transcript. Text
 	// selection then needs the terminal's modifier (Option or Shift).
-	fmt.Fprint(a.Output, "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h\x1b[?2004h")
-	defer fmt.Fprint(a.Output, "\x1b[?2004l\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l")
+	// The terminal's title is pushed (xterm's title stack) and popped at
+	// exit, so the person gets theirs back; setTitle keeps it current.
+	fmt.Fprint(a.Output, "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[22;0t")
+	defer fmt.Fprint(a.Output, "\x1b[?2004l\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[23;0t")
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	a.draw()
@@ -285,7 +295,7 @@ func (a *App) Run(ctx context.Context) error {
 			return nil
 		case s := <-snapshots:
 			a.state, a.live = s, true
-			a.bellForNewApprovals()
+			a.bellForEvents()
 			a.draw()
 		case k := <-keys:
 			a.handleKey(ctx, k)
@@ -311,6 +321,7 @@ func (a *App) selectChat(id string) {
 	a.diff = nil
 	if a.ChatID != id {
 		a.saveHistory()
+		a.lastSeen = nil
 	}
 	a.ChatID = id
 	a.scroll = 0
@@ -1151,6 +1162,16 @@ func (a *App) command(ctx context.Context, line string) {
 		a.rewind(ctx, c, arg)
 	case "diff":
 		a.showDiff(ctx, c, arg)
+	case "fork":
+		a.fork(ctx, c, arg)
+	case "btw":
+		a.btw(ctx, c, arg)
+	case "cost":
+		a.cost(c)
+	case "style":
+		a.style(ctx, c, arg)
+	case "bell":
+		a.bellCommand(arg)
 	case "verbose":
 		a.handleKey(ctx, Key{Kind: KeyCtrlO})
 	case "open":
@@ -1603,6 +1624,7 @@ func (a *App) draw() {
 		}
 	}
 	f := a.frame(width, height)
+	a.setTitle()
 	var b strings.Builder
 	b.WriteString("\x1b[?25l")
 	if a.redraw {
@@ -1654,25 +1676,6 @@ func clip(s string, width int) string {
 		}
 	}
 	return b.String() + reset
-}
-
-// bellForNewApprovals rings the terminal bell once per approval that
-// became pending on the selected chat, so a request is noticed without
-// watching the screen.
-func (a *App) bellForNewApprovals() {
-	c := a.chat()
-	if c == nil {
-		return
-	}
-	if a.rang == nil {
-		a.rang = map[string]bool{}
-	}
-	for _, ap := range c.Pending() {
-		if !a.rang[ap.ID] {
-			a.rang[ap.ID] = true
-			fmt.Fprint(a.Output, "\a")
-		}
-	}
 }
 
 // find scrolls so the nearest earlier line containing term (case-insensitive)
