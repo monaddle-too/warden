@@ -429,6 +429,9 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - 2026-09-18: main e5bf597 (the above plus round 2 A/B) deployed to GKE
   Autopilot at cloud.warden.monaddle.com (images
   `warden:v0.1.0-alpha.12-316-ge5bf597`), replacing 1a8a06f.
+- 2026-09-18: main 0270ce5 (everything above, round 2 C–G, the bug-report
+  server and the composer redesign) deployed locally and to GKE (images
+  `warden:v0.1.0-alpha.12-398-g0270ce5`), replacing c86ae18 there.
 
 ## Progress
 
