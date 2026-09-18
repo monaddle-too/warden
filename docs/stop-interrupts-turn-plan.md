@@ -85,3 +85,11 @@ sandbox, not for the turn.
   Claude Code abort result's shape is taken as "whatever result follows
   the interrupt", so any result ends the turn as interrupted; if the CLI
   sends none, the 10 s fallback applies.
+- 2026-09-17: verified the Claude Code side against the local CLI (2.1.275):
+  the `interrupt` control request is answered, the partial `assistant`
+  and a synthetic `user` message follow, then a `result`
+  (`error_during_execution`, `is_error: true`) within ~0.1 s; the process
+  stays up and the next turn runs on it. Merged to origin/main as
+  4265530 (main merged in twice on the way: 4c9adce, 7a54079). Not yet
+  deployed anywhere; a live check of Stop mid-turn on a real sandbox
+  (local release or GKE) remains.
