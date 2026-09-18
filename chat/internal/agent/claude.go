@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -76,12 +77,15 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		var initID json.RawMessage
 		tools := []any{}
 		pending := map[string]map[string]any{}
-		// Control requests Warden sent the CLI (a permission mode change),
-		// by request id, until the CLI answers them; cliMode is the CLI's
-		// permission mode as last set or reported, so a change is sent only
-		// when it is one.
+		// Control requests Warden sent the CLI (a permission mode, model,
+		// thinking, effort or fast-mode change), by request id, until the
+		// CLI answers them; cliMode is the CLI's permission mode as last
+		// set or reported, and cliThinking, cliEffort and cliFast the
+		// session settings as last set (a fresh process starts at its
+		// defaults), so a change is sent only when it is one.
 		outbound := map[string]claudeOutbound{}
 		cliMode := "default"
+		cliThinking, cliEffort, cliFast := "", "", false
 		// Tool calls in flight, by tool_use id, until their result; a
 		// background task's call stays until the task's notification.
 		toolCalls := map[string]claudeTool{}
@@ -120,6 +124,10 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		// An interrupt asked of the CLI: its next result ends the turn as
 		// interrupted, whatever the CLI calls the abort.
 		interrupting := false
+		// Control requests Warden sent the CLI whose answers a command
+		// waits for (conversation/rewind), by request id: the command's
+		// frame id to reply to.
+		awaiting := map[string]json.RawMessage{}
 		// The context: what the last model call was given against the
 		// model's window and the CLI's auto-compaction threshold, reported
 		// as thread/context/updated when it changes (claudeContext): from
@@ -238,7 +246,25 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 							content = append(content, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": data}})
 						}
 					}
-					_ = cliWrite(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil})
+					frame := map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil}
+					if id := String(f.Params["clientUserMessageId"]); id != "" {
+						// Warden's message ID is the CLI's uuid for the message,
+						// so a rewind can name it (conversation/rewind).
+						frame["uuid"] = id
+					}
+					_ = cliWrite(frame)
+				case "conversation/rewind":
+					// Claude Code's rewind_conversation: the session forgets the
+					// target user message and everything after it, durably (a
+					// later --resume continues from there). The CLI's answer
+					// ({rewound, reason…}) is the command's reply.
+					id := "warden-rewind-" + claudeID()
+					awaiting[id] = f.ID
+					req := map[string]any{"subtype": "rewind_conversation", "target_message_uuid": String(f.Params["targetMessageId"])}
+					if last := String(f.Params["lastSeenMessageId"]); last != "" {
+						req["last_seen_user_message_uuid"] = last
+					}
+					_ = cliWrite(map[string]any{"type": "control_request", "request_id": id, "request": req})
 				case "turn/interrupt":
 					// Claude Code's SDK interrupt: the query aborts where it is
 					// (mid-thought, mid-tool) and reports a result; the process
@@ -259,8 +285,63 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						continue
 					}
 					rid := "warden-mode-" + claudeID()
-					outbound[rid] = claudeOutbound{id: f.ID, mode: want}
+					outbound[rid] = claudeOutbound{id: f.ID, kind: "mode", value: want}
 					_ = cliWrite(map[string]any{"type": "control_request", "request_id": rid, "request": map[string]any{"subtype": "set_permission_mode", "mode": want}})
+				case "model/set":
+					// The chat's model for the turns to come, on the running
+					// process (set_model; the CLI's next system/init names
+					// what it resolved). "" is the CLI's default. A model the
+					// CLI does not know is refused with its message, so the
+					// engine can keep the old one or relaunch.
+					want := String(f.Params["model"])
+					model := want
+					if model == "" {
+						model = "default"
+					}
+					rid := "warden-model-" + claudeID()
+					outbound[rid] = claudeOutbound{id: f.ID, kind: "model", value: want}
+					_ = cliWrite(map[string]any{"type": "control_request", "request_id": rid, "request": map[string]any{"subtype": "set_model", "model": model}})
+				case "thinking/set":
+					// The chat's thinking setting as the CLI's thinking budget
+					// (set_max_thinking_tokens): "" is the CLI's default
+					// (null: adaptive on the models that have it), "off" is a
+					// budget of 0, a number is a fixed budget.
+					want := String(f.Params["thinking"])
+					if want == cliThinking {
+						reply(f.ID, map[string]any{"thinking": cliThinking})
+						continue
+					}
+					rid := "warden-thinking-" + claudeID()
+					outbound[rid] = claudeOutbound{id: f.ID, kind: "thinking", value: want}
+					_ = cliWrite(map[string]any{"type": "control_request", "request_id": rid, "request": map[string]any{"subtype": "set_max_thinking_tokens", "max_thinking_tokens": claudeThinkingBudget(want)}})
+				case "effort/set":
+					// The chat's effort level through the CLI's session flag
+					// settings (apply_flag_settings effortLevel); "" is null,
+					// the model's own default.
+					want := String(f.Params["effort"])
+					if want == cliEffort {
+						reply(f.ID, map[string]any{"effort": cliEffort})
+						continue
+					}
+					var level any
+					if want != "" {
+						level = want
+					}
+					rid := "warden-effort-" + claudeID()
+					outbound[rid] = claudeOutbound{id: f.ID, kind: "effort", value: want}
+					_ = cliWrite(map[string]any{"type": "control_request", "request_id": rid, "request": map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": level}}})
+				case "fastMode/set":
+					// Fast mode is the same flag-settings layer (fastMode);
+					// the CLI serves it only on the models that have it and
+					// reports the state with every system/init.
+					want := f.Params["fast"] == true
+					if want == cliFast {
+						reply(f.ID, map[string]any{"fast": cliFast})
+						continue
+					}
+					rid := "warden-fast-" + claudeID()
+					outbound[rid] = claudeOutbound{id: f.ID, kind: "fast", value: want}
+					_ = cliWrite(map[string]any{"type": "control_request", "request_id": rid, "request": map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"fastMode": want}}})
 				case "":
 					key := string(f.ID)
 					p := pending[key]
@@ -324,6 +405,15 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 				switch String(v["type"]) {
 				case "control_response":
 					r := Map(v["response"])
+					if rid, ok := awaiting[String(r["request_id"])]; ok {
+						delete(awaiting, String(r["request_id"]))
+						if r["subtype"] == "error" {
+							send(Frame{ID: rid, Error: &RPCError{Code: -32000, Message: String(r["error"])}})
+						} else {
+							reply(rid, Map(r["response"]))
+						}
+						continue
+					}
 					if r["request_id"] == "warden-init" {
 						if r["subtype"] == "error" {
 							send(Frame{ID: initID, Error: &RPCError{Code: -32000, Message: String(r["error"])}})
@@ -339,12 +429,26 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						delete(outbound, String(r["request_id"]))
 						if r["subtype"] == "error" {
 							send(Frame{ID: o.id, Error: &RPCError{Code: -32000, Message: String(r["error"])}})
-						} else {
-							cliMode = o.mode
+							continue
+						}
+						switch o.kind {
+						case "mode":
+							cliMode = String(o.value)
 							if m := String(Map(r["response"])["mode"]); m != "" {
 								cliMode = m
 							}
 							reply(o.id, map[string]any{"mode": cliMode})
+						case "thinking":
+							cliThinking = String(o.value)
+							reply(o.id, map[string]any{"thinking": cliThinking})
+						case "effort":
+							cliEffort = String(o.value)
+							reply(o.id, map[string]any{"effort": cliEffort})
+						case "fast":
+							cliFast = o.value == true
+							reply(o.id, map[string]any{"fast": cliFast})
+						default:
+							reply(o.id, map[string]any{o.kind: o.value})
 						}
 					}
 				case "control_request":
@@ -656,10 +760,29 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 func claudeID() string { var b [16]byte; _, _ = rand.Read(b[:]); return hex.EncodeToString(b[:]) }
 
 // claudeOutbound is a control request Warden sent the CLI: the engine call
-// it answers and, for set_permission_mode, the mode asked for.
+// it answers, what it sets (mode, model, thinking, effort, fast) and the
+// value asked for, recorded as the CLI's once it agrees.
 type claudeOutbound struct {
-	id   json.RawMessage
-	mode string
+	id    json.RawMessage
+	kind  string
+	value any
+}
+
+// claudeThinkingBudget is the set_max_thinking_tokens value for a chat's
+// thinking setting: null (the CLI's default) for "", 0 for "off", else the
+// budget in tokens.
+func claudeThinkingBudget(setting string) any {
+	switch setting {
+	case "":
+		return nil
+	case "off":
+		return 0
+	}
+	n, err := strconv.Atoi(setting)
+	if err != nil || n < 0 {
+		return nil
+	}
+	return n
 }
 
 // claudeDenial is the tool error a denied ask hands the model, in the
@@ -715,7 +838,7 @@ func claudeThread(id string, init map[string]any) map[string]any {
 		}
 		commands = append(commands, map[string]any{"name": name})
 	}
-	return map[string]any{"id": id, "commands": commands, "model": String(init["model"]), "permissionMode": String(init["permissionMode"]), "outputStyle": String(init["output_style"]), "autoMemory": String(Map(init["memory_paths"])["auto"])}
+	return map[string]any{"id": id, "commands": commands, "model": String(init["model"]), "permissionMode": String(init["permissionMode"]), "outputStyle": String(init["output_style"]), "fastMode": String(init["fast_mode_state"]), "autoMemory": String(Map(init["memory_paths"])["auto"])}
 }
 
 func claudeResultError(v map[string]any) string {

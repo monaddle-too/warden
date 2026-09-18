@@ -226,6 +226,13 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 			}
 		case "system":
 			out = append(out, wrap(text, width, red+"  ! "+reset, "    ")...)
+		case "rewind":
+			// The marker a rewind leaves: the message the chat went back to
+			// before and what was taken back, then what that did.
+			out = append(out, wrap(yellow+text+reset, width, yellow+"  ↶ "+reset, "    ")...)
+			if e.Detail != "" {
+				out = append(out, wrap(dim+e.Detail+reset, width, "    ", "    ")...)
+			}
 		case "notice":
 			out = append(out, wrap(dim+text+reset, width, dim+"  · ", "    ")...)
 		case "compaction":

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+	"warden/chat/internal/chats"
 )
 
 // App is the interactive terminal client for one chat at a time.
@@ -51,9 +52,12 @@ type App struct {
 	rows     int  // transcript rows in the last frame
 	expanded bool // show tool output and diffs in full
 	quiet    bool // hide tool steps and thinking (Ctrl+O)
-	redraw   bool // clear the screen on the next draw (Ctrl+L)
-	quit     bool
-	ctrlC    time.Time // last Ctrl+C; a second within ctrlCQuit quits
+	// diff is the session diff /diff fetched, shown under the transcript
+	// (one line per file; Tab expands the hunks) until /diff again.
+	diff   *WorkspaceChanges
+	redraw bool // clear the screen on the next draw (Ctrl+L)
+	quit   bool
+	ctrlC  time.Time // last Ctrl+C; a second within ctrlCQuit quits
 
 	menu        *Menu
 	menuOff     string // the draft the menu was dismissed for (Esc)
@@ -137,6 +141,7 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /new [title] /chats /switch N · /rename TITLE /archive /restore /delete
            /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
            /stop /model M /provider P /mode M · /open /previews /preview N /unpublish N
+           /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
            /find TEXT /copy /expand /verbose /clear /quit
            /instructions [edit|clear] your standing instructions, given to the agent in every chat
            /memory [FILE] [edit FILE] the workspace's CLAUDE.md, rules and auto-memory files
@@ -320,6 +325,7 @@ func (a *App) Run(ctx context.Context) error {
 // selectChat makes id the current chat: the view goes to the tail, menus
 // close and the editor takes that chat's prompt history.
 func (a *App) selectChat(id string) {
+	a.diff = nil
 	if a.ChatID != id {
 		a.saveHistory()
 	}
@@ -889,6 +895,98 @@ func (a *App) setMode(ctx context.Context, c *Chat, mode string) {
 	a.setNotice("permission mode " + mode + ": " + modeHint(mode))
 }
 
+// setSetting handles /thinking, /effort and /fast: with no argument it
+// says what the chat has, otherwise it sends the change (the service
+// validates and refuses what this Warden does not offer).
+func (a *App) setSetting(ctx context.Context, c *Chat, name, arg string) {
+	if c == nil {
+		a.setNotice("no chat selected")
+		return
+	}
+	if c.Provider != "claude" {
+		a.setNotice("thinking, effort and fast mode apply to Claude chats")
+		return
+	}
+	change := map[string]any{}
+	switch name {
+	case "thinking":
+		if arg == "" {
+			a.setNotice("thinking " + thinkingLabel(c.Thinking) + " · /thinking on|off|TOKENS (8k)")
+			return
+		}
+		v, err := chats.ParseThinking(arg)
+		if err != nil {
+			a.setNotice(err.Error())
+			return
+		}
+		change["thinking"] = v
+	case "effort":
+		if arg == "" {
+			a.setNotice("effort " + orDefault(c.Effort) + " · /effort " + strings.Join(chats.Efforts, "|") + "|default")
+			return
+		}
+		if arg == "default" {
+			arg = ""
+		}
+		if !chats.ValidEffort(arg) {
+			a.setNotice("/effort " + strings.Join(chats.Efforts, "|") + "|default")
+			return
+		}
+		change["effort"] = arg
+	case "fast":
+		switch arg {
+		case "":
+			state := "off"
+			if c.Fast {
+				state = "on"
+			}
+			if c.Session != nil && c.Session.FastMode != "" {
+				state += " (session: " + c.Session.FastMode + ")"
+			}
+			a.setNotice("fast mode " + state + " · /fast on|off")
+			return
+		case "on", "off":
+			change["fast"] = arg == "on"
+		default:
+			a.setNotice("/fast on|off")
+			return
+		}
+	}
+	if err := a.Client.Settings(ctx, c.ID, change); err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	for k, v := range change {
+		switch k {
+		case "thinking":
+			a.setNotice("thinking " + thinkingLabel(v.(string)))
+		case "effort":
+			a.setNotice("effort " + orDefault(v.(string)))
+		case "fast":
+			if v.(bool) {
+				a.setNotice("fast mode on: faster answers at a higher price, on the models that offer it")
+			} else {
+				a.setNotice("fast mode off")
+			}
+		}
+	}
+}
+
+// thinkingLabel words a thinking setting: default, off, or the budget
+// (8k for 8000).
+func thinkingLabel(setting string) string {
+	switch setting {
+	case "":
+		return "default (the model decides)"
+	case "off":
+		return "off"
+	}
+	if n, err := strconv.Atoi(setting); err == nil && n >= 1000 && n%1000 == 0 {
+		return strconv.Itoa(n/1000) + "k tokens"
+	}
+	return setting + " tokens"
+}
+
 func orMode(mode string) string {
 	if mode == "" {
 		return "auto"
@@ -1123,6 +1221,10 @@ func (a *App) command(ctx context.Context, line string) {
 		}
 		if err := a.Client.Agent(ctx, c.ID, provider, model); err != nil {
 			a.setNotice(err.Error())
+		} else if name == "model" && provider == "claude" {
+			// A Claude chat's live session takes the model now; the
+			// status line shows what it resolved after the next turn.
+			a.setNotice(fmt.Sprintf("model %s · a running session switches now, otherwise the next run", orDefault(model)))
 		} else {
 			a.setNotice(fmt.Sprintf("next run uses %s · %s", provider, orDefault(model)))
 		}
@@ -1139,6 +1241,8 @@ func (a *App) command(ctx context.Context, line string) {
 		default:
 			a.setNotice("/mode auto|ask|plan")
 		}
+	case "thinking", "effort", "fast":
+		a.setSetting(ctx, c, name, arg)
 	case "attach":
 		a.attach(ctx, c, arg)
 	case "attachments":
@@ -1186,6 +1290,10 @@ func (a *App) command(ctx context.Context, line string) {
 		a.setNotice("draft cleared")
 	case "export":
 		a.export(c, arg)
+	case "rewind":
+		a.rewind(ctx, c, arg)
+	case "diff":
+		a.showDiff(ctx, c, arg)
 	case "instructions":
 		a.instructions(ctx, arg)
 	case "memory":
@@ -1638,6 +1746,10 @@ func (a *App) compose(width int) []string {
 	default:
 		body = RenderTranscript(a.visible(c), width, a.expanded)
 		body = append(body, RenderApprovals(c, width)...)
+		if a.diff != nil {
+			body = append(body, "")
+			body = append(body, RenderChanges(a.diff, width, a.expanded)...)
+		}
 	}
 	// Notices sit under the transcript for a while.
 	if a.notice != "" && a.now().Sub(a.noticeAt) < 20*time.Second {

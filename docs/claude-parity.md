@@ -185,11 +185,11 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
-| Model choice | ✅ | ✅ | fixed per chat |
-| Change model mid-session | ✗ | ✗ | `set_model` |
-| Effort level | ✗ | ✗ | |
-| Thinking on/off, budget | ✗ | ✗ | `set_max_thinking_tokens` |
-| Fast mode, 1M context | ✗ | ✗ | policy |
+| Model choice | ✅ | ✅ | per chat; the session's resolved model shown |
+| Change model mid-session | ✅ | ✅ | item 9: `set_model` on the live session; Codex relaunches |
+| Effort level | ✅ | ✅ | item 9: `apply_flag_settings` `effortLevel`; `/effort` |
+| Thinking on/off, budget | ✅ | ✅ | item 9: `set_max_thinking_tokens`; `/thinking` |
+| Fast mode, 1M context | ✅ | ✅ | item 9: behind `providers.claude.allowFastMode` / `allowLongContext`, off by default |
 | Output style | ✗ | ✗ | |
 | Status line, terminal title | — | ✗ | |
 | `/cost`, `/context`, `/usage` | ◐ | ✗ | plan limits n/a behind the gateway |
@@ -214,8 +214,8 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
-| `/rewind` (code, conversation, both) | ✗ | ✗ | `rewind_files` or sandbox snapshot |
-| Whole-session diff | ✗ | ✗ | |
+| `/rewind` (code, conversation, both) | ✅ | ✅ | item 11: Warden's git checkpoints for code, the CLI's `rewind_conversation` for the conversation |
+| Whole-session diff | ✅ | ✅ | item 11: `chats/{id}/diff`, `SessionDiff.tsx`, `/diff` |
 | Open / view a file | ✅ | ✅ | |
 | Read renders images, PDFs, notebooks | ✅ | — | |
 | Commit attribution | ✅ | ✅ | the CLI's |
@@ -313,9 +313,13 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
   recorded only with `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` set in the
   environment (the SDK's `enableFileCheckpointing` option sets it) and
   `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING` unset. Warden's launch sets
-  neither, so nothing is recorded today. Not exercised live (item 11 will
-  set the variable and try it); `rewind_conversation`, `fork_conversation`
-  and `get_workspace_diff` requests also exist.
+  neither, so nothing is recorded today. Item 11 tried it live: with the
+  variable set, `rewind_files` restored a file changed with Edit and left
+  one created with Bash in place, so Warden keeps its own git checkpoints;
+  `rewind_conversation` works (keyed by the `uuid` Warden now puts on
+  every user frame, durable across `--resume`) and is used;
+  `fork_conversation` answers `unsupported` in `-p` mode;
+  `get_workspace_diff` is the working tree against HEAD only.
 - **A user message during a running turn:** queued. Sent while the first
   turn's API request was in flight, the second message ran as its own turn
   after the first completed (two `result` frames, `result_index` 0 and 1,
@@ -382,9 +386,9 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 6 TUI catch-up — merged to main c60d938 (2026-09-17); verified as the Item 6 section says.
 - [x] 7 Workspace `.claude/` loading — verified on CLI 2.1.272, merged to main 32138ea (2026-09-17); the launch-flag change (`--setting-sources=project` + `disableAllHooks`) is recommended under "Decisions needed", not made.
 - [x] 8 Compaction and context — merged to main e84a7bc (2026-09-17); verified as the Item 8 section says.
-- [ ] 9 Mid-session model, effort, thinking.
+- [x] 9 Mid-session model, effort, thinking — merged to main a007b96 (2026-09-18); verified as the Item 9 section says.
 - [ ] 10 Queueing and rewind.
-- [ ] 11 Checkpoints and session diff.
+- [x] 11 Checkpoints and session diff — merged to main 4d0a05e (2026-09-17); verified as the Item 11 section says.
 - [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
 - [ ] 13 Per-user instructions and memory.
 - [ ] 14 Project MCP, OAuth, plugins.
@@ -556,6 +560,138 @@ needs a running sandbox (the runner refuses with "sandbox is stopped",
 which the panel shows); no `#`-style append for rules or auto-memory.
 
 Progress: started 2026-09-17; implemented and live-verified 2026-09-18.
+
+### Item 11: checkpoints, rewind and the session diff
+
+Branch `feat/parity-11-rewind`, worktree `.local/warden-parity-11-rewind`,
+from main 0881386 (2026-09-17).
+
+What the CLI gives (probed on the guest's 2.1.272 in Warden's launch mode,
+`-p --input-format stream-json --output-format stream-json`, a second
+process in a chat's sandbox with the resident CLI's environment):
+
+- **User message ids.** A `user` frame accepts a `uuid`; any string
+  works (Warden's 32-hex entry IDs were used), and the CLI keys its
+  rewinds by it. `--replay-user-messages` echoes each user message back
+  with its uuid (`isReplay: true`), needed only when the caller sets none.
+- **`rewind_files`** `{user_message_id, dry_run?}` →
+  `{canRewind, filesChanged, insertions, deletions, skippedLinks}` exists
+  but is gated in `-p` mode on `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`
+  (Warden does not set it) and is backed by the CLI's own file history:
+  it restored a file changed with Edit and left a file created with Bash
+  in place. Not used.
+- **`rewind_conversation`** `{target_message_uuid,
+  last_seen_user_message_uuid?, interrupt_if_running?}` →
+  `{rewound: true, targetMessageUuid, prefillText, precedingAssistantUuid}`
+  slices the resident session to before the target (the model then knew
+  only what came before), and the anchor persists: a later
+  `--resume <session>` continued from the rewound state; rewinding to
+  before the first message works too. Without `last_seen…` any later user
+  message makes the target `stale_target`; other refusals are
+  `target_not_found`, `unseen_later_turn`, `turn_running`,
+  `commands_queued`, `prompt_pending`. **Used** for the conversation.
+- **`fork_conversation`** → `{forked: false, reason: "unsupported"}` in
+  this mode. **`get_workspace_diff`** works (`{diff: {stats,
+  perFileStats, hunks, skippedLarge, restricted, source}}`) but is the
+  working tree against HEAD with the CLI's caps (5 s, 50 files, 1 MB per
+  file), untracked files listed without hunks — not "since the chat
+  started". Not used.
+
+Decisions:
+
+1. **Checkpoints are Warden's, in git.** Before every user turn the runner
+   snapshots the workspace (tracked and untracked files, ignored ones and
+   `.warden/` left out) as a tree through a temporary index — the
+   working tree and the agent's index and HEAD are never touched — and
+   records a root commit under `refs/warden/checkpoints/<message id>`
+   (op `checkpoint`, `sandbox/checkpoint.go`). In a workspace that is a
+   repository the refs live in its own `.git`; otherwise in a private git
+   directory beside the workspace (`/home/agent/.warden-checkpoints.git`,
+   `GIT_WORK_TREE` = the workspace), where a nested repository is
+   recorded as its HEAD commit only and the snapshot is refused over
+   256 MiB (`du`, dependency and build directories excluded). A snapshot
+   whose tree equals the previous checkpoint's makes no new objects: the
+   ref points at the previous commit. The runner keeps the records per
+   sandbox (`managedSandbox.Checkpoints`, op `checkpoints`) and verifies
+   the ref still names the recorded commit before restoring. A tarball
+   would cost a full copy per checkpoint and give no diff; the CLI's own
+   checkpoints miss what Bash does. Checkpoints are a convenience, not a
+   boundary: the agent can alter refs in its own sandbox.
+2. **Rewind code** (`chats/{id}/rewind` `{turnID, what}`, `turnID` the
+   turn's id or the user message's) restores the checkpoint taken at that
+   message: the runner snapshots the workspace as it is now, diffs it
+   against the checkpoint and writes back only the paths that differ
+   (`checkout-index` from a temporary index), deleting the ones the
+   checkpoint lacks (op `restore`). The chat must be idle; the sandbox
+   must be running.
+3. **Rewind conversation** truncates the transcript to before the message
+   (its turn records and pending approvals with it) and asks the agent to
+   forget the same: on a live idle Claude session at once through the
+   adapter's new `conversation/rewind` command (the CLI's
+   `rewind_conversation`, keyed by the message id the adapter now puts on
+   every user frame as its `uuid`); with no live session, recorded as
+   `Chat.Rewind` and applied right after the next `--resume`, before the
+   first turn. When the agent cannot rewind (Codex; a message from before
+   this landed, which the CLI never saw a uuid for) the fallback is a
+   fresh session: the thread is dropped (`prepare` with `newSession`
+   clears the runner's binding so Claude launches without `--resume`) and
+   the kept transcript is re-sent once as a preamble of the next message
+   (`Chat.Recap`, last 24 KiB). Both = code, then conversation.
+4. A marker entry (role `rewind`) says "Rewound to before “…” (code /
+   conversation / both)"; the web renders it as a divider, the TUI as a
+   line.
+5. **Session diff** (`GET chats/{id}/diff`) is the workspace now against
+   `Chat.DiffBase`: the chat's first checkpoint, or the one its last code
+   rewind restored. The runner snapshots the workspace and answers
+   `git diff-tree` between the two trees (op `diff`): a unified diff per
+   file capped at 2 MiB, plus `--numstat` counts. Git-based in both
+   stores, so it works for non-repository workspaces too.
+6. Web: a rewind action in a user message's hover bar and Esc-Esc in the
+   composer open the chooser (`RewindDialog.tsx`); "Changes" in the
+   workspace panel opens `SessionDiff.tsx` over `DiffView`. TUI:
+   `/rewind` lists the user messages, `/rewind N code|conv|both`,
+   `/diff` shows the changed files folded, Tab expands.
+7. Seen on the way: the SBX exec API refuses an empty argument (`cmd
+   element N is empty`), so the scripts take `-` for "none"; the test
+   harness refuses empty arguments too. `Stop` on an idle chat keeps its
+   resident session (the engine's comment; the map's "released" is the
+   idle timeout), so a rewind right after it still goes to the live
+   session.
+
+Verified: `go vet`, `gofmt -l`, `go test ./...`, `pnpm build`, `pnpm test`
+(135 tests; `rewind.test.ts` new); live on a cloned home (`~/.warden-p7`)
+with a Claude chat whose workspace is not a repository (private store):
+two messages (Write, then Edit plus a Bash-made file) recorded two
+checkpoints; `GET chats/{id}/diff` listed both files with git's hunks;
+rewind code to before the second message restored `notes.txt` and removed
+the Bash-made `extra.txt` (checked in the guest), moved the diff base and
+emptied the diff; rewind conversation on the live session answered
+`rewound`, cut the transcript and the agent then listed only the first
+file; with the workspace stopped the rewind was `pending` and the next
+message resumed the session, applied it first and the agent had forgotten
+the codeword; on a chat from the previous build (messages the CLI had no
+uuid for) the rewind fell back to `fresh`: the next message launched
+without `--resume` and the agent called it the first message. Web: the
+chat menu's Changes… (two files as folded `DiffView`s with counts), the
+hover action and Esc-Esc opening the chooser on the last message, a code
+and conversation rewind from it (the dialog's stopped-sandbox refusal
+first, then "1 file restored, 1 file removed; … when its session
+resumes"), the ↶ markers in the transcript, the panel's Changes section.
+TUI in a pty: `/rewind` listing with • marks, `/diff` folded then Tab
+expanded, `/rewind 2 conv` confirmed with `y` and rewound.
+
+Progress: started 2026-09-17; implemented and live-verified 2026-09-17;
+merged to main 4d0a05e (2026-09-17) after merging items 3, 4, 5, 7, 8 and
+12 in (the adapter, the engine's turn start, the test fakes and the TUI
+render were the conflicts; the merged build was smoke-tested live).
+
+Left: nested repositories inside a non-repository workspace are recorded
+as gitlinks (their working trees are outside the snapshot); a checkpoint
+does not carry the agent's index or HEAD, so a rewind after the agent
+committed leaves its commits in place and moves the working tree only;
+the marker is not an undo (the removed transcript stays only in the
+CLI's own session file); Codex sessions always take the fresh-session
+fallback for a conversation rewind.
 
 ### Item 12: composer polish
 
@@ -1202,6 +1338,168 @@ ask; the web UI (selector, `/mode plan` from the composer, the command
 card, the diff card, the plan card rendered as markdown, the markers);
 the TUI in a pty (Shift-Tab auto → ask → plan, `/mode`, the status
 line, the command and diff cards, `a`, `n <message>`, `y`).
+
+### Item 9: mid-session model, effort and thinking
+
+Branch `feat/parity-9-model-controls`, worktree
+`.local/warden-parity-9-model-controls`, from main 05df4fa (2026-09-17).
+
+What the pinned CLI (2.1.272) accepts, probed inside a sandbox with a
+second CLI driven over stream-json with the resident one's env and argv
+(the item-7 method; the probe driver answered the SDK-MCP handshake and
+every `can_use_tool`, and the gateway's credential lapsed twice at the
+10-minute idle mark, each time revived with one message on the chat):
+
+- **`set_model`** `{"subtype":"set_model","model":…}` → `{"subtype":
+  "success"}` (no body); the next `system/init` reports the resolved
+  model (`claude-opus-5`) and the model answers as it ("I'm Opus 5 … the
+  session switched models after my previous answer"). Accepted: `opus`,
+  `sonnet`, `haiku`, `default` (the session default), `sonnet[1m]`,
+  `opusplan`, a dated name (`claude-haiku-4-5` → `claude-haiku-4-5-
+  20251001`). Refused: an unknown name, `{"subtype":"error","error":
+  "Model 'bogus-model-x' not found"}`. `model` null or omitted resets to
+  the default; an `@internal system_prompt` field exists. Cost: `result`'s
+  `total_cost_usd` keeps running across the switch (0.054 → 0.466 → 0.535
+  over sonnet → opus → haiku), with a per-model `modelUsage` breakdown, so
+  the adapter's per-turn cost (growth of the total) is right as it was.
+- **`list_models`** → the account's catalog: `default` (→ sonnet),
+  `sonnet`, `sonnet[1m]`, `opus`, `opus[1m]`, `haiku`, each with
+  `supportsEffort`, `supportedEffortLevels` (`low medium high xhigh
+  max` on the Sonnet/Opus rows, none on Haiku), `supportsAdaptiveThinking`
+  (Sonnet/Opus), `supportsFastMode` (the Opus rows only); `opusplan` is
+  accepted by `set_model` but not listed. The binary's alias list is
+  `sonnet opus haiku fable best sonnet[1m] opus[1m] fable[1m] opusplan`.
+- **`set_max_thinking_tokens`** `{"max_thinking_tokens": int|null,
+  "thinking_display"?: "summarized"|"omitted"|null}` → success; a
+  non-integer is refused with `max_thinking_tokens must be an integer or
+  null…` (a negative integer is accepted). The value maps to the CLI's
+  thinking config: `0` → disabled, `n` → enabled with budget n, `null` →
+  the default (adaptive on Sonnet 5 / Opus 5). Live on Haiku 4.5 (fixed-
+  budget thinking, on by default): `0` → no thinking block, 0 thinking
+  tokens; `2048` → a thinking block (69 tokens); `null` → thinking again.
+  On Sonnet 5 the model decides: neither `0` nor `8000` produced thinking
+  on the puzzles tried, so the budget is a cap there, `0` the switch off.
+  Launch equivalents: `--thinking enabled|adaptive|disabled`,
+  `--max-thinking-tokens N` (deprecated, `-p` only), env
+  `MAX_THINKING_TOKENS` (0 = off), `CLAUDE_CODE_DISABLE_THINKING`.
+- **Effort**: no `set_effort`; the control request is
+  **`apply_flag_settings`** `{"settings":{"effortLevel":"low"}}` (the
+  session-scoped flag layer) → success; `get_settings` then reports
+  `effective.effortLevel` and `applied.effort` (`low`, `max`, back to
+  `high` — the model's default — on `null`). Levels `low medium high
+  xhigh max` (`max` applies although the settings schema lists only the
+  first four); an unknown level is *accepted and dropped* (no error),
+  so Warden validates. Launch equivalents: `--effort <level>`, env
+  `CLAUDE_CODE_EFFORT_LEVEL` (which then pins effort for the session),
+  the `effortLevel` setting.
+- **Fast mode**: `system/init` carries `fast_mode_state` (`off`,
+  `cooldown`, `on`) and `fast_mode_disabled_reason`
+  (`sdk_opt_in_required` under `-p` until opted in; `not_first_party`,
+  `model_not_allowed`, `disabled_by_env`…). `apply_flag_settings
+  {"settings":{"fastMode":true}}` is the opt-in: the next init says
+  `off` on Sonnet (no reason: the model has no fast mode) and `on` once
+  the model is Opus; `false` turns it off. No `--fast` flag; the launch
+  equivalent is `--settings '{"fastMode":true}'`; env
+  `CLAUDE_CODE_DISABLE_FAST_MODE` forbids it.
+- **1M context**: the `[1m]` aliases; env `CLAUDE_CODE_DISABLE_1M_CONTEXT`
+  forbids them.
+- Also there, unused: `get_session_cost`, `get_context_usage` (item 8),
+  `rewind_conversation`, `fork_conversation`, `update_settings`
+  (writes the project's local settings file).
+
+Design (as implemented):
+
+1. **Model.** `chats/{id}/agent` on a Claude chat with a live session
+   sends `model/set` → `set_model` and keeps the session (`Chat.RunID`,
+   the thread and the CLI's context unchanged); the store follows with a
+   `notice` marker "Model → opus". A "not found" refusal is returned to
+   the caller and nothing changes; any other refusal falls back to the
+   old path (record, release the session, relaunch with `--model`). A
+   Claude chat's model may change while a turn runs (the CLI applies it
+   to the next model call); a Codex chat's still waits for idle and
+   relaunches (its app-server's `turn/start` has `model` and `effort`
+   fields — 24 in this build — but the account's Codex usage was
+   exhausted, so that path is untouched and unverified). The CLI's
+   resolved model rides on `thread/started` as before
+   (`chat.session.model`); the web's picker shows it on the chosen option
+   ("Claude Opus · claude-opus-5") and the TUI's status line as
+   "opus (claude-opus-5)".
+2. **Settings.** `Chat.Thinking` ("" default, "off", or a budget in
+   tokens), `Chat.Effort` ("" default, else a level), `Chat.Fast`;
+   `POST chats/{id}/settings` `{thinking?, effort?, fast?}` sets what is
+   present (`Engine.SetSettings`), Claude chats only, each change a
+   `notice` marker. Pushed at once to a live session (`thinking/set` →
+   `set_max_thinking_tokens`, `effort/set` and `fastMode/set` →
+   `apply_flag_settings`) and, with the permission mode, before every
+   turn (`applySession`), so a fresh process gets them before its first
+   model call; the adapter sends each only when it changes what the CLI
+   has (a new process starts at the defaults). Launch flags were not
+   used: the push is one code path and leaves the runner protocol alone.
+3. **Policy.** `providers.claude.allowFastMode` and `allowLongContext`
+   (config, default off; Helm `providers.claude.allowFastMode` /
+   `allowLongContext`) reach the engine as `AllowFastMode` /
+   `AllowLongContext` and clients as `GET state` → `agentOptions`
+   `{fastMode, longContext}`. Fast mode on is refused unless allowed; the
+   `[1m]` models are refused by `Create` and the agent route unless
+   allowed (`sandbox.ValidateAgent` now admits the suffix). The picker
+   offers the "Claude Sonnet 1M" / "Claude Opus 1M" rows and the Fast
+   checkbox only when allowed; the CLI's `fast_mode_state` is
+   `chat.session.fastMode` for the checkbox's title and the TUI's `/fast`.
+4. **Surfaces.** Web: beside the model, "Thinking: default / off / 4k /
+   16k / 32k" and "Effort: default / low … max" selects (Claude chats),
+   the Fast checkbox when allowed; `/thinking on|off|<tokens>` (8k
+   accepted) and `/effort <level>|default` in the composer, run locally
+   like `/mode`. TUI: `/thinking`, `/effort`, `/fast on|off` (bare: what
+   is set), the status line adds "thinking off", "effort low", "fast"
+   when set.
+
+Verified (2026-09-17): `gofmt -l`, `go vet ./...`, `go test ./...`;
+`pnpm build`, `pnpm test` (138 tests; `composer.test.ts` thinking,
+effort and the 1M rows); `deploy/helm/warden/test.sh` (goldens
+unchanged: the switches render only when true). Unit: `agent/claude_test.go`
+`TestClaudeModelThinkingEffortAndFastMode` (each request's shape, the
+refusal path, dedup, the init's fast-mode state);
+`chats/settings_test.go` (validation and markers, the route's policy,
+the live switch keeping the run, the not-found refusal, the fallback
+release and the settings pushed to the new session, a switch during a
+running turn); `config/config_test.go` (the switches parse, the secret
+rule still applies); `tui/tui_test.go` `TestThinkingEffortAndFastCommands`.
+Live on a cloned home (`~/.warden-p9`, CLI 2.1.272, build be53f5d): a
+Claude chat on sonnet, `chats/{id}/agent` → opus — `GET state` kept
+`runID` and `conversation.threadID`, the sandbox's CLI PID stayed 334,
+the marker "Model → opus" landed, the next reply said "I'm Opus 5
+(model ID: claude-opus-5)" and `session.model` followed; turn costs
+$0.02 (sonnet) then $0.46 (opus). Then haiku live: thinking off → no
+thinking entry (the reply alone), a 2000 budget → "Thought for 1.0s"
+entry back, default → thinking again, effort low accepted — all on the
+same run. Refusals: `bogus-x` → 409 "Model 'bogus-x' not found" with
+the model unchanged; fast mode and `opus[1m]` → 409 naming the config
+switch. With `allowFastMode`/`allowLongContext` on (and the restart
+that ended the session): fast on + opus → the new session's init
+reported `fastMode: on` (the settings pushed before its first turn:
+"Effort: low" carried over), `opus[1m]` set live → "claude-opus-5[1m]"
+in the reply and `session.model`, fast off → `off`. Web (1280 px):
+the picker reads "Claude Opus 1M · claude-opus-5[1m]", the Thinking and
+Effort selects and the Fast checkbox beside it, the Thinking select →
+"Thinking off" marker, `/effort hi` + Enter → the "Effort high" row and
+marker, the picker → sonnet + a message → "Model → sonnet" and the
+reply "I'm Sonnet 5"; at 800 px the group wraps to a second line. TUI
+in a pty: status "claude · sonnet (claude-sonnet-5) · auto · thinking
+off · effort high", `/thinking 8k`, `/effort low`, `/effort ultra`
+(usage), `/fast` ("fast mode off (session: off)"), `/model opus` →
+"opus (claude-sonnet-5)" until the reply, then "opus (claude-opus-5)",
+`/fast on` during the turn → "· fast" in the status. Codex: unit-tested
+only (usage exhausted).
+
+Progress: started 2026-09-17 on `feat/parity-9-model-controls` from main
+05df4fa; implemented and live-verified 2026-09-17 (be53f5d); merged to
+main a007b96 (2026-09-18) after merging items 8, 11 and 12 in.
+
+Left: Codex's model change still relaunches (its `turn/start` takes
+`model`/`effort`, untested); the `thinking_display` field and the
+launch flags are unused; `list_models` could replace the picker's
+static Claude rows; the `[1m]` rows and the Fast checkbox are hidden
+rather than explained when the operator has not allowed them.
 
 ### Item 5: slash-command pass-through
 

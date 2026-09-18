@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Copy,
   FileText,
+  History,
   LoaderCircle,
   Pencil,
   RotateCcw,
@@ -231,11 +232,17 @@ function MessageActions({
   enabled,
   onEdit,
   onRetry,
+  onRewind,
+  rewindable,
 }: {
   entry: Entry;
   enabled: boolean;
   onEdit?: (entry: Entry) => void;
   onRetry?: (entry: Entry) => void;
+  /* Opens the rewind chooser on this message (rewind.ts); disabled while
+     the chat is busy. */
+  onRewind?: (entry: Entry) => void;
+  rewindable?: boolean;
 }) {
   const { copied, copy } = useCopy(useCallback(() => entry.text, [entry.text]));
   return (
@@ -282,6 +289,18 @@ function MessageActions({
           <RotateCcw size={14} />
         </button>
       )}
+      {onRewind && (
+        <button
+          type="button"
+          className="ghost icon"
+          aria-label="Rewind to before this message"
+          title="Rewind to before this message (code, conversation or both)"
+          disabled={!rewindable}
+          onClick={() => onRewind(entry)}
+        >
+          <History size={14} />
+        </button>
+      )}
     </div>
   );
 }
@@ -293,8 +312,10 @@ export const EntryView = memo(function EntryView({
   onFile,
   onEdit,
   onRetry,
+  onRewind,
   onQuote,
   actions = false,
+  rewindable = false,
   stats,
   nested,
   label,
@@ -305,10 +326,13 @@ export const EntryView = memo(function EntryView({
   onFile: (href: string) => void;
   onEdit?: (entry: Entry) => void;
   onRetry?: (entry: Entry) => void;
+  onRewind?: (entry: Entry) => void;
   /* For a command the person ran: quote it into the composer. */
   onQuote?: (entry: Entry) => void;
   /* Whether retry and edit would be accepted right now. */
   actions?: boolean;
+  /* Whether a rewind would be accepted right now (the chat is idle). */
+  rewindable?: boolean;
   /* The turn's timing and usage, under the turn's last message. */
   stats?: TurnFooter;
   /* Subagents' entries by the ID of their card, for a task entry. */
@@ -350,6 +374,22 @@ export const EntryView = memo(function EntryView({
     return (
       <div className={`system-entry ${entry.role}-entry`} data-entry={entry.id}>
         {entry.text}
+      </div>
+    );
+  if (entry.role === "rewind")
+    // The marker a rewind leaves: which message the chat went back to
+    // before and what was taken back (rewind.ts).
+    return (
+      <div
+        className="system-entry rewind-entry"
+        data-entry={entry.id}
+        role="separator"
+        aria-label={entry.text}
+      >
+        <span>
+          <History size={13} aria-hidden="true" /> {entry.text}
+        </span>
+        {entry.detail && <small>{entry.detail}</small>}
       </div>
     );
   if (entry.role === "compaction")
@@ -396,6 +436,8 @@ export const EntryView = memo(function EntryView({
           enabled={actions}
           onEdit={onEdit}
           onRetry={onRetry}
+          onRewind={onRewind}
+          rewindable={rewindable}
         />
       </article>
     );

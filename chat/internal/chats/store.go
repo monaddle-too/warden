@@ -36,8 +36,16 @@ type Chat struct {
 	Resources *sandbox.Resources `json:"resources,omitempty"`
 	// Mode is the chat's permission mode (permissions.go): auto when
 	// empty. Allowed are its allow-always rules, in the order given.
-	Mode         string                    `json:"mode,omitempty"`
-	Allowed      []PermissionRule          `json:"allowed,omitempty"`
+	Mode    string           `json:"mode,omitempty"`
+	Allowed []PermissionRule `json:"allowed,omitempty"`
+	// Thinking, Effort and Fast are the chat's session settings
+	// (settings.go): the thinking budget ("" the agent's default, "off",
+	// or a number of tokens), the effort level ("" the model's default)
+	// and fast mode. Applied to a live Claude session at once and to every
+	// session at its start.
+	Thinking     string                    `json:"thinking,omitempty"`
+	Effort       string                    `json:"effort,omitempty"`
+	Fast         bool                      `json:"fast,omitempty"`
 	Status       string                    `json:"status"`
 	RunID        string                    `json:"runID"`
 	Error        string                    `json:"error,omitempty"`
@@ -63,6 +71,16 @@ type Chat struct {
 	// Startup is where the chat's start is while its message waits for the
 	// agent (startup.go); filled in by Engine.View, never stored.
 	Startup *Startup `json:"startup,omitempty"`
+	// DiffBase is the checkpoint the session diff is taken against: the
+	// chat's first, or the one its last code rewind restored (rewind.go).
+	DiffBase string `json:"diffBase,omitempty"`
+	// Rewind is a conversation rewind the agent's session has yet to
+	// apply, Recap the kept transcript the next message carries to a
+	// fresh session, NewSession that the next run starts one instead of
+	// resuming the recorded thread (rewind.go).
+	Rewind     *PendingRewind `json:"rewind,omitempty"`
+	Recap      string         `json:"recap,omitempty"`
+	NewSession bool           `json:"newSession,omitempty"`
 }
 
 // Command is one slash command the agent's session offers.
@@ -71,13 +89,17 @@ type Command struct {
 	Description string `json:"description,omitempty"`
 }
 
-// Session is the agent's own report of its session settings. AutoMemory
-// is the auto-memory directory the agent's CLI reported for the workspace
-// (`memory_paths.auto`), which the memory view lists; "" when not reported.
+// Session is the agent's own report of its session settings: the model
+// it resolved (the truth after a live model change), its permission mode,
+// output style and whether fast mode is serving ("on", "off", "cooldown").
+// AutoMemory is the auto-memory directory the agent's CLI reported for
+// the workspace (`memory_paths.auto`), which the memory view lists; ""
+// when not reported.
 type Session struct {
 	Model          string `json:"model,omitempty"`
 	PermissionMode string `json:"permissionMode,omitempty"`
 	OutputStyle    string `json:"outputStyle,omitempty"`
+	FastMode       string `json:"fastMode,omitempty"`
 	AutoMemory     string `json:"autoMemory,omitempty"`
 }
 
@@ -101,12 +123,13 @@ func (c *Chat) sessionStarted(thread map[string]any) {
 	model, _ := thread["model"].(string)
 	mode, _ := thread["permissionMode"].(string)
 	style, _ := thread["outputStyle"].(string)
+	fast, _ := thread["fastMode"].(string)
 	auto, _ := thread["autoMemory"].(string)
 	if len(auto) > 1024 || strings.ContainsAny(auto, "\x00\n\r") {
 		auto = ""
 	}
 	if model != "" || mode != "" || style != "" || auto != "" {
-		c.Session = &Session{Model: model, PermissionMode: mode, OutputStyle: style, AutoMemory: auto}
+		c.Session = &Session{Model: model, PermissionMode: mode, OutputStyle: style, FastMode: fast, AutoMemory: auto}
 	}
 }
 

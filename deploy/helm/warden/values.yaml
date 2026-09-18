@@ -218,6 +218,11 @@ providers:
     enabled: true
   claude:
     enabled: true
+    # Session features chats may turn on; both cost more than the defaults.
+    # Fast mode is Claude Code's faster Opus serving; long context offers
+    # the 1M-context model variants (sonnet[1m], opus[1m]).
+    allowFastMode: false
+    allowLongContext: false
   google:
     enabled: true
     # "builtin" is the shared Warden Docs client; otherwise the path of a

@@ -176,8 +176,19 @@ type Chat struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	// Mode is a Claude chat's permission mode: auto (also when empty),
-	// ask or plan (chats/permissions.go).
-	Mode         string       `json:"mode"`
+	// ask or plan (chats/permissions.go). Thinking, Effort and Fast are
+	// its session settings (chats/settings.go): "" is the default
+	// thinking or effort, "off" or a token budget the thinking.
+	Mode     string `json:"mode"`
+	Thinking string `json:"thinking"`
+	Effort   string `json:"effort"`
+	Fast     bool   `json:"fast"`
+	// Session is what the agent reported when its session started; its
+	// Model is the one it resolved, the truth after a live model change.
+	Session *struct {
+		Model    string `json:"model"`
+		FastMode string `json:"fastMode"`
+	} `json:"session"`
 	SandboxID    string       `json:"sandboxID"`
 	Repository   string       `json:"repository,omitempty"`
 	Status       string       `json:"status"`
@@ -555,6 +566,12 @@ func (c *Client) Mode(ctx context.Context, chatID, mode string) error {
 	return c.do(ctx, "POST", "chats/"+chatID+"/mode", map[string]any{"mode": mode}, nil)
 }
 
+// Settings changes a Claude chat's session settings: the keys given
+// (thinking, effort, fast) apply, the rest stay.
+func (c *Client) Settings(ctx context.Context, chatID string, change map[string]any) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/settings", change, nil)
+}
+
 func (c *Client) RevokePort(ctx context.Context, id string) error {
 	return c.do(ctx, "POST", "ports/"+id+"/revoke", map[string]any{}, nil)
 }
@@ -619,4 +636,64 @@ func (c *Client) stream(ctx context.Context, receive func(*State)) error {
 		}
 	}
 	return scanner.Err()
+}
+
+// Checkpoint is one workspace checkpoint as the runner records it: the
+// user message it was taken before (ID) and the snapshot commit.
+type Checkpoint struct {
+	ID      string `json:"id"`
+	ChatID  string `json:"chatID"`
+	Commit  string `json:"commit"`
+	Store   string `json:"store"`
+	Changed bool   `json:"changed"`
+}
+
+// ChangedFile is one file of the session diff with its counts.
+type ChangedFile struct {
+	Path    string `json:"path"`
+	Added   int    `json:"added"`
+	Removed int    `json:"removed"`
+	Binary  bool   `json:"binary"`
+}
+
+// WorkspaceChanges is the session diff: the workspace against the chat's
+// first checkpoint (or its last code rewind), as git's unified diff.
+type WorkspaceChanges struct {
+	Base      string        `json:"base"`
+	Files     []ChangedFile `json:"files"`
+	Diff      string        `json:"diff"`
+	Truncated bool          `json:"truncated"`
+}
+
+// RewindResult is what a rewind did (chats.RewindResult).
+type RewindResult struct {
+	MessageID    string   `json:"messageID"`
+	What         string   `json:"what"`
+	Restored     []string `json:"restored"`
+	Removed      []string `json:"removed"`
+	Conversation string   `json:"conversation"`
+}
+
+func (c *Client) Checkpoints(ctx context.Context, chatID string) ([]Checkpoint, error) {
+	var out struct {
+		Checkpoints []Checkpoint `json:"checkpoints"`
+	}
+	err := c.do(ctx, "GET", "chats/"+url.PathEscape(chatID)+"/checkpoints", nil, &out)
+	return out.Checkpoints, err
+}
+
+// Rewind takes the chat back to before a user message: what is "code",
+// "conversation" or "both".
+func (c *Client) Rewind(ctx context.Context, chatID, messageID, what string) (RewindResult, error) {
+	var out RewindResult
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/rewind", map[string]string{"turnID": messageID, "what": what}, &out)
+	return out, err
+}
+
+func (c *Client) Diff(ctx context.Context, chatID string) (*WorkspaceChanges, error) {
+	var out WorkspaceChanges
+	if err := c.do(ctx, "GET", "chats/"+url.PathEscape(chatID)+"/diff", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

@@ -1379,6 +1379,130 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 	}
 }
 
+// The model, thinking budget, effort level and fast mode of a live
+// session are control requests: set_model (the CLI's refusal fails the
+// call), set_max_thinking_tokens (null for the default, 0 for off, else
+// the budget) and apply_flag_settings (effortLevel, fastMode), each sent
+// only when it changes what the CLI has; the fast-mode state the CLI
+// reports rides on thread/started.
+func TestClaudeModelThinkingEffortAndFastMode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, cf, frames := newClaudeFake(t, ctx)
+	// answer accepts the next control request, checks it and answers it.
+	answer := func(want map[string]any, response map[string]any) {
+		go func() {
+			v := cf.next(t, ctx)
+			req := Map(v["request"])
+			for k, expected := range want {
+				got := req[k]
+				if m, ok := expected.(map[string]any); ok {
+					got = Map(req[k])
+					for kk, vv := range m {
+						if got.(map[string]any)[kk] != vv {
+							t.Errorf("%s.%s = %v, want %v in %+v", k, kk, got.(map[string]any)[kk], vv, req)
+						}
+					}
+					continue
+				}
+				if got != expected {
+					t.Errorf("%s = %v, want %v in %+v", k, got, expected, req)
+				}
+			}
+			cf.send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": response}})
+		}()
+	}
+	refuse := func(message string) {
+		go func() {
+			v := cf.next(t, ctx)
+			cf.send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": v["request_id"], "error": message}})
+		}()
+	}
+	quiet := func(what string) {
+		t.Helper()
+		select {
+		case v := <-cf.writes:
+			t.Fatalf("%s: unexpected write %+v", what, v)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	// Model: the alias goes as it is, "" as "default".
+	answer(map[string]any{"subtype": "set_model", "model": "opus"}, nil)
+	if r, err := c.Call(ctx, "model/set", map[string]any{"model": "opus"}); err != nil || r["model"] != "opus" {
+		t.Fatal(r, err)
+	}
+	answer(map[string]any{"subtype": "set_model", "model": "default"}, nil)
+	if r, err := c.Call(ctx, "model/set", map[string]any{"model": ""}); err != nil || r["model"] != "" {
+		t.Fatal(r, err)
+	}
+	refuse("Model 'bogus' not found")
+	if _, err := c.Call(ctx, "model/set", map[string]any{"model": "bogus"}); err == nil || !strings.Contains(err.Error(), "Model 'bogus' not found") {
+		t.Fatal(err)
+	}
+	// Thinking: the default needs no request on a fresh process; off is a
+	// budget of 0; a number is the budget; back to the default is null.
+	if r, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": ""}); err != nil || r["thinking"] != "" {
+		t.Fatal(r, err)
+	}
+	quiet("thinking default")
+	answer(map[string]any{"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0.0}, nil)
+	if r, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": "off"}); err != nil || r["thinking"] != "off" {
+		t.Fatal(r, err)
+	}
+	if r, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": "off"}); err != nil || r["thinking"] != "off" {
+		t.Fatal(r, err)
+	}
+	quiet("thinking unchanged")
+	answer(map[string]any{"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 8000.0}, nil)
+	if r, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": "8000"}); err != nil || r["thinking"] != "8000" {
+		t.Fatal(r, err)
+	}
+	answer(map[string]any{"subtype": "set_max_thinking_tokens", "max_thinking_tokens": nil}, nil)
+	if r, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": ""}); err != nil || r["thinking"] != "" {
+		t.Fatal(r, err)
+	}
+	// A refusal leaves the CLI's value as it was, so the same ask is sent again.
+	refuse("set_max_thinking_tokens: max_thinking_tokens must be an integer or null")
+	if _, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": "off"}); err == nil || !strings.Contains(err.Error(), "must be an integer") {
+		t.Fatal(err)
+	}
+	answer(map[string]any{"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0.0}, nil)
+	if _, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": "off"}); err != nil {
+		t.Fatal(err)
+	}
+	// Effort through the flag settings; the default is null.
+	answer(map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": "low"}}, nil)
+	if r, err := c.Call(ctx, "effort/set", map[string]any{"effort": "low"}); err != nil || r["effort"] != "low" {
+		t.Fatal(r, err)
+	}
+	if _, err := c.Call(ctx, "effort/set", map[string]any{"effort": "low"}); err != nil {
+		t.Fatal(err)
+	}
+	quiet("effort unchanged")
+	answer(map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": nil}}, nil)
+	if r, err := c.Call(ctx, "effort/set", map[string]any{"effort": ""}); err != nil || r["effort"] != "" {
+		t.Fatal(r, err)
+	}
+	// Fast mode likewise.
+	if _, err := c.Call(ctx, "fastMode/set", map[string]any{"fast": false}); err != nil {
+		t.Fatal(err)
+	}
+	quiet("fast mode off already")
+	answer(map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"fastMode": true}}, nil)
+	if r, err := c.Call(ctx, "fastMode/set", map[string]any{"fast": true}); err != nil || r["fast"] != true {
+		t.Fatal(r, err)
+	}
+	// The next init reports the model and the fast-mode state.
+	cf.send(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "model": "claude-opus-5", "permissionMode": "default", "fast_mode_state": "on"})
+	f := nextFrame(t, ctx, frames, "thread/started")
+	if th := Map(f.Params["thread"]); th["model"] != "claude-opus-5" || th["fastMode"] != "on" {
+		t.Fatalf("%+v", th)
+	}
+	if claudeThinkingBudget("") != nil || claudeThinkingBudget("off") != 0 || claudeThinkingBudget("4000") != 4000 || claudeThinkingBudget("x") != nil {
+		t.Fatal("claudeThinkingBudget")
+	}
+}
+
 // A /compact turn, as CLI 2.1.272 emits it: a compaction item runs from
 // the "compacting" status to the compact_boundary, which completes it
 // with the trigger and the token counts; the synthetic user frame that
@@ -1539,5 +1663,83 @@ func claudeNext(d *json.Decoder, v *map[string]any) bool {
 			continue
 		}
 		return true
+	}
+}
+
+// A user message carries Warden's message ID as its uuid, and
+// conversation/rewind is the CLI's rewind_conversation control request,
+// answered with what the CLI said: rewound, or not with the reason.
+func TestClaudeConversationRewind(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	raw, fake := net.Pipe()
+	defer fake.Close()
+	seen := make(chan map[string]any, 8)
+	go func() {
+		d := json.NewDecoder(fake)
+		e := json.NewEncoder(fake)
+		var v map[string]any
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
+		// The user message, answered at once (a fresh map per frame: a
+		// decode into a used map merges into it).
+		v = nil
+		if d.Decode(&v) != nil {
+			return
+		}
+		seen <- v
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "result", "is_error": false, "result": "ok"})
+		// Two rewind requests: one the CLI applies, one it refuses (the
+		// context requests the adapter sends after the result are skipped).
+		for i := 0; i < 2; i++ {
+			v = nil
+			if !claudeNext(d, &v) {
+				return
+			}
+			seen <- v
+			req := Map(v["request"])
+			answer := map[string]any{"rewound": true, "targetMessageUuid": req["target_message_uuid"], "prefillText": "first"}
+			if req["target_message_uuid"] == "unknown" {
+				answer = map[string]any{"rewound": false, "error": "target not found", "reason": "target_not_found"}
+			}
+			_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": answer}})
+		}
+	}()
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(_ *Client, f Frame) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err = c.Call(ctx, "thread/start", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"clientUserMessageId": "m1", "input": []any{map[string]any{"text": "first"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if v := <-seen; v["type"] != "user" || v["uuid"] != "m1" {
+		t.Fatalf("user frame without the message's uuid: %v", v)
+	}
+	result, err := c.Call(ctx, "conversation/rewind", map[string]any{"threadId": "s", "targetMessageId": "m1", "lastSeenMessageId": "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := <-seen; v["type"] != "control_request" || Map(v["request"])["subtype"] != "rewind_conversation" || Map(v["request"])["target_message_uuid"] != "m1" || Map(v["request"])["last_seen_user_message_uuid"] != "m1" {
+		t.Fatalf("rewind not forwarded as rewind_conversation: %v", v)
+	}
+	if result["rewound"] != true || result["prefillText"] != "first" {
+		t.Fatalf("rewind answer: %v", result)
+	}
+	result, err = c.Call(ctx, "conversation/rewind", map[string]any{"threadId": "s", "targetMessageId": "unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := <-seen; Map(v["request"])["last_seen_user_message_uuid"] != nil {
+		t.Fatalf("an empty last-seen id must be left out: %v", v)
+	}
+	if result["rewound"] != false || result["reason"] != "target_not_found" {
+		t.Fatalf("refused rewind answer: %v", result)
 	}
 }
