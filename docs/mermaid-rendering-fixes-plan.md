@@ -79,3 +79,4 @@ deployment):
   dark, none in light), the theme's own diagrams untouched (0 repaints),
   `fill:#222` under the light scheme repainted light. Web suite 271
   tests, `tsc`, `vite build` green. Not yet merged or deployed.
+- 2026-09-18: merged to main as a274dce (fast-forward; full Go suite, web build and 271 tests green). Not deployed: the owner asked to leave the GKE cluster alone; `~/.warden/release` also still runs the old build.
