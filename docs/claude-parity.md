@@ -351,7 +351,98 @@ inspected through `GET state`, the web UI (diffs with line numbers,
 (collapsed and Tab-expanded); a Codex chat's command renders through the
 same model (its file edit could not run: the account's Codex usage limit
 was exhausted; the `fileChange` mapping is unit-tested).
-- [ ] 2 Subagents and background tasks.
+- [ ] 2 Subagents and background tasks — in progress on `feat/parity-2-subagents`.
+
+### Item 2: subagents, background tasks, todo list
+
+Branch `feat/parity-2-subagents`, worktree `.local/warden-parity-2-subagents`,
+from main 8f0b720 (2026-09-17).
+
+What the CLI gives (probed on 2.1.275 in Warden's exact launch mode,
+`-p --input-format stream-json --include-partial-messages`; the guest's
+2.1.272 to be confirmed live):
+
+- **Subagents.** The tool is `Agent` (`system/init` lists it as `Task`).
+  A subagent's frames are complete `assistant` and `user` messages with
+  `parent_tool_use_id` set to the Agent call's id; no `stream_event`
+  carries a parent, so a subagent's text never streams. Two shapes:
+  - *Foreground* (`run_in_background: false`, `task_started` with
+    `is_backgrounded: false`): a `user` text frame with the prompt, the
+    child's tool calls and results, then the parent's `tool_result` whose
+    content is the child's final text and whose `tool_use_result` carries
+    `totalDurationMs`, `totalTokens`, `totalToolUseCount`, `usage`,
+    `agentType`. The child's own final text and thinking are not emitted.
+  - *Async* (the default on 2.1.275 when `run_in_background` is unset:
+    `subagent_stats.requested.unset`, `started_in_background: 1`): the
+    parent's `tool_result` comes back at once ("Async agent launched",
+    `tool_use_result.isAsync: true`, `status: "async_launched"`,
+    `agentId`), the parent goes on and its turn ends (`result`) while the
+    child keeps sending frames; the child's final text arrives as a child
+    `assistant` text frame; then `system/task_notification` (`tool_use_id`,
+    `status`, `summary` = the child's final text, `usage`) and the CLI
+    resumes the model by itself: a new `system/init`, a turn with no user
+    message, a second `result` with `origin: {kind: "task-notification"}`.
+- **Background commands.** Bash with `run_in_background: true`:
+  `system/task_started` (`task_id`, `tool_use_id`, `description`,
+  `task_type: local_bash`), the `tool_result` says "Command running in
+  background with ID …" with `tool_use_result.backgroundTaskId`; on exit,
+  `system/task_updated` (`patch.status`, `end_time`) and
+  `system/task_notification` (`status: completed|failed`, `summary`
+  "Background command … completed (exit code 0)" / "failed with exit code
+  3", `output_file` inside the sandbox). The output itself only reaches the
+  transcript when the model reads it: `TaskOutput {task_id, block,
+  timeout}` returns `tool_use_result.task {task_id, task_type, status,
+  description, output, exitCode}`. A notification after the turn ended
+  makes the CLI resume the model as above. Also seen: `task_progress` for
+  agents (`usage.total_tokens`, `tool_uses`, `duration_ms`,
+  `last_tool_name`), `background_tasks_changed`, `task_summary`,
+  `post_turn_summary`, `status`, `thinking_tokens` — all ignored.
+- **Todo list.** 2.1.275 has no `TodoWrite`; the list is `TaskCreate
+  {subject, description, activeForm}` → `{task: {id, subject}}`,
+  `TaskUpdate {taskId, status: pending|in_progress|completed|deleted, …}` →
+  `{statusChange: {from, to}}`, `TaskList {}` → `{tasks: [{id, subject,
+  status, blockedBy}]}`, `TaskGet {taskId}`. `TodoWrite`'s documented
+  shape (`{todos: [{content, status, activeForm}]}`) is mapped for a CLI
+  that has it.
+
+Decisions:
+
+1. Nesting is one additive field, `Entry.ParentID`: the Agent call's
+   entry id (its tool_use id) on every entry the subagent produced; ""
+   at the top level. Nested subagents chain by the same rule. The adapter
+   sets `parentId` on the items; `Upsert` copies it; `Hydrate` and
+   `Finish` need nothing more. A child entry carries the turn its Agent
+   call was made in, even when it arrives after that turn ended.
+2. A subagent's final text is the Agent card's result (`Detail`): the
+   parent's `tool_result` content in the foreground case, the
+   notification's `summary` in the async case. `Entry.EndedAt` is set on
+   the card when the subagent finished, so both surfaces show the elapsed
+   time; the tool-call count is the children's.
+3. `Tool.Background` marks a command or an agent the CLI runs in the
+   background (from `run_in_background`, `backgroundTaskId`, or an async
+   launch); such a card stays running past its `tool_result` (whose
+   boilerplate is dropped) until the task's notification, which sets the
+   status (completed, or failed by status or a non-zero exit code in the
+   summary) and, for a command, the summary line as a placeholder output;
+   a `TaskOutput` result replaces it with the real output and exit code.
+   `TaskOutput`, `TaskStop` and `Monitor` are generic cards titled with
+   the task's description.
+4. A turn the CLI starts by itself (after a task notification) is a turn
+   to Warden too: the adapter opens one (`turn/started`) at the first
+   top-level frame after a `result`, and the engine's idle wait
+   (`awaitMessage`) hands such a turn to the session loop, which drives
+   it like any other (running status, Stop, turn record, usage) without
+   sending a message.
+5. The todo list is one entry per adapter process (`todoList` item,
+   `Tool.Kind: "todo"`, the list as `Tool.Input.todos` in TodoWrite's
+   shape and as text lines in `Detail`), updated in place by every
+   `TodoWrite`/`TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` result; the
+   calls themselves get no card.
+6. Web: child entries are dropped from the top-level list and rendered
+   inside the Agent card (`nestEntries` in `transcript.ts`), collapsed
+   behind "n steps · elapsed"; the card shows the prompt, the child
+   transcript and the result. Turn footers, unread and jump counts skip
+   children. TUI: children indent under the card, Tab expands them.
 - [ ] 3 Permission model.
 - [ ] 4 Plan mode.
 - [ ] 5 Slash-command pass-through.
