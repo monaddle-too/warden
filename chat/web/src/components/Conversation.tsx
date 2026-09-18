@@ -21,6 +21,7 @@ import {
   File as FileIcon,
   Folder,
   Paperclip,
+  Pencil,
   ShieldCheck,
   Slash,
   Square,
@@ -33,7 +34,16 @@ import {
   resendAttempt,
   type Attempt,
 } from "../drafts";
-import { api, me, newID, downloadFile, uploadAttachment } from "../api";
+import {
+  api,
+  me,
+  newID,
+  downloadFile,
+  rewindChat,
+  sendQueued,
+  uploadAttachment,
+  withdrawMessage,
+} from "../api";
 import {
   agentCommandNamed,
   agentHint,
@@ -79,7 +89,17 @@ import {
   unreadEntry,
   unreadIndex,
 } from "../transcript";
-import { canRewind, doubleEscape } from "../rewind";
+import {
+  canEditAndResend,
+  canWithdraw,
+  editingScope,
+  lastQueued,
+  queueHeld,
+  queueHint,
+  queueLabel,
+  type Editing,
+} from "../queue";
+import { canRewind, doubleEscape, excerpt } from "../rewind";
 import { sameFooter, turnFooters, type TurnFooter } from "../turns";
 import type { Chat, Entry } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
@@ -168,6 +188,7 @@ export function Conversation({
   onExport,
   onRewind,
   onChanges,
+  prefill,
 }: {
   chat: Chat;
   live: boolean;
@@ -185,6 +206,10 @@ export function Conversation({
      the session diff (/diff); both dialogs live in the shell. */
   onRewind?: (entryID?: string) => void;
   onChanges?: () => void;
+  /* A message to put into an empty composer: the one a rewind from the
+     chooser went back to before (Claude Code's prefill), so it can be
+     edited and sent again. `key` changes with every rewind. */
+  prefill?: { key: number; entry: Entry };
 }) {
   const key = "warden-draft:" + location.origin + ":" + chat.id;
   const [text, setText] = useState(() => draft(key));
@@ -448,17 +473,17 @@ export function Conversation({
     },
     [chat.id, setFollow],
   );
-  // Edit puts the entry's text and uploads into the composer, asking first
-  // when that would replace something already there.
-  const edit = useCallback(
-    (entry: Entry) => {
+  // Load puts an entry's text and uploads into the composer, asking first
+  // when that would replace something already there; false when declined.
+  const load = useCallback(
+    (entry: Entry): boolean => {
       const { text, pending } = current.current;
       const draft = text.trim();
       const replacing =
         (draft !== "" && draft !== entry.text.trim()) ||
         pending.some((p) => !p.reused);
       if (replacing && !window.confirm("Replace your draft with this message?"))
-        return;
+        return false;
       for (const item of pending) forget(item);
       setPending(
         (entry.attachments || []).map((attachment) => ({
@@ -469,6 +494,8 @@ export function Conversation({
         })),
       );
       setText(entry.text);
+      setPastes([]);
+      setRecall(NOT_BROWSING);
       setError("");
       requestAnimationFrame(() => {
         const el = input.current;
@@ -476,9 +503,76 @@ export function Conversation({
         el.focus();
         el.setSelectionRange(el.value.length, el.value.length);
       });
+      return true;
     },
     [forget],
   );
+  // Edit-and-resend on a message the agent got (queue.ts): the composer
+  // holds the message, and sending it rewinds the conversation to before
+  // it first. Cancel gives the earlier draft back.
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const edit = useCallback(
+    (entry: Entry) => {
+      const draft = current.current.text;
+      if (!load(entry)) return;
+      setEditing({ entry, draft, code: false });
+    },
+    [load],
+  );
+  function cancelEditing() {
+    if (!editing) return;
+    setEditing(null);
+    setText(editing.draft);
+    setPending([]);
+    input.current?.focus();
+  }
+  // A queued message edited: it leaves the queue for the composer (nothing
+  // is sent while it is being edited) and goes at the end when sent again.
+  const editQueued = useCallback(
+    async (entry: Entry) => {
+      setError("");
+      try {
+        const withdrawn = await withdrawMessage(chat.id, entry.id);
+        if (!load(withdrawn)) {
+          // The draft stays: the withdrawn text is lost unless kept here.
+          setText(
+            (text) => (text.trim() ? text + "\n" : "") + withdrawn.text,
+          );
+        }
+        setEditing(null);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [chat.id, load],
+  );
+  const withdraw = useCallback(
+    async (entry: Entry) => {
+      setError("");
+      try {
+        await withdrawMessage(chat.id, entry.id);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [chat.id],
+  );
+  const sendQueuedNow = useCallback(async () => {
+    setError("");
+    try {
+      await sendQueued(chat.id);
+      setFollow(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [chat.id, setFollow]);
+  // The message a rewind went back to before, into an empty composer.
+  useEffect(() => {
+    if (!prefill || current.current.text.trim() !== "") return;
+    load(prefill.entry);
+    setEditing(null);
+  }, [prefill, load]);
+  const held = queueHeld(chat);
   const attempted = useRef<Attempt | undefined>(
     readLocalAttempt(key + ":attempt"),
   );
@@ -792,6 +886,7 @@ export function Conversation({
       case "clear":
         for (const item of pending) forget(item);
         setPending([]);
+        setEditing(null);
         setError("");
         place({ text: "", caret: 0 });
         break;
@@ -874,6 +969,12 @@ export function Conversation({
     // while following.
     setFollow(true);
     try {
+      if (editing) {
+        // The conversation goes back to before the message being edited
+        // (the code too when asked), then the edit goes as a new message.
+        await rewindChat(chat.id, editing.entry.id, editingScope(editing));
+        setEditing(null);
+      }
       await api(`chats/${chat.id}/message`, message);
       lastTyping.current = 0;
       setText("");
@@ -986,7 +1087,22 @@ export function Conversation({
                         onRewind ? (entry) => onRewind(entry.id) : undefined
                       }
                       onQuote={quote}
+                      onEditQueued={editQueued}
+                      onWithdraw={withdraw}
+                      onSendQueued={sendQueuedNow}
+                      queue={
+                        item.entry.delivery === "queued"
+                          ? {
+                              label: queueLabel(chat),
+                              held,
+                              mine: canWithdraw(item.entry, me),
+                            }
+                          : undefined
+                      }
                       actions={!busy && canResend(item.entry, chat, live)}
+                      editable={
+                        !busy && canEditAndResend(item.entry, chat, live)
+                      }
                       rewindable={canRewind(chat)}
                       stats={inline ? footer : undefined}
                     />
@@ -1114,6 +1230,28 @@ export function Conversation({
               input.current?.focus();
             }}
           />
+          {editing && (
+            <div className="composer-editing" role="status">
+              <span className="composer-editing-what">
+                <Pencil size={13} aria-hidden="true" /> Editing “
+                {excerpt(editing.entry.text, 40)}” — sending rewinds the
+                conversation to before it
+              </span>
+              <label className="composer-editing-code">
+                <input
+                  type="checkbox"
+                  checked={editing.code}
+                  onChange={(e) =>
+                    setEditing({ ...editing, code: e.target.checked })
+                  }
+                />
+                also rewind the code
+              </label>
+              <button type="button" className="ghost" onClick={cancelEditing}>
+                Cancel
+              </button>
+            </div>
+          )}
           <textarea
             ref={input}
             aria-label="Message agent"
@@ -1194,6 +1332,12 @@ export function Conversation({
                   pick(items[selected]);
                   return;
                 }
+              } else if (e.key === "Escape" && editing) {
+                // Editing a message: Esc leaves it, the draft comes back.
+                e.preventDefault();
+                lastEscape.current = 0;
+                cancelEditing();
+                return;
               } else if (e.key === "Escape") {
                 // Esc-Esc, Claude Code's rewind key: the chooser opens on
                 // the last message. One Esc is the interrupt (the Stop
@@ -1217,6 +1361,23 @@ export function Conversation({
                 e.preventDefault();
                 setSearching(true);
                 return;
+              }
+              // Up in an empty composer with a message of this person's
+              // queued edits it (Claude Code's ↑), before the history.
+              if (
+                e.key === "ArrowUp" &&
+                !e.altKey &&
+                !e.shiftKey &&
+                !e.metaKey &&
+                text === "" &&
+                !editing
+              ) {
+                const last = lastQueued(all, me);
+                if (last) {
+                  e.preventDefault();
+                  void editQueued(last);
+                  return;
+                }
               }
               // Up at the draft's first line recalls the previous prompt,
               // Down at its last line the next (then the draft again);
@@ -1369,11 +1530,14 @@ export function Conversation({
                 ? chat.provider === "codex"
                   ? "Appends a note to CLAUDE.md in the workspace (Codex reads AGENTS.md, not CLAUDE.md)"
                   : "Appends a note to CLAUDE.md in the workspace — the agent reads it only once the workspace's settings are loaded"
-                : chat.status === "running"
-                  ? chat.provider === "claude"
-                    ? "Queued for the next turn"
-                    : "Send to steer the current run"
-                  : "⌘ / Ctrl + Enter to send · / commands · @ file · ! shell · # note · ↑ history · Ctrl+R search"}
+                : editing
+                  ? "Sending rewinds the conversation to before the message and sends this in its place · Esc cancels"
+                  : queueHint(chat, me) ||
+                    (chat.status === "running"
+                      ? chat.provider === "claude"
+                        ? "Queued for the next turn — edit or withdraw it from the transcript until then"
+                        : "Send to steer the current run"
+                      : "⌘ / Ctrl + Enter to send · / commands · @ file · ! shell · # note · ↑ history · Ctrl+R search")}
         </div>
       </form>
     </div>

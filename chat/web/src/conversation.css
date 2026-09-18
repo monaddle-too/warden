@@ -244,6 +244,24 @@
 .message-actions.shown {
   opacity: 1;
 }
+/* A queued message (queue.ts): held by Warden until the agent's turn ends,
+   its bubble outlined rather than filled, with its actions always shown. */
+.message-queued .message-body {
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+}
+.message-queued .queued-label {
+  color: var(--accent-text);
+}
+.queued-actions {
+  align-items: center;
+}
+.queued-actions .queued-send {
+  height: 28px;
+  padding: 0 10px;
+  gap: 5px;
+  color: var(--accent-text);
+}
 @media (hover: none) {
   .message-actions {
     opacity: 1;
@@ -819,6 +837,36 @@ button.attachment-chip {
 }
 /* Long pastes: chips above the composer's text for the placeholders in
    it (paste.ts); the chip opens the text in a dialog. */
+/* Editing a message the agent got (queue.ts): the bar over the textarea
+   saying that sending rewinds the conversation to before it. */
+.composer-editing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 10px 12px 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+.composer-editing-what {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+}
+.composer-editing-code {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-2);
+}
+.composer-editing button {
+  height: 26px;
+  padding: 0 8px;
+}
 .composer-pastes {
   display: flex;
   flex-wrap: wrap;

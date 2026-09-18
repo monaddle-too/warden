@@ -5,7 +5,7 @@ import type {
   RewindWhat,
   SessionChanges,
 } from "./rewind";
-import type { Attachment, State } from "./types";
+import type { Attachment, Entry, State } from "./types";
 const key = "warden-chat-session";
 let token = "";
 try {
@@ -229,6 +229,17 @@ export function rewindChat(
     turnID,
     what,
   });
+}
+
+/* A queued message out of the queue (its sender or the owner may); the
+   entry comes back for the composer (queue.ts). */
+export function withdrawMessage(chatID: string, id: string): Promise<Entry> {
+  return api<Entry>(`chats/${encodeURIComponent(chatID)}/withdraw`, { id });
+}
+
+/* Lets a held queue go: the queued messages send in order. */
+export function sendQueued(chatID: string): Promise<unknown> {
+  return api(`chats/${encodeURIComponent(chatID)}/send-queued`, {});
 }
 
 export function sessionChanges(chatID: string): Promise<SessionChanges> {

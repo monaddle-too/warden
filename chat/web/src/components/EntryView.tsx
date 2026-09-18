@@ -12,6 +12,7 @@ import {
   RotateCcw,
   Send,
   User,
+  X,
 } from "lucide-react";
 import { compactionLabel } from "../context";
 import { hasDiff, parseDiff } from "../diff";
@@ -221,15 +222,91 @@ export const ActivityGroup = memo(function ActivityGroup({
     </details>
   );
 });
+/* Under a queued message (queue.ts): edit takes it out of the queue into
+   the composer, withdraw drops it, and Send lets a held queue go. Always
+   shown: the queue is something to act on, not to discover on hover. */
+function QueuedActions({
+  entry,
+  queue,
+  onEditQueued,
+  onWithdraw,
+  onSendQueued,
+}: {
+  entry: Entry;
+  queue: QueueState;
+  onEditQueued?: (entry: Entry) => void;
+  onWithdraw?: (entry: Entry) => void;
+  onSendQueued?: () => void;
+}) {
+  return (
+    <div
+      className="message-actions shown queued-actions"
+      role="group"
+      aria-label="Queued message actions"
+    >
+      {queue.held && onSendQueued && (
+        <button
+          type="button"
+          className="ghost queued-send"
+          title="Send the queued messages now, in order"
+          onClick={onSendQueued}
+        >
+          <Send size={14} /> Send
+        </button>
+      )}
+      {onEditQueued && (
+        <button
+          type="button"
+          className="ghost icon"
+          aria-label="Edit this queued message"
+          title={
+            queue.mine
+              ? "Edit: takes it out of the queue and into the composer"
+              : "Only its sender or the owner can edit it"
+          }
+          disabled={!queue.mine}
+          onClick={() => onEditQueued(entry)}
+        >
+          <Pencil size={14} />
+        </button>
+      )}
+      {onWithdraw && (
+        <button
+          type="button"
+          className="ghost icon"
+          aria-label="Withdraw this queued message"
+          title={
+            queue.mine
+              ? "Withdraw: the agent never sees it"
+              : "Only its sender or the owner can withdraw it"
+          }
+          disabled={!queue.mine}
+          onClick={() => onWithdraw(entry)}
+        >
+          <X size={14} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* What a queued message's card shows (queue.ts): the line beside the
+   sender, whether the queue is held, and whether this person may act on
+   the message. */
+export type QueueState = { label: string; held: boolean; mine: boolean };
+
 /* Under every message: copy its markdown source, and for one the owner
    sent, retry and edit. Shown on hover or focus (always when the message
    failed to deliver, since retrying is the fix); `enabled` is false while a
-   send would be refused, so the buttons still show what is possible instead
-   of failing in the composer. Copy waits for a streaming message to finish,
-   so the clipboard never holds half a message. */
+   send would be refused, and `editable` while a rewind would be (editing
+   a message the agent got rewinds the conversation to before it: queue.ts),
+   so the buttons still show what is possible instead of failing in the
+   composer. Copy waits for a streaming message to finish, so the clipboard
+   never holds half a message. */
 function MessageActions({
   entry,
   enabled,
+  editable,
   onEdit,
   onRetry,
   onRewind,
@@ -237,6 +314,7 @@ function MessageActions({
 }: {
   entry: Entry;
   enabled: boolean;
+  editable?: boolean;
   onEdit?: (entry: Entry) => void;
   onRetry?: (entry: Entry) => void;
   /* Opens the rewind chooser on this message (rewind.ts); disabled while
@@ -266,8 +344,8 @@ function MessageActions({
           type="button"
           className="ghost icon"
           aria-label="Edit and resend"
-          title="Edit and resend"
-          disabled={!enabled}
+          title="Edit and resend: the conversation goes back to before this message"
+          disabled={!editable}
           onClick={() => onEdit(entry)}
         >
           <Pencil size={14} />
@@ -314,7 +392,12 @@ export const EntryView = memo(function EntryView({
   onRetry,
   onRewind,
   onQuote,
+  onEditQueued,
+  onWithdraw,
+  onSendQueued,
+  queue,
   actions = false,
+  editable = false,
   rewindable = false,
   stats,
   nested,
@@ -329,8 +412,16 @@ export const EntryView = memo(function EntryView({
   onRewind?: (entry: Entry) => void;
   /* For a command the person ran: quote it into the composer. */
   onQuote?: (entry: Entry) => void;
-  /* Whether retry and edit would be accepted right now. */
+  /* For a queued message (queue.ts): edit it in the composer, withdraw
+     it, let a held queue go; `queue` says what its card shows. */
+  onEditQueued?: (entry: Entry) => void;
+  onWithdraw?: (entry: Entry) => void;
+  onSendQueued?: () => void;
+  queue?: QueueState;
+  /* Whether retry would be accepted right now. */
   actions?: boolean;
+  /* Whether edit-and-resend would be (a rewind is possible). */
+  editable?: boolean;
   /* Whether a rewind would be accepted right now (the chat is idle). */
   rewindable?: boolean;
   /* The turn's timing and usage, under the turn's last message. */
@@ -408,15 +499,21 @@ export const EntryView = memo(function EntryView({
           Writing<span className="typing-dots">…</span>
         </span>
       )}
-      {entry.delivery === "queued" && <span className="muted">Queued</span>}
+      {entry.delivery === "queued" && (
+        <span className="muted queued-label">{queue?.label ?? "Queued"}</span>
+      )}
       {entry.delivery === "failed" && (
         <span className="danger-text">{entry.detail || "Not delivered"}</span>
       )}
     </header>
   );
-  if (user)
+  if (user) {
+    const queued = entry.delivery === "queued" && !!queue;
     return (
-      <article className="message message-user" data-entry={entry.id}>
+      <article
+        className={`message message-user${queued ? " message-queued" : ""}`}
+        data-entry={entry.id}
+      >
         {header}
         <div className="message-body">
           {entry.text && (
@@ -431,16 +528,28 @@ export const EntryView = memo(function EntryView({
             <EntryAttachments chatID={chatID} attachments={entry.attachments} />
           )}
         </div>
-        <MessageActions
-          entry={entry}
-          enabled={actions}
-          onEdit={onEdit}
-          onRetry={onRetry}
-          onRewind={onRewind}
-          rewindable={rewindable}
-        />
+        {queued ? (
+          <QueuedActions
+            entry={entry}
+            queue={queue}
+            onEditQueued={onEditQueued}
+            onWithdraw={onWithdraw}
+            onSendQueued={onSendQueued}
+          />
+        ) : (
+          <MessageActions
+            entry={entry}
+            enabled={actions}
+            editable={editable}
+            onEdit={onEdit}
+            onRetry={onRetry}
+            onRewind={onRewind}
+            rewindable={rewindable}
+          />
+        )}
       </article>
     );
+  }
   return (
     <article className={`message message-${entry.role}`} data-entry={entry.id}>
       <div className="message-avatar" aria-hidden="true">

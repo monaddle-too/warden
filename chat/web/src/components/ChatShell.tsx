@@ -27,7 +27,7 @@ import {
   TextSearch,
   Timer,
 } from "lucide-react";
-import type { Chat, Environment, Resources, State } from "../types";
+import type { Chat, Entry, Environment, Resources, State } from "../types";
 import { api, signedIn, subscribe } from "../api";
 import { plural, providerName } from "../export";
 import {
@@ -99,6 +99,9 @@ export function ChatShell({
   // The rewind chooser (the message it opens on, "" for the last) and the
   // session diff (rewind.ts).
   const [rewinding, setRewinding] = useState<string | null>(null);
+  // The message the last conversation rewind went back to before, for
+  // the composer to offer for editing (Conversation's `prefill`).
+  const [prefill, setPrefill] = useState<{ key: number; entry: Entry }>();
   const [changesOpen, setChangesOpen] = useState(false);
   const [searching, setSearching] = useState(false);
   // The find bar's latest request; a new object each time so the same
@@ -748,7 +751,11 @@ export function ChatShell({
                 key={chat.id + "rewind"}
                 chat={chat}
                 initial={rewinding || undefined}
-                onClose={() => setRewinding(null)}
+                onClose={(result, target) => {
+                  setRewinding(null);
+                  if (result && result.what !== "code" && target)
+                    setPrefill({ key: Date.now(), entry: target });
+                }}
               />
             )}
             {changesOpen && (
@@ -768,6 +775,7 @@ export function ChatShell({
                 onExport={() => setExporting(true)}
                 onRewind={(entryID) => setRewinding(entryID || "")}
                 onChanges={() => setChangesOpen(true)}
+                prefill={prefill}
                 onModel={(next) =>
                   api(`chats/${chat.id}/agent`, {
                     provider: chat.provider || "codex",
