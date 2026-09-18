@@ -141,9 +141,51 @@ export type PermissionParams = {
   tool: string;
   input?: Record<string, unknown>;
   entry?: Entry;
+  /* What "Allow always" remembers: the label and the rule pattern. */
   always?: string;
+  rule?: string;
   description?: string;
   plan?: string;
+};
+
+/* A permission rule (chats/rules.go): allow, deny or ask by a tool
+   pattern in Claude Code's syntax (Bash(git *), Edit(src/**), Read,
+   WebFetch(domain:x), mcp__warden__*). origin is "editor" for one typed
+   into the rules editor, "always" for an "Allow always" answer (chatID
+   that chat when the rule is the workspace's); by is who added it. */
+export type Rule = {
+  id: string;
+  kind: "allow" | "deny" | "ask";
+  pattern: string;
+  origin?: string;
+  chatID?: string;
+  by?: Actor;
+  at?: number;
+};
+export type Actor = { principalID: string; email?: string; name?: string };
+
+/* One decision on a tool ask (the chat's permission history): how it was
+   decided — "auto" by the mode, "rule" by a rule (rule, scope), "card" by
+   the person (by), with the rule an "Allow always" made and a denial's
+   message. */
+export type PermissionEvent = {
+  id: string;
+  at: number;
+  tool: string;
+  summary: string;
+  decision: "allow" | "deny";
+  how: "auto" | "rule" | "card";
+  rule?: Rule;
+  scope?: "chat" | "workspace";
+  by?: Actor;
+  message?: string;
+};
+
+/* What environments/{id}/rules and chats/{id}/rules answer. */
+export type RulesView = {
+  workspace: string;
+  rules: Rule[];
+  chats: { id: string; title: string; rules: Rule[] }[];
 };
 export type Approval = {
   id: string;
@@ -165,11 +207,11 @@ export type ResourceLimits = {
 export type Chat = {
   provider?: string;
   model?: string;
-  /* A Claude chat's permission mode (auto when absent) and its
-     allow-always rules: the tool (Bash, edit for any file tool, or a
-     tool's name) and, for Bash, the command prefix. */
+  /* A Claude chat's permission mode (auto when absent) and its own
+     permission rules ("Allow always" answers kept to this chat, and rules
+     added to it); the workspace's are on Environment.rules. */
   mode?: string;
-  allowed?: { tool: string; command?: string }[];
+  rules?: Rule[];
   /* A Claude chat's session settings (chats/settings.go): the thinking
      budget ("" the agent's default, "off", or tokens), the effort level
      ("" the model's default) and fast mode. */
@@ -376,6 +418,8 @@ export type Environment = {
     access_summary?: string;
   }[];
   ports: { id: string; port: number; title: string; url: string }[];
+  /* The workspace's permission rules, applied to every chat of it. */
+  rules?: Rule[];
   deleted: boolean;
   archived: boolean;
 };

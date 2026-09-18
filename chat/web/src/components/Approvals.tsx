@@ -4,6 +4,7 @@ import type { Approval, PermissionParams } from "../types";
 import { api } from "../api";
 import {
   PLAN_ANSWERS,
+  alwaysHint,
   alwaysLabel,
   askedCommand,
   isPlan,
@@ -130,8 +131,9 @@ export function ApprovalCard({
    to the owner: a command, a file edit as its diff, another tool with
    its input), or the plan of one in plan mode. The answers go back as
    the CLI's allow or deny; "Allow always" also records the call's rule
-   on the chat; a denial's message and a plan's feedback reach the model
-   as the tool's error text. */
+   on the chat, or on the workspace for every chat of it (rules.go); a
+   denial's message and a plan's feedback reach the model as the tool's
+   error text. */
 export function PermissionCard({
   chatID,
   approval,
@@ -159,6 +161,7 @@ export function PermissionCard({
   async function answer(body: {
     allow: boolean;
     always?: boolean;
+    scope?: "chat" | "workspace";
     message?: string;
     mode?: string;
   }) {
@@ -168,6 +171,7 @@ export function PermissionCard({
       await api(`chats/${chatID}/approvals/${approval.id}`, {
         allow: body.allow,
         always: !!body.always,
+        scope: body.scope ?? "chat",
         message: body.message ?? "",
         mode: body.mode ?? "",
         answers: {},
@@ -257,14 +261,19 @@ export function PermissionCard({
             </button>
             <button
               disabled={busy}
-              title={
-                params.always
-                  ? `Allow ${params.always} for the rest of this chat without asking`
-                  : "Allow this for the rest of the chat"
-              }
+              title={alwaysHint(params, "chat")}
               onClick={() => answer({ allow: true, always: true })}
             >
-              {alwaysLabel(params)}
+              {alwaysLabel(params, "chat")}
+            </button>
+            <button
+              disabled={busy}
+              title={alwaysHint(params, "workspace")}
+              onClick={() =>
+                answer({ allow: true, always: true, scope: "workspace" })
+              }
+            >
+              {alwaysLabel(params, "workspace")}
             </button>
             <button
               className="primary"
