@@ -299,8 +299,8 @@ E–G after.
 - [x] R2.18 **Unread and jump**: unread markers per chat in `/chats` and the sidebar, an unread divider on switch, `G`/End jumps to the bottom. Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says (the TUI's status bar is the sidebar's equivalent; on the scrollback TUI the jump is a reprint).
 
 ### G. Asides and shortcuts (`feat/parity-r2-g-asides-keys`)
-- [ ] R2.19 **`/btw` polish**: starts the session when it was released instead of refusing, cleans the aside's session copies in the guest, and an aside can be promoted into the chat as a message (item 15's leftovers).
-- [ ] R2.20 **Keyboard help**: a `?` overlay on the web listing every shortcut (⌘K, ⌘F, Esc, Esc-Esc, ↑, Ctrl-R, Shift-Tab where applicable) and TUI `/keys`; both generated from one table so they cannot drift.
+- [x] R2.19 **`/btw` polish**: starts the session when it was released instead of refusing, cleans the aside's session copies in the guest, and an aside can be promoted into the chat as a message (item 15's leftovers). Merged to main 7dc2eb6 (2026-09-18); "### Round 2 G" below.
+- [x] R2.20 **Keyboard help**: a `?` overlay on the web listing every shortcut (⌘K, ⌘F, Esc, Esc-Esc, ↑, Ctrl-R, Shift-Tab where applicable) and TUI `/keys`; both generated from one table so they cannot drift. Merged to main 7dc2eb6 (2026-09-18); "### Round 2 G" below.
 
 ## Decisions needed
 
@@ -621,7 +621,8 @@ main 12e3ac8; implemented and live-verified 2026-09-18 (builds c12a017
 and 5a6b0f9 on `~/.warden-p19`; the natural 10-minute idle release
 observed at 07:45 and `/btw` starting the session from it in 4 s);
 rounds 2 C, E and F merged in on the way (F's vim gate ported onto the
-key table).
+key table); merged to main 7dc2eb6 (2026-09-18). Not deployed to
+`~/.warden`.
 ### Round 2 F: TUI vim mode, attachments and paste, unread
 
 Branch `feat/parity-r2-f-tui`, worktree `.local/warden-parity-r2-f-tui`,
