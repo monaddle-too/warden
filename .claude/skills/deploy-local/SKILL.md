@@ -45,9 +45,12 @@ them, so only add them when invoking `go` yourself.
 - `--no-restart` unpacks without restarting; useful when another session
   is mid-verification.
 - The script prints `deployed <version> to ~/.warden/release` and the new
-  `warden version` line, then stops and starts the background Warden. If
-  no background Warden was running it says so; start one with
-  `~/.warden/release/bin/warden start --detach`.
+  `warden version` line, then restarts the running Warden: `warden
+  restart` when it is the registered service (launchd agent
+  `com.monaddle.warden`, the normal case since the background-service
+  work), else stop + `start --detach` for a detached one. If nothing was
+  running it says so; `~/.warden/release/bin/warden start` starts the
+  service (`--detach` when none is registered).
 - Versions are `v0.0.0-dev.<12-char sha>`; uncommitted changes are not
   reflected in the version string, so commit first if the revision needs
   to be traceable.
@@ -89,9 +92,8 @@ Every deploy keeps the previous unpacked releases:
 
 ```sh
 ls -t ~/.warden/releases/
-~/.warden/release/bin/warden stop
 ln -sfn ~/.warden/releases/<older-directory> ~/.warden/release
-~/.warden/release/bin/warden start --detach
+~/.warden/release/bin/warden restart      # the service runs the launcher through the link
 ```
 
 Say which revision you rolled back to; another session may have expected

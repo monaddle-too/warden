@@ -38,6 +38,9 @@ type cli struct {
 	terminal bool // stdin is an interactive terminal
 	openFn   func(url string) error
 	notifyFn func(title, body string) error
+	// serviceFn supplies the service manager for a state directory (nil:
+	// the platform's); tests substitute a recording fake.
+	serviceFn func(state string) (serviceManager, string)
 }
 
 // openURL opens the browser on url.
@@ -66,12 +69,14 @@ const usageText = `usage: warden COMMAND [flags]
   install   create the private state, SBX namespace and runtimes; write warden.json
   doctor    check every host and runtime invariant and print the remediation
   login     codex | claude | github: store one provider sign-in, owner-only
-  start     run the policy, runner, chat and edge services
+  start     start Warden: the registered service, or the four services here (--foreground) or detached (--detach)
+  stop      stop the running Warden (the service, or a detached one)
+  restart   restart the service (after a new release)
+  status    show whether Warden is running and how
+  service   install | uninstall: register Warden with launchd / systemd --user (install does this too)
   open      open the running Warden in the browser
   chat      terminal client: warden chat [CHAT] | list | new | send | approve
-  stop      stop a detached Warden (see start --detach)
-  status    show whether Warden is running and its versions
-  uninstall stop Warden, delete its sandboxes, stop its private sbx daemon and remove the state
+  uninstall stop Warden, unregister the service, delete its sandboxes, stop its private sbx daemon and remove the state
   bugs      bug reports: status | on | off | send "text" | test | pending (you review every report before it is sent)
   tls       bootstrap: write a deployment CA and the four service certificates for tls:// transport
   version   print the build revision and protocol number
@@ -103,8 +108,12 @@ func (c *cli) run(args []string) int {
 		err = c.chat(args[1:])
 	case "stop":
 		err = c.stopService(args[1:])
+	case "restart":
+		err = c.restartService(args[1:])
 	case "status":
 		err = c.status(args[1:])
+	case "service":
+		err = c.serviceCommand(args[1:])
 	case "uninstall":
 		err = c.uninstall(args[1:])
 	case "bugs":
