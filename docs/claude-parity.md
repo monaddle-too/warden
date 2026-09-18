@@ -511,6 +511,21 @@ How it works (`app.go`, `render.go`):
   Claude Code's local command output, and is not reprinted by a
   structural redraw (it is above, in the terminal's history). A one-line
   notice stays under the transcript for 20 s as before.
+- **What is never committed.** Found live: the engine marks a queued
+  message `failed` ("delivery unconfirmed") while it attempts delivery
+  and `sent` once the agent acknowledges it, so a user message is final
+  only when sent (or failed on an idle chat, shown red as not delivered;
+  the dim `(sent)` line the TUI used to print is gone, the web shows
+  none either). The todo list is one entry the adapter rewrites in place
+  with every write, this turn and the next (`todoID` is per session), so
+  it is a live panel at the bottom of the transcript above the queued
+  messages — as Claude Code keeps its todo list above the composer,
+  never in the static transcript — and goes away once the chat is idle
+  with every item done (the web and an export keep it in place).
+- **Resize.** `TIOCSWINSZ` itself raises SIGWINCH and a window drag
+  sends one per step, each a full reprint in the first live run;
+  resize events now settle for 150 ms (`resizeSettle`) and reprint only
+  when the size the last draw painted for changed.
 - **Scrolling and search.** PgUp/PgDn/Home/End/wheel no longer scroll
   anything in the app (the terminal has them; Home/End move within the
   draft); the scroll hint left the status bar. `/find TEXT` prints the
@@ -541,11 +556,33 @@ Ctrl-L clearing and reprinting once without `3J`, the exit sequence);
 paragraphs on a 12-row terminal (tail ≤ rows − 1, no reprint, every
 paragraph written once after it is committed);
 `TestMultiLineNoticesArePrintedOnce`; `TestEntryFinality`;
-`TestFrameSplitsCommittedFromLiveTail`; `TestColumnWidths`; the key,
-find and status tests adapted.
+`TestFrameSplitsCommittedFromLiveTail`; `TestTodoListIsALivePanel`;
+`TestResizeBurstReprintsOnce` (the Run loop under a fake server: one
+reprint for a burst, none for an unchanged size, the start and exit
+sequences); `TestColumnWidths`; the key, find and status tests adapted.
 
-Progress: started 2026-09-18; implemented with unit tests the same day.
-Left for this item: live verification under a pty, feature map, merge.
+Verified live (2026-09-18, build 4d693d9 on a cloned home
+`~/.warden-p17`): the real `warden chat` driven under a pty from Python
+(`pty.fork`, `TIOCSWINSZ` + SIGWINCH, keys with delays, the raw byte
+stream recorded and replayed through a small VT emulator with a
+scrollback) on a Claude chat: a turn with `ls -la`, a `Write` and a
+`cat` card and a reply; `/find beta-p16` (four matching lines printed
+once); `/help` (printed once); Tab expand and collapse (no reprint — no
+card was folded, the notice went to the tail); Ctrl-L (one clear and
+reprint); a second turn; a resize to 60×24 (one clear and reprint after
+the fix above); then a 20-paragraph story streamed on the 24-row screen
+and Ctrl-C twice. From the stream: no `?1049`, `?1000` or `?1006`, no
+`3J`, exactly two `2J` (Ctrl-L, resize), the largest cursor-up 11 rows
+on 30 rows and 22 on 24, every paragraph of the streamed story in the
+emulated scrollback exactly once (committed early, never rewritten
+after), every committed entry once per segment between clears, the
+transcript and the last status/composer left on the screen at exit
+with `\r\n ?2004l ?25h 23;0t`. The pinned CLI offered Claude no todo
+tool in this environment, so the todo panel is covered by its unit
+test only.
+
+Progress: started 2026-09-18; implemented, unit-tested and live-verified
+the same day. Left: merge to main; not deployed to `~/.warden`.
 
 ### Item 15: the long tail
 
