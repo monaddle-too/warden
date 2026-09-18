@@ -92,6 +92,9 @@ func (w *Worker) cloneLocked(ctx context.Context, r Request) (Response, error) {
 		return Response{}, fmt.Errorf("copying the workspace: %w", err)
 	}
 	s.Created, s.Creating, s.fresh = true, false, true
+	// The copy runs the snapshot's image (SBX): the policy service's pin
+	// takes the digest from the runner.
+	w.recordImageLocked(ctx, s)
 	// A created sandbox boots; the copy waits stopped for its first chat.
 	if err := w.Runtime.Stop(ctx, s.RuntimeName); err != nil {
 		s.State = "error"

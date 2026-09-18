@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -332,6 +333,43 @@ func (d *sbxRuntime) createFrom(ctx context.Context, s RuntimeSpec) error {
 		return fmt.Errorf("SBX copy failed: %w", err)
 	}
 	return nil
+}
+
+// ImageDigest is the digest of the image the sandbox runs, as `sbx
+// inspect` reports it: the guest image for a sandbox created from the
+// template, the snapshot's own digest for one created from a saved
+// template (a copy, or a resize's regeneration). The worker passes a
+// snapshot's digest to the policy service, whose inspector pins the
+// image (policy/sbxinspector.go allowedImage), so a sandbox the runner
+// derived from a verified guest is accepted for what it is.
+func (d *sbxRuntime) ImageDigest(ctx context.Context, name string) (string, error) {
+	cmd := command(ctx, d.worker.Executable, "inspect", name, "--json")
+	var out bytes.Buffer
+	cmd.Stdout = &limitedWriter{W: &out, N: 1 << 20}
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("sbx inspect: %w", err)
+	}
+	var details struct {
+		ImageDigest string `json:"image_digest"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &details); err != nil {
+		return "", errors.New("invalid sandbox inspection")
+	}
+	if !imageDigestShape.MatchString(details.ImageDigest) {
+		return "", errors.New("sandbox inspection reports no image digest")
+	}
+	return details.ImageDigest, nil
+}
+
+// imageDigestShape is a container image digest as sbx reports it.
+var imageDigestShape = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// ImageInspector is a driver that can say which image a sandbox runs; the
+// worker records the digest of a sandbox derived from a snapshot (a copy,
+// a regeneration) for the policy service's image pin.
+type ImageInspector interface {
+	ImageDigest(ctx context.Context, name string) (string, error)
 }
 
 // createArgs is the `sbx create` invocation for a sandbox of the given size

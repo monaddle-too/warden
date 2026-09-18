@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -60,7 +62,7 @@ func TestCloneStopsAndRestoresTheSourceOnSBX(t *testing.T) {
 	bound := w.managed.Chats["chat-copy"]
 	srcState := src.State
 	w.mu.Unlock()
-	want := []string{"release-residency", "stop:" + src.RuntimeName, "create:" + copyName, "size:" + copyName + ":2 CPUs · 3 GiB", "source:" + copyName + ":" + src.RuntimeName, "hold-residency:" + src.RuntimeName, "prepare:" + src.RuntimeName + ":2 CPUs · 3 GiB", "stop:" + copyName}
+	want := []string{"release-residency", "stop:" + src.RuntimeName, "create:" + copyName, "size:" + copyName + ":2 CPUs · 3 GiB", "source:" + copyName + ":" + src.RuntimeName, "hold-residency:" + src.RuntimeName, "prepare:" + src.RuntimeName + ":2 CPUs · 3 GiB", "image:" + copyName, "stop:" + copyName}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("driver calls\n got %v\nwant %v", got, want)
 	}
@@ -120,7 +122,7 @@ func TestCloneStartsAndStopsAStoppedSourceOnPods(t *testing.T) {
 	copyName := w.managed.Sandboxes["sandbox-copy"].RuntimeName
 	srcState := src.State
 	w.mu.Unlock()
-	want := []string{"hold-residency:" + src.RuntimeName, "prepare:" + src.RuntimeName + ":1 CPU · 1536 MiB", "create:" + copyName, "size:" + copyName + ":1 CPU · 1536 MiB", "source:" + copyName + ":" + src.RuntimeName, "release-residency", "stop:" + src.RuntimeName, "stop:" + copyName}
+	want := []string{"hold-residency:" + src.RuntimeName, "prepare:" + src.RuntimeName + ":1 CPU · 1536 MiB", "create:" + copyName, "size:" + copyName + ":1 CPU · 1536 MiB", "source:" + copyName + ":" + src.RuntimeName, "release-residency", "stop:" + src.RuntimeName, "image:" + copyName, "stop:" + copyName}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("driver calls\n got %v\nwant %v", got, want)
 	}
@@ -183,5 +185,90 @@ func TestCloneRefusals(t *testing.T) {
 	}
 	if !removed {
 		t.Fatal("a failed copy's runtime was not removed")
+	}
+}
+
+// The copy runs a snapshot image: the driver's digest is recorded and
+// every grant of the copy declares it, so the policy service's image pin
+// accepts the copy; a driver that cannot say leaves the record empty. A
+// regeneration at a new size (SBX resize) records its digest the same way.
+func TestCloneAndResizeRecordTheSnapshotImage(t *testing.T) {
+	w, d, g, r := managedFixture(t)
+	w.Limits = ResourceLimits{Default: Resources{CPUMilli: 1000, MemoryMB: 1536}, Max: Resources{CPUMilli: 4000, MemoryMB: 8192}, CPUStepMilli: 1000, Restart: true}
+	prepareFixture(t, w, r)
+	w.mu.Lock()
+	w.managed.Sandboxes[r.SandboxID].Active = nil
+	w.mu.Unlock()
+	digest := "sha256:" + strings.Repeat("c", 64)
+	copyName := "wc-" + strings.Repeat("0", 24)
+	d.mu.Lock()
+	d.digests = map[string]string{}
+	d.mu.Unlock()
+	// Not knowable yet: the record stays empty, the copy still made.
+	if _, err := w.dispatch(context.Background(), cloneRequest(r)); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	copyName = w.managed.Sandboxes["sandbox-copy"].RuntimeName
+	recorded := w.managed.Sandboxes["sandbox-copy"].ImageDigest
+	w.mu.Unlock()
+	if recorded != "" {
+		t.Fatal("digest recorded without one", recorded)
+	}
+	// Known: recorded, and the copy's prepare registers it.
+	second := cloneRequest(r)
+	second.ChatID, second.SandboxID = "chat-copy-2", "sandbox-copy-2"
+	hash := sha256.Sum256([]byte(second.SandboxID))
+	secondName := "wc-" + hex.EncodeToString(hash[:12])
+	d.mu.Lock()
+	d.digests[secondName] = digest
+	d.mu.Unlock()
+	if _, err := w.dispatch(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	recorded = w.managed.Sandboxes["sandbox-copy-2"].ImageDigest
+	w.mu.Unlock()
+	if recorded != digest {
+		t.Fatalf("digest %q", recorded)
+	}
+	g.mu.Lock()
+	g.grants = nil
+	g.mu.Unlock()
+	second.Operation, second.RunID, second.Source, second.Provider = "prepare", "run-copy-2", "", "codex"
+	if _, err := w.dispatch(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	g.mu.Lock()
+	grants := append([]GrantContext(nil), g.grants...)
+	g.mu.Unlock()
+	if len(grants) == 0 {
+		t.Fatal("no grants")
+	}
+	for _, grant := range grants {
+		if grant.SandboxID == "sandbox-copy-2" && grant.ImageDigest != digest {
+			t.Fatalf("grant without the digest: %+v", grant)
+		}
+	}
+	_ = copyName
+	// A resize that regenerates the instance records the new snapshot.
+	d.resizeRestart = true
+	resized := "sha256:" + strings.Repeat("e", 64)
+	d.mu.Lock()
+	d.digests[secondName] = resized
+	d.mu.Unlock()
+	w.mu.Lock()
+	w.managed.Sandboxes["sandbox-copy-2"].Active = nil
+	w.mu.Unlock()
+	second.Operation = "resize"
+	second.Resources = &Resources{CPUMilli: 2000, MemoryMB: 3072}
+	if _, err := w.dispatch(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	recorded = w.managed.Sandboxes["sandbox-copy-2"].ImageDigest
+	w.mu.Unlock()
+	if recorded != resized {
+		t.Fatalf("digest after the regeneration %q", recorded)
 	}
 }
