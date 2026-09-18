@@ -1014,12 +1014,17 @@ The dev VM cannot exercise public previews (a public address, a domain,
 a browser certificate, Google sign-in). `deploy/k8s/gke/` and
 `scripts/k8s-gke.sh` run the chart on a GKE Autopilot cluster for that,
 as a test cluster that costs little while nothing runs: Autopilot bills
-pod requests only (the four service pods on Spot capacity are about $8 a
-month, the GKE free tier covers one cluster's management fee), GKE Sandbox
-is the gVisor tier with nothing to install on nodes, Dataplane V2 enforces
-the NetworkPolicies, the ingress controller's load balancer is about $18 a
-month while it exists, and a sandbox costs about five cents an hour while
-it runs. `sandboxes.warmSpares` is 0 in `deploy/k8s/gke/values.yaml` for
+pod requests only (the four service pods request 350m and 448Mi in all,
+about $17 a month on demand; the GKE free tier covers one cluster's
+management fee), GKE Sandbox is the gVisor tier with nothing to install on
+nodes, Dataplane V2 enforces the NetworkPolicies, the ingress controller's
+load balancer is about $18 a month while it exists, and a sandbox costs
+about five cents an hour while it runs. Requests are the whole bill, so
+every pod's are set on purpose: a chart that sets none gets Autopilot's
+defaults of 500m / 2Gi per pod — cert-manager's three pods came to about
+$70 a month that way, until `scripts/k8s-gke.sh addons` gave them 50m /
+64–128Mi. Node count is not a cost signal: Autopilot fills spare node
+capacity with `gke-system-balloon-pod`s and reclaims empty nodes itself. `sandboxes.warmSpares` is 0 in `deploy/k8s/gke/values.yaml` for
 that reason (a warm spare is billed around the clock), so the first
 sandbox after an idle period waits for a GKE Sandbox node.
 

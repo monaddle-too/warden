@@ -1340,8 +1340,8 @@ spec:
             limits:
               memory: 1Gi
             requests:
-              cpu: 250m
-              memory: 256Mi
+              cpu: 100m
+              memory: 128Mi
           volumeMounts:
             - name: state
               mountPath: /var/lib/warden/policy
@@ -1475,8 +1475,8 @@ spec:
             limits:
               memory: 1Gi
             requests:
-              cpu: 250m
-              memory: 256Mi
+              cpu: 100m
+              memory: 128Mi
           volumeMounts:
             - name: state
               mountPath: /var/lib/warden/runner
@@ -1739,7 +1739,7 @@ spec:
             limits:
               memory: 256Mi
             requests:
-              cpu: 100m
+              cpu: 50m
               memory: 64Mi
           volumeMounts:
             - name: state

@@ -305,19 +305,23 @@ podSecurityContext:
   fsGroup: 1000
   fsGroupChangePolicy: OnRootMismatch
 
-# Resources per service container.
+# Resources per service container. Requests are what Autopilot bills, so
+# they sit a little above what the services use at rest (a few tens of
+# millicores, under 40Mi each); the limits leave room for a burst — the
+# policy service inspects every sandbox's egress, the runner clones
+# workspaces.
 resources:
   policy:
-    requests: {cpu: 250m, memory: 256Mi}
+    requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 1Gi}
   runner:
-    requests: {cpu: 250m, memory: 256Mi}
+    requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 1Gi}
   chat:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 512Mi}
   edge:
-    requests: {cpu: 100m, memory: 64Mi}
+    requests: {cpu: 50m, memory: 64Mi}
     limits: {memory: 256Mi}
 
 # Scheduling of the four service pods (not the sandboxes; see
