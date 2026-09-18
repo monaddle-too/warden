@@ -233,3 +233,32 @@ func TestRepositoryAccessAlreadySharedAndFailures(t *testing.T) {
 		t.Fatalf("listing failure: %q", msg)
 	}
 }
+
+// The workspace panel lists a shared repository as soon as it is shared,
+// on a chat that has not sent its first message: the environments listing
+// asks the policy service for the workspace's repositories whether or not
+// a chat has run.
+func TestEnvironmentsListRepositoriesBeforeTheFirstTurn(t *testing.T) {
+	sharing, socket := newFakeSharing(t)
+	sharing.results["github_list"] = map[string]any{"repositories": []any{map[string]any{"full_name": "monaddle-too/warden", "access": []any{"contents"}}}}
+	e, _ := residentSetup(t, func(e *Engine) { e.PolicyAddress = "unix://" + socket })
+	id, err := e.Create("Fresh", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := e.Store.Snapshot().chat(id)
+	if ranChat([]*Chat{c}) != nil {
+		t.Fatal("a fresh chat counts as run")
+	}
+	envs, err := e.Environments(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(envs) != 1 || len(envs[0].Repositories) != 1 || agent.String(agent.Map(envs[0].Repositories[0])["full_name"]) != "monaddle-too/warden" {
+		t.Fatalf("%+v", envs)
+	}
+	asked := sharing.actions("github_list")
+	if len(asked) != 1 || agent.String(agent.Map(asked[0]["data"])["chatID"]) != id || agent.String(agent.Map(asked[0]["data"])["sandboxID"]) != c.SandboxID {
+		t.Fatalf("github_list asked with %+v", asked)
+	}
+}
