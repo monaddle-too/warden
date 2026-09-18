@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"warden/chat/internal/conversation"
@@ -98,6 +99,15 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" && path == "state" {
 		json.NewEncoder(w).Encode(h.Engine.View())
+		return
+	}
+	if r.Method == "GET" && path == "chats/search" {
+		// A search across every chat's title and transcript (search.go).
+		limit := 0
+		if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+			limit = n
+		}
+		json.NewEncoder(w).Encode(h.Engine.Search(r.URL.Query().Get("q"), limit))
 		return
 	}
 	if r.Method == "GET" && path == "environments" {

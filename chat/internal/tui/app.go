@@ -75,6 +75,9 @@ type App struct {
 	later   chan func(context.Context)
 	search  *searchState
 	confirm *confirmation
+	// searchHits are the last /search's hits, for /search N (search.go).
+	searchHits  []SearchHit
+	searchQuery string
 	// editing is set while the composer holds a file or the person's
 	// instructions (/memory edit, /instructions edit): Enter saves it
 	// through save, Esc cancels. memoryFiles is the last listing per chat,
@@ -152,7 +155,8 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /fork (list) /fork N|all copies the chat into a sibling · /cost totals so far
            /btw QUESTION asks a copy of the session (never sent to the agent)
            /style [default|Explanatory|Learning] · /bell [on|off]
-           /find TEXT /copy /expand /verbose /clear /quit
+           /find TEXT (this chat) · /search TEXT (every chat; /search N opens hit N)
+           /copy /expand /verbose /clear /quit
            /instructions [edit|clear] your standing instructions, given to the agent in every chat
            /memory [FILE] [edit FILE] the workspace's CLAUDE.md, rules and auto-memory files
            /compact [what to keep] asks Claude to replace the history with a summary
@@ -1367,6 +1371,8 @@ func (a *App) command(ctx context.Context, line string) {
 			return
 		}
 		a.find(arg)
+	case "search":
+		a.searchCommand(ctx, arg)
 	case "copy":
 		if c == nil {
 			a.setNotice("no chat selected")

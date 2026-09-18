@@ -226,6 +226,7 @@ type fakeServer struct {
 	instructions string
 	memory       MemoryView
 	writes       []string
+	searches     []string // the query strings /search sent
 }
 
 func newFakeServer(t *testing.T, initial State) *fakeServer {
@@ -278,6 +279,39 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		f.state.Chats = append(f.state.Chats, &Chat{ID: id, Title: body["title"].(string), Provider: body["provider"].(string), Status: "idle"})
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]string{"id": id})
+	case path == "chats/search" && r.Method == "GET":
+		// A plain version of chats/search.go: titles then entries, newest
+		// entry first, case-insensitive, one hit per entry.
+		q := strings.ToLower(r.URL.Query().Get("q"))
+		res := SearchResult{Hits: []SearchHit{}}
+		f.mu.Lock()
+		f.searches = append(f.searches, r.URL.RawQuery)
+		for _, c := range f.state.Chats {
+			if q != "" && strings.Contains(strings.ToLower(c.Title), q) {
+				h := SearchHit{ChatID: c.ID, Title: c.Title, Archived: c.Archived, Provider: c.Provider, Field: "title"}
+				h.Snippet.Match = q
+				res.Hits = append(res.Hits, h)
+			}
+		}
+		for _, c := range f.state.Chats {
+			for i := len(c.Conversation.Entries) - 1; i >= 0 && q != ""; i-- {
+				e := c.Conversation.Entries[i]
+				field := ""
+				if strings.Contains(strings.ToLower(e.Text), q) {
+					field = "text"
+				} else if e.Role == "activity" && strings.Contains(strings.ToLower(e.Detail), q) {
+					field = "detail"
+				}
+				if field == "" {
+					continue
+				}
+				h := SearchHit{ChatID: c.ID, Title: c.Title, Provider: c.Provider, EntryID: e.ID, Field: field, Role: e.Role, ParentID: e.ParentID, CreatedAt: e.CreatedAt, Sender: e.Sender}
+				h.Snippet.Match = q
+				res.Hits = append(res.Hits, h)
+			}
+		}
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(res)
 	case strings.HasSuffix(path, "/paths") && r.Method == "GET":
 		q := r.URL.Query().Get("q")
 		var paths []string
@@ -861,7 +895,7 @@ func TestFindReachesNestedAndFoldedEntries(t *testing.T) {
 			Email       string `json:"email"`
 			Name        string `json:"name"`
 		}{PrincipalID: "owner"}, Tool: &Tool{Kind: "command", Name: "Bash", Status: "completed"}},
-		Entry{ID: "tail", Role: "assistant", Text: strings.Repeat("filler line\n", 40)},
+		Entry{ID: "tail", Role: "assistant", Text: strings.Repeat("filler line\n\n", 40)},
 	)
 	f := newFakeServer(t, State{Chats: []*Chat{c}})
 	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Size: func() (int, int) { return 80, 30 }}
@@ -893,6 +927,116 @@ func TestFindReachesNestedAndFoldedEntries(t *testing.T) {
 	app.submit(ctx, "/find zzzz-not-there")
 	if app.expanded || !strings.Contains(app.notice, "not found") {
 		t.Fatalf("missing: expanded %v notice %q", app.expanded, app.notice)
+	}
+}
+
+// /search lists the hits of every chat as a numbered menu (Enter or
+// /search N opens one), and a jump opens the chat and scrolls to the
+// entry, expanding the transcript for an entry inside a subagent's card.
+func TestSearchAcrossChatsListsAndJumps(t *testing.T) {
+	first := sampleChat()
+	first.Status, first.Conversation.Entries[2].IsStreaming = "idle", false
+	first.Conversation.Entries = append(first.Conversation.Entries, Entry{ID: "tail1", Role: "assistant", Text: strings.Repeat("filler\n\n", 40), CreatedAt: 5})
+	second := &Chat{ID: "chat2", Title: "Second chat", Provider: "claude", Status: "idle"}
+	second.Conversation.Entries = []Entry{
+		{ID: "u2", Role: "user", Text: "Find the tokenizer", CreatedAt: 1},
+		{ID: "agent", Role: "activity", Text: "Agent: look (Explore)", Detail: "lex.go", CreatedAt: 2, Tool: &Tool{Kind: "task", Name: "Agent", Status: "completed", Input: map[string]any{"subagent_type": "Explore"}}},
+		{ID: "child", Role: "assistant", Text: "The tokenizer-marker is in lex.go.", ParentID: "agent", CreatedAt: 3},
+		{ID: "tail2", Role: "assistant", Text: strings.Repeat("filler\n\n", 40), CreatedAt: 4},
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{first, second}})
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Size: func() (int, int) { return 80, 30 }}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+	app.frame(80, 30)
+	app.submit(ctx, "/search")
+	if !strings.Contains(app.notice, "/search TEXT") {
+		t.Fatalf("usage: %q", app.notice)
+	}
+	app.submit(ctx, "/search tokenizer")
+	if len(f.searches) != 1 || f.searches[0] != "q=tokenizer&limit=40" {
+		t.Fatalf("request: %v", f.searches)
+	}
+	if app.menu == nil || app.menu.Trigger.Kind != "hit" || len(app.menu.Items) != 2 || !strings.Contains(app.notice, "2 hits for \"tokenizer\"") {
+		t.Fatalf("menu: %+v notice %q", app.menu, app.notice)
+	}
+	if it := app.menu.Items[0]; it.Insert != "/search 1" || !it.Run || !strings.HasPrefix(it.Label, "1  Second chat") || !strings.Contains(it.Hint, "claude in a subagent") {
+		t.Fatalf("first row: %+v", it)
+	}
+	if it := app.menu.Items[1]; !strings.Contains(it.Hint, "you ·") {
+		t.Fatalf("second row: %+v", it)
+	}
+	// Down, then Enter: the second hit (the user's message) opens chat 2.
+	app.handleKey(ctx, Key{Kind: KeyDown})
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.ChatID != "chat2" || app.menu != nil || app.expanded || !strings.Contains(app.notice, "Second chat · you") {
+		t.Fatalf("jump: chat %s expanded %v notice %q", app.ChatID, app.expanded, app.notice)
+	}
+	if app.scroll == 0 {
+		t.Fatalf("not scrolled to the message: %d", app.scroll)
+	}
+	// /search N: the subagent's message needs the transcript expanded.
+	app.scroll = 0
+	app.submit(ctx, "/search 1")
+	if !app.expanded || !strings.Contains(app.notice, "output expanded") || app.scroll == 0 {
+		t.Fatalf("nested jump: expanded %v scroll %d notice %q", app.expanded, app.scroll, app.notice)
+	}
+	body := app.compose(80)
+	top := len(body) - app.scroll - app.rows
+	if top < 0 || !strings.Contains(plainText(body[top]), "Agent: look") {
+		t.Fatalf("card not at the top: %q", plainText(body[max(top, 0)]))
+	}
+	app.submit(ctx, "/search 9")
+	if !strings.Contains(app.notice, "N from the last search") {
+		t.Fatalf("out of range: %q", app.notice)
+	}
+	app.submit(ctx, "/search zzzz-nothing")
+	if app.menu != nil || !strings.Contains(app.notice, "no chat mentions") {
+		t.Fatalf("no hits: %q", app.notice)
+	}
+	// A title hit opens the chat at its end.
+	app.submit(ctx, "/search preview")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.ChatID != "chat1" || app.scroll != 0 || !strings.Contains(app.notice, "opened Local preview test") {
+		t.Fatalf("title jump: chat %s scroll %d notice %q", app.ChatID, app.scroll, app.notice)
+	}
+}
+
+// entryOffset is where an entry starts in the rendered transcript: the
+// lines of everything before it, a subagent's entries counted under
+// their card, queued messages last.
+func TestEntryOffset(t *testing.T) {
+	c := &Chat{ID: "c", Provider: "claude"}
+	c.Conversation.Entries = []Entry{
+		{ID: "u", Role: "user", Text: "one\ntwo"},
+		{ID: "agent", Role: "activity", Text: "Agent: look", Tool: &Tool{Kind: "task", Status: "completed"}},
+		{ID: "child", Role: "assistant", Text: "inside", ParentID: "agent"},
+		{ID: "r", Role: "assistant", Text: "after"},
+	}
+	lines := RenderTranscript(c, 80, true)
+	find := func(s string) int {
+		for i, l := range lines {
+			if strings.Contains(plainText(l), s) {
+				return i
+			}
+		}
+		return -1
+	}
+	if got := entryOffset(c, 80, true, "u"); got != 0 {
+		t.Fatalf("first: %d", got)
+	}
+	if got := entryOffset(c, 80, true, "agent"); got != find("Agent: look") {
+		t.Fatalf("card: %d, want %d", got, find("Agent: look"))
+	}
+	if got := entryOffset(c, 80, true, "child"); got != find("Agent: look") {
+		t.Fatalf("nested: %d, want the card's %d", got, find("Agent: look"))
+	}
+	if got := entryOffset(c, 80, true, "r"); got != find("after") {
+		t.Fatalf("last: %d, want %d", got, find("after"))
+	}
+	if got := entryOffset(c, 80, true, "nope"); got != len(lines) {
+		t.Fatalf("unknown: %d", got)
 	}
 }
 
