@@ -39,7 +39,7 @@ func run(args []string) error {
 	template := fs.String("template", "", "Pinned SBX template for the verified Warden launch profile (sbx.guestImage@sbx.guestImageDigest; default the stock shell template)")
 	runtimeDir := fs.String("runtime-dir", "", "Pinned Linux Codex vendor bundle directory (runtimes.codex)")
 	wardenSocket := fs.String("warden-socket", "", "Private Warden enforcement socket; missing/unverified enforcement denies execution (services.policy.address, default paths.state/policy/sbx-control.sock)")
-	idle := fs.Duration("idle-timeout", 15*time.Minute, "Stop environments after this much trusted user inactivity (sandboxes.stopAfterIdleMinutes)")
+	idle := fs.Duration("idle-timeout", 30*time.Minute, "Stop environments this long after the last chat activity (a turn's end, a message, a command, a preview; sandboxes.stopAfterIdleMinutes)")
 	memoryMB := fs.Int("sandbox-memory-mb", 1536, "Memory in MiB for newly created chat sandboxes, 512–16384 (sandboxes.memoryMB)")
 	residents := fs.Int("max-resident", 2, "Maximum resident sandbox environments (sandboxes.maxRunning)")
 	spares := fs.Int("spare-sandboxes", 1, "Booted spare guests kept ready for new environments, beside max-resident (sandboxes.warmSpares)")

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	stdlog "log"
 	neturl "net/url"
 	"os"
 	"os/exec"
@@ -36,7 +37,9 @@ func (c *cli) start(args []string) error {
 	vendorDir := fs.String("vendor-dir", "", "GitHub catalog directory when warden.json has no paths.githubCatalog")
 	template := fs.String("policy-template", "", "sandbox policy template when warden.json has no paths.sandboxPolicyTemplate")
 	withoutEdge := fs.Bool("without-edge", false, "do not start the edge (no previews; the app is reachable on the chat port only)")
-	detach := fs.Bool("detach", false, "run in the background; logs to <state>/warden.log, stop with `warden stop`")
+	detach := fs.Bool("detach", false, "run in the background without a service manager; logs to <state>/warden.log, stop with `warden stop`")
+	foreground := fs.Bool("foreground", false, "run the services in this terminal even though a service is registered (stop it first)")
+	serviceMode := fs.Bool("service", false, "internal: this process is the registered service's; output goes to <state>/warden.log")
 	popupsMode := fs.String("popups", popupsNone, "how pending approvals are surfaced: none (default: they wait in the app and the terminal client), notify (desktop notification), browser (notification and the chat opened in the browser), auto (browser when detached, notify otherwise), silent (nothing at all). A review only the app can do (a pull request proposal, document suggestions, a document choice) opens the app under every mode but silent")
 	detachedChild := fs.Bool("detached-child", false, "internal: this process was started by --detach")
 	if err := fs.Parse(args); err != nil {
@@ -49,8 +52,29 @@ func (c *cli) start(args []string) error {
 	if _, err = os.Stat(path); err != nil {
 		return fmt.Errorf("%s: %w; run `warden install` first", path, err)
 	}
+	if !*serviceMode && !*foreground && !*detachedChild {
+		// Once a service is registered, "start" means the service.
+		if svc := c.registeredService(cfg); svc != nil {
+			if *detach {
+				fmt.Fprintln(c.stdout, "warden: a service is registered; starting it (--detach is for hosts without one)")
+			}
+			return c.startService(cfg, svc)
+		}
+	}
 	if *detach {
 		return c.detach(cfg, args)
+	}
+	if *serviceMode {
+		// Under launchd or systemd nobody reads stdout; the launcher keeps
+		// its own rotated log, as a detached run does.
+		log, err := openLog(cfg)
+		if err != nil {
+			return err
+		}
+		defer log.Close()
+		stdlog.SetOutput(log)
+		c = &cli{stdin: c.stdin, stdout: log, stderr: log, openFn: c.openFn, notifyFn: c.notifyFn, serviceFn: c.serviceFn}
+		*detachedChild = true
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -160,6 +184,9 @@ func (l *launcher) run() error {
 	}
 	defer lock.Close()
 	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if svc := l.c.registeredService(cfg); svc != nil && svc.status().Running {
+			return fmt.Errorf("Warden is already running as a %s (%s); `warden stop` it before a foreground start.", svc.kind(), svc.status())
+		}
 		return errors.New("Warden is already running or shutting down in this state directory.")
 	}
 	fmt.Fprintf(l.c.stdout, "warden: %s\n", handshake.Self("warden"))
@@ -255,6 +282,7 @@ func (l *launcher) launch(ctx context.Context, name string, env, args []string, 
 		previous = fileStamp(ready)
 	}
 	logPath := filepath.Join(l.cfg.Paths.State, name+".log")
+	rotateLog(logPath)
 	log, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return err

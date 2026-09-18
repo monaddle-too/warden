@@ -639,7 +639,7 @@ missing `providers.github` hides the repository UI instead of failing.
   "sandboxes": {
     "memoryMB": 1536, "cpus": 1, "maxMemoryMB": 0, "maxCPUs": 0,
     "maxRunning": 2, "warmSpares": 1,
-    "stopAfterIdleMinutes": 15, "keepStopped": 32
+    "stopAfterIdleMinutes": 30, "keepStopped": 32
   },
   "chat": { "listen": "127.0.0.1:18780" },
   "previews": { "mode": "loopback", "hostSuffix": "localhost", "edgeListen": "127.0.0.1:18781" },
@@ -676,7 +676,7 @@ missing `providers.github` hides the repository UI instead of failing.
 | `sandboxes.maxMemoryMB`, `sandboxes.maxCPUs` | The most any one workspace may be given (at creation, by the owner, or through an agent's approved request); 0 derives it from the host. See [warden-workspace-resources-plan](warden-workspace-resources-plan.md). | runner |
 | `sandboxes.maxRunning` | How many sandboxes may run at once. | runner |
 | `sandboxes.warmSpares` | Booted empty sandboxes kept ready so a new chat starts fast. | runner |
-| `sandboxes.stopAfterIdleMinutes` | Minutes without user activity before a running sandbox stops; files are kept. | runner |
+| `sandboxes.stopAfterIdleMinutes` | Minutes after the last chat activity (the agent's last reply, a message, a command, a preview) before a running sandbox stops; files are kept. Default 30. | runner |
 | `sandboxes.keepStopped` | Stopped sandboxes kept on disk before the oldest are deleted. | runner |
 | `sandboxes.egress` | What a sandbox may reach through its gateway besides the brokered providers: `restricted` (the template's destination list; default) or `open` (any public HTTP/HTTPS host). Credentials are injected only for approved requests in both modes; in `open`, a brokered host without a grant is reached anonymously instead of refused. The Admin console can switch it at runtime; that choice persists in the policy state and overrides this value. | policy |
 | `chat.listen` | Loopback address of the chat API and UI; the edge sits in front. | chat, edge |

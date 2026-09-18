@@ -90,9 +90,11 @@ sandboxes:
   maxRunning: 2
   # Pre-started sandboxes waiting for a chat.
   warmSpares: 1
-  # Stop a sandbox with no chat activity after this long, unless it has a
-  # published preview.
-  stopAfterIdleMinutes: 15
+  # Stop a sandbox this long after its last chat activity (the agent's
+  # last reply, a message, a person's command, a preview or review), unless
+  # it has a published preview. The idle agent session's release does not
+  # count.
+  stopAfterIdleMinutes: 30
   # Stopped sandboxes (their workspace PVCs) kept before the oldest is
   # removed.
   keepStopped: 32
