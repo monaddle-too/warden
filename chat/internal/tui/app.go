@@ -1076,6 +1076,10 @@ func (a *App) command(ctx context.Context, line string) {
 		}
 		if err := a.Client.Agent(ctx, c.ID, provider, model); err != nil {
 			a.setNotice(err.Error())
+		} else if name == "model" && provider == "claude" {
+			// A Claude chat's live session takes the model now; the
+			// status line shows what it resolved after the next turn.
+			a.setNotice(fmt.Sprintf("model %s · a running session switches now, otherwise the next run", orDefault(model)))
 		} else {
 			a.setNotice(fmt.Sprintf("next run uses %s · %s", provider, orDefault(model)))
 		}

@@ -1858,9 +1858,19 @@ func TestThinkingEffortAndFastCommands(t *testing.T) {
 	if app.state.Chats[0].Effort != "" {
 		t.Fatal(app.state.Chats[0].Effort)
 	}
+	// /model on a Claude chat says the session takes it; a Codex chat's
+	// next run does.
+	app.submit(ctx, "/model opus")
+	if !strings.Contains(app.notice, "model opus · a running session switches now") {
+		t.Fatal(app.notice)
+	}
 	app.ChatID = "c2"
 	app.submit(ctx, "/effort low")
 	if !strings.Contains(app.notice, "Claude chats") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/model gpt-5.5")
+	if !strings.Contains(app.notice, "next run uses codex · gpt-5.5") {
 		t.Fatal(app.notice)
 	}
 	if items := commandItems("thi", nil); len(items) != 1 || items[0].Name != "thinking" {

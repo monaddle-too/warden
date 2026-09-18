@@ -924,7 +924,38 @@ the live switch keeping the run, the not-found refusal, the fallback
 release and the settings pushed to the new session, a switch during a
 running turn); `config/config_test.go` (the switches parse, the secret
 rule still applies); `tui/tui_test.go` `TestThinkingEffortAndFastCommands`.
-Live: see the progress line below.
+Live on a cloned home (`~/.warden-p9`, CLI 2.1.272, build be53f5d): a
+Claude chat on sonnet, `chats/{id}/agent` → opus — `GET state` kept
+`runID` and `conversation.threadID`, the sandbox's CLI PID stayed 334,
+the marker "Model → opus" landed, the next reply said "I'm Opus 5
+(model ID: claude-opus-5)" and `session.model` followed; turn costs
+$0.02 (sonnet) then $0.46 (opus). Then haiku live: thinking off → no
+thinking entry (the reply alone), a 2000 budget → "Thought for 1.0s"
+entry back, default → thinking again, effort low accepted — all on the
+same run. Refusals: `bogus-x` → 409 "Model 'bogus-x' not found" with
+the model unchanged; fast mode and `opus[1m]` → 409 naming the config
+switch. With `allowFastMode`/`allowLongContext` on (and the restart
+that ended the session): fast on + opus → the new session's init
+reported `fastMode: on` (the settings pushed before its first turn:
+"Effort: low" carried over), `opus[1m]` set live → "claude-opus-5[1m]"
+in the reply and `session.model`, fast off → `off`. Web (1280 px):
+the picker reads "Claude Opus 1M · claude-opus-5[1m]", the Thinking and
+Effort selects and the Fast checkbox beside it, the Thinking select →
+"Thinking off" marker, `/effort hi` + Enter → the "Effort high" row and
+marker, the picker → sonnet + a message → "Model → sonnet" and the
+reply "I'm Sonnet 5"; at 800 px the group wraps to a second line. TUI
+in a pty: status "claude · sonnet (claude-sonnet-5) · auto · thinking
+off · effort high", `/thinking 8k`, `/effort low`, `/effort ultra`
+(usage), `/fast` ("fast mode off (session: off)"), `/model opus` →
+"opus (claude-sonnet-5)" until the reply, then "opus (claude-opus-5)",
+`/fast on` during the turn → "· fast" in the status. Codex: unit-tested
+only (usage exhausted).
+
+Left: Codex's model change still relaunches (its `turn/start` takes
+`model`/`effort`, untested); the `thinking_display` field and the
+launch flags are unused; `list_models` could replace the picker's
+static Claude rows; the `[1m]` rows and the Fast checkbox are hidden
+rather than explained when the operator has not allowed them.
 
 ### Item 5: slash-command pass-through
 
