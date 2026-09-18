@@ -71,7 +71,7 @@ func claudeTaskStatus(status, summary string) string {
 		return "failed"
 	}
 	if i := strings.LastIndex(summary, "exit code "); i >= 0 {
-		code := strings.TrimRight(strings.Fields(summary[i+len("exit code "):]+" ")[0], ").,")
+		code := strings.TrimRight(strings.Fields(summary[i+len("exit code "):] + " ")[0], ").,")
 		if code != "" && code != "0" {
 			return "failed"
 		}
