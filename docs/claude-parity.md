@@ -387,7 +387,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 7 Workspace `.claude/` loading — verified on CLI 2.1.272, merged to main 32138ea (2026-09-17); the launch-flag change (`--setting-sources=project` + `disableAllHooks`) is recommended under "Decisions needed", not made.
 - [x] 8 Compaction and context — merged to main e84a7bc (2026-09-17); verified as the Item 8 section says.
 - [x] 9 Mid-session model, effort, thinking — merged to main a007b96 (2026-09-18); verified as the Item 9 section says.
-- [ ] 10 Queueing and edit-and-resend — implemented and live-verified 2026-09-18 (cd4a51e); merge pending.
+- [x] 10 Queueing and edit-and-resend — merged to main d11383c (2026-09-18); verified as the Item 10 section says.
 - [x] 11 Checkpoints and session diff — merged to main 4d0a05e (2026-09-17); verified as the Item 11 section says.
 - [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
 - [x] 13 Per-user instructions and memory — merged to main a5012c0 (2026-09-18); verified as the Item 13 section says.
@@ -524,7 +524,9 @@ queued message waits for the whole queue; the CLI's own queue is never
 used, so nothing here exercises `commands_queued`.
 
 Progress: started 2026-09-18; implemented and live-verified 2026-09-18
-(cd4a51e).
+(cd4a51e); merged to main d11383c (2026-09-18) after merging items 9 and
+13 in (append-append seams in `tui_test.go` and both docs only; the full
+Go and web suites passed on the merged tree).
 
 ### Item 13: per-user instructions and memory
 
