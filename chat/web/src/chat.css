@@ -1600,3 +1600,101 @@ button.danger:hover {
   background: var(--info-soft);
   color: var(--info-text);
 }
+
+/* The workspace panel's Memory section (parity item 13): a details block
+   like Access history, files grouped under small headings, each a link
+   that opens the editor; the create/refresh row under them. */
+.workspace-memory > details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  list-style: none;
+}
+.workspace-memory > details > summary::-webkit-details-marker {
+  display: none;
+}
+.workspace-memory > details[open] > summary {
+  color: var(--text);
+}
+.workspace-memory .workspace-note {
+  margin: 6px 0 4px;
+  font-size: 12.5px;
+}
+.workspace-memory-group {
+  margin: 6px 0 2px;
+}
+.workspace-memory-group h3 {
+  margin: 6px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.workspace-memory li > button.link {
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: var(--accent-text);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-memory li > button.link:hover:not(:disabled) code {
+  text-decoration: underline;
+}
+.workspace-memory li > button.link:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+.workspace-memory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 6px 0 4px;
+}
+.workspace-memory-actions button.ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px;
+  margin-left: -6px;
+  font-size: 13px;
+  color: var(--accent-text);
+}
+
+/* The instructions and memory editors: a wider modal with a monospace
+   textarea that takes the height. */
+.instructions-dialog,
+.memory-dialog {
+  width: min(720px, 100%);
+}
+.instructions-dialog textarea,
+.memory-dialog textarea {
+  font-family: var(--mono);
+  font-size: 13px;
+  min-height: 240px;
+  margin-top: 8px;
+}
+.memory-dialog h2 code {
+  font-size: 16px;
+}
+.instructions-dialog .button-row,
+.memory-dialog .button-row {
+  align-items: center;
+}
+.instructions-updated {
+  margin-right: auto;
+}

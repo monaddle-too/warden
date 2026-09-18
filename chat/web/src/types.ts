@@ -174,8 +174,17 @@ export type Chat = {
      the workspace's own commands and skills); "/name …" is sent as text
      and the agent expands it. Absent for Codex. */
   commands?: AgentCommand[];
-  /* What the agent reported when its session started. */
-  session?: { model?: string; permissionMode?: string; outputStyle?: string };
+  /* What the agent reported when its session started; autoMemory is the
+     auto-memory directory its CLI keeps for the workspace. */
+  session?: {
+    model?: string;
+    permissionMode?: string;
+    outputStyle?: string;
+    autoMemory?: string;
+  };
+  /* Who created the chat (their instructions reach the agent with the
+     senders'). */
+  creator?: { principalID: string; email?: string; name?: string };
   typing?: { principalID: string; name: string; until: number }[];
   startup?: Startup;
 };
@@ -327,4 +336,30 @@ export type Environment = {
   ports: { id: string; port: number; title: string; url: string }[];
   deleted: boolean;
   archived: boolean;
+};
+
+/* A person's standing instructions for the agent (me/instructions). */
+export type Instructions = {
+  text: string;
+  updatedAt?: number;
+  name?: string;
+};
+/* One of the workspace's instruction or memory files (chats/{id}/memory):
+   scope "workspace" is a path under the workspace root (CLAUDE.md, rules),
+   "auto" a path under the CLI's auto-memory directory. */
+export type MemoryFile = {
+  scope: "workspace" | "auto";
+  path: string;
+  size: number;
+  text: string;
+  truncated?: boolean;
+};
+export type MemoryView = {
+  root: string;
+  autoDir: string;
+  autoDirExists: boolean;
+  files: MemoryFile[];
+  /* Whether the agent's launch reads these files, and the sentence about it. */
+  read: boolean;
+  hint?: string;
 };

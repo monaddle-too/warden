@@ -15,6 +15,7 @@ import {
   FileText,
   GitPullRequest,
   MoreHorizontal,
+  NotebookPen,
   PanelRight,
   Pencil,
   Plus,
@@ -55,6 +56,7 @@ import { AdminConsole } from "./AdminConsole";
 import { chatStatusLabel } from "../stages";
 import { WorkspacePanel } from "./WorkspacePanel";
 import { ExportDialog } from "./ExportDialog";
+import { InstructionsDialog } from "./InstructionsDialog";
 import { SearchPalette } from "./SearchPalette";
 import { modifierKey, type FindRequest } from "./FindBar";
 
@@ -92,6 +94,7 @@ export function ChatShell({
   const [workspaceState, setWorkspaceState] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [searching, setSearching] = useState(false);
   // The find bar's latest request; a new object each time so the same
   // query can be asked for again.
@@ -553,6 +556,13 @@ export function ChatShell({
               <span>Admin console</span>
             </button>
           )}
+          <button
+            title="Your standing instructions: the agent gets them in every chat you take part in"
+            onClick={() => setInstructionsOpen(true)}
+          >
+            <NotebookPen size={16} />
+            <span>Instructions</span>
+          </button>
           <button onClick={() => setArchived(!archived)}>
             <Archive size={16} />
             <span>{archived ? "Active chats" : "Archived chats"}</span>
@@ -564,6 +574,9 @@ export function ChatShell({
           {account}
         </div>
       </aside>
+      {instructionsOpen && (
+        <InstructionsDialog onClose={() => setInstructionsOpen(false)} />
+      )}
       <main className="chat-main">
         {adminOpen && admin ? (
           <AdminConsole signIn={signIn} />

@@ -1211,6 +1211,7 @@ button.attachment-chip {
 }
 .todo-active {
   font-size: 12px;
+}
 /* The context meter in the composer footer: a small bar and "42k / 200k",
    amber from 80 % of the window, red from 95 %. */
 .context-meter {
