@@ -120,7 +120,6 @@ choice of its own, and says how many workspaces override it.
    sandbox and gateway, so the mode is a property of the sandbox.
 3. Overrides live in the policy service keyed by sandbox ID, not in the
    engine's per-binding directory, so a regenerated sandbox keeps its mode.
-
 4. Only the owner chooses, end to end. The edge forwards `X-Warden-Role:
    admin` on the owner's requests (stripped from clients like the other
    identity headers) because `POST chats` cannot be gated by path; the
