@@ -1181,7 +1181,7 @@ func (a *App) visible(c *Chat) *Chat {
 	v := *c
 	v.Conversation.Entries = nil
 	for _, e := range c.Conversation.Entries {
-		if e.Role != "activity" && e.Role != "thinking" {
+		if e.Role != "activity" && e.Role != "thinking" && e.ParentID == "" {
 			v.Conversation.Entries = append(v.Conversation.Entries, e)
 		}
 	}

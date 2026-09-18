@@ -34,7 +34,10 @@ type Entry struct {
 	IsStreaming bool    `json:"isStreaming"`
 	Delivery    string  `json:"delivery"`
 	Tool        *Tool   `json:"tool"` // the tool call an activity entry records (render.go)
-	Sender      *struct {
+	// ParentID names the subagent's card (an Agent call) this entry
+	// belongs to; "" for the conversation's own entries.
+	ParentID string `json:"parentID,omitempty"`
+	Sender   *struct {
 		PrincipalID string `json:"principalID"`
 		Email       string `json:"email"`
 		Name        string `json:"name"`

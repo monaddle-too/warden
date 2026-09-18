@@ -1576,3 +1576,52 @@ func TestRenderToolEntries(t *testing.T) {
 		t.Fatalf("header ambiguity: %q", lines)
 	}
 }
+
+// A subagent's entries render under its card: a count line until
+// expanded, then indented with the subagent's type as the speaker; the
+// card shows how long the subagent took and its final text. A background
+// call is marked; the todo list is a checklist.
+func TestRenderSubagentBackgroundAndTodo(t *testing.T) {
+	c := &Chat{ID: "c", Title: "t", Provider: "claude"}
+	c.Conversation.Entries = []Entry{
+		{ID: "a", Role: "activity", Text: "Agent: List files (Explore)", Detail: "a.txt and b.txt", CreatedAt: 100, EndedAt: 112, Tool: &Tool{Kind: "task", Name: "Agent", Status: "completed", Input: map[string]any{"subagent_type": "Explore", "prompt": "List the files."}}},
+		{ID: "b", Role: "activity", Text: "ls", Detail: "a.txt\nb.txt", ParentID: "a", Tool: &Tool{Kind: "command", Name: "Bash", Status: "completed"}},
+		{ID: "m", Role: "assistant", Text: "The files are a.txt and b.txt.", ParentID: "a"},
+		{ID: "bg", Role: "activity", Text: "sleep 9", Detail: "", ParentID: "", Tool: &Tool{Kind: "command", Name: "Bash", Status: "running", Background: true, Description: "Wait"}},
+		{ID: "todo", Role: "activity", Text: "Todo list · 1 of 3 done · Testing", Detail: "[x] Parse\n[>] Test\n[ ] Ship\n", Tool: &Tool{Kind: "todo", Status: "completed"}},
+		{ID: "orphan", Role: "activity", Text: "pwd", Detail: "/w", ParentID: "gone", Tool: &Tool{Kind: "command", Name: "Bash", Status: "completed"}},
+	}
+	collapsed := plain(strings.Join(RenderTranscript(c, 60, false), "\n"))
+	for _, want := range []string{"· Agent: List files (Explore)  12s", "    List the files.", "│ … 1 tool calls, 1 messages (Tab to expand)", "│ a.txt and b.txt", "⋯ $ sleep 9 [background]", "Todo list · 1 of 3 done · Testing", "    ✓ Parse", "    ▸ Test", "    ○ Ship", "· $ pwd"} {
+		if !strings.Contains(collapsed, want) {
+			t.Fatalf("missing %q in:\n%s", want, collapsed)
+		}
+	}
+	for _, unwanted := range []string{"Explore ›", "$ ls", "[x]"} {
+		if strings.Contains(collapsed, unwanted) {
+			t.Fatalf("unexpected %q in:\n%s", unwanted, collapsed)
+		}
+	}
+	expanded := plain(strings.Join(RenderTranscript(c, 60, true), "\n"))
+	for _, want := range []string{"      · $ ls", "        │ a.txt", "    Explore › The files are a.txt and b.txt.", "│ a.txt and b.txt"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("missing %q when expanded in:\n%s", want, expanded)
+		}
+	}
+	if strings.Contains(expanded, "Tab to expand") {
+		t.Fatalf("expanded transcript still folded:\n%s", expanded)
+	}
+	for _, l := range RenderTranscript(c, 40, true) {
+		if clipLen(l) > 40 {
+			t.Fatalf("line wider than 40: %q", l)
+		}
+	}
+	if formatSeconds(4.4) != "4s" || formatSeconds(72) != "1m 12s" || formatSeconds(7500) != "2h 5m" {
+		t.Fatal("formatSeconds")
+	}
+	// The quiet view (Ctrl+O) hides a subagent's messages with the steps.
+	a := &App{quiet: true}
+	if v := a.visible(c); len(v.Conversation.Entries) != 0 {
+		t.Fatalf("quiet view shows a subagent's message: %+v", v.Conversation.Entries)
+	}
+}
