@@ -1356,6 +1356,13 @@ button.danger:hover {
   white-space: nowrap;
 }
 
+/* Admin console: the Spend section's table shares the cluster tables'
+   look; numbers line up. */
+.spend-table td {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* Admin console: the Cluster section. The admin body is capped at 920px;
    the tables scroll sideways below that. */
 .cluster-table {
@@ -1935,4 +1942,147 @@ button.danger:hover {
 }
 .instructions-updated {
   margin-right: auto;
+}
+
+/* Permission rules (parity round 2 B): the workspace panel's Permissions
+   section — one row per rule with its kind, pattern and origin, an add
+   form — and the chat menu's permission history. */
+.workspace-permissions li.rule-row {
+  align-items: baseline;
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+.workspace-permissions li.rule-row > code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-permissions li.rule-row > small {
+  flex-basis: 100%;
+  order: 3;
+  font-size: 12px;
+  margin: -6px 0 6px 52px;
+}
+.workspace-permissions li.rule-row > button.ghost {
+  order: 2;
+}
+.rule-kind {
+  flex-shrink: 0;
+  width: 44px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 2px 0;
+  color: var(--text-2);
+  background: var(--surface-3);
+}
+.rule-kind.rule-allow {
+  color: var(--success);
+  background: var(--success-soft);
+}
+.rule-kind.rule-deny {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.rule-kind.rule-ask {
+  color: var(--info-text);
+  background: var(--info-soft);
+}
+.rule-form {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0 8px;
+}
+.rule-form select {
+  flex: 0 0 auto;
+  width: 84px;
+}
+.rule-form input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.rule-form button.primary {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 12px;
+}
+.rule-chat h3 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.rule-chat h3 small {
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 12px;
+}
+.permission-history {
+  width: min(760px, 100%);
+}
+.permission-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 60vh;
+  overflow: auto;
+}
+.permission-list li {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  column-gap: 10px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.permission-list li:first-child {
+  border-top: 0;
+}
+.permission-decision {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: center;
+  border-radius: 999px;
+  padding: 2px 0;
+  color: var(--success);
+  background: var(--success-soft);
+}
+.permission-deny .permission-decision {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.permission-what {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+.permission-tool {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.permission-what code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+.permission-list li > small {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 12px;
 }

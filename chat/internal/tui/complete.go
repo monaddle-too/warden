@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"warden/chat/internal/chats"
 )
 
 // Completion in the composer, the pure parts (the web's composer.ts): a
@@ -57,6 +58,9 @@ var Commands = []Command{
 	{"fork", "[N|all]", "copy this chat into a sibling (before message N, or the whole of it)"},
 	{"btw", "QUESTION", "a side question answered from this chat's context, never sent to the agent"},
 	{"cost", "", "this chat's turns, tokens and cost so far"},
+	{"rules", "[add allow|deny|ask PATTERN | rm N]", "the workspace's permission rules (Bash(git *), Edit(src/**)…) and this chat's"},
+	{"permissions", "", "how this chat's tool asks were decided and by whom"},
+	{"allow", "[chat]", "allow the pending tool ask always, for the workspace (or this chat)"},
 	{"style", "[default|Explanatory|Learning]", "Claude's output style for the next session"},
 	{"bell", "[on|off]", "ring the terminal bell when the agent finishes, asks or fails"},
 	{"copy", "", "put the agent's last reply on the clipboard"},
@@ -85,7 +89,7 @@ type Trigger struct {
 func isSpace(r rune) bool { return r == ' ' || r == '\t' || r == '\n' }
 
 // argumentKinds are the commands whose argument has its own list.
-var argumentKinds = map[string]string{"attach": "local", "switch": "chat"}
+var argumentKinds = map[string]string{"attach": "local", "switch": "chat", "model": "model", "effort": "effort"}
 
 // triggerAt finds the trigger at the caret, if any.
 func triggerAt(text []rune, caret int) (Trigger, bool) {
@@ -213,6 +217,110 @@ func localPaths(query string) []string {
 	out := append(dirs, files...)
 	if len(out) > 50 {
 		out = out[:50]
+	}
+	return out
+}
+
+// staticModels are the rows a provider's picker offers when its CLI has
+// reported no catalog (the web's ModelSelect keeps the same).
+var staticModels = map[string][]ModelInfo{
+	"codex":  {{Value: "gpt-6-astra", Label: "GPT-6 Astra"}, {Value: "gpt-5.6-sol", Label: "GPT-5.6 Sol"}, {Value: "gpt-5.6-terra", Label: "GPT-5.6 Terra"}, {Value: "gpt-5.6-luna", Label: "GPT-5.6 Luna"}, {Value: "gpt-5.5", Label: "GPT-5.5"}},
+	"claude": {{Value: "sonnet", Label: "Claude Sonnet", Efforts: chats.Efforts, AdaptiveThinking: true}, {Value: "opus", Label: "Claude Opus", Efforts: chats.Efforts, AdaptiveThinking: true, FastMode: true}, {Value: "haiku", Label: "Claude Haiku"}, {Value: "sonnet[1m]", Label: "Claude Sonnet 1M", Efforts: chats.Efforts, AdaptiveThinking: true}, {Value: "opus[1m]", Label: "Claude Opus 1M", Efforts: chats.Efforts, AdaptiveThinking: true, FastMode: true}},
+}
+
+// LongContextHint and FastModeHint say why a costlier choice is refused
+// where the operator has not allowed it (config providers.claude.*).
+const (
+	LongContextHint = "not allowed here: enable providers.claude.allowLongContext"
+	FastModeHint    = "not allowed here: enable providers.claude.allowFastMode"
+)
+
+// longContextModel reports a 1M-context alias (chats.longContextModel).
+func longContextModel(value string) bool { return strings.HasSuffix(value, "[1m]") }
+
+// ModelRows are the picker's rows for a provider: the CLI's catalog when
+// it reported one (its "default" row is the provider-default row), else
+// the static rows. A 1M-context row the operator has not allowed stays
+// listed with the hint; the provider default comes first.
+func ModelRows(provider string, options AgentOptions) []ModelInfo {
+	rows := options.Models[provider]
+	if len(rows) == 0 {
+		rows = staticModels[provider]
+	}
+	out := []ModelInfo{{Value: "", Label: "Provider default"}}
+	for _, r := range rows {
+		if r.Value == "default" {
+			out[0].Resolved, out[0].Description = r.Resolved, r.Description
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// modelItems are the rows a /model argument can pick: those whose value
+// or label contains the query. The default row inserts "default".
+func modelItems(provider string, options AgentOptions, query string) []MenuItem {
+	q := strings.ToLower(strings.TrimSpace(query))
+	var out []MenuItem
+	for _, r := range ModelRows(provider, options) {
+		insert := r.Value
+		if insert == "" {
+			insert = "default"
+		}
+		if q != "" && !strings.Contains(strings.ToLower(insert), q) && !strings.Contains(strings.ToLower(r.Label), q) {
+			continue
+		}
+		hint := r.Description
+		if r.Resolved != "" {
+			hint = strings.TrimSpace(r.Resolved + " · " + hint)
+			hint = strings.TrimSuffix(hint, " ·")
+		}
+		if provider == "claude" && longContextModel(r.Value) && !options.LongContext {
+			hint = LongContextHint
+		}
+		out = append(out, MenuItem{Insert: insert, Label: insert + "  " + truncate(sanitize(r.Label), 32), Hint: hint, Run: true})
+	}
+	return out
+}
+
+// EffortsFor are the effort levels the chat's model takes: the catalog
+// row's when the CLI reported one (a row with none, like Haiku, takes no
+// level), else every level. The chat's model "" is the provider default.
+func EffortsFor(c *Chat, options AgentOptions) []string {
+	if c == nil || c.Provider != "claude" {
+		return chats.Efforts
+	}
+	rows := options.Models["claude"]
+	if len(rows) == 0 {
+		return chats.Efforts
+	}
+	want := c.Model
+	if want == "" {
+		want = "default"
+	}
+	for _, r := range rows {
+		if r.Value == want {
+			return r.Efforts
+		}
+	}
+	return chats.Efforts
+}
+
+// effortItems are the rows a /effort argument can pick: the model's
+// levels and the default.
+func effortItems(c *Chat, options AgentOptions, query string) []MenuItem {
+	q := strings.ToLower(strings.TrimSpace(query))
+	var out []MenuItem
+	for _, level := range append([]string{"default"}, EffortsFor(c, options)...) {
+		if q != "" && !strings.HasPrefix(level, q) {
+			continue
+		}
+		hint := "the model's default level"
+		if level != "default" {
+			hint = "effort " + level
+		}
+		out = append(out, MenuItem{Insert: level, Label: level, Hint: hint, Run: true})
 	}
 	return out
 }

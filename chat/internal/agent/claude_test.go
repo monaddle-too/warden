@@ -1667,6 +1667,39 @@ func claudeNext(d *json.Decoder, v *map[string]any) bool {
 }
 
 // A user message carries Warden's message ID as its uuid, and
+// models/list is the CLI's list_models control request: its answer (the
+// rows with their effort levels and fast-mode support) is the command's
+// reply, a refusal its error (docs/claude-parity.md, R2.3).
+func TestClaudeModelsList(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, cf, _ := newClaudeFake(t, ctx)
+	rows := []any{map[string]any{"value": "sonnet", "resolvedModel": "claude-sonnet-5", "displayName": "Sonnet", "supportedEffortLevels": []any{"low", "high"}, "supportsAdaptiveThinking": true}, map[string]any{"value": "opus[1m]", "displayName": "Opus (1M context)", "supportsFastMode": true}}
+	go func() {
+		v := cf.next(t, ctx)
+		req := Map(v["request"])
+		if req["subtype"] != "list_models" || len(req) != 1 || !strings.HasPrefix(String(v["request_id"]), "warden-models-") {
+			t.Errorf("request %+v", v)
+		}
+		cf.send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{"models": rows}}})
+	}()
+	r, err := c.Call(ctx, "models/list", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := Array(r["models"])
+	if len(got) != 2 || String(Map(got[0])["value"]) != "sonnet" || len(Array(Map(got[0])["supportedEffortLevels"])) != 2 || Map(got[1])["supportsFastMode"] != true {
+		t.Fatalf("reply %+v", r)
+	}
+	go func() {
+		v := cf.next(t, ctx)
+		cf.send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": v["request_id"], "error": "list_models is not available"}})
+	}()
+	if _, err := c.Call(ctx, "models/list", map[string]any{}); err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("refusal: %v", err)
+	}
+}
+
 // conversation/rewind is the CLI's rewind_conversation control request,
 // answered with what the CLI said: rewound, or not with the reason.
 func TestClaudeConversationRewind(t *testing.T) {

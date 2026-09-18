@@ -226,6 +226,11 @@ type fakeServer struct {
 	instructions string
 	memory       MemoryView
 	writes       []string
+	// rules is what environments|chats/{id}/rules answer (the workspace's
+	// then the chats'); adds and removes edit it; events is the chat's
+	// permission history.
+	rules  RulesView
+	events []PermissionEvent
 }
 
 func newFakeServer(t *testing.T, initial State) *fakeServer {
@@ -303,6 +308,27 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		id := fmt.Sprintf("%032d", len(f.uploads))
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(Attachment{ID: id, Name: header.Filename, Kind: kind, Size: int64(len(data)), Path: ".warden/attachments/" + id + ".bin"})
+	case strings.Contains(path, "/rules/") && strings.HasSuffix(path, "/remove"):
+		parts := strings.Split(path, "/")
+		f.mu.Lock()
+		drop := func(rules []Rule) []Rule {
+			var out []Rule
+			for _, r := range rules {
+				if r.ID != parts[3] {
+					out = append(out, r)
+				}
+			}
+			return out
+		}
+		if parts[0] == "environments" {
+			f.rules.Rules = drop(f.rules.Rules)
+		} else {
+			for i := range f.rules.Chats {
+				f.rules.Chats[i].Rules = drop(f.rules.Chats[i].Rules)
+			}
+		}
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/remove"):
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/edit"):
@@ -357,6 +383,38 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			f.mu.Unlock()
 		}()
 		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/rules") && r.Method == "GET":
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		json.NewEncoder(w).Encode(f.rules)
+	case strings.HasSuffix(path, "/rules") && r.Method == "POST":
+		var body struct {
+			Kind, Pattern string
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if !strings.Contains(body.Pattern, "(") && body.Pattern != "Read" {
+			w.WriteHeader(409)
+			w.Write([]byte(`{"error":"rule pattern: missing the tool name"}`))
+			return
+		}
+		parts := strings.Split(path, "/")
+		f.mu.Lock()
+		rule := Rule{ID: fmt.Sprintf("r%d", len(f.rules.Rules)+1), Kind: body.Kind, Pattern: body.Pattern, Origin: "editor", By: &Actor{PrincipalID: "owner"}}
+		if parts[0] == "environments" {
+			f.rules.Rules = append(f.rules.Rules, rule)
+		} else {
+			for i := range f.rules.Chats {
+				if f.rules.Chats[i].ID == parts[1] {
+					f.rules.Chats[i].Rules = append(f.rules.Chats[i].Rules, rule)
+				}
+			}
+		}
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(rule)
+	case strings.HasSuffix(path, "/permissions") && r.Method == "GET":
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"events": f.events})
 	case strings.Contains(path, "/approvals/"):
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -371,7 +429,7 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 					c.Approvals[i].State = "declined"
 				}
 				c.Approvals[i].Params["answers"] = body["answers"]
-				for _, k := range []string{"always", "message", "mode"} {
+				for _, k := range []string{"always", "scope", "message", "mode"} {
 					if v, ok := body[k]; ok {
 						c.Approvals[i].Params[k] = v
 					}
@@ -484,7 +542,17 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))
-	case strings.HasSuffix(path, "/agent"), strings.HasSuffix(path, "/revoke"):
+	case strings.HasSuffix(path, "/agent"):
+		// The chat's provider and model for the next turn.
+		var body struct{ Provider, Model string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		if c := f.state.Chat(strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/agent")); c != nil {
+			c.Provider, c.Model = body.Provider, body.Model
+		}
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/revoke"):
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/checkpoints"):
 		// Every user message but the first has a checkpoint.
@@ -1836,7 +1904,7 @@ func TestPermissionCardsAndAnswers(t *testing.T) {
 		permissionAsk("p3", "ExitPlanMode", nil, map[string]any{"plan": "# Plan\n\n1. Write notes.md"}),
 	}
 	joined := plain(strings.Join(RenderApprovals(c, 80), "\n"))
-	for _, want := range []string{"run a command: Create x", "y = allow · a = allow always (`touch` commands) · n [message] = deny", "$ touch x", "Write notes.md", "+1 −0", "+hello", "Claude has a plan", "1. Write notes.md"} {
+	for _, want := range []string{"run a command: Create x", "y = allow · a = allow always (`touch` commands) · A = for the workspace · n [message] = deny", "$ touch x", "Write notes.md", "+1 −0", "+hello", "Claude has a plan", "1. Write notes.md"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in:\n%s", want, joined)
 		}
@@ -1859,7 +1927,7 @@ func TestPermissionCardsAndAnswers(t *testing.T) {
 	app.submit(ctx, "a")
 	refresh()
 	s := app.state
-	if got := s.Chats[0].Approvals[0]; got.State != "allowed" || got.Params["always"] != true || !strings.Contains(app.notice, "allowed always: `touch` commands") {
+	if got := s.Chats[0].Approvals[0]; got.State != "allowed" || got.Params["always"] != true || got.Params["scope"] != "chat" || !strings.Contains(app.notice, "allowed always for this chat: `touch` commands") {
 		t.Fatalf("allow always: %+v %q", got, app.notice)
 	}
 	app.submit(ctx, "n keep the notes in docs/")
@@ -2970,6 +3038,248 @@ func TestTitleAndBellEvents(t *testing.T) {
 	app.bellForEvents()
 	if strings.Contains(out.String(), "\a") {
 		t.Fatal("the bell rang while off")
+	}
+}
+
+// `A` (or /allow) on a tool ask allows it always for the whole workspace
+// where `a` does for the chat; /rules lists, adds and removes the
+// workspace's rules and the chats' by number; /permissions lists how the
+// chat's asks were decided.
+func TestWorkspaceAllowRulesAndPermissions(t *testing.T) {
+	c := &Chat{ID: "chat1", Title: "Claude", Provider: "claude", Status: "running", Mode: "ask", SandboxID: "sbx1"}
+	command := &Entry{ID: "toolu_1", Role: "activity", Text: "touch x", Tool: &Tool{Kind: "command", Name: "Bash", Status: "running"}}
+	c.Approvals = []Approval{
+		permissionAsk("p1", "Bash", command, map[string]any{"always": "`touch` commands", "rule": "Bash(touch *)"}),
+		permissionAsk("p2", "Bash", command, map[string]any{"always": "`touch` commands", "rule": "Bash(touch *)"}),
+		permissionAsk("p3", "ExitPlanMode", nil, map[string]any{"plan": "# Plan"}),
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	f.rules = RulesView{Workspace: "sbx1", Rules: []Rule{{ID: "w1", Kind: "deny", Pattern: "Bash(rm *)", Origin: "editor", By: &Actor{PrincipalID: "owner"}}}, Chats: []ChatRules{{ID: "chat1", Title: "Claude", Rules: []Rule{{ID: "c1", Kind: "allow", Pattern: "Bash(touch *)", Origin: "always", By: &Actor{Name: "Dan"}}}}}}
+	f.events = []PermissionEvent{
+		{At: 1_000_000, Tool: "Bash", Summary: "rm -rf build", Decision: "deny", How: "rule", Scope: "workspace", Rule: &Rule{Kind: "deny", Pattern: "Bash(rm *)"}},
+		{At: 1_000_060, Tool: "Write", Summary: "notes.md", Decision: "allow", How: "card", By: &Actor{Name: "Dan"}, Rule: &Rule{Pattern: "Edit"}, Scope: "workspace"},
+		{At: 1_000_120, Tool: "Bash", Summary: "touch y", Decision: "allow", How: "auto"},
+		{At: 1_000_180, Tool: "Bash", Summary: "curl x", Decision: "deny", How: "card", By: &Actor{PrincipalID: "owner"}, Message: "use the proxy"},
+	}
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard}
+	ctx := context.Background()
+	refresh := func() { s, _ := app.Client.State(ctx); app.state = s }
+	refresh()
+	app.submit(ctx, "A")
+	refresh()
+	if got := app.state.Chats[0].Approvals[0]; got.State != "allowed" || got.Params["always"] != true || got.Params["scope"] != "workspace" || app.notice != "allowed always for this workspace: `touch` commands" {
+		t.Fatalf("A: %+v %q", got, app.notice)
+	}
+	app.submit(ctx, "/allow")
+	refresh()
+	if got := app.state.Chats[0].Approvals[1]; got.State != "allowed" || got.Params["scope"] != "workspace" {
+		t.Fatalf("/allow: %+v %q", got, app.notice)
+	}
+	// A plan is never remembered: A is not an answer to it, /allow finds
+	// no tool ask.
+	app.submit(ctx, "/allow")
+	if app.notice != "no tool ask pending" {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/rules")
+	listing := plain(app.notice)
+	for _, want := range []string{"workspace rules", " 1  deny  Bash(rm *)", "from the editor by the owner", "chat Claude (this chat)", " 2  allow Bash(touch *)", "allow always by Dan", "/rules add allow|deny|ask PATTERN"} {
+		if !strings.Contains(listing, want) {
+			t.Fatalf("missing %q in:\n%s", want, listing)
+		}
+	}
+	app.submit(ctx, `/rules add ask "Edit(src/**)"`)
+	if app.notice != "workspace rule added: ask Edit(src/**)" || len(f.rules.Rules) != 2 || f.rules.Rules[1].Pattern != "Edit(src/**)" {
+		t.Fatalf("%q %+v", app.notice, f.rules.Rules)
+	}
+	app.submit(ctx, "/rules add deny nonsense")
+	if !strings.Contains(app.notice, "missing the tool name") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/rules add")
+	if !strings.HasPrefix(app.notice, "/rules add allow|deny|ask PATTERN") {
+		t.Fatal(app.notice)
+	}
+	// rm by the listing's numbers: 3 is the chat's rule (after the two
+	// workspace rules), and the listing is fetched when stale.
+	app.submit(ctx, "/rules rm 3")
+	if app.notice != "rule 3 removed" || len(f.rules.Chats[0].Rules) != 0 || len(f.rules.Rules) != 2 {
+		t.Fatalf("%q %+v", app.notice, f.rules)
+	}
+	app.submit(ctx, "/rules rm 9")
+	if app.notice != "/rules rm N with N from /rules" {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/rules rm 1")
+	if app.notice != "rule 1 removed" || len(f.rules.Rules) != 1 || f.rules.Rules[0].Pattern != "Edit(src/**)" {
+		t.Fatalf("%q %+v", app.notice, f.rules.Rules)
+	}
+	app.submit(ctx, "/permissions")
+	lines := strings.Split(plain(app.notice), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("%q", app.notice)
+	}
+	for i, want := range []string{"deny  Bash         rm -rf build  — workspace rule deny Bash(rm *)", "allow Write        notes.md  — Dan, always for the workspace (Edit)", "allow Bash         touch y  — auto mode", "deny  Bash         curl x  — the owner: use the proxy"} {
+		if !strings.HasSuffix(lines[i], want) {
+			t.Errorf("line %d: %q, want suffix %q", i, lines[i], want)
+		}
+	}
+	f.events = nil
+	app.submit(ctx, "/permissions")
+	if app.notice != "no tool asks decided in this chat yet" {
+		t.Fatal(app.notice)
+	}
+	// The / menu offers the commands.
+	if !strings.Contains(strings.Join(commandNames(), " "), "rules permissions allow") {
+		t.Fatal(commandNames())
+	}
+}
+
+func commandNames() []string {
+	var out []string
+	for _, c := range Commands {
+		out = append(out, c.Name)
+	}
+	return out
+}
+
+// The /model menu lists the provider's rows: the CLI's catalog when the
+// service reported one (the default row first, a 1M row the operator has
+// not allowed with its hint), else the static rows; picking the default
+// row sends the provider default. /effort lists the model's levels from
+// the catalog, and a model without any refuses a level.
+func TestModelAndEffortMenusFromTheCatalog(t *testing.T) {
+	claude := &Chat{ID: "c1", Title: "Claude", Provider: "claude", Model: "haiku", Status: "idle"}
+	codex := &Chat{ID: "c2", Title: "Codex", Provider: "codex", Status: "idle"}
+	catalog := []ModelInfo{
+		{Value: "default", Resolved: "claude-sonnet-5", Label: "Default (recommended)", Description: "Sonnet 5 · Efficient", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, AdaptiveThinking: true},
+		{Value: "sonnet", Resolved: "claude-sonnet-5", Label: "Sonnet", Description: "Sonnet 5 · Efficient", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, AdaptiveThinking: true},
+		{Value: "opus[1m]", Resolved: "claude-opus-5[1m]", Label: "Opus (1M context)", Efforts: []string{"low", "max"}, FastMode: true},
+		{Value: "haiku", Resolved: "claude-haiku-4-5", Label: "Haiku"},
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{claude, codex}, AgentOptions: AgentOptions{Models: map[string][]ModelInfo{"claude": catalog}}})
+	app := &App{Client: f.client(), ChatID: "c1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	ctx := context.Background()
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/model ")
+	if app.menu == nil || app.menu.Trigger.Kind != "model" || len(app.menu.Items) != 4 {
+		t.Fatalf("model menu: %+v", app.menu)
+	}
+	items := app.menu.Items
+	if items[0].Insert != "default" || !strings.Contains(items[0].Label, "Provider default") || !strings.Contains(items[0].Hint, "claude-sonnet-5") {
+		t.Fatalf("default row: %+v", items[0])
+	}
+	if items[1].Insert != "sonnet" || !strings.Contains(items[1].Label, "Sonnet") || items[2].Insert != "opus[1m]" || items[2].Hint != LongContextHint || items[3].Insert != "haiku" {
+		t.Fatalf("rows: %+v", items)
+	}
+	// Typing narrows by value or label; Enter picks and runs.
+	typeText(app, ctx, "son")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Insert != "sonnet" {
+		t.Fatalf("narrowed: %+v", app.menu)
+	}
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	app.state, _ = app.Client.State(ctx)
+	if app.state.Chats[0].Model != "sonnet" || app.editor.Text() != "" {
+		t.Fatalf("picked: %q draft %q", app.state.Chats[0].Model, app.editor.Text())
+	}
+	// The default row sends "" (the provider default).
+	typeText(app, ctx, "/model def")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	app.state, _ = app.Client.State(ctx)
+	if app.state.Chats[0].Model != "" {
+		t.Fatalf("default row sent %q", app.state.Chats[0].Model)
+	}
+	// With the operator's leave the 1M row has its own hint.
+	f.mu.Lock()
+	f.state.AgentOptions.LongContext = true
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/model 1m")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Hint == LongContextHint || !strings.Contains(app.menu.Items[0].Hint, "claude-opus-5[1m]") {
+		t.Fatalf("allowed 1M row: %+v", app.menu)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	// /effort on the default model lists the default row's levels; on
+	// Haiku (no levels) it refuses one.
+	typeText(app, ctx, "/effort ")
+	if app.menu == nil || app.menu.Trigger.Kind != "effort" || len(app.menu.Items) != 6 || app.menu.Items[0].Insert != "default" || app.menu.Items[5].Insert != "max" {
+		t.Fatalf("effort menu: %+v", app.menu)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	app.submit(ctx, "/model haiku")
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/effort ")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Insert != "default" {
+		t.Fatalf("effort menu on haiku: %+v", app.menu)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	app.submit(ctx, "/effort high")
+	if !strings.Contains(app.notice, "takes no effort level") {
+		t.Fatalf("effort on haiku: %q", app.notice)
+	}
+	app.submit(ctx, "/effort")
+	if !strings.Contains(app.notice, "takes no effort level") {
+		t.Fatalf("effort on haiku: %q", app.notice)
+	}
+	// Without a catalog the static rows serve, every level offered.
+	f.mu.Lock()
+	f.state.AgentOptions.Models = nil
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/model ")
+	if app.menu == nil || len(app.menu.Items) != 6 || app.menu.Items[1].Insert != "sonnet" || app.menu.Items[4].Insert != "sonnet[1m]" {
+		t.Fatalf("static rows: %+v", app.menu)
+	}
+	if levels := EffortsFor(app.chat(), app.agentOptions()); len(levels) != 5 {
+		t.Fatalf("static efforts: %v", levels)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	// Codex has its own static rows.
+	app.selectChat("c2")
+	typeText(app, ctx, "/model ")
+	if app.menu == nil || len(app.menu.Items) != 6 || app.menu.Items[1].Insert != "gpt-6-astra" {
+		t.Fatalf("codex rows: %+v", app.menu)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	typeText(app, ctx, "/effort ")
+	if app.menu != nil {
+		t.Fatalf("effort menu on codex: %+v", app.menu)
+	}
+}
+
+// /cost ends with the workspace's total when the chat shares it: every
+// chat's turns summed, archived ones included.
+func TestCostShowsTheWorkspaceTotal(t *testing.T) {
+	turns := func(cost float64, total int64) Conversation {
+		return Conversation{Turns: []Turn{{ID: "t", StartedAt: 1, EndedAt: 2, Usage: &Usage{Input: total - 10, Output: 10, Total: total, CostUSD: cost}}}}
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{
+		{ID: "a", Title: "A", Provider: "claude", SandboxID: "ws", Status: "idle", Conversation: turns(0.10, 1000)},
+		{ID: "b", Title: "B", Provider: "claude", SandboxID: "ws", Status: "idle", Archived: true, Conversation: turns(0.20, 2000)},
+		{ID: "c", Title: "C", Provider: "claude", SandboxID: "other", Status: "idle", Conversation: turns(5, 50000)},
+	}})
+	app := &App{Client: f.client(), ChatID: "a", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	ctx := context.Background()
+	app.refreshState(ctx)
+	app.submit(ctx, "/cost")
+	notice := plain(app.notice)
+	if !strings.Contains(notice, "cost                 $0.10") || !strings.Contains(notice, "this workspace: 2 chats · 2 turns · 3.0k tokens · $0.30") {
+		t.Fatalf("/cost:\n%s", notice)
+	}
+	// Alone on its workspace: no total line.
+	app.selectChat("c")
+	app.submit(ctx, "/cost")
+	if strings.Contains(plain(app.notice), "this workspace") {
+		t.Fatalf("/cost alone:\n%s", app.notice)
+	}
+	codex, n := WorkspaceCost(&Chat{SandboxID: "x"}, []*Chat{{SandboxID: "x", Conversation: turns(0, 15)}, {SandboxID: "x"}}, 0)
+	if n != 2 || codex.Priced || WorkspaceCostLine(codex, n) != "this workspace: 2 chats · 1 turn · 15 tokens" {
+		t.Fatalf("codex: %q", WorkspaceCostLine(codex, n))
 	}
 }
 
