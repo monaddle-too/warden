@@ -74,7 +74,8 @@ const usageText = `usage: warden COMMAND [flags]
   restart   restart the service (after a new release)
   status    show whether Warden is running and how
   service   install | uninstall: register Warden with launchd / systemd --user (install does this too)
-  open      open the running Warden in the browser
+  open      open the running Warden in the browser (--chat ID, --new)
+  menu      feed: the menu bar item's model, one JSON line per change (macOS; warden-menu runs it)
   chat      terminal client: warden chat [CHAT] | list | new | send | approve
   uninstall stop Warden, unregister the service, delete its sandboxes, stop its private sbx daemon and remove the state
   bugs      bug reports: status | on | off | send "text" | test | pending (you review every report before it is sent)
@@ -114,6 +115,8 @@ func (c *cli) run(args []string) int {
 		err = c.status(args[1:])
 	case "service":
 		err = c.serviceCommand(args[1:])
+	case "menu":
+		err = c.menuCommand(args[1:])
 	case "uninstall":
 		err = c.uninstall(args[1:])
 	case "bugs":
