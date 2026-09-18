@@ -38,8 +38,13 @@ func sanitize(s string) string {
 			}
 		case r == 0x1b:
 			inEscape = true
-		case r == '\n' || r == '\t':
+		case r == '\n':
 			b.WriteRune(r)
+		case r == '\t':
+			// A tab's width depends on the column it lands in, which the
+			// painter cannot know once the line is prefixed and wrapped;
+			// four spaces keep the rows countable.
+			b.WriteString("    ")
 		case r < 0x20 || r == 0x7f:
 			// dropped
 		default:
@@ -124,15 +129,20 @@ func wrap(text string, width int, prefix, indent string) []string {
 	return out
 }
 
-// cutVisible splits s after n visible runes, keeping every escape
-// sequence with the part it precedes.
+// cutVisible splits s after n visible columns, keeping every escape
+// sequence with the part it precedes and never splitting a rune from the
+// zero-width marks that follow it.
 func cutVisible(s string, n int) (head, tail string) {
 	var b strings.Builder
 	seen := 0
 	inEscape := false
 	for i, r := range s {
-		if seen >= n && !inEscape && r != 0x1b {
-			return b.String(), s[i:]
+		if !inEscape && r != 0x1b {
+			w := runeWidth(r)
+			if w > 0 && seen+w > n {
+				return b.String(), s[i:]
+			}
+			seen += w
 		}
 		b.WriteRune(r)
 		switch {
@@ -142,8 +152,6 @@ func cutVisible(s string, n int) (head, tail string) {
 			}
 		case r == 0x1b:
 			inEscape = true
-		default:
-			seen++
 		}
 	}
 	return b.String(), ""
@@ -205,13 +213,73 @@ func lastLines(text string, n int) []string {
 // output and diffs in full instead of their last lines, and a subagent's
 // own transcript under its card.
 func RenderTranscript(c *Chat, width int, expanded bool) []string {
-	top, children := nestEntries(c.Conversation.Entries)
 	var out []string
-	for _, e := range queuedLast(top) {
-		out = append(out, renderEntry(c, e, width, expanded, children, "")...)
-		out = append(out, "")
+	for _, b := range RenderBlocks(c, width, expanded) {
+		out = append(out, b.Lines...)
 	}
 	return out
+}
+
+// Block is one entry as the painter sees it: its lines (a blank separator
+// last) and whether the entry is final — nothing about it will change, so
+// the painter can write its lines to the terminal's scrollback once and
+// never touch them again.
+type Block struct {
+	Lines []string
+	Final bool
+}
+
+// RenderBlocks lays out the chat's entries one block each, in the order
+// the transcript shows them (queued messages last).
+func RenderBlocks(c *Chat, width int, expanded bool) []Block {
+	top, children := nestEntries(c.Conversation.Entries)
+	var out []Block
+	for _, e := range queuedLast(top) {
+		lines := renderEntry(c, e, width, expanded, children, "")
+		out = append(out, Block{Lines: append(lines, ""), Final: entryFinal(e, children)})
+	}
+	return out
+}
+
+// entryFinal reports an entry the service will not change any more: not
+// streaming, not a running tool (a background command counts as running
+// until its notification lands), not a message still queued, not a
+// compaction or an aside under way, and not a subagent's card while any
+// entry under it is still one of these. A todo list is final after every
+// write although the next write replaces it in place; the painter notices
+// the change and reprints.
+func entryFinal(e Entry, children map[string][]Entry) bool {
+	if e.IsStreaming {
+		return false
+	}
+	switch e.Role {
+	case "user":
+		if e.Delivery == "queued" {
+			return false
+		}
+	case "activity":
+		if t := e.Tool; t != nil {
+			if t.Status == "running" {
+				return false
+			}
+			if t.Kind == "task" {
+				for _, k := range children[e.ID] {
+					if !entryFinal(k, children) {
+						return false
+					}
+				}
+			}
+		}
+	case "compaction":
+		if e.Compaction != nil && e.Compaction.Status == "running" {
+			return false
+		}
+	case "aside":
+		if e.Aside != nil && e.Aside.Status == "running" {
+			return false
+		}
+	}
+	return true
 }
 
 // nestEntries splits the entries into the conversation's own and, by the

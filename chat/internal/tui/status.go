@@ -5,7 +5,6 @@ import (
 	"math"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -270,8 +269,8 @@ func LayoutStatus(parts []string, width, maxRows int) []string {
 	return rows
 }
 
-// visibleWidth counts the runes of s that reach the screen: the styling
-// (escape sequences) takes no columns.
+// visibleWidth is the columns s takes on the screen: the styling (escape
+// sequences) takes none, a wide rune two (width.go).
 func visibleWidth(s string) int {
-	return utf8.RuneCountInString(plainText(s))
+	return textWidth(plainText(s))
 }

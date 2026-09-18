@@ -109,6 +109,11 @@ Most important first. Each item lands on both surfaces unless marked.
 15. **Long tail.** Fork a session, `/btw`, prompt suggestions, output
     styles, status line and terminal title, desktop notifications, `/cost`
     and `/context` breakdowns, share links (see the chat-sharing plan).
+16. **Scrollback rendering** (TUI only). Render as Claude Code's TUI
+    does: into the terminal's normal buffer, final entries written once
+    and left in the scrollback, only a live tail redrawn in place; no
+    alternate screen, no mouse tracking, so the terminal's own scrolling,
+    search and text selection work on the whole conversation.
 
 Out of scope: `/login`, `/logout`, `/upgrade`, `/doctor`, `/config`,
 `/theme`, `/terminal-setup`, `/bug`, `/release-notes`, the auto-updater,
@@ -434,7 +439,113 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
 - [x] 13 Per-user instructions and memory — merged to main a5012c0 (2026-09-18); verified as the Item 13 section says.
 - [ ] 14 Project MCP, OAuth, plugins.
+- [ ] 16 Scrollback rendering (Claude-style TUI) — in progress on `feat/parity-16-scrollback-tui` (2026-09-18); see the Item 16 section.
 - [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
+
+### Item 16: scrollback rendering (Claude-style TUI)
+
+Branch `feat/parity-16-scrollback-tui`, worktree
+`.local/warden-parity-16-scrollback-tui`, from main 31ecf8d (2026-09-18).
+TUI only (`chat/internal/tui`); `warden chat send --wait`'s `Follow`
+printing is untouched.
+
+Why: the owner wants to select text in the TUI. The client entered the
+alternate screen (`?1049h`) and asked for mouse reports (`?1000h`,
+`?1006h`) so the wheel could scroll its own viewport; mouse reporting is
+what takes the mouse away from the terminal's selection. Mouse off on the
+alternate screen does not work either: terminals then send wheel ticks as
+↑/↓, which collide with ↑ = prompt recall. Claude Code (Ink) avoids all
+of it by printing the transcript into the normal buffer and redrawing
+only a live tail; the instruction was "make it work like in Claude".
+
+How it works (`app.go`, `render.go`):
+
+- **Terminal modes.** Raw mode, bracketed paste (`?2004h`) and the title
+  stack (`22;0t` / `23;0t`) as before; no `?1049`, no `?1000`/`?1006`.
+  The cursor is hidden only while a draw writes. At exit (`finish`) the
+  cursor goes below the last tail, bracketed paste is turned off and the
+  title popped; the transcript and the last status/composer stay on the
+  screen, as Claude Code leaves them.
+- **Committed and live.** Every draw renders the whole body — the
+  transcript as `RenderBlocks` (one `Block` per entry with `Final`), the
+  pending approvals, the session diff — at the terminal's width. An entry
+  is final when nothing about it will change: not streaming, not a
+  running tool (a background card until its notification), not a queued
+  message, not a compaction or an aside under way, and not a subagent's
+  card while an entry under it is still one of these. The leading run of
+  final entries is the committed prefix: written to the scrollback once
+  (`Frame.Commit`) and never rewritten. Everything after it is the live
+  tail — streaming entries, queued cards, approvals, the one-line notice,
+  the `/`/`@` menu, attachments, a confirmation, the status rows and the
+  composer — and a draw rewrites it in place: cursor up by the row the
+  cursor was on (`screen.cursorLine`), `\r`, `ESC[J`, the new lines.
+  Lines are clipped to the width so each takes exactly one row, which is
+  what makes the cursor-up count right. An unchanged tail is not written.
+- **Structural changes.** The body is compared with what the scrollback
+  holds (`hasPrefix`): while it still begins with the committed lines the
+  draw is incremental; otherwise the screen is cleared (`ESC[2J ESC[H`,
+  never `3J`: the person's earlier terminal history survives) and the
+  transcript is printed again from its first entry, then the tail. That
+  covers a rewind (the prefix is longer than the body), the service
+  reordering entries, a todo list rewritten in place, Tab / `/expand` /
+  Ctrl-O / `/verbose` when they change a card that is already printed
+  (when they only change the tail, no reprint), and a background card
+  committed early that then settles. A chat switch (`/switch`, `/new`,
+  `/fork`), a terminal resize and Ctrl-L set `redraw` and reprint
+  unconditionally. Claude Code does the same clear-and-rerender on Ctrl-L,
+  resize and rewind; on `/resume` it prints the other session afresh.
+  `/clear` keeps its Warden meaning (the draft and its attachments), it
+  is not Claude's history clear.
+- **Tail budget.** The tail is kept to at most rows − 1 so the cursor
+  never has to move up past the top of the screen. A taller tail has its
+  top committed early (`earlyCommit`): at least the excess, rounded up to
+  the next blank line (a paragraph's or an entry's end), never the last
+  two lines (the ones still changing). Greedy wrapping and per-line
+  inline styling make a streaming reply's earlier lines stable, so a long
+  answer goes out a paragraph at a time; a committed line that does
+  change later (a folded card whose window slid) costs one reprint. If
+  the chrome alone does not fit (a very small terminal) the notice, then
+  the extras, are cut from the top.
+- **Notices.** A notice of several lines (`/help`, `/chats`, `/memory`,
+  `/rewind`, `/cost`, `/find`…) is printed into the scrollback once, like
+  Claude Code's local command output, and is not reprinted by a
+  structural redraw (it is above, in the terminal's history). A one-line
+  notice stays under the transcript for 20 s as before.
+- **Scrolling and search.** PgUp/PgDn/Home/End/wheel no longer scroll
+  anything in the app (the terminal has them; Home/End move within the
+  draft); the scroll hint left the status bar. `/find TEXT` prints the
+  matching lines as they show on the screen (up to 20, with the count)
+  so the person sees where the text occurs; the terminal's own search
+  jumps to it. Kept rather than dropped because round 2 bundle C builds
+  on `/find`. ↑/↓ keep items 6/10/12's meanings.
+- **Widths are columns.** In the alternate screen a miscounted line only
+  shifted a row until the next full repaint; in the normal buffer a line
+  the terminal wraps because a rune took two columns leaves a stale row
+  behind at every draw. `visibleWidth`, `wrap`, `cutVisible` and `clip`
+  now measure columns (`width.go`: East Asian wide and fullwidth forms
+  and Emoji_Presentation runes take two, combining marks, joiners and
+  variation selectors none, U+FE0F after a symbol makes it wide), and
+  `sanitize` expands a tab to four spaces. Doubtful runes count as wide:
+  an over-estimate wraps early, an under-estimate corrupts the screen.
+- Everything else is unchanged: the menus, paste placeholders, `!`/`#`,
+  approvals, Shift-Tab, Esc, Esc-Esc, Ctrl-C/D/R, the status line's
+  content (now the bottom of the tail rather than the screen's last
+  row), the bell and the title.
+
+Tests (`tui_test.go`): `TestPaintCommitsOnceAndRewritesTheTail` feeds
+states through `draw` and checks the bytes (no `?1049`/`?1000`/`?1006`,
+a committed line written once, the tail rewritten with the right
+cursor-up and `ESC[J`, an unchanged tail not written, a rewind and
+Ctrl-L clearing and reprinting once without `3J`, the exit sequence);
+`TestPaintCommitsEarlyWhenTheTailOutgrowsTheScreen` streams thirty
+paragraphs on a 12-row terminal (tail ≤ rows − 1, no reprint, every
+paragraph written once after it is committed);
+`TestMultiLineNoticesArePrintedOnce`; `TestEntryFinality`;
+`TestFrameSplitsCommittedFromLiveTail`; `TestColumnWidths`; the key,
+find and status tests adapted.
+
+Progress: started 2026-09-18; implemented with unit tests the same day.
+Left for this item: live verification under a pty, feature map, merge.
 
 ### Item 15: the long tail
 

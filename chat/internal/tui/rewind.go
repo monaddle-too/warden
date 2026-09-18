@@ -154,7 +154,6 @@ func (a *App) showDiff(ctx context.Context, c *Chat, arg string) {
 		return
 	}
 	a.diff = changes
-	a.scroll = 0
 	if len(changes.Files) == 0 {
 		a.setNotice("no changes since this chat began")
 		return
