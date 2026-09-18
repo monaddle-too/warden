@@ -1434,6 +1434,7 @@ button.attachment-chip {
 /* The spend chip beside the model: the chat's cost (or tokens) so far. */
 .spend-chip {
   display: inline-flex;
+  flex: none; /* a few characters: never the one the footer cuts */
   align-items: center;
   font-size: 12px;
   color: var(--muted);

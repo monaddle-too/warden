@@ -3,6 +3,7 @@ import {
   chatSpend,
   spendLabel,
   spendLine,
+  spendSummary,
   spendTitle,
   sumSpend,
   workspaceSpend,
@@ -56,6 +57,8 @@ describe("spend", () => {
       "1 turn · 1.0k tokens (900 in, 100 out) · no cost reported",
     );
     expect(spendTitle(priced)).toContain("This chat so far: 3 turns");
+    expect(spendSummary(priced)).toBe("$0.12 · 31k tokens · 3 turns");
+    expect(spendSummary({ ...tokens, turns: 1 })).toBe("1.0k tokens · 1 turn");
   });
   it("takes the service's sum, or sums the turns when the service gave none", () => {
     expect(chatSpend(chat("a", "ws", priced))).toBe(priced);

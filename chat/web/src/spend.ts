@@ -71,6 +71,17 @@ export function spendLine(s: Spend): string {
   return parts.join(" · ");
 }
 
+/* The short form for a narrow row: "$0.04 · 93k tokens · 2 turns" (the
+   tokens first where nothing is priced); the full line goes in the title. */
+export function spendSummary(s: Spend): string {
+  const parts = [
+    `${formatTokens(s.total)} tokens`,
+    `${s.turns} turn${s.turns === 1 ? "" : "s"}`,
+  ];
+  if (s.priced) parts.unshift(formatCost(s.costUSD));
+  return parts.join(" · ");
+}
+
 /* The chip's title. */
 export function spendTitle(s: Spend): string {
   return `This chat so far: ${spendLine(s)}. The agent's turns summed; /cost shows the breakdown.`;
