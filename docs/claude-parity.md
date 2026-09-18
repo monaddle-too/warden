@@ -486,6 +486,54 @@ Design (as implemented):
    the process with it; the selector beside the model says so, and
    `chat.session.outputStyle` shows what the running session has. TUI
    `/style [name]`.
+6. Seen on the way: the SBX exec API refuses an empty argument (item
+   11), so the one-shot's `--tools ""` is added by the guest script, not
+   passed; a `/style` change ends the idle session, so a `/btw` right
+   after it is refused until the next message (the refusal says so).
+
+Verified (2026-09-18): `gofmt -l`, `go vet ./...`, `go test ./...`
+(`sandbox/aside_test.go`: the launch flags, the one-shot command, the
+guest script against a fake CLI with the timeout, the parser, the op
+through the fake guest, a fork's prepare and stream; `chats/fork_test.go`
+through the scripted stream-json CLI: a whole fork's transcript and
+session hand-over, a cut fork's rewind on the copy, the Codex fresh
+fallback with the recap, side questions on an idle session and every
+refusal, the style's release and launch flag, the three routes;
+`tui/tui_test.go`: `/cost` `/style` `/bell` `/fork` `/btw`, the aside
+card, the title and the bell's events), `pnpm build`, `pnpm test` (173;
+`cost.test.ts`, `notify.test.ts` new). Live on a cloned home
+(`~/.warden-p12`, build 8ea4897, CLI 2.1.272) with a Claude chat given
+two codewords: `chats/{id}/aside` answered both in 1.8 s for $0.05 with
+the chat still idle on its session and the agent, asked next, unaware of
+it; refused during a `sleep 25` turn; a whole fork continued on a new
+session (71c20bc5) knowing a third codeword the source, resumed on
+3885ea8f, never learned; a fork cut before the second codeword's message
+got the pending rewind on its copied session (ac571b69) and knew only
+the first; `/style Explanatory` relaunched the same session with
+`--settings {"outputStyle":"Explanatory"}` (seen on the process),
+`session.outputStyle` reporting it and the answer carrying `★ Insight`
+blocks; an unknown style refused. Browser: the aside card, `/btw` from
+the `/` menu and the composer (the question icon, the note, the card
+arriving over the stream), the `/cost` card (6 turns, 325k tokens,
+$0.09), Fork… from the menu and from a message's hover action, "Open the
+fork" switching to it with the marker linking back, the style selector
+showing "Learning (next session)" with the running style in its title,
+the menu's notifications toggle reporting the pane's blocked permission,
+and — with the page counted hidden — a turn's end badging the favicon
+"1" and the badge clearing on visibility; the Notification itself could
+not be shown there (the embedded pane denies the permission). TUI in a
+pty: `/cost`, `/bell`, `/style`, `/fork` listing, `/btw` answered
+($0.03) with the aside card, `/fork 2` switching to the fork, the title
+`Warden · probe · idle` → `running` → `idle` around a turn with one bell,
+the title pushed at start and popped at exit.
+
+Left: a side question needs the resident session up (the gateway's
+credential is per run), so after the idle release the person sends a
+message first; the aside's copy session files accumulate in the guest's
+`~/.claude/projects/` (a few hundred KB each); the browser Notification
+was not seen live; Codex forks and side questions are unit-tested only
+(the account's Codex usage was exhausted); prompt suggestions and the
+`/context` breakdown from item 15's list are not done.
 
 ### Item 11: checkpoints, rewind and the session diff
 

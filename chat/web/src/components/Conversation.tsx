@@ -100,7 +100,7 @@ import { chatStatusLabel, startupLine } from "../stages";
 import { pendingReply } from "../thinking";
 import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
-import { FindBar, isFindKey, type FindRequest } from "./FindBar";
+import { FindBar, isFindKey, modifierKey, type FindRequest } from "./FindBar";
 import { HistorySearch } from "./HistorySearch";
 import { ModelSelect, modelOptions } from "./ModelSelect";
 import { ModeSelect } from "./ModeSelect";
@@ -621,14 +621,16 @@ export function Conversation({
                   },
       );
       if (items.length) return { items };
-      if (sideQuestion(text) !== undefined)
+      if (/^btw(\s|$)/i.test(trigger.query.trimStart()))
         return {
           items,
-          note: asides
-            ? running
+          note: !asides
+            ? "Side questions are a Claude chat's"
+            : running
               ? "Side questions wait until the agent's turn is over"
-              : "Enter asks it of a copy of the session; the agent never sees it"
-            : "Side questions are a Claude chat's",
+              : sideQuestion(text) === undefined
+                ? "Type the question; sending it asks a copy of the session, and the agent never sees it"
+                : `${modifierKey}Enter asks a copy of the session; the agent never sees it`,
         };
       // An agent command with its argument typed: nothing to pick, the
       // message goes as it is; its hint stays up while it is written.
