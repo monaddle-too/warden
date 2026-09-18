@@ -387,6 +387,9 @@ export type AgentOptions = {
   models?: Record<string, CatalogModel[]>;
   /* The model a chat of each provider starts with (chats/defaults.go). */
   defaults?: Record<string, string>;
+  /* The composer may attach files from this computer by path (a local
+     install, where the chat service runs on the owner's machine). */
+  localFiles?: boolean;
 };
 export type State = {
   version: number;

@@ -523,13 +523,17 @@ type AgentOptions struct {
 	// Defaults is the model a chat of each provider starts with
 	// (defaults.go), the row the pickers show first.
 	Defaults map[string]string `json:"defaults"`
+	// LocalFiles: the composer may attach files from this machine by
+	// path (localfiles.go; a local install, where the service runs on the
+	// owner's machine).
+	LocalFiles bool `json:"localFiles"`
 }
 
 func (e *Engine) View() View {
 	st := e.state()
 	models := catalogRows(st.Catalog)
 	st.Catalog = nil // clients get it as agentOptions.models
-	return View{State: st, Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models, Defaults: e.defaultModels()}}
+	return View{State: st, Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models, Defaults: e.defaultModels(), LocalFiles: e.LocalMode}}
 }
 
 // state is the store with typing indicators and each chat's spend filled

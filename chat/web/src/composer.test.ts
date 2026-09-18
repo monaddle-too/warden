@@ -4,10 +4,16 @@ import {
   sideQuestion,
   agentCommandNamed,
   agentHint,
+  attachArgs,
+  attachCommand,
+  attachInsert,
+  attachQuery,
   bugReport,
   commandItems,
   exactCommand,
   isBugTest,
+  isLocalPath,
+  localMentions,
   mentionFor,
   mentionToken,
   parseThinking,
@@ -16,6 +22,7 @@ import {
   prefixed,
   quoteCommand,
   replaceTrigger,
+  rewriteMentions,
   thinkingLabel,
   triggerAt,
   withoutCommand,
@@ -281,6 +288,7 @@ describe("agent commands in the composer", () => {
       "bug",
       "test",
       "style",
+      "attach",
       "clear",
       "/compact",
       "/init",
@@ -481,5 +489,107 @@ describe("resource mentions", () => {
     expect(resourceQuery("Repo:mon")).toBe(true);
     expect(resourceQuery("src/doc:x")).toBe(false);
     expect(resourceQuery("")).toBe(false);
+  });
+});
+
+describe("files from this computer", () => {
+  it("tells a local mention from a workspace one by its prefix", () => {
+    expect(isLocalPath("./a")).toBe(true);
+    expect(isLocalPath("../a")).toBe(true);
+    expect(isLocalPath("~/a")).toBe(true);
+    expect(isLocalPath("src/a")).toBe(false);
+    expect(isLocalPath("~")).toBe(false);
+    expect(isLocalPath(".hidden")).toBe(false);
+  });
+
+  it("lists the local mentions once, without trailing punctuation", () => {
+    expect(
+      localMentions(
+        "read @~/notes.md, then @./a.txt and @~/notes.md; not me@./x nor @src/x.ts, @../up/y.go).",
+      ),
+    ).toEqual(["~/notes.md", "./a.txt", "../up/y.go"]);
+    // A bare prefix names nothing.
+    expect(localMentions("@~/ @./")).toEqual([]);
+    expect(localMentions("nothing here")).toEqual([]);
+  });
+
+  it("rewrites attached mentions to their workspace paths", () => {
+    expect(
+      rewriteMentions("see @~/a.txt and @~/a.txt, plus @./*.log; @~/gone.txt", [
+        { typed: "~/a.txt", path: ".warden/attachments/1.txt" },
+        { typed: "./*.log", path: ".warden/attachments/2.log" },
+        { typed: "./*.log", path: ".warden/attachments/3.log" },
+      ]),
+    ).toBe(
+      "see @.warden/attachments/1.txt and @.warden/attachments/1.txt, plus @.warden/attachments/2.log @.warden/attachments/3.log; @~/gone.txt",
+    );
+  });
+
+  it("splits an /attach line into paths, quoted for spaces", () => {
+    expect(attachArgs(` ~/a.txt "My Docs/b c.pdf" './x y' *.log`)).toEqual([
+      "~/a.txt",
+      "My Docs/b c.pdf",
+      "./x y",
+      "*.log",
+    ]);
+    expect(attachArgs('"unterminated a')).toEqual(["unterminated a"]);
+    expect(attachArgs("")).toEqual([]);
+    expect(attachCommand("/attach ~/a.txt b")).toEqual(["~/a.txt", "b"]);
+    expect(attachCommand("/ATTACH  x ")).toEqual(["x"]);
+    expect(attachCommand("/attach")).toBeUndefined();
+    expect(attachCommand("/attach   ")).toBeUndefined();
+    expect(attachCommand("/attach a\nmore")).toBeUndefined();
+    expect(attachCommand("/attachments")).toBeUndefined();
+    expect(attachCommand("attach a")).toBeUndefined();
+  });
+
+  it("finds the path being typed on an /attach line", () => {
+    expect(attachQuery("/attach", 7)).toBeUndefined();
+    expect(attachQuery("/atta", 5)).toBeUndefined();
+    expect(attachQuery("/attach ", 8)).toEqual({ query: "", start: 8, end: 8 });
+    expect(attachQuery("/attach ~/Doc", 13)).toEqual({
+      query: "~/Doc",
+      start: 8,
+      end: 13,
+    });
+    // The caret in the middle of a word: the query is the part before it,
+    // the whole word is replaced.
+    expect(attachQuery("/attach ~/Docs/x.txt b", 11)).toEqual({
+      query: "~/D",
+      start: 8,
+      end: 20,
+    });
+    expect(attachQuery("/attach a b", 11)).toEqual({ query: "b", start: 10, end: 11 });
+    // A quoted word: the query is what is inside it.
+    expect(attachQuery(`/attach "~/My Docs/re`, 21)).toEqual({
+      query: "~/My Docs/re",
+      start: 8,
+      end: 21,
+    });
+    expect(attachQuery(`/attach "~/My Docs/a.txt" `, 26)).toEqual({
+      query: "",
+      start: 26,
+      end: 26,
+    });
+    // Off the first line, nothing.
+    expect(attachQuery("/attach a\nb", 11)).toBeUndefined();
+  });
+
+  it("inserts a picked path quoted when it needs it", () => {
+    expect(attachInsert("~/a.txt")).toBe("~/a.txt ");
+    expect(attachInsert("~/Docs/")).toBe("~/Docs/");
+    expect(attachInsert("~/My Docs/a.txt")).toBe('"~/My Docs/a.txt" ');
+    expect(attachInsert("~/My Docs/")).toBe('"~/My Docs/');
+  });
+
+  it("offers /attach in the command list", () => {
+    expect(
+      commandItems("att", models).map((i) => i.kind === "command" && i.command.name),
+    ).toEqual(["attach"]);
+    expect(exactCommand("/attach", models)).toMatchObject({
+      kind: "command",
+      command: { name: "attach" },
+    });
+    expect(exactCommand("/attach ~/a", models)).toBeUndefined();
   });
 });
