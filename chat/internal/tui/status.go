@@ -206,12 +206,8 @@ func StatusParts(c *Chat, ports []Port, live bool, now time.Time) []string {
 		}
 	}
 	parts := []string{fmt.Sprintf("%s %s%s%s", link, bold, sanitize(c.Title), reset), agent, status}
-	if n := len(c.Pending()); n > 0 {
-		word := "approvals"
-		if n == 1 {
-			word = "approval"
-		}
-		parts = append(parts, fmt.Sprintf("%s⚠ %d %s%s", yellow, n, word, reset))
+	if waiting := WaitingLabel(c); waiting != "" {
+		parts = append(parts, yellow+"⚠ "+waiting+reset)
 	}
 	if c.Error != "" {
 		parts = append(parts, red+sanitize(c.Error)+reset)
@@ -232,6 +228,28 @@ func StatusParts(c *Chat, ports []Port, live bool, now time.Time) []string {
 		parts = append(parts, fmt.Sprintf("previews:%d", published))
 	}
 	return parts
+}
+
+// WaitingLabel counts what waits for the person: the pending approvals
+// and the reviews open in the app ("1 approval · 2 reviews"); "" when
+// nothing does.
+func WaitingLabel(c *Chat) string {
+	var parts []string
+	if n := len(c.Pending()); n > 0 {
+		word := "approvals"
+		if n == 1 {
+			word = "approval"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", n, word))
+	}
+	if n := len(c.Reviews); n > 0 {
+		word := "reviews"
+		if n == 1 {
+			word = "review"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", n, word))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // LayoutStatus packs the status parts into rows no wider than width,

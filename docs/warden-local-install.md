@@ -686,6 +686,23 @@ approval appears on the open chat (`/bell`), and the app can show a browser
 notification when its tab is hidden (the chat menu's "Desktop
 notifications").
 
+**Reviews open the app.** Three requests can only be done in the app: a
+pull request proposal (`request_pull_request`), suggested document edits
+(`propose_google_document_edit`) and a document selection or creation
+(`request_google_docs_access`, `request_google_document_creation`, which
+need the Google picker). When one appears the launcher opens the app on
+that chat under every `--popups` value, the default `none` included, and
+logs a line (`warden: review pending in "…": …; opening the app`); `notify`
+and `browser` add the desktop notification. `--popups silent` turns even
+that off, for a machine with no browser to open. The terminal client shows
+the review above the approvals ("Claude proposed a pull request “…” to
+owner/repo — review it in the app: /review"), counts it in the status line
+and the terminal title, rings the bell for it, and `/review [N]` opens the
+app on the chat (or shows the URL when it cannot); `warden chat send
+--wait` prints `review pending: …`. The reviews are `chats[].reviews` in
+`GET state`, kept while the policy service holds the request open and
+matched to it again when Warden restarts.
+
 ## Optional: a guest image so new sandboxes start faster
 
 Without a guest image every new sandbox is created from the stock template

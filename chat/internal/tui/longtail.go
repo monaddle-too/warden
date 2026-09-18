@@ -363,8 +363,17 @@ func BellEvents(prev, next *Chat) []string {
 	for _, ap := range prev.Pending() {
 		seen[ap.ID] = true
 	}
+	for _, r := range prev.Reviews {
+		seen[r.ID] = true
+	}
 	for _, ap := range next.Pending() {
 		if !seen[ap.ID] {
+			out = append(out, "approval")
+		}
+	}
+	// A review waits for the person as an approval does, in the app.
+	for _, r := range next.Reviews {
+		if !seen[r.ID] {
 			out = append(out, "approval")
 		}
 	}
@@ -398,7 +407,7 @@ func TitleFor(c *Chat) string {
 	}
 	state := "idle"
 	switch {
-	case len(c.Pending()) > 0:
+	case len(c.Pending()) > 0 || len(c.Reviews) > 0:
 		state = "approval"
 	case c.Running():
 		state = "running"

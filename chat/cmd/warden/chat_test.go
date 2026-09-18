@@ -178,8 +178,65 @@ func TestNotifyCommandPassesTextAsArguments(t *testing.T) {
 func TestStartRejectsUnknownPopupsMode(t *testing.T) {
 	_, configPath := loginFixture(t)
 	code, out := runCLI("", false, "start", "--config", configPath, "--popups", "loud")
-	if code == 0 || !strings.Contains(out, "--popups must be") {
+	if code == 0 || !strings.Contains(out, "--popups must be auto, browser, notify, none or silent") {
 		t.Fatalf("(%d) %s", code, out)
+	}
+}
+
+// A review only the app can do opens the app on its chat under every
+// popups mode but silent, the default none included; an approval opens
+// nothing under none and is notified only in notify and browser modes.
+func TestPopupsOpenTheAppForReviews(t *testing.T) {
+	chat := &tui.Chat{ID: "abc123", Title: "Docs", Provider: "claude"}
+	review := tui.Review{ID: "pr1", Kind: "pull_request", Status: "pending", Title: "Fix the README", Repository: "owner/repo"}
+	approval := tui.Approval{ID: "ap1", Method: "warden/ports/bind", State: "pending", Params: map[string]any{"port": 8000, "title": "Counter"}}
+	for _, tc := range []struct {
+		mode                         string
+		detached                     bool
+		reviewOpens, reviewNotes     bool
+		approvalOpens, approvalNotes bool
+	}{
+		{popupsNone, false, true, false, false, false},
+		{popupsNone, true, true, false, false, false},
+		{popupsSilent, true, false, false, false, false},
+		{popupsNotify, false, true, true, false, true},
+		{popupsBrowser, false, true, true, true, true},
+		{popupsAuto, true, true, true, true, true},
+		{popupsAuto, false, true, true, false, true},
+	} {
+		var opened, notified []string
+		var log strings.Builder
+		p := &popupper{mode: resolvePopups(tc.mode, tc.detached), appURL: "http://127.0.0.1:18781/?launch=5#session=abc", log: &log,
+			notify: func(title, body string) error { notified = append(notified, title+": "+body); return nil },
+			open:   func(url string) error { opened = append(opened, url); return nil }}
+		p.review(chat, review)
+		if got := len(opened) == 1; got != tc.reviewOpens {
+			t.Fatalf("%s detached=%v: review opened %v (%v)", tc.mode, tc.detached, opened, log.String())
+		}
+		if tc.reviewOpens && (opened[0] != "http://127.0.0.1:18781/?launch=5&chat=abc123#session=abc" || !strings.Contains(log.String(), `review pending in "Docs": Claude proposed a pull request “Fix the README” to owner/repo; opening the app`)) {
+			t.Fatalf("%s: review opened %v, log %q", tc.mode, opened, log.String())
+		}
+		if got := len(notified) == 1; got != tc.reviewNotes {
+			t.Fatalf("%s detached=%v: review notified %v", tc.mode, tc.detached, notified)
+		}
+		if tc.reviewNotes && notified[0] != "Warden: Docs: Claude proposed a pull request “Fix the README” to owner/repo — review it in the app" {
+			t.Fatalf("%s: notification %q", tc.mode, notified[0])
+		}
+		opened, notified = nil, nil
+		p.approval(chat, approval)
+		if got := len(opened) == 1; got != tc.approvalOpens {
+			t.Fatalf("%s detached=%v: approval opened %v", tc.mode, tc.detached, opened)
+		}
+		if got := len(notified) == 1; got != tc.approvalNotes {
+			t.Fatalf("%s detached=%v: approval notified %v", tc.mode, tc.detached, notified)
+		}
+	}
+	// Without a launch URL the review is logged, not opened.
+	var log strings.Builder
+	p := &popupper{mode: popupsNone, log: &log, notify: desktopNotify, open: func(string) error { t.Fatal("opened without a URL"); return nil }}
+	p.review(chat, review)
+	if !strings.Contains(log.String(), `cannot open the app on "Docs": no launch URL`) {
+		t.Fatalf("log: %q", log.String())
 	}
 }
 

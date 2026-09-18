@@ -148,6 +148,7 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /new [title] /chats /switch N · /rename TITLE /archive /restore /delete
            /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
            /stop /model M /provider P /mode M · /open /previews /preview N /unpublish N
+           /review [N] opens the app on this chat for a pull request proposal, document suggestions or a document choice
            /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
            /queue (list) /queue send · /withdraw N · /edit [N] [both] (N from /rewind)
            /fork (list) /fork N|all copies the chat into a sibling · /cost totals so far
@@ -1409,6 +1410,8 @@ func (a *App) command(ctx context.Context, line string) {
 		} else {
 			a.setNotice("opened in the browser")
 		}
+	case "review":
+		a.review(c, arg)
 	case "expand":
 		a.expanded = !a.expanded
 		a.setNotice(map[bool]string{true: "showing full tool output and diffs", false: "showing the last lines of tool output"}[a.expanded])
@@ -1844,6 +1847,7 @@ func (a *App) compose(width int) []string {
 		body = append(body, "", dim+"/switch N or /new [title]"+reset)
 	default:
 		body = RenderTranscript(a.visible(c), width, a.expanded)
+		body = append(body, RenderReviews(c, width)...)
 		body = append(body, RenderApprovals(c, width)...)
 		if a.diff != nil {
 			body = append(body, "")
