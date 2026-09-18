@@ -223,6 +223,11 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			err = h.Engine.Edit(parts[1], body.Title, body.Archived)
 		case "stop":
 			err = h.Engine.Stop(r.Context(), parts[1])
+		case "exec":
+			// A person's own shell command in the workspace (composer.go).
+			result, err = h.Engine.Exec(r.Context(), parts[1], body.Text, requester(r))
+		case "memory":
+			err = h.Engine.AppendMemory(r.Context(), parts[1], body.Text, requester(r))
 		case "activity":
 			result, err = h.Engine.Runtime(r.Context(), parts[1], "activity")
 		default:

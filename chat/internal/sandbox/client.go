@@ -80,8 +80,11 @@ type Request struct {
 	// Resources is the size a fresh workspace is created with (bind-chat,
 	// prepare) or resized to (resize); nil leaves the sandbox's own.
 	Resources *Resources `json:"resources,omitempty"`
-	// Bytes is the content an attachment-write puts into the sandbox.
+	// Bytes is the content an attachment-write puts into the sandbox, or
+	// the note a memory-append adds to CLAUDE.md.
 	Bytes []byte `json:"bytes,omitempty"`
+	// Command is the shell command line an exec runs in the workspace.
+	Command string `json:"command,omitempty"`
 }
 type Response struct {
 	PublishPlan       *RepositoryPublishPlan `json:"publishPlan,omitempty"`
@@ -116,6 +119,8 @@ type Response struct {
 	Bytes             []byte                 `json:"bytes,omitempty"`
 	// Paths is a "paths" completion: workspace paths matching the query.
 	Paths []string `json:"paths,omitempty"`
+	// Exec is what an "exec" came to: output, exit code, timeout.
+	Exec *ExecResult `json:"exec,omitempty"`
 }
 type SandboxInfo struct {
 	ID          string `json:"id"`

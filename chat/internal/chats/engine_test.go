@@ -34,6 +34,8 @@ type fakeWorker struct {
 	inputs      [][]any  // the input items of every turn/start and turn/steer
 	turnID      string   // the ID of the next turn/start's turn; "turn-one" when empty
 	paths       []string // what a "paths" completion answers
+	// exec is what an "exec" answers (nil: a plain success with no output).
+	exec *sandbox.ExecResult
 	// prepareGate, when set, holds prepare until it is closed; progress is
 	// what the progress operation answers meanwhile (startup_test.go).
 	prepareGate chan struct{}
@@ -74,6 +76,16 @@ func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 	}
 	if r.Operation == "paths" {
 		return sandbox.Response{Version: 2, Paths: f.paths}, nil
+	}
+	if r.Operation == "exec" {
+		result := f.exec
+		if result == nil {
+			result = &sandbox.ExecResult{}
+		}
+		return sandbox.Response{Version: 2, Exec: result}, nil
+	}
+	if r.Operation == "memory-append" {
+		return sandbox.Response{Version: 2, Directory: "CLAUDE.md"}, nil
 	}
 	return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: id, ProjectID: r.ProjectID}}, nil
 }

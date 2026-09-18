@@ -29,6 +29,7 @@ const MaxParallelSessions = 2
 type Worker struct {
 	ordinarySlots chan struct{}
 	controlSlots  chan struct{}
+	execSlots     chan struct{} // a person's own commands (exec.go)
 	Revision      string
 	Parallel      int
 	Retained      int
@@ -95,7 +96,7 @@ func (w *Worker) parallelLimit() int {
 }
 
 func NewWorker(root, executable, template string) *Worker {
-	return &Worker{metrics: &hoststats.Collector{Root: root}, ordinarySlots: make(chan struct{}, 4), controlSlots: make(chan struct{}, 16), controls: &controlState{bindings: map[string]Request{}, cancel: map[string]context.CancelFunc{}, cancelled: map[string]bool{}}, Root: root, Executable: executable, Template: template}
+	return &Worker{metrics: &hoststats.Collector{Root: root}, ordinarySlots: make(chan struct{}, 4), controlSlots: make(chan struct{}, 16), execSlots: make(chan struct{}, 4), controls: &controlState{bindings: map[string]Request{}, cancel: map[string]context.CancelFunc{}, cancelled: map[string]bool{}}, Root: root, Executable: executable, Template: template}
 }
 func (w *Worker) Serve(ctx context.Context, l net.Listener) error {
 	// A worker restart must not leave detached app servers in old guests.
