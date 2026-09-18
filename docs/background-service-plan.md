@@ -138,3 +138,12 @@ start`/`stop`/`restart`/`status` drive the manager instead of a pid file.
 - Remaining: nothing on the branch. Later: the owner-session rotation on a
   restart the service made (a KeepAlive restart logs the browser tab out;
   persist the capability or tell the page); a Linux run of the unit.
+- 2026-09-18, `fix/service-restart-lock`: a restart (`launchctl kickstart
+  -k`, which every redeploy does) starts the replacement instance while the
+  old stack is still stopping its services, so the replacement hit the
+  launcher lock and exited ("Warden is already running or shutting down"),
+  launchd throttled the respawn for 10 s, and a `warden start` issued from
+  the menu bar meanwhile reported "Warden exited during startup". A
+  detached or service instance now waits up to 30 s for the previous one
+  to release the lock (`launcher.launcherLock`, announced in the log); a
+  foreground start still refuses at once. Tests `start_lock_test.go`.
