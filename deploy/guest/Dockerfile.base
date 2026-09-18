@@ -75,20 +75,26 @@ ARG CLAUDE_SHA256_ARM64=214a90efdd16ee0ea81132ffecced588dba394d178cc494f285ba04b
 # Python with venv and pip, jq, the archive tools, an SSH client (for
 # ssh-keygen and known_hosts; SSH egress itself is not allowed through the
 # gateway), less (git's pager), procps (ps) and tini (the PID 1 that reaps
-# the children of exec sessions). Not included, on purpose: build-essential
-# (it roughly doubles the image and native compilation is rare in chat
-# work; a session can `sudo apt-get install` it through the gateway, at the
-# cost of not persisting), Node (the Claude executable is self-contained)
-# and Docker (decision 16: no Docker inside Kubernetes guests). The Docker
-# Sandboxes template the SBX variant uses ships Docker and a broader tool
-# set; the base image is the smaller of the two by design.
+# the children of exec sessions), and the native cairo library (libcairo2
+# with its headers and pkg-config file, so charting and image tools that
+# load or link cairo — cairocffi, pycairo, node-canvas, rsvg, matplotlib's
+# cairo backends — work without a package install that would not persist;
+# the SBX variant installs the same). Not included, on purpose:
+# build-essential (it roughly doubles the image and native compilation is
+# rare in chat work; a session can `sudo apt-get install` it through the
+# gateway, at the cost of not persisting), Node (the Claude executable is
+# self-contained) and Docker (decision 16: no Docker inside Kubernetes
+# guests). The Docker Sandboxes template the SBX variant uses ships Docker
+# and a broader tool set; the base image is the smaller of the two by
+# design.
 RUN set -eu; export DEBIAN_FRONTEND=noninteractive; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
       bash ca-certificates curl git sudo \
       python3 python3-pip python3-venv jq \
       tar gzip bzip2 xz-utils unzip zip \
-      openssh-client less procps tini; \
+      openssh-client less procps tini \
+      libcairo2 libcairo2-dev pkg-config; \
     rm -rf /var/lib/apt/lists/*
 
 # The agent user: uid and gid 1000, home /home/agent, passwordless sudo

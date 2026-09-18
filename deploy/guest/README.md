@@ -15,6 +15,7 @@ constants.
 | Codex bundle | `/opt/warden/runtime` | `/tmp/warden-runtime` |
 | Claude executable | `/opt/warden/claude/claude` | `/tmp/warden-claude` |
 | Trust | `/opt/warden/trust/ca-certificates.crt` (mountable, see below) | `/etc/ssl/certs/ca-certificates.crt`, kept by the runner's CA install |
+| Native libraries | cairo (`libcairo2`, `libcairo2-dev`, `pkg-config`) | the same, on top of the template |
 | Manifest `variant` | `base` | `sbx` |
 | Persisted across stop | `/home/agent` only | the whole root filesystem (SBX) |
 

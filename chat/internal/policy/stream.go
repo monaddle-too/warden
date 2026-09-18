@@ -10,11 +10,13 @@ import (
 )
 
 // ProviderEndpoints are the exact provider routes whose SSE responses may be
-// streamed through bounded inspection.
+// streamed through bounded inspection. Anthropic's count_tokens is JSON only
+// and keeps the buffered path.
 var ProviderEndpoints = map[[2]string]bool{
 	{"api.openai.com", "/v1/responses"}:             true,
 	{"api.openai.com", "/v1/chat/completions"}:      true,
 	{"chatgpt.com", "/backend-api/codex/responses"}: true,
+	{"api.anthropic.com", "/v1/messages"}:           true,
 }
 
 // ResponseLimit bounds wire and decoded bytes of an inspected stream.

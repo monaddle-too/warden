@@ -44,6 +44,15 @@ ARG CLAUDE_SHA256_AMD64=d81396a668eb76fbddb49a2a5841f1b5d7af96b4c1f6500ced92f2c9
 ARG CLAUDE_SHA256_ARM64=214a90efdd16ee0ea81132ffecced588dba394d178cc494f285ba04b5288c8de
 
 USER root
+# The native cairo library (libcairo2 with its headers and pkg-config
+# file), which the template does not ship: charting and image tools that
+# load or link cairo (cairocffi, pycairo, node-canvas, rsvg, matplotlib's
+# cairo backends) then work without a package install. Dockerfile.base
+# installs the same for Kubernetes guests.
+RUN set -eu; export DEBIAN_FRONTEND=noninteractive; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends libcairo2 libcairo2-dev pkg-config; \
+    rm -rf /var/lib/apt/lists/*
 # The pinned runtimes at the paths the SBX runner expects, fetched and
 # verified by the shared script (see fetch-runtimes.sh for what it checks).
 RUN --mount=type=bind,source=fetch-runtimes.sh,target=/tmp/fetch-runtimes.sh \
