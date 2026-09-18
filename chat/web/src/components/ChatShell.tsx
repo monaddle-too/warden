@@ -57,7 +57,7 @@ import {
 } from "./DocumentReview";
 import { Previews } from "./Previews";
 import { Conversation, type RequestCard } from "./Conversation";
-import { ModelSelect } from "./ModelSelect";
+import { chatModel, modelOptions } from "../models";
 import { SizeSelect, sameSize } from "./SizeSelect";
 import { AdminConsole } from "./AdminConsole";
 import { chatStatusLabel } from "../stages";
@@ -1002,13 +1002,23 @@ export function ChatShell({
               </label>
               <label>
                 Model
-                <ModelSelect
-                  provider={provider}
-                  value={model}
-                  onChange={setModel}
-                  label="New conversation model"
-                  options={state.agentOptions}
-                />
+                <select
+                  aria-label="New conversation model"
+                  value={chatModel(provider, model, state.agentOptions)}
+                  onChange={(e) => setModel(e.target.value)}
+                >
+                  {modelOptions(provider, state.agentOptions).map((m) => (
+                    <option
+                      key={m.value}
+                      value={m.value}
+                      title={m.hint}
+                      disabled={m.disabled}
+                    >
+                      {m.label}
+                      {m.disabled ? " (not allowed)" : ""}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 Workspace

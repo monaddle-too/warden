@@ -130,10 +130,10 @@ import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
 import { FindBar, isFindKey, modifierKey, type FindRequest } from "./FindBar";
 import { HistorySearch } from "./HistorySearch";
-import { ModelSelect, modelOptions } from "./ModelSelect";
+import { ComposerMenu } from "./ComposerMenu";
+import { modelOptions } from "../models";
 import { SpendChip } from "./SpendChip";
 import { ModeSelect } from "./ModeSelect";
-import { StyleSelect } from "./StyleSelect";
 import { CostCard } from "./CostCard";
 import { ComposerPastes } from "./Pastes";
 import {
@@ -1805,84 +1805,7 @@ export function Conversation({
             }}
           />
           <div className="composer-footer">
-            <span>
-              <span className="composer-model">
-                <ModelSelect
-                  provider={chat.provider || "codex"}
-                  value={chat.model || ""}
-                  disabled={modelLocked || chat.archived}
-                  onChange={(model) => {
-                    setError("");
-                    void onModel(model).catch((e) => setError(String(e)));
-                  }}
-                  label="Model for the next turn"
-                  session={chat.session}
-                  settings={
-                    settings
-                      ? {
-                          thinking: chat.thinking,
-                          effort: chat.effort,
-                          fast: chat.fast,
-                        }
-                      : undefined
-                  }
-                  options={agentOptions}
-                  onSettings={
-                    settings
-                      ? (change) => {
-                          setError("");
-                          void onSettings(change).catch((e) =>
-                            setError(String(e)),
-                          );
-                        }
-                      : undefined
-                  }
-                />
-              </span>
-              {modes && (
-                <span className="composer-mode">
-                  <ModeSelect
-                    value={chat.mode || "auto"}
-                    disabled={chat.archived}
-                    onChange={(mode) => {
-                      setError("");
-                      void onMode(mode).catch((e) => setError(String(e)));
-                    }}
-                  />
-                </span>
-              )}
-              {styles && (
-                <span className="composer-style">
-                  <StyleSelect
-                    value={chat.outputStyle || ""}
-                    running={chat.session?.outputStyle}
-                    disabled={chat.archived}
-                    onChange={(style) => {
-                      setError("");
-                      void onStyle(style).catch((e) => setError(String(e)));
-                    }}
-                  />
-                </span>
-              )}
-              {chat.conversation.context && (
-                <ContextMeter context={chat.conversation.context} />
-              )}
-              <SpendChip chat={chat} />
-              <span
-                className={`status-dot ${chat.startup && running ? "starting" : chat.status}`}
-              />
-              <span
-                className={chat.startup && running ? "composer-startup" : ""}
-                title={chat.startup?.detail}
-              >
-                {chat.startup && running
-                  ? startupLine(chat.startup, clock)
-                  : chat.archived && !running
-                    ? "Archived"
-                    : chatStatusLabel(chat)}
-              </span>
-            </span>
-            <div>
+            <div className="composer-tools">
               <input
                 ref={picker}
                 type="file"
@@ -1903,9 +1826,24 @@ export function Conversation({
               >
                 <Paperclip size={16} />
               </button>
+              {modes && (
+                <span className="composer-mode">
+                  <ModeSelect
+                    value={chat.mode || "auto"}
+                    disabled={chat.archived}
+                    onChange={(mode) => {
+                      setError("");
+                      void onMode(mode).catch((e) => setError(String(e)));
+                    }}
+                  />
+                </span>
+              )}
+            </div>
+            <div className="composer-actions">
               {running && (
                 <button
                   type="button"
+                  className="composer-stop"
                   title="Interrupt the agent's turn; the workspace stays up"
                   disabled={busy || chat.status === "stopping"}
                   onClick={stop}
@@ -1914,6 +1852,45 @@ export function Conversation({
                   Stop
                 </button>
               )}
+              <ComposerMenu
+                provider={chat.provider || "codex"}
+                model={chat.model || ""}
+                disabled={modelLocked || chat.archived}
+                onModel={(model) => {
+                  setError("");
+                  void onModel(model).catch((e) => setError(String(e)));
+                }}
+                session={chat.session}
+                settings={
+                  settings
+                    ? {
+                        thinking: chat.thinking,
+                        effort: chat.effort,
+                        fast: chat.fast,
+                      }
+                    : undefined
+                }
+                style={chat.outputStyle || ""}
+                options={agentOptions}
+                onSettings={
+                  settings
+                    ? (change) => {
+                        setError("");
+                        void onSettings(change).catch((e) =>
+                          setError(String(e)),
+                        );
+                      }
+                    : undefined
+                }
+                onStyle={
+                  styles
+                    ? (style) => {
+                        setError("");
+                        void onStyle(style).catch((e) => setError(String(e)));
+                      }
+                    : undefined
+                }
+              />
               <button
                 className="send-button"
                 aria-label={
@@ -1955,6 +1932,22 @@ export function Conversation({
           </div>
         </div>
         <div className="composer-hint">
+          <span className="composer-status">
+            <span
+              className={`status-dot ${chat.startup && running ? "starting" : chat.status}`}
+            />
+            <span
+              className={chat.startup && running ? "composer-startup" : ""}
+              title={chat.startup?.detail}
+            >
+              {chat.startup && running
+                ? startupLine(chat.startup, clock)
+                : chat.archived && !running
+                  ? "Archived"
+                  : chatStatusLabel(chat)}
+            </span>
+          </span>
+          <span className="composer-hint-text">
           {!live
             ? "Reconnecting · your draft is preserved"
             : prefix?.kind === "shell"
@@ -1976,7 +1969,14 @@ export function Conversation({
                         ? chat.provider === "claude"
                           ? "Queued for the next turn — edit or withdraw it from the transcript until then"
                           : "Send to steer the current run"
-                        : "⌘ / Ctrl + Enter to send · / commands · @ file · ! shell · # note · /btw aside · ↑ history · Ctrl+R search")}
+                        : "")}
+          </span>
+          <span className="composer-meters">
+            {chat.conversation.context && (
+              <ContextMeter context={chat.conversation.context} />
+            )}
+            <SpendChip chat={chat} />
+          </span>
         </div>
       </form>
     </div>

@@ -145,23 +145,22 @@ export const MODES: ModeOption[] = [
    in tokens. The selector offers these; /thinking also takes any budget. */
 export type ThinkingOption = { value: string; label: string; hint: string };
 export const THINKING: ThinkingOption[] = [
-  { value: "", label: "Thinking: default", hint: "The model decides" },
-  { value: "off", label: "Thinking off", hint: "No extended thinking" },
-  { value: "4000", label: "Thinking 4k", hint: "A budget of 4,000 tokens" },
-  { value: "16000", label: "Thinking 16k", hint: "A budget of 16,000 tokens" },
-  { value: "32000", label: "Thinking 32k", hint: "A budget of 32,000 tokens" },
+  { value: "", label: "Default", hint: "The model decides how much to think" },
+  { value: "off", label: "Off", hint: "No extended thinking" },
+  { value: "4000", label: "4k budget", hint: "A budget of 4,000 tokens" },
+  { value: "16000", label: "16k budget", hint: "A budget of 16,000 tokens" },
+  { value: "32000", label: "32k budget", hint: "A budget of 32,000 tokens" },
 ];
 
-/* The effort levels of a Claude chat, lowest first; "" is the model's own
-   default. */
+/* The effort levels of a Claude chat, lowest first. A chat that has not
+   chosen one runs the CLI's default, high (models.ts DEFAULT_EFFORT). */
 export type EffortOption = { value: string; label: string; hint: string };
 export const EFFORTS: EffortOption[] = [
-  { value: "", label: "Effort: default", hint: "The model's default level" },
-  { value: "low", label: "Effort low", hint: "Quick, shallow answers" },
-  { value: "medium", label: "Effort medium", hint: "Between low and high" },
-  { value: "high", label: "Effort high", hint: "The usual level" },
-  { value: "xhigh", label: "Effort xhigh", hint: "More reasoning than high" },
-  { value: "max", label: "Effort max", hint: "As much reasoning as it takes" },
+  { value: "low", label: "Low", hint: "Quick, shallow answers" },
+  { value: "medium", label: "Medium", hint: "Between low and high" },
+  { value: "high", label: "High", hint: "The usual level" },
+  { value: "xhigh", label: "Extra high", hint: "More reasoning than high" },
+  { value: "max", label: "Max", hint: "As much reasoning as it takes" },
 ];
 
 /* A /thinking argument as the setting: on/default for the default, off,
@@ -275,9 +274,10 @@ export function commandItems(
     }));
   if (name === "thinking") return thinkingItems(arg);
   if (name === "effort")
-    return EFFORTS.filter((e) => (e.value || "default").startsWith(arg)).map(
-      (effort) => ({ kind: "effort", effort }),
-    );
+    return EFFORTS.filter((e) => e.value.startsWith(arg)).map((effort) => ({
+      kind: "effort",
+      effort,
+    }));
   if (name === "style")
     return STYLES.filter((s) =>
       (s.value || "default").toLowerCase().startsWith(arg),
@@ -361,7 +361,7 @@ export function exactCommand(
       (item.kind === "mode" && item.mode.value === arg) ||
       (item.kind === "thinking" &&
         item.thinking.value === parseThinking(arg)) ||
-      (item.kind === "effort" && (item.effort.value || "default") === arg) ||
+      (item.kind === "effort" && item.effort.value === arg) ||
       (item.kind === "style" &&
         (item.style.value || "default").toLowerCase() === arg),
   );

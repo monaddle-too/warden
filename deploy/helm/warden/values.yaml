@@ -231,8 +231,14 @@ providers:
   # Set to false to run without that provider (rendered as JSON null).
   codex:
     enabled: true
+    # The model new Codex chats start with; empty means Warden's built-in
+    # default (GPT-5.6 Sol).
+    defaultModel: ""
   claude:
     enabled: true
+    # The model new Claude chats start with; empty means Warden's built-in
+    # default (Opus).
+    defaultModel: ""
     # Session features chats may turn on; both cost more than the defaults.
     # Fast mode is Claude Code's faster Opus serving; long context offers
     # the 1M-context model variants (sonnet[1m], opus[1m]).

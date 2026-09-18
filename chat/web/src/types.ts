@@ -374,6 +374,8 @@ export type AgentOptions = {
   fastMode: boolean;
   longContext: boolean;
   models?: Record<string, CatalogModel[]>;
+  /* The model a chat of each provider starts with (chats/defaults.go). */
+  defaults?: Record<string, string>;
 };
 export type State = {
   version: number;

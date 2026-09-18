@@ -124,8 +124,13 @@ func run(args []string) error {
 	// single-owner install on a machine with such directories, which the
 	// Kubernetes shape is not (the runner is a pod).
 	engine.LocalMode = s.cfg.Auth.Mode == config.AuthOwner && s.cfg.RuntimeKind() != config.RuntimeKubernetes
+	engine.DefaultModels = map[string]string{}
 	if claude := s.cfg.Providers.Claude; claude != nil {
 		engine.AllowFastMode, engine.AllowLongContext = claude.AllowFastMode, claude.AllowLongContext
+		engine.DefaultModels["claude"] = claude.DefaultModel
+	}
+	if codex := s.cfg.Providers.Codex; codex != nil {
+		engine.DefaultModels["codex"] = codex.DefaultModel
 	}
 	handler.Engine = engine
 	// Bug reports (docs/bug-reporting-plan.md): a recovered panic in a

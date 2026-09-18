@@ -287,8 +287,8 @@ func localPaths(query string) []string {
 // staticModels are the rows a provider's picker offers when its CLI has
 // reported no catalog (the web's ModelSelect keeps the same).
 var staticModels = map[string][]ModelInfo{
-	"codex":  {{Value: "gpt-6-astra", Label: "GPT-6 Astra"}, {Value: "gpt-5.6-sol", Label: "GPT-5.6 Sol"}, {Value: "gpt-5.6-terra", Label: "GPT-5.6 Terra"}, {Value: "gpt-5.6-luna", Label: "GPT-5.6 Luna"}, {Value: "gpt-5.5", Label: "GPT-5.5"}},
-	"claude": {{Value: "sonnet", Label: "Claude Sonnet", Efforts: chats.Efforts, AdaptiveThinking: true}, {Value: "opus", Label: "Claude Opus", Efforts: chats.Efforts, AdaptiveThinking: true, FastMode: true}, {Value: "haiku", Label: "Claude Haiku"}, {Value: "sonnet[1m]", Label: "Claude Sonnet 1M", Efforts: chats.Efforts, AdaptiveThinking: true}, {Value: "opus[1m]", Label: "Claude Opus 1M", Efforts: chats.Efforts, AdaptiveThinking: true, FastMode: true}},
+	"codex":  {{Value: "gpt-5.6-sol", Label: "GPT-5.6 Sol"}, {Value: "gpt-6-astra", Label: "GPT-6 Astra"}, {Value: "gpt-5.6-terra", Label: "GPT-5.6 Terra"}, {Value: "gpt-5.6-luna", Label: "GPT-5.6 Luna"}, {Value: "gpt-5.5", Label: "GPT-5.5"}},
+	"claude": {{Value: "opus", Label: "Opus", Efforts: chats.Efforts, AdaptiveThinking: true, FastMode: true}, {Value: "sonnet", Label: "Sonnet", Efforts: chats.Efforts, AdaptiveThinking: true}, {Value: "haiku", Label: "Haiku"}, {Value: "sonnet[1m]", Label: "Sonnet 1M", Efforts: chats.Efforts, AdaptiveThinking: true}, {Value: "opus[1m]", Label: "Opus 1M", Efforts: chats.Efforts, AdaptiveThinking: true, FastMode: true}},
 }
 
 // LongContextHint and FastModeHint say why a costlier choice is refused
@@ -301,36 +301,64 @@ const (
 // longContextModel reports a 1M-context alias (chats.longContextModel).
 func longContextModel(value string) bool { return strings.HasSuffix(value, "[1m]") }
 
+// DefaultModel is the model chats of a provider start with, as the
+// service reported it (chats/defaults.go), or the static rows' first.
+func DefaultModel(provider string, options AgentOptions) string {
+	if m := options.Defaults[provider]; m != "" {
+		return m
+	}
+	if provider == "claude" {
+		return chats.DefaultClaudeModel
+	}
+	return chats.DefaultCodexModel
+}
+
 // ModelRows are the picker's rows for a provider: the CLI's catalog when
-// it reported one (its "default" row is the provider-default row), else
-// the static rows. A 1M-context row the operator has not allowed stays
-// listed with the hint; the provider default comes first.
+// it reported one (its "default" row, the CLI's own default, is dropped:
+// a chat always has a concrete model), else the static rows. The
+// provider's default model comes first, marked. A 1M-context row the
+// operator has not allowed stays listed with the hint.
 func ModelRows(provider string, options AgentOptions) []ModelInfo {
 	rows := options.Models[provider]
 	if len(rows) == 0 {
 		rows = staticModels[provider]
 	}
-	out := []ModelInfo{{Value: "", Label: "Provider default"}}
+	def := DefaultModel(provider, options)
+	var out []ModelInfo
+	found := false
 	for _, r := range rows {
 		if r.Value == "default" {
-			out[0].Resolved, out[0].Description = r.Resolved, r.Description
+			continue
+		}
+		if r.Value == def {
+			r.Label += " (default)"
+			out = append([]ModelInfo{r}, out...)
+			found = true
 			continue
 		}
 		out = append(out, r)
+	}
+	if !found && def != "" {
+		// A default the catalog does not list (the operator's choice, or
+		// an alias the CLI resolves without listing) still leads.
+		label := def
+		for _, r := range staticModels[provider] {
+			if r.Value == def {
+				label = r.Label
+			}
+		}
+		out = append([]ModelInfo{{Value: def, Label: label + " (default)"}}, out...)
 	}
 	return out
 }
 
 // modelItems are the rows a /model argument can pick: those whose value
-// or label contains the query. The default row inserts "default".
+// or label contains the query.
 func modelItems(provider string, options AgentOptions, query string) []MenuItem {
 	q := strings.ToLower(strings.TrimSpace(query))
 	var out []MenuItem
 	for _, r := range ModelRows(provider, options) {
 		insert := r.Value
-		if insert == "" {
-			insert = "default"
-		}
 		if q != "" && !strings.Contains(strings.ToLower(insert), q) && !strings.Contains(strings.ToLower(r.Label), q) {
 			continue
 		}
@@ -349,7 +377,8 @@ func modelItems(provider string, options AgentOptions, query string) []MenuItem 
 
 // EffortsFor are the effort levels the chat's model takes: the catalog
 // row's when the CLI reported one (a row with none, like Haiku, takes no
-// level), else every level. The chat's model "" is the provider default.
+// level), else every level. A chat recorded without a model runs the
+// provider's default.
 func EffortsFor(c *Chat, options AgentOptions) []string {
 	if c == nil || c.Provider != "claude" {
 		return chats.Efforts
@@ -360,7 +389,7 @@ func EffortsFor(c *Chat, options AgentOptions) []string {
 	}
 	want := c.Model
 	if want == "" {
-		want = "default"
+		want = DefaultModel("claude", options)
 	}
 	for _, r := range rows {
 		if r.Value == want {

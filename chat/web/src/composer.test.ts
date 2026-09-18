@@ -20,10 +20,10 @@ import {
   triggerAt,
   withoutCommand,
 } from "./composer";
-import { modelOptions } from "./components/ModelSelect";
+import { modelOptions } from "./models";
 
 const models = [
-  { value: "", label: "Provider default" },
+  { value: "gpt-5.6-sol", label: "GPT-5.6 Sol", hint: "Default" },
   { value: "gpt-5.5", label: "GPT-5.5" },
   { value: "gpt-6-astra", label: "GPT-6 Astra" },
 ];
@@ -85,32 +85,26 @@ describe("thinking and effort commands", () => {
   it("lists the effort levels after /effort and runs an exact one", () => {
     const values = (q: string) =>
       commandItems(q, models).map((i) =>
-        i.kind === "effort" ? i.effort.value || "default" : i.kind,
+        i.kind === "effort" ? i.effort.value : i.kind,
       );
-    expect(values("effort ")).toEqual([
-      "default",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-    ]);
+    // No "default" row: a chat always runs a level (high until chosen).
+    expect(values("effort ")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(values("effort m")).toEqual(["medium", "max"]);
     const hit = exactCommand("/effort xhigh", models);
     expect(hit?.kind === "effort" && hit.effort.value).toBe("xhigh");
-    const def = exactCommand("/effort default", models);
-    expect(def?.kind === "effort" && def.effort.value).toBe("");
+    expect(exactCommand("/effort default", models)).toBeUndefined();
     expect(exactCommand("/effort ultra", models)).toBeUndefined();
   });
   it("lists the 1M-context models, disabled with a hint until the service allows them", () => {
+    // The provider's default leads, marked; there is no "default" row.
     expect(modelOptions("claude").map((m) => m.value)).toEqual([
-      "",
-      "sonnet",
       "opus",
+      "sonnet",
       "haiku",
       "sonnet[1m]",
       "opus[1m]",
     ]);
+    expect(modelOptions("claude")[0].hint).toMatch(/^Default/);
     expect(
       modelOptions("claude")
         .filter((m) => m.disabled)
@@ -123,7 +117,7 @@ describe("thinking and effort commands", () => {
     ).toBe(false);
     expect(
       modelOptions("codex", { fastMode: true, longContext: true }),
-    ).toHaveLength(6);
+    ).toHaveLength(5);
     // The /model rows carry the hint and the disabled state.
     const items = commandItems("model opus[", modelOptions("claude"));
     expect(items).toHaveLength(1);
@@ -192,7 +186,7 @@ describe("composer triggers", () => {
       commandItems("model ", models).map((i) =>
         i.kind === "model" ? i.model.value : "",
       ),
-    ).toEqual(["", "gpt-5.5", "gpt-6-astra"]);
+    ).toEqual(["gpt-5.6-sol", "gpt-5.5", "gpt-6-astra"]);
     expect(
       commandItems("model GPT-6", models).map((i) =>
         i.kind === "model" ? i.model.value : "",
@@ -203,11 +197,13 @@ describe("composer triggers", () => {
         i.kind === "model" ? i.model.value : "",
       ),
     ).toEqual(["gpt-5.5"]);
+    // A label matches too ("sol" finds GPT-5.6 Sol); no default row exists.
     expect(
-      commandItems("model prov", models).map((i) =>
+      commandItems("model sol", models).map((i) =>
         i.kind === "model" ? i.model.label : "",
       ),
-    ).toEqual(["Provider default"]);
+    ).toEqual(["GPT-5.6 Sol"]);
+    expect(commandItems("model prov", models)).toEqual([]);
     expect(commandItems("stop now", models)).toEqual([]);
   });
   it("recognises a message that is exactly a command", () => {

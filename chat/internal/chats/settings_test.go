@@ -29,7 +29,7 @@ func claudeResidentSetup(t *testing.T) (*Engine, *claudeWorker, string) {
 		}
 		s.Close()
 	})
-	id, err := e.Create("Settings", "", "", nil, "claude", "")
+	id, err := e.Create("Settings", "", "", nil, "claude", "sonnet")
 	if err != nil {
 		t.Fatal(err)
 	}

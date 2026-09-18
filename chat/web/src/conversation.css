@@ -810,73 +810,35 @@
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px 8px 8px;
+  padding: 4px 8px 8px 8px;
   font-size: 13px;
   color: var(--text-2);
 }
-/* The model picker sits in the composer, as in the desktop agent apps;
-   on Claude chats the thinking, effort and fast-mode controls follow it
-   and wrap to a second line where the footer is narrow. */
-.composer-footer > span > span.composer-model {
-  display: inline-flex;
-  flex-wrap: wrap;
+/* The footer, as in the desktop agent apps: the attach button and the
+   permission mode at the left; Stop, the model · effort menu and Send
+   at the right. */
+.composer-tools,
+.composer-actions {
+  display: flex;
   align-items: center;
-  gap: 2px;
-  overflow: visible;
-  white-space: normal;
+  gap: 4px;
+  min-width: 0;
 }
-.composer-model select {
-  width: auto;
-  height: 30px;
-  min-height: 0;
-  padding: 0 26px 0 8px;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background-color: transparent;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-2);
-  cursor: pointer;
-}
-.composer-model select:hover:not(:disabled) {
-  background-color: var(--surface-3);
-  color: var(--text);
-}
-.composer-model select:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-/* Fast mode, a checkbox after the Claude settings when the service
-   offers it. */
-.composer-model .composer-fast {
-  display: inline-flex;
-  flex-direction: row;
-  align-items: center;
+.composer-actions {
   gap: 6px;
+}
+.composer-stop {
   height: 30px;
-  margin: 0;
-  padding: 0 8px;
-  border-radius: var(--radius);
+  padding: 0 10px;
   font-size: 13px;
-  font-weight: 500;
-  color: var(--text-2);
-  cursor: pointer;
 }
-.composer-model .composer-fast:hover {
-  background-color: var(--surface-3);
-  color: var(--text);
-}
-.composer-model .composer-fast input {
-  flex: none;
-  width: 14px;
-  height: 14px;
-}
-/* The permission mode picker sits beside the model on Claude chats. */
+/* The permission mode: a quiet pill (a native select, so the keyboard
+   and screen readers get the real control). */
 .composer-mode select {
   width: auto;
   height: 30px;
   min-height: 0;
-  padding: 0 26px 0 8px;
+  padding: 0 22px 0 8px;
   border: 1px solid transparent;
   border-radius: var(--radius);
   background-color: transparent;
@@ -893,21 +855,161 @@
   opacity: 0.6;
   cursor: default;
 }
-.composer-footer > span {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
+/* The model · effort menu (ComposerMenu.tsx). */
+.composer-menu {
+  position: relative;
 }
-.composer-footer > span > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
+.composer-menu-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 6px 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
   white-space: nowrap;
 }
-.composer-footer > div {
+.composer-menu-button:hover:not(:disabled),
+.composer-menu.open .composer-menu-button {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.composer-menu-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.composer-menu-sep {
+  color: var(--muted);
+}
+.composer-menu-effort {
+  color: var(--muted);
+  font-weight: 400;
+}
+.composer-menu-button:hover .composer-menu-effort,
+.composer-menu.open .composer-menu-effort {
+  color: var(--text-2);
+}
+.composer-menu-mark {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.composer-menu-list {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  min-width: 240px;
+  max-height: min(60vh, 480px);
+  overflow: auto;
+  padding: 6px;
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  text-align: left;
+}
+.composer-menu-section {
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.composer-menu-section + .composer-menu-section,
+.composer-menu-list > button + .composer-menu-section,
+.composer-menu-advanced {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+.composer-menu-list > button {
+  display: flex;
   align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: auto;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.composer-menu-list > button:hover:not(:disabled),
+.composer-menu-list > button:focus-visible {
+  background: var(--surface-3);
+}
+.composer-menu-list > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.composer-menu-check {
+  flex: none;
+  width: 14px;
+  display: inline-flex;
+  justify-content: center;
+  color: var(--accent);
+}
+.composer-menu-label {
+  flex: 1;
+  min-width: 0;
+}
+.composer-menu-hint {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+.composer-menu-advanced summary {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.composer-menu-advanced summary:hover {
+  color: var(--text);
+}
+.composer-menu-advanced label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 400;
+  text-align: left;
+  color: var(--text);
+}
+.composer-menu-advanced label > span:first-child {
+  color: var(--text-2);
+}
+.composer-menu-advanced select {
+  width: auto;
+  height: 28px;
+  min-height: 0;
+  padding: 0 24px 0 8px;
+  font-size: 13px;
+}
+.composer-menu-advanced .composer-menu-fast {
+  justify-content: flex-start;
+}
+.composer-menu-advanced .composer-menu-fast input {
+  width: 14px;
+  height: 14px;
 }
 .send-button {
   width: 36px;
@@ -920,10 +1022,37 @@
   background: var(--primary-hover);
   border-color: var(--primary-hover);
 }
+/* Under the composer: the agent's state at the left, a hint about the
+   draft in the middle when there is one, the context meter and the spend
+   at the right. */
 .composer-hint {
-  padding: 6px 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 22px;
+  padding: 6px 6px 0;
   font-size: 12px;
   color: var(--muted);
+}
+.composer-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  white-space: nowrap;
+}
+.composer-hint-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-meters {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
 }
 
 /* Slash commands and @path mentions: a list floating over the composer,
@@ -1476,7 +1605,7 @@ button.attachment-chip {
 .todo-active {
   font-size: 12px;
 }
-/* The context meter in the composer footer: a small bar and "42k / 200k",
+/* The context meter under the composer: a small bar and "42k / 200k",
    amber from 80 % of the window, red from 95 %. */
 .context-meter {
   display: inline-flex;
@@ -1515,7 +1644,7 @@ button.attachment-chip {
   background: var(--danger);
 }
 
-/* The spend chip beside the model: the chat's cost (or tokens) so far. */
+/* The spend chip beside the context meter: the chat's cost (or tokens) so far. */
 .spend-chip {
   display: inline-flex;
   flex: none; /* a few characters: never the one the footer cuts */
@@ -1525,10 +1654,6 @@ button.attachment-chip {
   white-space: nowrap;
   cursor: default;
   font-variant-numeric: tabular-nums;
-}
-.composer-model .composer-fast.disallowed {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 
 /* The divider where the agent compacted its context. */

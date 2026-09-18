@@ -315,6 +315,9 @@ type Providers struct {
 type AuthFile struct {
 	AuthFile string `json:"authFile,omitempty"`
 	Secret   string `json:"secret,omitempty"`
+	// DefaultModel is the model new chats of this provider start with
+	// (chats/defaults.go has the built-in: GPT-5.6 Sol for Codex).
+	DefaultModel string `json:"defaultModel,omitempty"`
 }
 
 // Claude is the Claude login (as AuthFile) plus the session features the
@@ -326,6 +329,9 @@ type Claude struct {
 	Secret           string `json:"secret,omitempty"`
 	AllowFastMode    bool   `json:"allowFastMode,omitempty"`
 	AllowLongContext bool   `json:"allowLongContext,omitempty"`
+	// DefaultModel is the model new Claude chats start with (the
+	// built-in is Opus, chats/defaults.go).
+	DefaultModel string `json:"defaultModel,omitempty"`
 }
 
 // logins are the two agent logins as one shape, for the validation that

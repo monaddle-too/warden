@@ -376,6 +376,8 @@ type AgentOptions struct {
 	FastMode    bool                   `json:"fastMode"`
 	LongContext bool                   `json:"longContext"`
 	Models      map[string][]ModelInfo `json:"models"`
+	// Defaults is the model a chat of each provider starts with.
+	Defaults map[string]string `json:"defaults"`
 }
 
 // ModelInfo mirrors chats.ModelInfo: one row of a provider's catalog as

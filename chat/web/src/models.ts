@@ -52,8 +52,32 @@ export function catalogRows(
   return rows && rows.length ? rows : staticModels[provider] || [];
 }
 
-/* The catalog row a chat's model means: its own, or the "default" row
-   for the provider default; undefined without a catalog or a match. */
+/* Warden's built-in defaults (chats/defaults.go), for a service that
+   has not said its own. */
+const staticDefaults: Record<string, string> = {
+  claude: "opus",
+  codex: "gpt-5.6-sol",
+};
+
+/* The model a chat of the provider starts with: the service's default
+   (agentOptions.defaults, the operator's choice or the built-in), else
+   the built-in. A chat recorded without a model (from before defaults
+   existed) runs this one, so the picker shows it. */
+export function defaultModel(provider: string, options?: AgentOptions) {
+  return options?.defaults?.[provider] || staticDefaults[provider] || "";
+}
+
+/* The model a chat runs: its own, or the provider's default. */
+export function chatModel(
+  provider: string,
+  model: string,
+  options?: AgentOptions,
+) {
+  return model || defaultModel(provider, options);
+}
+
+/* The catalog row a chat's model means; undefined without a catalog or a
+   match. */
 export function catalogRow(
   provider: string,
   model: string,
@@ -61,29 +85,24 @@ export function catalogRow(
 ): CatalogModel | undefined {
   const rows = options?.models?.[provider];
   if (!rows?.length) return undefined;
-  return rows.find((r) => r.value === (model || "default"));
+  return rows.find((r) => r.value === chatModel(provider, model, options));
 }
 
-/* The choices the picker offers for a provider, the default first; the
-   composer's /model command lists the same. */
+/* The choices the picker offers for a provider, the default first and
+   marked; the composer's /model command lists the same. The CLI's own
+   "default" row is not offered: a chat always names its model. */
 export function modelOptions(
   provider: string,
   options?: AgentOptions,
 ): ModelOption[] {
   const rows = catalogRows(provider, options);
-  const fallback = rows.find((r) => r.value === "default");
-  const out: ModelOption[] = [
-    {
-      value: "",
-      label: "Provider default",
-      hint: describe(fallback) || "The provider's default model",
-    },
-  ];
+  const def = defaultModel(provider, options);
+  const out: ModelOption[] = [];
   for (const r of rows) {
     if (r.value === "default") continue;
     const option: ModelOption = {
       value: r.value,
-      label: provider === "claude" ? `Claude ${r.label}` : r.label,
+      label: r.label,
       hint: describe(r) || r.value,
     };
     if (
@@ -94,9 +113,26 @@ export function modelOptions(
       option.disabled = true;
       option.hint = LONG_CONTEXT_HINT;
     }
-    out.push(option);
+    if (r.value === def) {
+      option.hint = ["Default", option.hint].filter(Boolean).join(" · ");
+      out.unshift(option);
+    } else out.push(option);
   }
+  // A default the catalog does not list (an operator's choice, or an
+  // alias the CLI resolves without listing) is still what chats run.
+  if (def && !out.some((o) => o.value === def))
+    out.unshift({ value: def, label: modelLabel(def), hint: "Default" });
   return out;
+}
+
+/* A readable name for a model alias the catalog does not describe:
+   the static row's label, else the alias with its first letter up. */
+export function modelLabel(value: string): string {
+  for (const rows of Object.values(staticModels)) {
+    const row = rows.find((r) => r.value === value);
+    if (row) return row.label;
+  }
+  return value ? value[0].toUpperCase() + value.slice(1) : value;
 }
 
 function describe(r?: CatalogModel): string {
@@ -104,9 +140,18 @@ function describe(r?: CatalogModel): string {
   return [r.resolved, r.description].filter(Boolean).join(" · ");
 }
 
-/* The effort rows for a chat's model: the default row, then the levels
-   the catalog says the model takes (every level without a catalog; none
-   for a model like Haiku, which takes no effort level). */
+/* The effort level a Claude chat runs when it has not chosen one: the
+   CLI's own (item 9: "high" until told otherwise). */
+export const DEFAULT_EFFORT = "high";
+
+/* The effort a chat runs: its setting, or the default. */
+export function chatEffort(effort: string | undefined) {
+  return effort || DEFAULT_EFFORT;
+}
+
+/* The effort rows for a chat's model: the levels the catalog says the
+   model takes (every level without a catalog; none for a model like
+   Haiku, which takes no effort level). */
 export function effortOptions(
   provider: string,
   model: string,
@@ -115,7 +160,7 @@ export function effortOptions(
   const row = catalogRow(provider, model, options);
   if (!row) return EFFORTS;
   const levels = row.efforts || [];
-  return EFFORTS.filter((e) => e.value === "" || levels.includes(e.value));
+  return EFFORTS.filter((e) => levels.includes(e.value));
 }
 
 /* Fast mode for a chat's model: whether the operator allows it (the

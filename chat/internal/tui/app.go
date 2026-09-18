@@ -1518,7 +1518,7 @@ func (a *App) command(ctx context.Context, line string) {
 		if name == "model" {
 			model = arg
 			if model == "default" {
-				model = "" // the menu's row for the provider default
+				model = DefaultModel(provider, a.agentOptions())
 			}
 		} else {
 			provider = arg

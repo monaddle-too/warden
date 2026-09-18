@@ -100,6 +100,9 @@ type Engine struct {
 	// mode as a chat setting, the 1M-context model variants as choices.
 	AllowFastMode    bool
 	AllowLongContext bool
+	// DefaultModels is the operator's default model by provider
+	// (providers.<p>.defaultModel); DefaultModel fills the built-ins in.
+	DefaultModels map[string]string
 	// Bugs drafts this service's bug reports (bugs.go); nil reports nothing.
 	Bugs *bugreport.Capturer
 	// Now is the clock (tests replace it); nil means time.Now.
@@ -216,6 +219,7 @@ func (e *Engine) Wake() {
 func (e *Engine) Serve(ctx context.Context) {
 	defer close(e.done)
 	defer e.Bugs.Recover("engine serve loop")
+	e.fillDefaultModels()
 	if e.PolicyAddress != "" {
 		deliveryCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
@@ -318,6 +322,9 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 	}
 	if provider == "" {
 		provider = "codex"
+	}
+	if model == "" {
+		model = e.DefaultModel(provider)
 	}
 	if resources != nil && resources.IsZero() {
 		resources = nil
@@ -507,13 +514,16 @@ type AgentOptions struct {
 	FastMode    bool                   `json:"fastMode"`
 	LongContext bool                   `json:"longContext"`
 	Models      map[string][]ModelInfo `json:"models,omitempty"`
+	// Defaults is the model a chat of each provider starts with
+	// (defaults.go), the row the pickers show first.
+	Defaults map[string]string `json:"defaults"`
 }
 
 func (e *Engine) View() View {
 	st := e.state()
 	models := catalogRows(st.Catalog)
 	st.Catalog = nil // clients get it as agentOptions.models
-	return View{State: st, Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models}}
+	return View{State: st, Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models, Defaults: e.defaultModels()}}
 }
 
 // state is the store with typing indicators and each chat's spend filled
@@ -1032,9 +1042,7 @@ func (e *Engine) run(parent context.Context, id string) {
 	if instructions != "" {
 		params["developerInstructions"] = params["developerInstructions"].(string) + "\n\n" + instructions
 	}
-	if current.Model != "" {
-		params["model"] = current.Model
-	}
+	params["model"] = e.modelOf(&current)
 	params["runtimeWorkspaceRoots"] = []string{prep.Directory}
 	params["approvalsReviewer"] = "user"
 	tools := append(append(previewTools(), sharingTools()...), grantTools(e.LocalMode)...)
@@ -1877,6 +1885,9 @@ func (e *Engine) configureAgent(id, provider, model string, idleOnly bool) error
 func (e *Engine) ConfigureAgentAndRelease(ctx context.Context, id, provider, model string) error {
 	if provider == "" {
 		provider = "codex"
+	}
+	if model == "" {
+		model = e.DefaultModel(provider)
 	}
 	if current := e.Store.Snapshot().chat(id); current != nil && current.Provider == "claude" && provider == "claude" && model != current.Model {
 		if client := e.liveClient(id); client != nil {

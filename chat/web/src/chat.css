@@ -1863,9 +1863,6 @@ button.danger:hover {
   color: inherit;
   font-weight: 600;
 }
-.composer-style select.style-pending {
-  border-color: var(--accent);
-}
 .session-diff {
   width: min(900px, 100%);
   max-height: 90vh;

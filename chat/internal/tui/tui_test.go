@@ -4250,10 +4250,11 @@ func commandNames() []string {
 }
 
 // The /model menu lists the provider's rows: the CLI's catalog when the
-// service reported one (the default row first, a 1M row the operator has
-// not allowed with its hint), else the static rows; picking the default
-// row sends the provider default. /effort lists the model's levels from
-// the catalog, and a model without any refuses a level.
+// service reported one (Warden's default first, marked, even when the
+// catalog does not list it; the CLI's own "default" row dropped; a 1M row
+// the operator has not allowed with its hint), else the static rows.
+// /effort lists the model's levels from the catalog, and a model without
+// any refuses a level.
 func TestModelAndEffortMenusFromTheCatalog(t *testing.T) {
 	claude := &Chat{ID: "c1", Title: "Claude", Provider: "claude", Model: "haiku", Status: "idle"}
 	codex := &Chat{ID: "c2", Title: "Codex", Provider: "codex", Status: "idle"}
@@ -4272,7 +4273,7 @@ func TestModelAndEffortMenusFromTheCatalog(t *testing.T) {
 		t.Fatalf("model menu: %+v", app.menu)
 	}
 	items := app.menu.Items
-	if items[0].Insert != "default" || !strings.Contains(items[0].Label, "Provider default") || !strings.Contains(items[0].Hint, "claude-sonnet-5") {
+	if items[0].Insert != "opus" || !strings.Contains(items[0].Label, "Opus (default)") {
 		t.Fatalf("default row: %+v", items[0])
 	}
 	if items[1].Insert != "sonnet" || !strings.Contains(items[1].Label, "Sonnet") || items[2].Insert != "opus[1m]" || items[2].Hint != LongContextHint || items[3].Insert != "haiku" {
@@ -4288,11 +4289,11 @@ func TestModelAndEffortMenusFromTheCatalog(t *testing.T) {
 	if app.state.Chats[0].Model != "sonnet" || app.editor.Text() != "" {
 		t.Fatalf("picked: %q draft %q", app.state.Chats[0].Model, app.editor.Text())
 	}
-	// The default row sends "" (the provider default).
-	typeText(app, ctx, "/model def")
+	// "/model default" names the provider's default model, a concrete one.
+	typeText(app, ctx, "/model default")
 	app.handleKey(ctx, Key{Kind: KeyEnter})
 	app.state, _ = app.Client.State(ctx)
-	if app.state.Chats[0].Model != "" {
+	if app.state.Chats[0].Model != "opus" {
 		t.Fatalf("default row sent %q", app.state.Chats[0].Model)
 	}
 	// With the operator's leave the 1M row has its own hint.
@@ -4336,7 +4337,7 @@ func TestModelAndEffortMenusFromTheCatalog(t *testing.T) {
 	f.mu.Unlock()
 	app.state, _ = app.Client.State(ctx)
 	typeText(app, ctx, "/model ")
-	if app.menu == nil || len(app.menu.Items) != 6 || app.menu.Items[1].Insert != "sonnet" || app.menu.Items[4].Insert != "sonnet[1m]" {
+	if app.menu == nil || len(app.menu.Items) != 5 || app.menu.Items[0].Insert != "opus" || app.menu.Items[1].Insert != "sonnet" || app.menu.Items[3].Insert != "sonnet[1m]" {
 		t.Fatalf("static rows: %+v", app.menu)
 	}
 	if levels := EffortsFor(app.chat(), app.agentOptions()); len(levels) != 5 {
@@ -4347,7 +4348,7 @@ func TestModelAndEffortMenusFromTheCatalog(t *testing.T) {
 	// Codex has its own static rows.
 	app.selectChat("c2")
 	typeText(app, ctx, "/model ")
-	if app.menu == nil || len(app.menu.Items) != 6 || app.menu.Items[1].Insert != "gpt-6-astra" {
+	if app.menu == nil || len(app.menu.Items) != 5 || app.menu.Items[0].Insert != "gpt-5.6-sol" || app.menu.Items[1].Insert != "gpt-6-astra" {
 		t.Fatalf("codex rows: %+v", app.menu)
 	}
 	app.editor.Set("")
