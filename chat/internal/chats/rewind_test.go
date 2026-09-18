@@ -227,10 +227,12 @@ func TestRewindConversationFallsBackToAFreshSessionWithARecap(t *testing.T) {
 	if len(input) != 2 || !strings.HasPrefix(agent.String(agent.Map(input[0])["text"]), "Context:") || !strings.Contains(agent.String(agent.Map(input[0])["text"]), "User: first") || agent.String(agent.Map(input[1])["text"]) != "third" {
 		t.Fatalf("the recap must precede the message once: %v", input)
 	}
-	c = e.Store.Snapshot().chat(id)
-	if c.Recap != "" || c.NewSession {
-		t.Fatal("the recap must be consumed by the turn")
-	}
+	// The worker counted the turn on receiving turn/start; the engine
+	// consumes the recap when it confirms the turn from the reply.
+	until(t, func() bool {
+		c := e.Store.Snapshot().chat(id)
+		return c.Recap == "" && !c.NewSession
+	})
 }
 
 func TestRewindConversationWithoutALiveSessionIsAppliedOnResume(t *testing.T) {
