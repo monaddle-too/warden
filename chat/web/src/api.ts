@@ -1,4 +1,10 @@
 import { saveFile } from "./export";
+import type {
+  Checkpoint,
+  RewindResult,
+  RewindWhat,
+  SessionChanges,
+} from "./rewind";
 import type { Attachment, State } from "./types";
 const key = "warden-chat-session";
 let token = "";
@@ -200,4 +206,31 @@ export async function workspacePaths(
   return Array.isArray(result.paths)
     ? result.paths.filter((p): p is string => typeof p === "string")
     : [];
+}
+
+// Checkpoints, rewind and the session diff (rewind.ts). A rewind names the
+// message by its ID (or its turn's) and what to take back: the workspace,
+// the conversation, or both.
+export async function chatCheckpoints(chatID: string): Promise<Checkpoint[]> {
+  const result = await api<{ checkpoints?: unknown }>(
+    `chats/${encodeURIComponent(chatID)}/checkpoints`,
+  );
+  return Array.isArray(result.checkpoints)
+    ? (result.checkpoints as Checkpoint[])
+    : [];
+}
+
+export function rewindChat(
+  chatID: string,
+  turnID: string,
+  what: RewindWhat,
+): Promise<RewindResult> {
+  return api<RewindResult>(`chats/${encodeURIComponent(chatID)}/rewind`, {
+    turnID,
+    what,
+  });
+}
+
+export function sessionChanges(chatID: string): Promise<SessionChanges> {
+  return api<SessionChanges>(`chats/${encodeURIComponent(chatID)}/diff`);
 }

@@ -44,11 +44,14 @@ type managedSandbox struct {
 	// paths is the guest layout the last guest report described (the
 	// manifest's paths object, or the SBX template's defaults); it is
 	// taken again at every prepare, so it is not persisted.
-	paths          GuestPaths
-	LastActivity   time.Time
-	Grant          GrantContext
-	Active         *managedRun
-	Reviewing      bool `json:"-"`
+	paths        GuestPaths
+	LastActivity time.Time
+	Grant        GrantContext
+	Active       *managedRun
+	// Checkpoints are the workspace snapshots taken before user turns,
+	// oldest first (checkpoint.go).
+	Checkpoints    []Checkpoint `json:",omitempty"`
+	Reviewing      bool         `json:"-"`
 	residency      io.Closer
 	previewAuditAt time.Time
 }
@@ -589,6 +592,11 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 	}
 	s.Active.Expires = w.now().Add(60 * time.Second)
 
+	if r.NewSession {
+		// The chat dropped its thread (a conversation rewind the agent
+		// could not apply): the next stream starts fresh.
+		c.ThreadID, c.RolloutPath = "", ""
+	}
 	if r.ThreadID != "" {
 		if !validIdentity(r.ThreadID) {
 			return fail(errors.New("invalid provider thread ID"))
@@ -643,6 +651,13 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	if r.Operation == "pod" {
 		// The pod read is a cluster call; it never holds the registry.
 		return w.snapshotOp(ctx, r)
+	}
+	switch r.Operation {
+	case "exec":
+		// A person's own command: resolved under the lock, run without it.
+		return w.execCommand(ctx, r)
+	case "memory-append":
+		return w.appendMemory(ctx, r)
 	}
 	if r.Operation == "status" {
 		// The read the workspace panel polls: never behind a creation.
@@ -733,6 +748,8 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 			return Response{}, err
 		}
 		return w.writeAttachmentLocked(ctx, s, r)
+	case "checkpoint", "checkpoints", "restore", "diff":
+		return w.checkpointOp(ctx, s, r)
 	case "host.import", "host.export":
 		// Owner-approved copy of a host directory into the sandbox, or of
 		// the sandbox's copy back over it (local installs only; the chat
@@ -785,6 +802,11 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	slots := w.ordinarySlots
 	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" {
 		slots = w.controlSlots
+	}
+	if r.Operation == "exec" {
+		// A person's command may run for a minute; it never takes a slot
+		// from the sandbox operations.
+		slots = w.execSlots
 	}
 	select {
 	case slots <- struct{}{}:

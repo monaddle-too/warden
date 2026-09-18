@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -893,6 +892,7 @@ func (e *Engine) run(parent context.Context, id string) {
 	if current.Conversation.ThreadID != nil {
 		r.ThreadID = *current.Conversation.ThreadID
 	}
+	r.NewSession = current.NewSession
 	var prep sandbox.Response
 	// The runner reports its stages (sandbox creation, the boot, the guest
 	// provisioning) while prepare runs; a follower copies them to the chat.
@@ -1004,6 +1004,11 @@ func (e *Engine) run(parent context.Context, id string) {
 	if err != nil {
 		return
 	}
+	if current.Rewind != nil && !e.applyPendingRewind(ctx, id, client, threadID) {
+		// The resumed session could not rewind: this run ends cleanly and
+		// the message stays queued for a fresh session (rewind.go).
+		return
+	}
 	var message *cv.Entry
 	message, err = e.attempt(id, "")
 	if err != nil {
@@ -1018,6 +1023,7 @@ func (e *Engine) run(parent context.Context, id string) {
 	if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 		return
 	}
+	items = e.beforeTurn(ctx, id, &current, message.ID, items)
 	e.applySession(ctx, id, &current, client)
 	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 	if err != nil {
@@ -1065,6 +1071,7 @@ func (e *Engine) run(parent context.Context, id string) {
 		if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 			return
 		}
+		items = e.beforeTurn(ctx, id, &current, message.ID, items)
 		e.applySession(ctx, id, &current, client)
 		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 		if err != nil {
@@ -1340,6 +1347,7 @@ func (e *Engine) confirm(id, message, turn string) error {
 	return e.Store.update(func(st *State) error {
 		c := st.chat(id)
 		c.Conversation.Begin(turn, e.at())
+		c.Recap, c.NewSession = "", false // delivered with this turn (rewind.go)
 		for i := range c.Conversation.Entries {
 			v := &c.Conversation.Entries[i]
 			if v.ID == message {
@@ -1397,11 +1405,6 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 			thread := agent.Map(p["thread"])
 			c.ThreadID = cv.Ptr(agent.String(thread["id"]))
 			chat.sessionStarted(thread)
-		case "thread/compacted":
-			// The agent compacted its context (Claude's /compact or its
-			// auto-compaction): say so where it happened, with what it
-			// kept, until the transcript has a marker of its own.
-			c.Entries = append(c.Entries, cv.NewEntry("system", compactionNote(p)))
 		case "turn/started":
 			c.ActiveTurnID = cv.Ptr(turn)
 		case "item/started", "item/completed":
@@ -1422,6 +1425,12 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 		case "thread/tokenUsage/updated":
 			if usage != nil {
 				c.Report(usageTurn, *usage)
+			}
+		case "thread/context/updated":
+			// How full the agent's context is (the Claude adapter reports
+			// it per model call and after a compaction).
+			if context := cv.ContextFrom(agent.Map(p["context"])); context != nil {
+				c.Context = context
 			}
 		case "error":
 			if p["willRetry"] != true {
@@ -1672,34 +1681,6 @@ func (e *Engine) configureAgent(id, provider, model string, idleOnly bool) error
 		c.Model = model
 		return nil
 	})
-}
-
-// compactionNote is the system line for a `thread/compacted` notification:
-// how the context was compacted and what it came down to.
-func compactionNote(p map[string]any) string {
-	note := "Context compacted"
-	if agent.String(p["trigger"]) == "auto" {
-		note = "Context compacted automatically"
-	}
-	before, _ := p["preTokens"].(float64)
-	after, _ := p["postTokens"].(float64)
-	if before > 0 && after > 0 {
-		note += fmt.Sprintf(": %s → %s tokens", formatTokens(before), formatTokens(after))
-	}
-	return note + "."
-}
-
-// formatTokens writes a token count the way the usage line does (1.2k, 27k).
-func formatTokens(n float64) string {
-	switch {
-	case n >= 1e6:
-		return strconv.FormatFloat(n/1e6, 'f', 1, 64) + "M"
-	case n >= 1e4:
-		return strconv.FormatFloat(n/1e3, 'f', 0, 64) + "k"
-	case n >= 1e3:
-		return strconv.FormatFloat(n/1e3, 'f', 1, 64) + "k"
-	}
-	return strconv.FormatFloat(n, 'f', 0, 64)
 }
 
 // ConfigureAgentAndRelease applies a provider and model choice. A model

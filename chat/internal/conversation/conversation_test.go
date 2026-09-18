@@ -203,3 +203,34 @@ func TestSubagentEntriesNestUnderTheirCall(t *testing.T) {
 		}
 	}
 }
+
+// A compaction item is a compaction entry: running while the agent
+// compacts, then the divider with the trigger and token counts, the
+// summary as its detail; a failed one says so with the error.
+func TestCompactionItemsAreDividers(t *testing.T) {
+	var c Conversation
+	c.Upsert(map[string]any{"id": "k1", "type": "compaction", "status": "running"}, "turn", false)
+	e := c.Entries[0]
+	if len(c.Entries) != 1 || e.Role != "compaction" || e.Text != "Compacting context…" || !e.IsStreaming || e.Compaction == nil || e.Compaction.Status != "running" {
+		t.Fatalf("running compaction: %+v", c.Entries)
+	}
+	c.Upsert(map[string]any{"id": "k1", "type": "compaction", "status": "completed", "trigger": "manual", "preTokens": 171238.0, "postTokens": 2194.0}, "turn", true)
+	e = c.Entries[0]
+	if len(c.Entries) != 1 || e.Text != "Context compacted" || e.IsStreaming || e.Compaction.Trigger != "manual" || e.Compaction.PreTokens != 171238 || e.Compaction.PostTokens != 2194 || e.Compaction.Status != "completed" || e.Detail != "" {
+		t.Fatalf("completed compaction: %+v %+v", e, e.Compaction)
+	}
+	c.Upsert(map[string]any{"id": "k1", "type": "compaction", "status": "completed", "trigger": "manual", "preTokens": 171238.0, "postTokens": 2194.0, "summary": "This session is being continued…"}, "turn", true)
+	if e = c.Entries[0]; e.Detail != "This session is being continued…" || e.Compaction.PreTokens != 171238 {
+		t.Fatalf("summary: %+v %+v", e, e.Compaction)
+	}
+	c.Upsert(map[string]any{"id": "k2", "type": "compaction", "status": "failed", "error": "API Error: refused"}, "turn", true)
+	if e = c.Entries[1]; e.Role != "compaction" || e.Text != "Compaction failed" || e.Compaction.Status != "failed" || e.Compaction.Error != "API Error: refused" {
+		t.Fatalf("failed compaction: %+v %+v", e, e.Compaction)
+	}
+	if ctx := ContextFrom(map[string]any{"used": 42787.0, "window": 200000.0, "threshold": 167000.0, "model": "claude-sonnet-5"}); ctx == nil || ctx.Used != 42787 || ctx.Window != 200000 || ctx.Threshold != 167000 || ctx.Model != "claude-sonnet-5" {
+		t.Fatalf("context: %+v", ctx)
+	}
+	if ContextFrom(map[string]any{}) != nil {
+		t.Fatal("an empty context is nil")
+	}
+}

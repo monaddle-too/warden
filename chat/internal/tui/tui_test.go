@@ -216,6 +216,7 @@ type fakeServer struct {
 	uploads []string // name:content, in upload order
 	srv     *httptest.Server
 	token   string
+	notes   []string // "#" notes the memory route received
 	// fastMode is whether the fake Warden allows fast mode.
 	fastMode bool
 }
@@ -378,6 +379,41 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		f.state.Chat(id).Status = "idle"
 		f.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/exec"):
+		// A person's command: the card lands in the transcript with its
+		// output, attributed to the owner, and the answer says how it ended.
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/exec")
+		cmd := body["text"].(string)
+		code := 0
+		if strings.HasPrefix(cmd, "false") {
+			code = 1
+		}
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		entry := Entry{ID: "x" + cmd, Role: "activity", Text: cmd, Detail: "out of " + cmd + "\n", Tool: &Tool{Kind: "command", Name: "shell", Status: "completed"}}
+		if code != 0 {
+			entry.Tool.Status = "exit 1"
+		}
+		entry.Sender = &struct {
+			PrincipalID string `json:"principalID"`
+			Email       string `json:"email"`
+			Name        string `json:"name"`
+		}{PrincipalID: "owner"}
+		c.Conversation.Entries = append(c.Conversation.Entries, entry)
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"id": entry.ID, "exitCode": code, "output": entry.Detail})
+	case strings.HasSuffix(path, "/memory"):
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/memory")
+		f.mu.Lock()
+		f.notes = append(f.notes, body["text"].(string))
+		c := f.state.Chat(id)
+		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "note", Role: "system", Text: "Added to CLAUDE.md: “" + body["text"].(string) + "”."})
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/mode"):
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -416,6 +452,45 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/agent"), strings.HasSuffix(path, "/revoke"):
 		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/checkpoints"):
+		// Every user message but the first has a checkpoint.
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/checkpoints")
+		f.mu.Lock()
+		var list []Checkpoint
+		for i, e := range f.state.Chat(id).Conversation.Entries {
+			if e.Role == "user" && i > 0 {
+				list = append(list, Checkpoint{ID: e.ID, ChatID: id, Commit: "c" + e.ID, Store: "repository", Changed: true})
+			}
+		}
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"checkpoints": list})
+	case strings.HasSuffix(path, "/rewind"):
+		var body struct{ TurnID, What string }
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/rewind")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		if c.Status == "running" {
+			f.mu.Unlock()
+			w.WriteHeader(400)
+			w.Write([]byte(`{"error":"wait for the agent to finish, or stop it, before rewinding"}`))
+			return
+		}
+		var kept []Entry
+		for _, e := range c.Conversation.Entries {
+			if e.ID == body.TurnID {
+				break
+			}
+			kept = append(kept, e)
+		}
+		if body.What != "code" {
+			c.Conversation.Entries = kept
+		}
+		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "marker", Role: "rewind", Text: "Rewound to before “" + body.TurnID + "” (" + body.What + ")", Detail: "1 file restored, 0 files removed"})
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(RewindResult{MessageID: body.TurnID, What: body.What, Restored: []string{"a.txt"}, Conversation: "rewound"})
+	case strings.HasSuffix(path, "/diff"):
+		json.NewEncoder(w).Encode(WorkspaceChanges{Base: "u2", Files: []ChangedFile{{Path: "src/app.go", Added: 2, Removed: 1}, {Path: "logo.png", Binary: true}}, Diff: "diff --git a/src/app.go b/src/app.go\n--- a/src/app.go\n+++ b/src/app.go\n@@ -1,2 +1,3 @@\n-old\n+new\n+more\n context\n"})
 	default:
 		http.Error(w, "not found", 404)
 	}
@@ -874,11 +949,12 @@ func TestSlashMenuCompletesAndRuns(t *testing.T) {
 	app.editor.Clear()
 	app.menu = nil
 	typeText(app, ctx, "/")
-	if app.menu == nil || len(app.menu.Items) != len(Commands) {
+	// chat2 is a Claude chat, so the agent's /compact joins the built-ins.
+	if app.menu == nil || len(app.menu.Items) != len(Commands)+1 || app.menu.Items[len(Commands)].Label != "/compact [INSTRUCTIONS]" {
 		t.Fatalf("all commands: %+v", app.menu)
 	}
 	app.handleKey(ctx, Key{Kind: KeyUp})
-	if app.menu.Selected != len(Commands)-1 {
+	if app.menu.Selected != len(Commands) {
 		t.Fatalf("up wraps to the last item: %d", app.menu.Selected)
 	}
 	// Commands the chat offers join the menu after the built-ins.
@@ -1875,5 +1951,346 @@ func TestThinkingEffortAndFastCommands(t *testing.T) {
 	}
 	if items := commandItems("thi", nil); len(items) != 1 || items[0].Name != "thinking" {
 		t.Fatalf("%+v", items)
+	}
+}
+
+func TestRewindCommandListsConfirmsAndRewinds(t *testing.T) {
+	f := newFakeServer(t, State{Chats: []*Chat{{ID: "chat1", Title: "Rewind", Provider: "claude", Status: "idle", Conversation: Conversation{Entries: []Entry{
+		{ID: "u1", Role: "user", Text: "Add a counter component"},
+		{ID: "a1", Role: "assistant", Text: "Done."},
+		{ID: "u2", Role: "user", Text: "Now make it   blue\nplease"},
+		{ID: "a2", Role: "assistant", Text: "Blue now."},
+	}}}}})
+	ctx := context.Background()
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	app.refreshState(ctx)
+	app.submit(ctx, "/rewind")
+	notice := plain(app.notice)
+	if !strings.Contains(notice, " 1   Add a counter component") || !strings.Contains(notice, " 2 • Now make it blue please") || !strings.Contains(notice, "/rewind N") {
+		t.Fatalf("listing: %q", notice)
+	}
+	for _, bad := range []string{"/rewind 3", "/rewind x", "/rewind 2 files-and-more extra", "/rewind 1 nothing"} {
+		app.submit(ctx, bad)
+		if app.confirm != nil || !strings.HasPrefix(app.notice, "/rewind N") {
+			t.Fatalf("%s: confirm %v notice %q", bad, app.confirm != nil, app.notice)
+		}
+	}
+	app.submit(ctx, "/rewind 2 conv")
+	if app.confirm == nil || !strings.Contains(app.confirm.prompt, `Rewind to before message 2 "Now make it blue please" (conversation)?`) {
+		t.Fatalf("confirm: %+v", app.confirm)
+	}
+	app.submit(ctx, "n")
+	if app.confirm != nil || app.notice != "cancelled" {
+		t.Fatalf("cancel: %+v %q", app.confirm, app.notice)
+	}
+	app.submit(ctx, "/rewind 2")
+	if app.confirm == nil || !strings.Contains(app.confirm.prompt, "(code and conversation)") {
+		t.Fatalf("default scope: %+v", app.confirm)
+	}
+	app.submit(ctx, "y")
+	if app.confirm != nil || app.notice != "rewound to before message 2 (code and conversation); 1 file(s) restored, 0 removed" {
+		t.Fatalf("rewind: %+v %q", app.confirm, app.notice)
+	}
+	f.mu.Lock()
+	calls := strings.Join(f.calls, "\n")
+	entries := f.state.Chats[0].Conversation.Entries
+	f.mu.Unlock()
+	if !strings.Contains(calls, "POST chats/chat1/rewind") || len(entries) != 3 || entries[2].Role != "rewind" {
+		t.Fatalf("rewind route: %d entries, calls:\n%s", len(entries), calls)
+	}
+	// The marker renders as a line of its own, with the detail.
+	lines := RenderTranscript(app.chat(), 100, false)
+	joined := plain(strings.Join(lines, "\n"))
+	if !strings.Contains(joined, "↶ Rewound to before “u2” (both)") || !strings.Contains(joined, "1 file restored, 0 files removed") {
+		t.Fatalf("marker: %s", joined)
+	}
+	// A running chat is refused before asking.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.submit(ctx, "/rewind 1 code")
+	if app.confirm != nil || app.notice != "stop the agent first (Esc)" {
+		t.Fatalf("running: %+v %q", app.confirm, app.notice)
+	}
+}
+
+func TestDiffCommandShowsChangesFoldedAndExpanded(t *testing.T) {
+	f := newFakeServer(t, State{Chats: []*Chat{{ID: "chat1", Title: "Diff", Provider: "claude", Status: "idle", Conversation: Conversation{Entries: []Entry{{ID: "u1", Role: "user", Text: "go"}}}}}})
+	ctx := context.Background()
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }, Size: func() (int, int) { return 100, 40 }}
+	app.refreshState(ctx)
+	app.submit(ctx, "/diff")
+	if app.diff == nil || app.notice != "2 changed file(s); Tab expands the hunks, /diff hides them" {
+		t.Fatalf("diff: %v %q", app.diff != nil, app.notice)
+	}
+	folded := plain(strings.Join(app.compose(100), "\n"))
+	for _, want := range []string{"Changes since this chat began: 2 file(s), +2 −1", "src/app.go  +2 −1", "logo.png  binary", "Tab expands the hunks"} {
+		if !strings.Contains(folded, want) {
+			t.Fatalf("folded lacks %q:\n%s", want, folded)
+		}
+	}
+	if strings.Contains(folded, "+new") {
+		t.Fatal("folded view shows hunks")
+	}
+	app.handleKey(ctx, Key{Kind: KeyTab})
+	expanded := plain(strings.Join(app.compose(100), "\n"))
+	for _, want := range []string{"@@ -1,2 +1,3 @@", "-old", "+new", "+more", "(not in the diff)"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded lacks %q:\n%s", want, expanded)
+		}
+	}
+	app.submit(ctx, "/diff")
+	if app.diff != nil || app.notice != "changes hidden" {
+		t.Fatalf("hide: %v %q", app.diff != nil, app.notice)
+	}
+	// Switching chats drops it.
+	app.submit(ctx, "/diff")
+	app.selectChat("chat1")
+	if app.diff != nil {
+		t.Fatal("selectChat kept the diff")
+	}
+	if got := splitDiff("diff --git a/x b/x\n+1\ndiff --git a/y b/y\n+2\n"); got["x"] != "diff --git a/x b/x\n+1\n" || got["y"] != "diff --git a/y b/y\n+2\n" {
+		t.Fatalf("splitDiff: %v", got)
+	}
+}
+
+// "!cmd" runs the rest as a shell command in the workspace by the person
+// (off the loop, reported when it ends) and "#note" appends to CLAUDE.md;
+// neither is sent to the agent as a message.
+func TestBangAndHashPrefixes(t *testing.T) {
+	c := sampleChat()
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, later: make(chan func(context.Context), 8)}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+	app.submit(ctx, "!ls -la")
+	if !strings.Contains(app.notice, "running in the workspace: ls -la") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	select {
+	case fn := <-app.later:
+		fn(ctx)
+	case <-time.After(3 * time.Second):
+		t.Fatal("no report")
+	}
+	if app.notice != "command finished" {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.submit(ctx, "! false now")
+	select {
+	case fn := <-app.later:
+		fn(ctx)
+	case <-time.After(3 * time.Second):
+		t.Fatal("no report")
+	}
+	if app.notice != "command exited 1" {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.submit(ctx, "#use tabs")
+	if app.notice != "added to CLAUDE.md" {
+		t.Fatalf("notice %q", app.notice)
+	}
+	// A lone "!" or "#" is a message like any other.
+	app.submit(ctx, "!")
+	app.submit(ctx, "#")
+	time.Sleep(100 * time.Millisecond)
+	f.mu.Lock()
+	calls := strings.Join(f.calls, "\n")
+	notes := f.notes
+	f.mu.Unlock()
+	if strings.Count(calls, "POST chats/chat1/exec") != 2 || strings.Count(calls, "POST chats/chat1/memory") != 1 || strings.Count(calls, "POST chats/chat1/message") != 2 {
+		t.Fatalf("calls:\n%s", calls)
+	}
+	if len(notes) != 1 || notes[0] != "use tabs" {
+		t.Fatalf("notes %q", notes)
+	}
+	// The person's command renders as their own card, failure by status.
+	s, _ = app.Client.State(ctx)
+	app.state = s
+	lines := plain(strings.Join(RenderTranscript(app.chat(), 80, true), "\n"))
+	if !strings.Contains(lines, "you $ ls -la") || !strings.Contains(lines, "out of ls -la") || !strings.Contains(lines, "✗ you $ false now exit 1") || !strings.Contains(lines, "Added to CLAUDE.md") {
+		t.Fatalf("transcript:\n%s", lines)
+	}
+}
+
+// A long bracketed paste stands in the draft as a placeholder and is put
+// back when the prompt is sent; a short one is inserted as it is.
+func TestLongPasteCollapsesToAPlaceholder(t *testing.T) {
+	var e Editor
+	e.Handle(Key{Kind: KeyPaste, Text: "one\ntwo"})
+	if e.Text() != "one\ntwo" || len(e.Pastes()) != 0 {
+		t.Fatalf("short paste: %q %d", e.Text(), len(e.Pastes()))
+	}
+	e.Clear()
+	long := strings.Repeat("line\n", 20)
+	e.Insert("see ")
+	e.Handle(Key{Kind: KeyPaste, Text: long})
+	e.Insert(" and ")
+	wide := strings.Repeat("x", 1200)
+	e.Handle(Key{Kind: KeyPaste, Text: wide})
+	if e.Text() != "see [Pasted text #1 — 20 lines] and [Pasted text #2 — 1 line]" || len(e.Pastes()) != 2 {
+		t.Fatalf("placeholders: %q %d", e.Text(), len(e.Pastes()))
+	}
+	// Deleting a placeholder drops that paste from the prompt; a typed
+	// placeholder for a paste that does not exist stays as written.
+	e.Insert(" [Pasted text #9 — 3 lines]")
+	got := e.Submit()
+	want := "see " + long + " and " + wide + " [Pasted text #9 — 3 lines]"
+	if got != want {
+		t.Fatalf("expanded: %d chars, want %d: %q…", len(got), len(want), got[:40])
+	}
+	if e.Text() != "" || len(e.Pastes()) != 0 {
+		t.Fatal("editor not cleared")
+	}
+	if !LongPaste(strings.Repeat("a\n", 9)) || LongPaste(strings.Repeat("a\n", 8)) || !LongPaste(strings.Repeat("b", 1001)) || LongPaste(strings.Repeat("b", 1000)) {
+		t.Fatal("thresholds")
+	}
+}
+
+// A compaction entry is a divider: the trigger and the token counts, the
+// summary only when expanded, yellow while it runs and red when it
+// failed. The status line shows the context against the window, yellow
+// from 80 % and red from 95 %. /compact, with or without instructions,
+// goes to a Claude chat as the message; a Codex chat does not offer it.
+func TestCompactionDividerContextAndPassthrough(t *testing.T) {
+	c := &Chat{ID: "c", Title: "t", Provider: "claude", Status: "idle"}
+	c.Conversation.Entries = []Entry{
+		{ID: "k1", Role: "compaction", Text: "Compacting context…", IsStreaming: true, Compaction: &Compaction{Status: "running"}},
+		{ID: "k2", Role: "compaction", Text: "Context compacted", Detail: "Summary:\n1. Files read: a.txt (lima)", Compaction: &Compaction{Status: "completed", Trigger: "manual", PreTokens: 171238, PostTokens: 2194}},
+		{ID: "k3", Role: "compaction", Text: "Context compacted", Compaction: &Compaction{Status: "completed", Trigger: "auto", PreTokens: 184293}},
+		{ID: "k4", Role: "compaction", Text: "Compaction failed", Compaction: &Compaction{Status: "failed", Error: "API Error: refused"}},
+		{ID: "k5", Role: "compaction", Text: "Context compacted"},
+	}
+	collapsed := plain(strings.Join(RenderTranscript(c, 70, false), "\n"))
+	for _, want := range []string{"── Compacting context… ──", "── Context compacted · manual · 171k → 2.2k tokens ──", "── Context compacted · automatic · from 184k tokens ──", "── Compaction failed: API Error: refused ──", "── Context compacted ──"} {
+		if !strings.Contains(collapsed, want) {
+			t.Fatalf("missing %q in:\n%s", want, collapsed)
+		}
+	}
+	if strings.Contains(collapsed, "Files read") {
+		t.Fatalf("summary shown collapsed:\n%s", collapsed)
+	}
+	styled := strings.Join(RenderTranscript(c, 70, false), "\n")
+	if !strings.Contains(styled, yellow+"  ── Compacting") || !strings.Contains(styled, red+"  ── Compaction failed") {
+		t.Fatalf("colours:\n%s", styled)
+	}
+	if expanded := plain(strings.Join(RenderTranscript(c, 70, true), "\n")); !strings.Contains(expanded, "     1. Files read: a.txt (lima)") {
+		t.Fatalf("summary not expanded:\n%s", expanded)
+	}
+	md := ExportMarkdown(c, false, time.Unix(0, 0), func(float64) string { return "t" })
+	if !strings.Contains(md, "### Context compacted · manual · 171k → 2.2k tokens\n\n> Summary:\n> 1. Files read: a.txt (lima)") || !strings.Contains(md, "### Compaction failed: API Error: refused") {
+		t.Fatalf("export:\n%s", md)
+	}
+	// The context indicator.
+	now := time.Unix(1000, 0)
+	if s := plain(StatusLine(c, nil, true, now)); strings.Contains(s, "ctx") {
+		t.Fatalf("indicator without a context: %q", s)
+	}
+	c.Conversation.Context = &Context{Used: 42787, Window: 200000, Model: "claude-sonnet-5"}
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, "  ctx 43k/200k (21%)") || strings.Contains(s, yellow+"ctx") {
+		t.Fatalf("indicator: %q", s)
+	}
+	c.Conversation.Context.Used = 171238
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, yellow+"ctx 171k/200k (86%)"+reset) {
+		t.Fatalf("yellow indicator: %q", s)
+	}
+	c.Conversation.Context.Used = 191000
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, red+"ctx 191k/200k (96%)"+reset) {
+		t.Fatalf("red indicator: %q", s)
+	}
+	// With the agent's own threshold (the window less its buffer), the
+	// colours follow the way to that: 142k is 71 % of the window but 85 %
+	// of the way to a compaction at 167k.
+	c.Conversation.Context = &Context{Used: 142000, Window: 200000, Threshold: 167000}
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, yellow+"ctx 142k/200k (71%)"+reset) {
+		t.Fatalf("threshold indicator: %q", s)
+	}
+	c.Conversation.Context.Used = 160000
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, red+"ctx 160k/200k (80%)"+reset) {
+		t.Fatalf("threshold red indicator: %q", s)
+	}
+	c.Conversation.Context = &Context{Used: 42787}
+	if s := plain(StatusLine(c, nil, true, now)); !strings.Contains(s, "ctx 43k") || strings.Contains(s, "/") {
+		t.Fatalf("windowless indicator: %q", s)
+	}
+	// A /compact turn reports no tokens, only the compaction's cost.
+	c.Conversation.Turns = []Turn{{ID: "t", StartedAt: 990, EndedAt: 1017, Usage: &Usage{CostUSD: 0.16}}}
+	c.Conversation.Entries[1].TurnID = &c.Conversation.Turns[0].ID
+	if s := plain(StatusLine(c, nil, true, now)); strings.Contains(s, "0 tokens") || !strings.Contains(s, "27s · $0.16") {
+		t.Fatalf("compaction turn stats: %q", s)
+	}
+	var out bytes.Buffer
+	printEntry(&out, c, c.Conversation.Entries[1])
+	if out.String() != "  ── Context compacted · manual · 171k → 2.2k tokens ──\n" {
+		t.Fatalf("follow line: %q", out.String())
+	}
+	// /compact is sent as text to a Claude chat.
+	codex := sampleChat()
+	codex.Status = "idle"
+	f := newFakeServer(t, State{Chats: []*Chat{c, codex}})
+	app := &App{Client: f.client(), ChatID: "c", Output: io.Discard, Now: func() time.Time { return now }}
+	ctx := context.Background()
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/comp")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Label != "/compact [INSTRUCTIONS]" || !app.menu.Items[0].Run {
+		t.Fatalf("menu: %+v", app.menu)
+	}
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	time.Sleep(100 * time.Millisecond)
+	s, _ := app.Client.State(ctx)
+	entries := s.Chats[0].Conversation.Entries
+	if got := entries[len(entries)-1].Text; got != "echo: /compact" {
+		t.Fatalf("enter on /compact: %q (notice %q)", got, app.notice)
+	}
+	app.submit(ctx, "/compact keep the file list")
+	time.Sleep(100 * time.Millisecond)
+	s, _ = app.Client.State(ctx)
+	entries = s.Chats[0].Conversation.Entries
+	if got := entries[len(entries)-1].Text; got != "echo: /compact keep the file list" {
+		t.Fatalf("/compact with instructions: %q", got)
+	}
+	// Once the chat reports its list, the menu is that list, with the
+	// known argument and hint for /compact and the reported description
+	// for the workspace's own.
+	c.Commands = []AgentCommand{{Name: "compact"}, {Name: "probe-cmd", Description: "From the workspace"}}
+	app.state, _ = app.Client.State(ctx)
+	f.mu.Lock()
+	f.state.Chats[0].Commands = c.Commands
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	app.editor.Clear()
+	app.menu = nil
+	typeText(app, ctx, "/")
+	labels := []string{}
+	for _, it := range app.menu.Items {
+		labels = append(labels, it.Label+"|"+it.Hint)
+	}
+	if got := strings.Join(labels, "\n"); !strings.Contains(got, "/compact [INSTRUCTIONS]|replace the history with a summary; say what to keep") || !strings.Contains(got, "/probe-cmd|From the workspace") {
+		t.Fatalf("reported list: %s", got)
+	}
+	app.editor.Clear()
+	app.menu = nil
+	app.submit(ctx, "/probe-cmd now")
+	time.Sleep(100 * time.Millisecond)
+	s, _ = app.Client.State(ctx)
+	entries = s.Chats[0].Conversation.Entries
+	if got := entries[len(entries)-1].Text; got != "echo: /probe-cmd now" {
+		t.Fatalf("a reported command is sent as text: %q", got)
+	}
+	// A Codex chat has no /compact: the menu leaves it out and typing it
+	// is an unknown command.
+	app.ChatID = "chat1"
+	app.editor.Clear()
+	app.menu = nil
+	typeText(app, ctx, "/comp")
+	if app.menu != nil && len(app.menu.Items) > 0 {
+		t.Fatalf("codex menu offers: %+v", app.menu.Items)
+	}
+	app.editor.Clear()
+	app.submit(ctx, "/compact")
+	if !strings.Contains(app.notice, "unknown command /compact") {
+		t.Fatalf("codex notice: %q", app.notice)
 	}
 }

@@ -20,11 +20,11 @@ func TestClaudeStreamingTranslation(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "saved-claude-session"})
@@ -89,20 +89,20 @@ func TestClaudeBuiltinToolAskAndMCPResponse(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init"}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_request", "request_id": "approve", "request": map[string]any{"subtype": "can_use_tool", "tool_name": "Write", "input": map[string]any{"file_path": "/workspace/check", "content": "ok"}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		allowed := Map(Map(v["response"])["response"])["behavior"] == "allow" && Map(Map(Map(v["response"])["response"])["updatedInput"])["content"] == "ok"
 		_ = e.Encode(map[string]any{"type": "control_request", "request_id": "preview", "request": map[string]any{"subtype": "mcp_message", "server_name": "warden", "message": map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": map[string]any{"name": "preview_attach", "arguments": map[string]any{"port": 3000, "path": "/", "title": "Preview"}}}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		result := Map(Map(Map(v["response"])["response"])["mcp_response"])
@@ -162,11 +162,11 @@ func TestClaudeTextBlocksAroundToolsAreSeparateItems(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
@@ -223,11 +223,11 @@ func TestClaudeTurnInputImages(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		for d.Decode(&v) == nil {
+		for claudeNext(d, &v) {
 			if v["type"] == "user" {
 				user <- v
 				return
@@ -290,11 +290,11 @@ func TestClaudeThinkingBlocksAreReasoningItems(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
@@ -376,16 +376,16 @@ func TestClaudeInterruptEndsTurnAsInterrupted(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
 		_ = e.Encode(map[string]any{"type": "stream_event", "event": map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": "Working on"}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		interrupts <- v
@@ -393,7 +393,7 @@ func TestClaudeInterruptEndsTurnAsInterrupted(t *testing.T) {
 		// What the CLI reports for an aborted query: an error result.
 		_ = e.Encode(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "result": "Request was aborted."})
 		// The next turn runs on the same process.
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "result", "is_error": false, "result": "Again."})
@@ -641,11 +641,11 @@ func TestClaudeToolItemsThroughTheStream(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
@@ -715,7 +715,7 @@ func newClaudeFake(t *testing.T, ctx context.Context) (*Client, *claudeFake, cha
 		d := json.NewDecoder(fake)
 		for {
 			var v map[string]any
-			if d.Decode(&v) != nil {
+			if !claudeNext(d, &v) {
 				return
 			}
 			if v["type"] == "control_request" && Map(v["request"])["subtype"] == "initialize" {
@@ -897,11 +897,11 @@ func claudeSession(t *testing.T, script func(e *json.Encoder), until int) []Fram
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
@@ -1298,11 +1298,11 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 		d := json.NewDecoder(fake)
 		e := json.NewEncoder(fake)
 		var v map[string]any
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
-		if d.Decode(&v) != nil {
+		if !claudeNext(d, &v) {
 			return
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s",
@@ -1337,9 +1337,18 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 			switch f.Method {
 			case "thread/started":
 				threads = append(threads, Map(f.Params["thread"]))
-			case "thread/compacted":
-				compacted = f.Params
 			case "item/started", "item/completed":
+				// The boundary is a compaction item (item 8); nothing else
+				// streams.
+				if item := Map(f.Params["item"]); item["type"] == "compaction" {
+					if f.Method == "item/completed" {
+						compacted = item
+					}
+					if String(f.Params["turnId"]) != turnID {
+						t.Fatalf("compaction outside the turn: %+v", f.Params)
+					}
+					continue
+				}
 				items++
 			case "turn/completed":
 				if len(threads) != 2 {
@@ -1353,7 +1362,7 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 				if first["id"] != "s" || fmt.Sprint(names) != "[code-review compact init probe-cmd]" || first["model"] != "claude-opus-5[1m]" || first["permissionMode"] != "default" || first["outputStyle"] != "default" {
 					t.Fatalf("thread %+v", first)
 				}
-				if compacted == nil || compacted["threadId"] != "s" || compacted["turnId"] != turnID || compacted["trigger"] != "manual" || compacted["preTokens"] != 27230.0 || compacted["postTokens"] != 1850.0 {
+				if compacted == nil || compacted["trigger"] != "manual" || compacted["preTokens"] != 27230.0 || compacted["postTokens"] != 1850.0 || compacted["status"] != "completed" {
 					t.Fatalf("compacted %+v", compacted)
 				}
 				// The summary and the local command's stdout are the CLI's
@@ -1490,5 +1499,246 @@ func TestClaudeModelThinkingEffortAndFastMode(t *testing.T) {
 	}
 	if claudeThinkingBudget("") != nil || claudeThinkingBudget("off") != 0 || claudeThinkingBudget("4000") != 4000 || claudeThinkingBudget("x") != nil {
 		t.Fatal("claudeThinkingBudget")
+	}
+}
+
+// A /compact turn, as CLI 2.1.272 emits it: a compaction item runs from
+// the "compacting" status to the compact_boundary, which completes it
+// with the trigger and the token counts; the synthetic user frame that
+// follows completes it again with the summary. The context is reported
+// per model call from the assistant frame's usage (input plus cache read
+// and written), re-estimated at the boundary from post_tokens and the
+// fixed prefix, with the window from the result's modelUsage. A failed
+// auto-compaction completes the item as failed.
+func TestClaudeCompactionAndContext(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	raw, fake := net.Pipe()
+	defer fake.Close()
+	done := make(chan Frame, 60)
+	go func() {
+		d := json.NewDecoder(fake)
+		e := json.NewEncoder(fake)
+		var v map[string]any
+		if !claudeNext(d, &v) {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
+		if !claudeNext(d, &v) {
+			return
+		}
+		usage := map[string]any{"input_tokens": 2.0, "cache_creation_input_tokens": 11788.0, "cache_read_input_tokens": 28803.0, "output_tokens": 2.0}
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "model": "claude-sonnet-5"})
+		_ = e.Encode(map[string]any{"type": "assistant", "message": map[string]any{"model": "claude-sonnet-5", "usage": usage, "content": []any{map[string]any{"type": "thinking", "thinking": ""}}}})
+		_ = e.Encode(map[string]any{"type": "assistant", "message": map[string]any{"model": "claude-sonnet-5", "usage": usage, "content": []any{map[string]any{"type": "text", "text": "ok"}}}})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": "compacting", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": nil, "compact_result": "success", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "model": "claude-sonnet-5"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "compact_boundary", "session_id": "s", "compact_metadata": map[string]any{"trigger": "manual", "pre_tokens": 171238.0, "post_tokens": 2194.0, "cumulative_dropped_tokens": 169044.0, "duration_ms": 22526.0}})
+		_ = e.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. Files read: a.txt (lima)"}, "isSynthetic": true, "isReplay": false})
+		_ = e.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "<local-command-stdout>Compacted </local-command-stdout>"}, "isReplay": true})
+		_ = e.Encode(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": "", "num_turns": 0.0, "usage": map[string]any{"input_tokens": 0.0, "cache_creation_input_tokens": 0.0, "cache_read_input_tokens": 0.0, "output_tokens": 0.0}, "total_cost_usd": 0.78, "modelUsage": map[string]any{"claude-sonnet-5": map[string]any{"contextWindow": 200000.0, "maxOutputTokens": 64000.0}}})
+		// After the turn the adapter asks the CLI for its own account of
+		// the context (the boundary's request and the result's both arrive;
+		// the first is answered, as CLI 2.1.272 answers get_context_usage).
+		for i := 0; i < 2; i++ {
+			if d.Decode(&v) != nil || v["type"] != "control_request" || Map(v["request"])["subtype"] != "get_context_usage" {
+				return
+			}
+			if i == 0 {
+				_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{"totalTokens": 41113.0, "maxTokens": 200000.0, "rawMaxTokens": 200000.0, "autocompactSource": "model-default", "percentage": 21.0, "categories": []any{map[string]any{"name": "System prompt", "tokens": 8516.0, "kind": "used"}, map[string]any{"name": "Autocompact buffer", "tokens": 33000.0, "kind": "buffer"}, map[string]any{"name": "Free space", "tokens": 125887.0, "kind": "free"}}}}})
+			}
+		}
+		// The next turn: an automatic compaction that fails.
+		if !claudeNext(d, &v) {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "model": "claude-sonnet-5"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": "compacting", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": nil, "compact_result": "failed", "compact_error": "API Error: refused", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "assistant", "message": map[string]any{"model": "<synthetic>", "usage": map[string]any{"input_tokens": 0.0, "output_tokens": 0.0}, "content": []any{map[string]any{"type": "text", "text": "Prompt is too long · automatic compaction failed: API Error: refused"}}}})
+		_ = e.Encode(map[string]any{"type": "result", "subtype": "success", "is_error": true, "result": "Prompt is too long · automatic compaction failed: API Error: refused", "usage": map[string]any{"input_tokens": 0.0, "output_tokens": 0.0}, "total_cost_usd": 0.78})
+	}()
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(_ *Client, f Frame) { done <- f })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err = c.Call(ctx, "thread/start", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "/compact keep the file list"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var items []map[string]any
+	var contexts []map[string]any
+	collect := func() {
+		for {
+			select {
+			case f := <-done:
+				switch f.Method {
+				case "item/started", "item/completed":
+					if item := Map(f.Params["item"]); item["type"] == "compaction" {
+						items = append(items, item)
+					}
+				case "thread/context/updated":
+					contexts = append(contexts, Map(f.Params["context"]))
+				case "turn/completed":
+					return
+				}
+			case <-ctx.Done():
+				t.Fatal("translation timed out")
+			}
+		}
+	}
+	collect()
+	if len(items) != 3 || items[0]["status"] != "running" || items[1]["status"] != "completed" || items[2]["status"] != "completed" || items[0]["id"] != items[2]["id"] {
+		t.Fatalf("compaction items %+v", items)
+	}
+	if items[1]["trigger"] != "manual" || items[1]["preTokens"] != 171238.0 || items[1]["postTokens"] != 2194.0 || items[1]["summary"] != nil {
+		t.Fatalf("boundary item %+v", items[1])
+	}
+	if items[2]["trigger"] != "manual" || items[2]["preTokens"] != 171238.0 || !strings.HasPrefix(String(items[2]["summary"]), "This session is being continued") {
+		t.Fatalf("summary item %+v", items[2])
+	}
+	// One report per change: the call (the table's window before any
+	// result), the boundary's estimate (the summary plus the prefix, the
+	// smallest context seen); the result's window is the same 200k.
+	if len(contexts) != 2 || contexts[0]["used"] != 40593.0 || contexts[0]["window"] != 200000.0 || contexts[0]["model"] != "claude-sonnet-5" || contexts[0]["threshold"] != nil || contexts[1]["used"] != 2194.0+40593 || contexts[1]["window"] != 200000.0 {
+		t.Fatalf("contexts %+v", contexts)
+	}
+	// The CLI's own account then corrects the estimate and adds where it
+	// compacts on its own: the window less its buffer.
+	select {
+	case f := <-done:
+		if f.Method != "thread/context/updated" {
+			t.Fatalf("after the turn: %s %+v", f.Method, f.Params)
+		}
+		if c := Map(f.Params["context"]); c["used"] != 41113.0 || c["window"] != 200000.0 || c["threshold"] != 167000.0 {
+			t.Fatalf("accounted context %+v", c)
+		}
+	case <-ctx.Done():
+		t.Fatal("no context account")
+	}
+	items, contexts = nil, nil
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "go on"}}}); err != nil {
+		t.Fatal(err)
+	}
+	collect()
+	if len(items) != 2 || items[0]["status"] != "running" || items[1]["status"] != "failed" || items[1]["error"] != "API Error: refused" || len(contexts) != 0 {
+		t.Fatalf("failed compaction %+v, contexts %+v", items, contexts)
+	}
+}
+
+func TestClaudeContextWindowTable(t *testing.T) {
+	for model, want := range map[string]int64{"claude-sonnet-5": 200000, "claude-sonnet-5[1m]": 1000000, "claude-opus-4-5": 200000, "claude-opus-4-6": 1000000, "claude-opus-5": 1000000, "claude-haiku-4-5-20251001": 200000, "claude-sonnet-4-6": 1000000, "claude-fable-5": 1000000, "": 200000} {
+		if got := claudeContextWindow(model); got != want {
+			t.Errorf("%s: %d, want %d", model, got, want)
+		}
+	}
+	// The result's modelUsage overrides the table (a [1m] session on a
+	// model the table calls 200k, or the other way round).
+	c := claudeContext{}
+	c.model("claude-sonnet-5")
+	c.result(map[string]any{"modelUsage": map[string]any{"claude-sonnet-5": map[string]any{"contextWindow": 1000000.0}}})
+	if c.window != 1000000 {
+		t.Fatalf("window %d", c.window)
+	}
+	c.result(map[string]any{"modelUsage": map[string]any{"other": map[string]any{"contextWindow": 500000.0}}})
+	if c.window != 500000 {
+		t.Fatalf("lone entry: window %d", c.window)
+	}
+}
+
+// claudeNext reads the adapter's next frame for a fake CLI, skipping the
+// context requests the adapter sends on its own after a turn (a real CLI
+// answers them; the fakes here need not).
+func claudeNext(d *json.Decoder, v *map[string]any) bool {
+	for {
+		if d.Decode(v) != nil {
+			return false
+		}
+		if (*v)["type"] == "control_request" && Map((*v)["request"])["subtype"] == "get_context_usage" {
+			continue
+		}
+		return true
+	}
+}
+
+// A user message carries Warden's message ID as its uuid, and
+// conversation/rewind is the CLI's rewind_conversation control request,
+// answered with what the CLI said: rewound, or not with the reason.
+func TestClaudeConversationRewind(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	raw, fake := net.Pipe()
+	defer fake.Close()
+	seen := make(chan map[string]any, 8)
+	go func() {
+		d := json.NewDecoder(fake)
+		e := json.NewEncoder(fake)
+		var v map[string]any
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
+		// The user message, answered at once (a fresh map per frame: a
+		// decode into a used map merges into it).
+		v = nil
+		if d.Decode(&v) != nil {
+			return
+		}
+		seen <- v
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "result", "is_error": false, "result": "ok"})
+		// Two rewind requests: one the CLI applies, one it refuses (the
+		// context requests the adapter sends after the result are skipped).
+		for i := 0; i < 2; i++ {
+			v = nil
+			if !claudeNext(d, &v) {
+				return
+			}
+			seen <- v
+			req := Map(v["request"])
+			answer := map[string]any{"rewound": true, "targetMessageUuid": req["target_message_uuid"], "prefillText": "first"}
+			if req["target_message_uuid"] == "unknown" {
+				answer = map[string]any{"rewound": false, "error": "target not found", "reason": "target_not_found"}
+			}
+			_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": answer}})
+		}
+	}()
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(_ *Client, f Frame) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err = c.Call(ctx, "thread/start", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"clientUserMessageId": "m1", "input": []any{map[string]any{"text": "first"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if v := <-seen; v["type"] != "user" || v["uuid"] != "m1" {
+		t.Fatalf("user frame without the message's uuid: %v", v)
+	}
+	result, err := c.Call(ctx, "conversation/rewind", map[string]any{"threadId": "s", "targetMessageId": "m1", "lastSeenMessageId": "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := <-seen; v["type"] != "control_request" || Map(v["request"])["subtype"] != "rewind_conversation" || Map(v["request"])["target_message_uuid"] != "m1" || Map(v["request"])["last_seen_user_message_uuid"] != "m1" {
+		t.Fatalf("rewind not forwarded as rewind_conversation: %v", v)
+	}
+	if result["rewound"] != true || result["prefillText"] != "first" {
+		t.Fatalf("rewind answer: %v", result)
+	}
+	result, err = c.Call(ctx, "conversation/rewind", map[string]any{"threadId": "s", "targetMessageId": "unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := <-seen; Map(v["request"])["last_seen_user_message_uuid"] != nil {
+		t.Fatalf("an empty last-seen id must be left out: %v", v)
+	}
+	if result["rewound"] != false || result["reason"] != "target_not_found" {
+		t.Fatalf("refused rewind answer: %v", result)
 	}
 }

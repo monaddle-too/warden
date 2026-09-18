@@ -34,6 +34,8 @@ type fakeWorker struct {
 	inputs      [][]any  // the input items of every turn/start and turn/steer
 	turnID      string   // the ID of the next turn/start's turn; "turn-one" when empty
 	paths       []string // what a "paths" completion answers
+	// exec is what an "exec" answers (nil: a plain success with no output).
+	exec *sandbox.ExecResult
 	// prepareGate, when set, holds prepare until it is closed; progress is
 	// what the progress operation answers meanwhile (startup_test.go).
 	prepareGate chan struct{}
@@ -44,6 +46,10 @@ type fakeWorker struct {
 	// ignoreInterrupt answers turn/interrupt without ending the turn, as an
 	// agent that hangs would.
 	ignoreInterrupt bool
+	// checkpoints are the records the checkpoint op made (rewind_test.go);
+	// rewindAnswer is what conversation/rewind answers (nil: rewound).
+	checkpoints  []sandbox.Checkpoint
+	rewindAnswer map[string]any
 }
 
 func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
@@ -74,6 +80,34 @@ func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 	}
 	if r.Operation == "paths" {
 		return sandbox.Response{Version: 2, Paths: f.paths}, nil
+	}
+	switch r.Operation {
+	case "checkpoint":
+		cp := sandbox.Checkpoint{ID: r.CallID, ChatID: r.ChatID, Commit: "commit-" + r.CallID[:4], Tree: "tree-" + r.CallID[:4], Store: "repository", Changed: true}
+		f.checkpoints = append(f.checkpoints, cp)
+		return sandbox.Response{Version: 2, Checkpoint: &cp}, nil
+	case "checkpoints":
+		return sandbox.Response{Version: 2, Checkpoints: append([]sandbox.Checkpoint(nil), f.checkpoints...)}, nil
+	case "restore", "diff":
+		for _, cp := range f.checkpoints {
+			if cp.ID == r.CallID {
+				if r.Operation == "restore" {
+					return sandbox.Response{Version: 2, Restore: &sandbox.WorkspaceRestore{Checkpoint: cp, Restored: []string{"a.txt"}, Removed: []string{"b.txt"}}}, nil
+				}
+				return sandbox.Response{Version: 2, Changes: &sandbox.WorkspaceChanges{Base: cp.ID, Files: []sandbox.ReviewFile{{Path: "a.txt", Added: 1}}, Diff: "diff --git a/a.txt b/a.txt\n--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1 @@\n+hello\n"}}, nil
+			}
+		}
+		return sandbox.Response{}, errors.New("no checkpoint was recorded at this message")
+	}
+	if r.Operation == "exec" {
+		result := f.exec
+		if result == nil {
+			result = &sandbox.ExecResult{}
+		}
+		return sandbox.Response{Version: 2, Exec: result}, nil
+	}
+	if r.Operation == "memory-append" {
+		return sandbox.Response{Version: 2, Directory: "CLAUDE.md"}, nil
 	}
 	return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: id, ProjectID: r.ProjectID}}, nil
 }
@@ -140,6 +174,14 @@ func (f *fakeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWriteC
 					turnID = "turn-one"
 				}
 				result = map[string]any{"turn": map[string]any{"id": turnID, "status": "inProgress"}}
+			case "conversation/rewind":
+				f.mu.Lock()
+				answer := f.rewindAnswer
+				f.mu.Unlock()
+				if answer == nil {
+					answer = map[string]any{"rewound": true}
+				}
+				result = answer
 			case "turn/steer":
 				f.mu.Lock()
 				f.inputs = append(f.inputs, agent.Array(frame.Params["input"]))
@@ -854,6 +896,12 @@ func TestTurnTimingAndTokenUsage(t *testing.T) {
 	if u := usage(); u.Input != 2500 || u.Cached != 1500 || u.Output != 700 {
 		t.Fatalf("usage %+v", u)
 	}
+	// The agent's context report is kept on the conversation as it stands.
+	w.send(agent.Frame{Method: "thread/context/updated", Params: map[string]any{"threadId": "thread-one", "turnId": "turn-one", "context": map[string]any{"used": 42787.0, "window": 200000.0, "model": "claude-sonnet-5"}}})
+	until(t, func() bool { c := e.Store.Snapshot().chat(id).Conversation.Context; return c != nil && c.Used == 42787 })
+	if c := e.Store.Snapshot().chat(id).Conversation.Context; c.Window != 200000 || c.Model != "claude-sonnet-5" {
+		t.Fatalf("context %+v", c)
+	}
 	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
 	c = e.Store.Snapshot().chat(id)
@@ -887,8 +935,8 @@ func TestTurnTimingAndTokenUsage(t *testing.T) {
 // settings (Claude's system/init); they are on the chat, in GET state as
 // chat.commands and chat.session, survive a restart, and follow the
 // next thread/started. A thread/started without them (Codex) leaves them
-// alone. A thread/compacted notification is a system line in the
-// transcript.
+// alone. A compaction item (item 8) is a compaction entry in the
+// transcript, its running state included.
 func TestSessionCommandsInStateAndCompactionNote(t *testing.T) {
 	e, w, _ := setup(t)
 	// The fake worker speaks the Codex protocol; the frames below are what
@@ -924,16 +972,21 @@ func TestSessionCommandsInStateAndCompactionNote(t *testing.T) {
 	if got.Session == nil || *got.Session != (Session{Model: "claude-opus-5[1m]", PermissionMode: "default", OutputStyle: "default"}) {
 		t.Fatalf("session %+v", got.Session)
 	}
-	w.send(agent.Frame{Method: "thread/compacted", Params: map[string]any{"threadId": "thread-one", "turnId": "turn-one", "trigger": "manual", "preTokens": 27230.0, "postTokens": 1850.0}})
+	w.send(agent.Frame{Method: "item/started", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "k1", "type": "compaction", "status": "running"}}})
 	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 2 })
-	if note := e.Store.Snapshot().chat(id).Conversation.Entries[1]; note.Role != "system" || note.Text != "Context compacted: 27k → 1.9k tokens." {
-		t.Fatalf("note %+v", note)
+	if note := e.Store.Snapshot().chat(id).Conversation.Entries[1]; note.Role != "compaction" || note.Text != "Compacting context…" || !note.IsStreaming {
+		t.Fatalf("running compaction %+v", note)
+	}
+	w.send(agent.Frame{Method: "item/completed", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "k1", "type": "compaction", "status": "completed", "trigger": "manual", "preTokens": 27230.0, "postTokens": 1850.0, "summary": "This session is being continued…"}}})
+	until(t, func() bool { return !e.Store.Snapshot().chat(id).Conversation.Entries[1].IsStreaming })
+	if note := e.Store.Snapshot().chat(id).Conversation.Entries[1]; note.Role != "compaction" || note.Text != "Context compacted" || note.Detail != "This session is being continued…" || note.Compaction == nil || note.Compaction.Trigger != "manual" || note.Compaction.PreTokens != 27230 || note.Compaction.PostTokens != 1850 {
+		t.Fatalf("note %+v %+v", note, note.Compaction)
 	}
 	// Codex's thread/started, and a later Claude init with fewer commands.
 	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one"}}})
-	w.send(agent.Frame{Method: "thread/compacted", Params: map[string]any{"threadId": "thread-one", "turnId": "turn-one", "trigger": "auto"}})
+	w.send(agent.Frame{Method: "item/completed", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "k2", "type": "compaction", "status": "completed", "trigger": "auto"}}})
 	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 3 })
-	if c := e.Store.Snapshot().chat(id); len(c.Commands) != 2 || c.Session == nil || c.Conversation.Entries[2].Text != "Context compacted automatically." {
+	if c := e.Store.Snapshot().chat(id); len(c.Commands) != 2 || c.Session == nil || c.Conversation.Entries[2].Role != "compaction" || c.Conversation.Entries[2].Compaction.Trigger != "auto" {
 		t.Fatalf("unchanged by a bare thread/started: %+v", c)
 	}
 	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one", "commands": []any{map[string]any{"name": "init"}}}}})

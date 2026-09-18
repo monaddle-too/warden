@@ -93,7 +93,8 @@ export function unreadIndex<T extends Item>(entries: T[], id: string): number {
   return id ? entries.findIndex((e) => e.id === id) : -1;
 }
 
-/* How many messages (not tool steps) follow `lastID`, the last entry the
+/* How many messages (not tool steps, thinking or compaction dividers)
+   follow `lastID`, the last entry the
    reader had in view when they left the bottom of the transcript. An empty
    ID is an empty transcript, so everything counts; an ID that is gone
    counts nothing rather than everything. */
@@ -106,14 +107,20 @@ export function newSince<T extends Item>(entries: T[], lastID: string): number {
   }
   let count = 0;
   for (let i = from; i < entries.length; i++)
-    if (entries[i].role !== "activity" && entries[i].role !== "thinking")
+    if (
+      entries[i].role !== "activity" &&
+      entries[i].role !== "thinking" &&
+      entries[i].role !== "compaction"
+    )
       count++;
   return count;
 }
 
 /* Consecutive tool steps render as one collapsible group; a group never
    spans the unread divider, so the divider can sit before `breakAt`, and
-   never two turns, so a turn's line can follow its last group. */
+   never two turns, so a turn's line can follow its last group. A step
+   with a sender (a command the person ran) stands on its own, never in
+   the agent's group. */
 export function groupEntries<T extends Item>(
   entries: T[],
   breakAt = -1,
@@ -121,12 +128,13 @@ export function groupEntries<T extends Item>(
   const items: ({ entry: T } | { group: T[] })[] = [];
   entries.forEach((entry, index) => {
     const last = items[items.length - 1];
-    if (entry.role === "activity") {
+    if (entry.role === "activity" && !entry.sender) {
       if (
         last &&
         "group" in last &&
         index !== breakAt &&
-        last.group[0].turnID === entry.turnID
+        last.group[0].turnID === entry.turnID &&
+        !last.group[0].sender
       )
         last.group.push(entry);
       else items.push({ group: [entry] });

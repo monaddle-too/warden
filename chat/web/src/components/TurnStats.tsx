@@ -41,7 +41,10 @@ export function TurnStats({
     >
       <Timer size={12} aria-hidden="true" />
       {seconds !== undefined && <span>{formatDuration(seconds)}</span>}
-      {usage && <span title={usageDetail(usage)}>{usageSummary(usage)}</span>}
+      {/* A /compact turn reports no tokens, only the compaction's cost. */}
+      {usage && usage.total > 0 && (
+        <span title={usageDetail(usage)}>{usageSummary(usage)}</span>
+      )}
       {!!usage?.costUSD && <span>{formatCost(usage.costUSD)}</span>}
     </p>
   );

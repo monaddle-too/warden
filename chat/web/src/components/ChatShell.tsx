@@ -12,8 +12,10 @@ import {
   ArchiveRestore,
   Box,
   Download,
+  FileDiff,
   FileText,
   GitPullRequest,
+  History,
   MoreHorizontal,
   PanelRight,
   Pencil,
@@ -55,6 +57,8 @@ import { AdminConsole } from "./AdminConsole";
 import { chatStatusLabel } from "../stages";
 import { WorkspacePanel } from "./WorkspacePanel";
 import { ExportDialog } from "./ExportDialog";
+import { RewindDialog } from "./RewindDialog";
+import { SessionDiff } from "./SessionDiff";
 import { SearchPalette } from "./SearchPalette";
 import { modifierKey, type FindRequest } from "./FindBar";
 
@@ -92,6 +96,10 @@ export function ChatShell({
   const [workspaceState, setWorkspaceState] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // The rewind chooser (the message it opens on, "" for the last) and the
+  // session diff (rewind.ts).
+  const [rewinding, setRewinding] = useState<string | null>(null);
+  const [changesOpen, setChangesOpen] = useState(false);
   const [searching, setSearching] = useState(false);
   // The find bar's latest request; a new object each time so the same
   // query can be asked for again.
@@ -663,6 +671,26 @@ export function ChatShell({
                   </button>
                   <button
                     role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setChangesOpen(true);
+                    }}
+                  >
+                    <FileDiff size={15} />
+                    Changes…
+                  </button>
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setRewinding("");
+                    }}
+                  >
+                    <History size={15} />
+                    Rewind…
+                  </button>
+                  <button
+                    role="menuitem"
                     disabled={chatBusy}
                     onClick={() => {
                       setMenuOpen(false);
@@ -715,6 +743,21 @@ export function ChatShell({
                 onClose={() => setExporting(false)}
               />
             )}
+            {rewinding !== null && (
+              <RewindDialog
+                key={chat.id + "rewind"}
+                chat={chat}
+                initial={rewinding || undefined}
+                onClose={() => setRewinding(null)}
+              />
+            )}
+            {changesOpen && (
+              <SessionDiff
+                key={chat.id + "changes"}
+                chatID={chat.id}
+                onClose={() => setChangesOpen(false)}
+              />
+            )}
             <div className="warden-chat-content">
               <Conversation
                 key={chat.id}
@@ -723,6 +766,8 @@ export function ChatShell({
                 requests={requests}
                 find={find}
                 onExport={() => setExporting(true)}
+                onRewind={(entryID) => setRewinding(entryID || "")}
+                onChanges={() => setChangesOpen(true)}
                 onModel={(next) =>
                   api(`chats/${chat.id}/agent`, {
                     provider: chat.provider || "codex",
@@ -757,6 +802,7 @@ export function ChatShell({
                     documentReviewsRef.current?.open(id)
                   }
                   onChanged={refresh}
+                  onChanges={() => setChangesOpen(true)}
                   limits={state.sandboxes}
                 />
               )}

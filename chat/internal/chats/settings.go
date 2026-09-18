@@ -90,7 +90,21 @@ func thinkingNotice(setting string) string {
 		return "Thinking off"
 	}
 	n, _ := strconv.Atoi(setting)
-	return "Thinking budget: " + formatTokens(float64(n)) + " tokens"
+	return "Thinking budget: " + formatTokens(n) + " tokens"
+}
+
+// formatTokens writes a token count the way the usage line does (1.2k,
+// 27k).
+func formatTokens(n int) string {
+	switch {
+	case n >= 1e6:
+		return strconv.FormatFloat(float64(n)/1e6, 'f', 1, 64) + "M"
+	case n >= 1e4:
+		return strconv.FormatFloat(float64(n)/1e3, 'f', 0, 64) + "k"
+	case n >= 1e3:
+		return strconv.FormatFloat(float64(n)/1e3, 'f', 1, 64) + "k"
+	}
+	return strconv.Itoa(n)
 }
 
 // effortNotice is the transcript marker for an effort level.

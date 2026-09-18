@@ -37,7 +37,10 @@ type Entry struct {
 	// ParentID names the subagent's card (an Agent call) this entry
 	// belongs to; "" for the conversation's own entries.
 	ParentID string `json:"parentID,omitempty"`
-	Sender   *struct {
+	// Compaction is what a compaction entry records (conversation.Compaction):
+	// the agent compacted its context here; Detail is the summary.
+	Compaction *Compaction `json:"compaction,omitempty"`
+	Sender     *struct {
 		PrincipalID string `json:"principalID"`
 		Email       string `json:"email"`
 		Name        string `json:"name"`
@@ -52,6 +55,33 @@ type Attachment struct {
 	Path string `json:"path"`
 	Kind string `json:"kind"`
 	Size int64  `json:"size"`
+}
+
+// Compaction mirrors conversation.Compaction: how the agent's context was
+// compacted (manual for /compact, auto), the context before and the
+// summary after in tokens, and whether it is running, completed or failed.
+type Compaction struct {
+	Trigger    string `json:"trigger"`
+	PreTokens  int64  `json:"preTokens"`
+	PostTokens int64  `json:"postTokens"`
+	Status     string `json:"status"`
+	Error      string `json:"error"`
+}
+
+// Context mirrors conversation.Context: what the agent's latest model call
+// was given against the model's window, in tokens.
+type Context struct {
+	Used      int64  `json:"used"`
+	Window    int64  `json:"window"`
+	Threshold int64  `json:"threshold"` // where the agent compacts on its own; 0 when unknown
+	Model     string `json:"model"`
+}
+
+// AgentCommand is one slash command the agent's session offers
+// (chats.Command): sent as text, the agent expands it.
+type AgentCommand struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // Turn and Usage mirror conversation.Turn: what one agent turn took.
@@ -79,6 +109,7 @@ type Conversation struct {
 	ActiveTurnID *string           `json:"activeTurnID,omitempty"`
 	Entries      []Entry           `json:"entries"`
 	Turns        []Turn            `json:"turns,omitempty"`
+	Context      *Context          `json:"context,omitempty"`
 	Raw          []json.RawMessage `json:"-"`
 }
 
@@ -88,11 +119,12 @@ func (c *Conversation) UnmarshalJSON(b []byte) error {
 		ActiveTurnID *string           `json:"activeTurnID"`
 		Entries      []json.RawMessage `json:"entries"`
 		Turns        []Turn            `json:"turns"`
+		Context      *Context          `json:"context"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
-	c.ThreadID, c.ActiveTurnID, c.Turns, c.Raw = raw.ThreadID, raw.ActiveTurnID, raw.Turns, raw.Entries
+	c.ThreadID, c.ActiveTurnID, c.Turns, c.Context, c.Raw = raw.ThreadID, raw.ActiveTurnID, raw.Turns, raw.Context, raw.Entries
 	c.Entries = make([]Entry, 0, len(raw.Entries))
 	for _, r := range raw.Entries {
 		var e Entry
@@ -164,6 +196,9 @@ type Chat struct {
 	Archived     bool         `json:"archived"`
 	Conversation Conversation `json:"conversation"`
 	Approvals    []Approval   `json:"approvals"`
+	// Commands are the slash commands the agent's session offers (Claude
+	// Code's built-ins and the workspace's own), for the / menu.
+	Commands []AgentCommand `json:"commands"`
 	// Startup is where the chat's start is while its message waits for the
 	// agent: the stage and the runtime's detail.
 	Startup *struct {
@@ -344,6 +379,29 @@ func (c *Client) Message(ctx context.Context, chatID, text, messageID string, at
 	return c.do(ctx, "POST", "chats/"+chatID+"/message", body, nil)
 }
 
+// Exec runs a shell command in the chat's workspace as the person (the
+// composer's "!cmd"); the transcript gets a command card attributed to
+// them, and the answer is what it came to.
+func (c *Client) Exec(ctx context.Context, chatID, command string) (ExecResult, error) {
+	var result ExecResult
+	err := c.do(ctx, "POST", "chats/"+chatID+"/exec", map[string]any{"text": command}, &result)
+	return result, err
+}
+
+// ExecResult mirrors chats.ExecResult.
+type ExecResult struct {
+	ID       string `json:"id"`
+	ExitCode int    `json:"exitCode"`
+	TimedOut bool   `json:"timedOut,omitempty"`
+	Output   string `json:"output"`
+}
+
+// Memory appends a note to the workspace's CLAUDE.md (the composer's
+// "#note"); the transcript gets a system line saying so.
+func (c *Client) Memory(ctx context.Context, chatID, note string) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/memory", map[string]any{"text": note}, nil)
+}
+
 // Upload stores one file for the chat (multipart field "file", as the web
 // composer sends it) and returns its record; a message then names its ID.
 func (c *Client) Upload(ctx context.Context, chatID, name string, data []byte) (Attachment, error) {
@@ -516,4 +574,64 @@ func (c *Client) stream(ctx context.Context, receive func(*State)) error {
 		}
 	}
 	return scanner.Err()
+}
+
+// Checkpoint is one workspace checkpoint as the runner records it: the
+// user message it was taken before (ID) and the snapshot commit.
+type Checkpoint struct {
+	ID      string `json:"id"`
+	ChatID  string `json:"chatID"`
+	Commit  string `json:"commit"`
+	Store   string `json:"store"`
+	Changed bool   `json:"changed"`
+}
+
+// ChangedFile is one file of the session diff with its counts.
+type ChangedFile struct {
+	Path    string `json:"path"`
+	Added   int    `json:"added"`
+	Removed int    `json:"removed"`
+	Binary  bool   `json:"binary"`
+}
+
+// WorkspaceChanges is the session diff: the workspace against the chat's
+// first checkpoint (or its last code rewind), as git's unified diff.
+type WorkspaceChanges struct {
+	Base      string        `json:"base"`
+	Files     []ChangedFile `json:"files"`
+	Diff      string        `json:"diff"`
+	Truncated bool          `json:"truncated"`
+}
+
+// RewindResult is what a rewind did (chats.RewindResult).
+type RewindResult struct {
+	MessageID    string   `json:"messageID"`
+	What         string   `json:"what"`
+	Restored     []string `json:"restored"`
+	Removed      []string `json:"removed"`
+	Conversation string   `json:"conversation"`
+}
+
+func (c *Client) Checkpoints(ctx context.Context, chatID string) ([]Checkpoint, error) {
+	var out struct {
+		Checkpoints []Checkpoint `json:"checkpoints"`
+	}
+	err := c.do(ctx, "GET", "chats/"+url.PathEscape(chatID)+"/checkpoints", nil, &out)
+	return out.Checkpoints, err
+}
+
+// Rewind takes the chat back to before a user message: what is "code",
+// "conversation" or "both".
+func (c *Client) Rewind(ctx context.Context, chatID, messageID, what string) (RewindResult, error) {
+	var out RewindResult
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/rewind", map[string]string{"turnID": messageID, "what": what}, &out)
+	return out, err
+}
+
+func (c *Client) Diff(ctx context.Context, chatID string) (*WorkspaceChanges, error) {
+	var out WorkspaceChanges
+	if err := c.do(ctx, "GET", "chats/"+url.PathEscape(chatID)+"/diff", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

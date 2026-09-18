@@ -135,8 +135,8 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Subagent nesting, child transcript | ✅ | ✅ | item 2: `Entry.ParentID`, collapsed under the Agent card |
 | Background task cards, task notifications | ✅ | ✅ | item 2: `Tool.Background`, `TaskOutput` lands the output |
 | Todo panel (TodoWrite) | ◐ | ◐ | item 2: one card updated in place; the pinned CLI offers no todo tool |
-| Compaction boundary marker | ◐ | ◐ | `system/compact_boundary` → a system entry with the token counts (item 5); a real marker is item 8 |
-| Context-left indicator, auto-compact warning | ✗ | ✗ | `result` usage |
+| Compaction boundary marker | ✅ | ✅ | item 8: `compaction` entry (running → divider with trigger, counts, summary) |
+| Context-left indicator, auto-compact warning | ✅ | ✅ | item 8: `conversation.context` {used, window, threshold} |
 | Per-turn tokens, cost, duration | ✅ | ◐ | `TurnStats.tsx`; TUI elapsed only |
 | Session cost total | ◐ | ✗ | |
 | Inline images | ✅ | — | TUI: path + `/open` |
@@ -151,19 +151,19 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
 | Multi-line editing, newline chord | ✅ | ✅ | |
-| Prompt history, Ctrl-R search | ✗ | ✗ | |
+| Prompt history, Ctrl-R search | ✅ | ✅ | item 12 (web: from the transcript), item 6 (TUI) |
 | `@path` completion | ✅ | ✗ | `paths` op |
 | `@server:resource` | ✗ | ✗ | needs MCP resources |
 | `/` menu with fuzzy match | ✅ (4) | ◐ typed | |
-| Long paste collapsed | ✗ | ✗ | |
+| Long paste collapsed | ✅ | ✅ | item 12: `[Pasted text #N — M lines]`, sent in full |
 | Image paste, drop, picker | ✅ | ✗ | |
 | File attachments into the workspace | ✅ | ✗ | |
 | Queue a message during a turn | ◐ | ◐ | the CLI queues it (item 7); Warden's engine serialises turns itself; Codex steers |
 | Edit a queued message | ✗ | ✗ | |
 | Esc to interrupt | ✅ | ✅ | `turn/interrupt` |
 | Esc-Esc / edit-and-resend | ◐ | ✗ | resident-session semantics to check |
-| `!` shell command | ✗ | ✗ | policy |
-| `#` append to `CLAUDE.md` | ✗ | ✗ | |
+| `!` shell command | ✅ | ✅ | item 12: by the person, transcript-only, `chats/{id}/exec` |
+| `#` append to `CLAUDE.md` | ✅ | ✅ | item 12: `chats/{id}/memory`; read by the agent only once item 7's flag change lands |
 | Prompt suggestions | ✗ | ✗ | |
 | Vim mode | — | ✗ | |
 
@@ -201,7 +201,7 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | New, rename, archive, delete | ✅ | ◐ | TUI `/new` only |
 | Resume between turns | ✅ | ✅ | resident sessions |
 | `/clear` | ✅ | ✅ | new chat |
-| `/compact`, auto-compact | ✗ | ✗ | |
+| `/compact`, auto-compact | ✅ | ✅ | item 8: passthrough from the CLI's list; both triggers as dividers |
 | Fork a session | ✗ | ✗ | pairs with sandbox fork |
 | Auto titles | ◐ | ◐ | verify |
 | Session picker | ✅ | ✅ | |
@@ -214,8 +214,8 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
-| `/rewind` (code, conversation, both) | ✗ | ✗ | `rewind_files` or sandbox snapshot |
-| Whole-session diff | ✗ | ✗ | |
+| `/rewind` (code, conversation, both) | ✅ | ✅ | item 11: Warden's git checkpoints for code, the CLI's `rewind_conversation` for the conversation |
+| Whole-session diff | ✅ | ✅ | item 11: `chats/{id}/diff`, `SessionDiff.tsx`, `/diff` |
 | Open / view a file | ✅ | ✅ | |
 | Read renders images, PDFs, notebooks | ✅ | — | |
 | Commit attribution | ✅ | ✅ | the CLI's |
@@ -284,7 +284,11 @@ until the owner confirms.
 - **Permission modes per role.** Not probed here (item 3). `permissionMode`
   is in `system/init` and `set_permission_mode` is a control request in
   this CLI, so a selector needs no relaunch.
-- **`!` shell commands.** Not probed; item 12.
+- **`!` shell commands.** Item 12 runs them as the sandbox's agent user
+  through the runner, attributed to the requester and open to anyone
+  the edge admits to the chat (who could already have the agent run
+  anything); an owner-only rule at the edge (`ownerOnly`) is one line if
+  wanted.
 - **Per-principal instructions and memory.** The CLI reports
   `memory_paths.auto` = `~/.claude/projects/<cwd>/memory/` in the sandbox
   home, so auto-memory is per sandbox; a per-principal layout needs
@@ -308,9 +312,13 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
   recorded only with `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` set in the
   environment (the SDK's `enableFileCheckpointing` option sets it) and
   `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING` unset. Warden's launch sets
-  neither, so nothing is recorded today. Not exercised live (item 11 will
-  set the variable and try it); `rewind_conversation`, `fork_conversation`
-  and `get_workspace_diff` requests also exist.
+  neither, so nothing is recorded today. Item 11 tried it live: with the
+  variable set, `rewind_files` restored a file changed with Edit and left
+  one created with Bash in place, so Warden keeps its own git checkpoints;
+  `rewind_conversation` works (keyed by the `uuid` Warden now puts on
+  every user frame, durable across `--resume`) and is used;
+  `fork_conversation` answers `unsupported` in `-p` mode;
+  `get_workspace_diff` is the working tree against HEAD only.
 - **A user message during a running turn:** queued. Sent while the first
   turn's API request was in flight, the second message ran as its own turn
   after the first completed (two `result` frames, `result_index` 0 and 1,
@@ -376,14 +384,377 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 5 Slash-command pass-through — merged to main 32138ea (2026-09-17); verified as the Item 5 section says; TUI `/` menu from `chat.commands` left for a follow-up.
 - [x] 6 TUI catch-up — merged to main c60d938 (2026-09-17); verified as the Item 6 section says.
 - [x] 7 Workspace `.claude/` loading — verified on CLI 2.1.272, merged to main 32138ea (2026-09-17); the launch-flag change (`--setting-sources=project` + `disableAllHooks`) is recommended under "Decisions needed", not made.
-- [ ] 8 Compaction and context.
+- [x] 8 Compaction and context — merged to main e84a7bc (2026-09-17); verified as the Item 8 section says.
 - [ ] 9 Mid-session model, effort, thinking — implemented and live-verified 2026-09-17; see the Item 9 section.
 - [ ] 10 Queueing and rewind.
-- [ ] 11 Checkpoints and session diff.
-- [ ] 12 Composer polish.
+- [x] 11 Checkpoints and session diff — merged to main 4d0a05e (2026-09-17); verified as the Item 11 section says.
+- [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
 - [ ] 13 Per-user instructions and memory.
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
+
+### Item 11: checkpoints, rewind and the session diff
+
+Branch `feat/parity-11-rewind`, worktree `.local/warden-parity-11-rewind`,
+from main 0881386 (2026-09-17).
+
+What the CLI gives (probed on the guest's 2.1.272 in Warden's launch mode,
+`-p --input-format stream-json --output-format stream-json`, a second
+process in a chat's sandbox with the resident CLI's environment):
+
+- **User message ids.** A `user` frame accepts a `uuid`; any string
+  works (Warden's 32-hex entry IDs were used), and the CLI keys its
+  rewinds by it. `--replay-user-messages` echoes each user message back
+  with its uuid (`isReplay: true`), needed only when the caller sets none.
+- **`rewind_files`** `{user_message_id, dry_run?}` →
+  `{canRewind, filesChanged, insertions, deletions, skippedLinks}` exists
+  but is gated in `-p` mode on `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`
+  (Warden does not set it) and is backed by the CLI's own file history:
+  it restored a file changed with Edit and left a file created with Bash
+  in place. Not used.
+- **`rewind_conversation`** `{target_message_uuid,
+  last_seen_user_message_uuid?, interrupt_if_running?}` →
+  `{rewound: true, targetMessageUuid, prefillText, precedingAssistantUuid}`
+  slices the resident session to before the target (the model then knew
+  only what came before), and the anchor persists: a later
+  `--resume <session>` continued from the rewound state; rewinding to
+  before the first message works too. Without `last_seen…` any later user
+  message makes the target `stale_target`; other refusals are
+  `target_not_found`, `unseen_later_turn`, `turn_running`,
+  `commands_queued`, `prompt_pending`. **Used** for the conversation.
+- **`fork_conversation`** → `{forked: false, reason: "unsupported"}` in
+  this mode. **`get_workspace_diff`** works (`{diff: {stats,
+  perFileStats, hunks, skippedLarge, restricted, source}}`) but is the
+  working tree against HEAD with the CLI's caps (5 s, 50 files, 1 MB per
+  file), untracked files listed without hunks — not "since the chat
+  started". Not used.
+
+Decisions:
+
+1. **Checkpoints are Warden's, in git.** Before every user turn the runner
+   snapshots the workspace (tracked and untracked files, ignored ones and
+   `.warden/` left out) as a tree through a temporary index — the
+   working tree and the agent's index and HEAD are never touched — and
+   records a root commit under `refs/warden/checkpoints/<message id>`
+   (op `checkpoint`, `sandbox/checkpoint.go`). In a workspace that is a
+   repository the refs live in its own `.git`; otherwise in a private git
+   directory beside the workspace (`/home/agent/.warden-checkpoints.git`,
+   `GIT_WORK_TREE` = the workspace), where a nested repository is
+   recorded as its HEAD commit only and the snapshot is refused over
+   256 MiB (`du`, dependency and build directories excluded). A snapshot
+   whose tree equals the previous checkpoint's makes no new objects: the
+   ref points at the previous commit. The runner keeps the records per
+   sandbox (`managedSandbox.Checkpoints`, op `checkpoints`) and verifies
+   the ref still names the recorded commit before restoring. A tarball
+   would cost a full copy per checkpoint and give no diff; the CLI's own
+   checkpoints miss what Bash does. Checkpoints are a convenience, not a
+   boundary: the agent can alter refs in its own sandbox.
+2. **Rewind code** (`chats/{id}/rewind` `{turnID, what}`, `turnID` the
+   turn's id or the user message's) restores the checkpoint taken at that
+   message: the runner snapshots the workspace as it is now, diffs it
+   against the checkpoint and writes back only the paths that differ
+   (`checkout-index` from a temporary index), deleting the ones the
+   checkpoint lacks (op `restore`). The chat must be idle; the sandbox
+   must be running.
+3. **Rewind conversation** truncates the transcript to before the message
+   (its turn records and pending approvals with it) and asks the agent to
+   forget the same: on a live idle Claude session at once through the
+   adapter's new `conversation/rewind` command (the CLI's
+   `rewind_conversation`, keyed by the message id the adapter now puts on
+   every user frame as its `uuid`); with no live session, recorded as
+   `Chat.Rewind` and applied right after the next `--resume`, before the
+   first turn. When the agent cannot rewind (Codex; a message from before
+   this landed, which the CLI never saw a uuid for) the fallback is a
+   fresh session: the thread is dropped (`prepare` with `newSession`
+   clears the runner's binding so Claude launches without `--resume`) and
+   the kept transcript is re-sent once as a preamble of the next message
+   (`Chat.Recap`, last 24 KiB). Both = code, then conversation.
+4. A marker entry (role `rewind`) says "Rewound to before “…” (code /
+   conversation / both)"; the web renders it as a divider, the TUI as a
+   line.
+5. **Session diff** (`GET chats/{id}/diff`) is the workspace now against
+   `Chat.DiffBase`: the chat's first checkpoint, or the one its last code
+   rewind restored. The runner snapshots the workspace and answers
+   `git diff-tree` between the two trees (op `diff`): a unified diff per
+   file capped at 2 MiB, plus `--numstat` counts. Git-based in both
+   stores, so it works for non-repository workspaces too.
+6. Web: a rewind action in a user message's hover bar and Esc-Esc in the
+   composer open the chooser (`RewindDialog.tsx`); "Changes" in the
+   workspace panel opens `SessionDiff.tsx` over `DiffView`. TUI:
+   `/rewind` lists the user messages, `/rewind N code|conv|both`,
+   `/diff` shows the changed files folded, Tab expands.
+7. Seen on the way: the SBX exec API refuses an empty argument (`cmd
+   element N is empty`), so the scripts take `-` for "none"; the test
+   harness refuses empty arguments too. `Stop` on an idle chat keeps its
+   resident session (the engine's comment; the map's "released" is the
+   idle timeout), so a rewind right after it still goes to the live
+   session.
+
+Verified: `go vet`, `gofmt -l`, `go test ./...`, `pnpm build`, `pnpm test`
+(135 tests; `rewind.test.ts` new); live on a cloned home (`~/.warden-p7`)
+with a Claude chat whose workspace is not a repository (private store):
+two messages (Write, then Edit plus a Bash-made file) recorded two
+checkpoints; `GET chats/{id}/diff` listed both files with git's hunks;
+rewind code to before the second message restored `notes.txt` and removed
+the Bash-made `extra.txt` (checked in the guest), moved the diff base and
+emptied the diff; rewind conversation on the live session answered
+`rewound`, cut the transcript and the agent then listed only the first
+file; with the workspace stopped the rewind was `pending` and the next
+message resumed the session, applied it first and the agent had forgotten
+the codeword; on a chat from the previous build (messages the CLI had no
+uuid for) the rewind fell back to `fresh`: the next message launched
+without `--resume` and the agent called it the first message. Web: the
+chat menu's Changes… (two files as folded `DiffView`s with counts), the
+hover action and Esc-Esc opening the chooser on the last message, a code
+and conversation rewind from it (the dialog's stopped-sandbox refusal
+first, then "1 file restored, 1 file removed; … when its session
+resumes"), the ↶ markers in the transcript, the panel's Changes section.
+TUI in a pty: `/rewind` listing with • marks, `/diff` folded then Tab
+expanded, `/rewind 2 conv` confirmed with `y` and rewound.
+
+Progress: started 2026-09-17; implemented and live-verified 2026-09-17;
+merged to main 4d0a05e (2026-09-17) after merging items 3, 4, 5, 7, 8 and
+12 in (the adapter, the engine's turn start, the test fakes and the TUI
+render were the conflicts; the merged build was smoke-tested live).
+
+Left: nested repositories inside a non-repository workspace are recorded
+as gitlinks (their working trees are outside the snapshot); a checkpoint
+does not carry the agent's index or HEAD, so a rewind after the agent
+committed leaves its commits in place and moves the working tree only;
+the marker is not an undo (the removed transcript stays only in the
+CLI's own session file); Codex sessions always take the fresh-session
+fallback for a conversation rewind.
+### Item 12: composer polish
+
+Branch `feat/parity-12-composer`, worktree `.local/warden-parity-12-composer`,
+from main d74ac80 (2026-09-17). Started 2026-09-17.
+
+Steps:
+
+1. Web prompt history: Up/Down at the draft's first/last line recall this
+   chat's earlier prompts (the transcript's user entries by this
+   principal, newest first; the draft is kept), Ctrl-R searches them
+   (`history.ts`).
+2. Long paste: a paste over 8 lines or 1000 characters becomes a
+   `[Pasted text #N — M lines]` placeholder in the text and a chip above
+   it (hover previews, click opens, remove drops both); the message sends
+   with the full text; several per draft; persisted with the draft
+   (`paste.ts`, `drafts.ts`). TUI: the same placeholder from bracketed
+   paste, expanded on Enter.
+3. `!cmd`: the rest runs as a shell command in the workspace by the
+   person — `POST chats/{id}/exec` → runner op `exec` (both drivers,
+   cwd = workspace, 60 s, output capped at 30k) — recorded as a command
+   card with `Sender`, transcript-only, with "Send to agent". Web and TUI.
+4. `#note`: appended as a bullet to the workspace's `CLAUDE.md` — `POST
+   chats/{id}/memory` → runner op `memory-append` — with a system line
+   "Added to CLAUDE.md" and the item 7 hint. Web and TUI.
+5. Tests, feature map, live check on a cloned home, merge.
+
+Decisions:
+
+1. A `!` command's entry is transcript-only: the agent never sees it
+   unless the person quotes it into a message ("Send to agent" puts the
+   command and its output into the draft as a fenced block). Reason: the
+   command ran outside the agent's turn, by a person; feeding it to the
+   model silently would make the agent act on output it did not ask for,
+   and a resident session cannot take an out-of-band user message without
+   it becoming a turn.
+2. Attribution: the entry carries `Sender` (the requester the edge
+   identified, or the owner), the runner request carries the principal,
+   and the chat service logs who ran what with the exit code.
+3. The runner runs the command as the sandbox's agent user in a bash
+   process group, kills the group at the timeout, and returns stdout and
+   stderr merged with the exit code; the command is passed as data, never
+   through a host shell. It runs outside the registry lock and on its own
+   request slots, so a slow command blocks neither the turn nor the
+   workspace panel.
+4. The web's history comes from the transcript (this principal's user
+   entries), not from local storage: every device sees the same list and
+   nothing new is stored. The TUI keeps item 6's per-chat file.
+5. The paste thresholds (8 lines or 1000 characters) and the placeholder
+   text are the same on both surfaces; a placeholder deleted from the
+   draft drops its paste, a placeholder typed by hand stays text.
+6. "#" for Codex chats still writes CLAUDE.md (the note is for Claude);
+   the system line says Codex reads AGENTS.md instead.
+
+Verified 2026-09-17 on a cloned home (`~/.warden-p8`, build a19cc28, CLI
+2.1.272): unit — `go test ./...` (`sandbox/exec_test.go` runs the guest
+scripts locally: cwd, merged stderr, exit codes, the output tail, the
+timeout killing the group, a background child not holding the answer,
+CLAUDE.md created/appended/never through a symlink; the ops through the
+fake guest; `chats/composer_test.go` both routes; `tui/tui_test.go`
+`!`/`#`/placeholders), `pnpm test` (144: `history.test.ts`,
+`paste.test.ts`, prefixes, grouping). Live through the API: `ls -la`,
+`git status` in a workspace the agent had `git init`ed, `exit 7` with
+stderr, two `#` notes then `cat CLAUDE.md` showing the bullets (with the
+indented continuation line), a `!` command answering in 0 s while a 25 s
+agent turn ran, and the agent's next reply confirming it never saw the
+person's commands. In the browser: Up/Down walked three prompts and back
+to the empty draft, Ctrl-R + "hello" + Enter recalled the first prompt, a
+240-line paste became `[Pasted text #1 — 240 lines]` with its chip,
+survived a reload, opened in the dialog and was sent in full (241 lines
+in `GET state`; Claude answered "log line 137"), `!git status --short;
+git log --oneline` from the composer (hint, terminal send icon, the "You"
+card open with `?? CLAUDE.md`), "Send to agent" quoting it into the
+draft, `#prefer small commits` → the system line and `!cat CLAUDE.md`
+showing it, a `!` card landing while the agent's turn ran. TUI in a pty:
+`!echo …; exit 4` → "you $ …" card with `exit 4` and the notices, `#`
+→ the system line, a 14-line bracketed paste → the placeholder.
+
+Left: the runner's `exec` has no per-role policy (see "Decisions
+needed"); a `!` command's card is not searched by the transcript find
+(activity entries never were); the TUI's paste placeholder is not a
+chip (no preview), and a `!` command with a paste placeholder expands it
+on the TUI too but the TUI shows no chip to inspect first.
+
+Progress: started 2026-09-17; implemented and live-verified 2026-09-17
+(a19cc28); merged to main 981ef68 (2026-09-17) after merging items 3, 4
+and 8 in (append-append conflicts in the TUI and its tests, the
+Conversation.tsx imports, both docs); the merged build re-checked on the
+cloned home (a `!` against the stopped sandbox gives the clean refusal
+card; Ctrl-R finds the pasted prompt; the mode selector sits beside the
+composer's).
+
+### Item 8: compaction and context
+
+Branch `feat/parity-8-compaction`, worktree `.local/warden-parity-8-compaction`,
+from main d648409 (2026-09-17).
+
+What the pinned CLI (2.1.272) emits, probed on a cloned home (`~/.warden-p6`)
+with a second CLI run inside the chat's sandbox under the resident process's
+environment and Warden's launch flags (`scratchpad/probe.py`: one `user`
+frame per turn, the next sent after the `result`), on a session that read
+three 1500-line files (~171k tokens of context), then `/compact keep the
+list of files read and their last words`, a question, `/compact`, and on a
+fresh session that read seven such files:
+
+- **Context length.** Every `assistant` frame (one per content block) and
+  the `message_start` stream event carry the API call's `message.usage`:
+  `input_tokens` (the uncached part, 2), `cache_creation_input_tokens`,
+  `cache_read_input_tokens`. Their sum is the prompt size of that call —
+  the context length: 40.6k → 109k → 171k over one turn's three calls.
+  The `result`'s `usage` is **summed over the turn's calls** (142127
+  cache-creation = 11788 + 68398 + 61941), so it cannot give the context;
+  the last call's usage does.
+- **Context window.** `result.modelUsage[<model>].contextWindow` reports
+  it (200000 for `claude-sonnet-5` here; also `maxOutputTokens`,
+  `canonicalModel`, running per-model totals and cost). The binary's model
+  table agrees: 200k for haiku 4.5, sonnet 4.0/4.5, opus 4.0/4.1/4.5
+  (`[1m]` suffix → 1M where `supports_1m_suffix`); native 1M for sonnet
+  4.6, opus 4.6/4.7/4.8, opus 5, fable 5. The CLI's own auto-compact
+  window can be set below the model's (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
+  `autoCompactWindow`); Warden does not set it.
+- **`/compact` and `/compact <instructions>`** (both `trigger: manual`;
+  the instructions shaped the summary, which kept the file list and last
+  words): `system/status` `{status: "compacting"}` → after 11–23 s
+  `system/status` `{status: null, compact_result: "success"}` →
+  `system/init` (same `session_id`) → `system/compact_boundary` with
+  `compact_metadata` `{trigger, pre_tokens: 171238, post_tokens: 2194,
+  cumulative_dropped_tokens, duration_ms, preserved_segment,
+  preserved_messages}` → a `user` frame with the summary as **string**
+  content (`isSynthetic: true`, `isReplay: false`; "This session is being
+  continued from a previous conversation that ran out of context. The
+  summary below…", 4–6k chars) → a `user` frame `isReplay: true` with
+  `<local-command-stdout>Compacted </local-command-stdout>` → `result`
+  (`num_turns: 0`, empty `result`, all-zero `usage`, `total_cost_usd`
+  grown by the compaction's own call, `duration_api_ms: 0`).
+  `pre_tokens` is the whole context (system prompt and tools included:
+  last call 170932 + its output); `post_tokens` is the summary alone —
+  the next call's context was 41.1k (37.2k cache read of the fixed
+  prefix + 3.9k summary).
+- **Auto-compaction** (fresh session, seven files; the context reached
+  171k, the seventh read pushed it past the threshold): mid-turn
+  `status: "compacting"` → 24 s → `status: null, compact_result:
+  "failed", compact_error: "API Error: …"` (the summary request was
+  refused: an AUP classifier false positive on the random word lists) →
+  a synthetic `assistant` frame (`model: "<synthetic>"`,
+  `is_api_error_message: true`, text "Prompt is too long · automatic
+  compaction failed: …") → `result` `is_error: true` with that text. The
+  next turn retried before its API call: `status: "compacting"` (re-sent
+  once after 30 s) → `compact_result: "success"` → `compact_boundary`
+  `{trigger: "auto", pre_tokens: 184293, post_tokens: 2484}` → the
+  summary as a `user` frame whose content is a **list** of text blocks
+  (`isSynthetic: true`) → the turn's normal API call at 41.1k. No
+  `system/init` between (it had come at the turn's start).
+- Also: `system/status {status: "requesting"}` precedes every API call;
+  `system/init` carries no window (`model`, `tools`, `slash_commands`,
+  … as item 5 records).
+- **`get_context_usage`** (a client control request, answered in about
+  a second, between turns and mid-turn): `totalTokens` (the context as
+  the CLI counts it — the same figure as the last call's usage, 40541
+  both ways), `maxTokens` and `rawMaxTokens` (200000),
+  `autocompactSource: "model-default"`, `percentage`, `categories`
+  (`System prompt` 8516, `System tools` 27263, `Skills` 1941,
+  `Messages`, `Autocompact buffer` 33000 with `kind: "buffer"`, `Free
+  space`) and `gridRows` for the CLI's own `/context` picture. So the
+  CLI compacts on its own at the window less 33k = 167k on the 200k
+  models, which matches the auto-compaction seen at 184k–189k
+  `pre_tokens` (the last read's output pushed it past).
+
+Design:
+
+1. Adapter (`claude.go`, the `system` non-init subtypes, the synthetic
+   `user` frame and the `assistant`/`result` usage): a compaction is a
+   transcript item of type `compaction` — `item/started` at `status:
+   compacting` (so the 10–30 s show as "Compacting context…" in the
+   transcript and the status line), `item/completed` at the boundary with
+   `trigger`, `preTokens`, `postTokens`, and again with `summary` when the
+   synthetic user frame follows; `compact_result: failed` completes it as
+   `failed` with the error (the CLI's own error result still ends the
+   turn). The context is a `thread/context/updated` notification `{used,
+   window, threshold, model}`: as the turn runs, `used` from each
+   `assistant` frame's usage (input + cache creation + cache read; the
+   conversation's own calls, not a subagent's) with `window` from
+   `result.modelUsage` once seen (a table by model id before that: 1M
+   for the `[1m]` suffix and the native-1M ids above, 200k otherwise)
+   and, at a boundary, `post_tokens` + the smallest context the process
+   has seen (the fixed prefix) as the estimate; then the CLI's own
+   account, `get_context_usage` sent after every `turn/completed` and
+   after every boundary (from a goroutine behind a mutex on the CLI's
+   stdin, so a slow reader never stalls the adapter), whose answer gives
+   `used` exactly, `window`, and `threshold` = `maxTokens` − the buffer
+   category. One boundary path: item 5's `thread/compacted` → system
+   line (which its plan marked as item 8's to replace) is gone.
+2. Conversation: entry role `compaction` with `Compaction{Trigger,
+   PreTokens, PostTokens, Status, Error}` and the summary in `Detail`;
+   `Conversation.Context{Used, Window, Threshold, Model}` kept by the
+   engine from the notification (in `GET state` / `events` as
+   `conversation.context`). Codex reports no window today; the field
+   stays nil.
+3. Web: the divider "Context compacted · manual · 171k → 2.2k tokens"
+   with the summary behind a disclosure, "Compacting context…" while it
+   runs (the status says so too), the error when it failed; a context
+   meter beside the model in the composer footer ("42k / 200k" with a
+   tick at the threshold; amber from 80 % of the way to the threshold,
+   red from 95 %, the title naming the threshold and what happens); a
+   `/compact` turn's footer shows its duration and cost, not "0 tokens".
+   `/compact` comes from the CLI's list in the `/` menu (item 5). TUI:
+   `ctx 42k/200k (21%)` in the status line (yellow/red on the same way
+   to the threshold), the divider (summary on Tab), `/compact
+   [INSTRUCTIONS]` in the menu from the chat's reported list (the
+   provider default until it reports), sent as text; `warden chat send
+   --wait` prints the divider line.
+
+Verified (2026-09-17): `go vet`, `gofmt -l`, `go test ./...` (the
+`kube` framing test flakes under the full run and passes alone, as
+noted before), `pnpm build`, `pnpm test` (139 tests; `context.test.ts`
+new); live on a cloned home (`~/.warden-p6`, build e664770) with a
+Claude chat: three 1500-line files generated and read (the context grew
+to 189k and the CLI compacted on its own mid-turn — divider "Context
+compacted · automatic · 189k → 25k tokens", summary captured, the meter
+at 100k / 200k afterwards; `GET state` `context {used: 99747, window:
+200000}` while the turn's summed usage said 593k); `/compact keep the
+list of files and their last words` from the web composer (picked from
+the `/` menu) — "Compacting context…" in amber with the turn timer and
+the status "Compacting context" for 27 s, then "Context compacted ·
+manual · 100k → 2.7k tokens" with the footer "27s · $0.16" and the meter
+down to 49k / 200k; the follow-up "which files…" answered correctly from
+the compacted session (context 47.3k, the estimate had said 48.7k);
+`/compact` through `warden chat send` (a third divider, 47k → 2.7k);
+after the merge, `context.threshold: 167000` from `get_context_usage`,
+the meter's tick at 83.5 % with "at about 167,000 tokens" in its title,
+and the TUI under a pty: status line `… $0.03  ctx 49k/200k (25%)`, the
+three dividers, `/comp` → `/compact [INSTRUCTIONS]` → Tab.
 
 ### Item 1: typed tool cards and diffs
 

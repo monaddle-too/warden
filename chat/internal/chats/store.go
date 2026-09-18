@@ -66,6 +66,16 @@ type Chat struct {
 	// Startup is where the chat's start is while its message waits for the
 	// agent (startup.go); filled in by Engine.View, never stored.
 	Startup *Startup `json:"startup,omitempty"`
+	// DiffBase is the checkpoint the session diff is taken against: the
+	// chat's first, or the one its last code rewind restored (rewind.go).
+	DiffBase string `json:"diffBase,omitempty"`
+	// Rewind is a conversation rewind the agent's session has yet to
+	// apply, Recap the kept transcript the next message carries to a
+	// fresh session, NewSession that the next run starts one instead of
+	// resuming the recorded thread (rewind.go).
+	Rewind     *PendingRewind `json:"rewind,omitempty"`
+	Recap      string         `json:"recap,omitempty"`
+	NewSession bool           `json:"newSession,omitempty"`
 }
 
 // Command is one slash command the agent's session offers.

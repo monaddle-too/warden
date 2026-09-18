@@ -52,14 +52,21 @@ type App struct {
 	rows     int  // transcript rows in the last frame
 	expanded bool // show tool output and diffs in full
 	quiet    bool // hide tool steps and thinking (Ctrl+O)
-	redraw   bool // clear the screen on the next draw (Ctrl+L)
-	quit     bool
-	ctrlC    time.Time // last Ctrl+C; a second within ctrlCQuit quits
+	// diff is the session diff /diff fetched, shown under the transcript
+	// (one line per file; Tab expands the hunks) until /diff again.
+	diff   *WorkspaceChanges
+	redraw bool // clear the screen on the next draw (Ctrl+L)
+	quit   bool
+	ctrlC  time.Time // last Ctrl+C; a second within ctrlCQuit quits
 
 	menu        *Menu
 	menuOff     string // the draft the menu was dismissed for (Esc)
 	pathSeq     atomic.Int64
 	pathResults chan pathResult
+	// later carries what a background request (a "!" command, which may
+	// run for a minute) has to apply on the main loop: a notice, a state
+	// refresh.
+	later       chan func(context.Context)
 	search      *searchState
 	confirm     *confirmation
 	attachments map[string][]Attachment // uploads waiting for the next message, per chat
@@ -120,8 +127,13 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /new [title] /chats /switch N · /rename TITLE /archive /restore /delete
            /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
            /stop /model M /provider P /mode M · /open /previews /preview N /unpublish N
+           /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
            /find TEXT /copy /expand /verbose /clear /quit
+           /compact [what to keep] asks Claude to replace the history with a summary
 composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
+           a long paste becomes [Pasted text #N — M lines] and is sent in full
+           !cmd runs a shell command in the workspace as you (not the agent)
+           #note appends a bullet to the workspace's CLAUDE.md
            @path completes a workspace path (Tab or Enter accepts)
            Up/Down recall prompts (or move between lines) · Ctrl+R searches them
            Ctrl+A/E line start/end · Ctrl+U/K delete to line start/end · Ctrl+W a word
@@ -243,6 +255,9 @@ func (a *App) Run(ctx context.Context) error {
 	if a.pathResults == nil {
 		a.pathResults = make(chan pathResult, 4)
 	}
+	if a.later == nil {
+		a.later = make(chan func(context.Context), 8)
+	}
 	if s, err := a.Client.State(ctx); err == nil {
 		a.state, a.live = s, true
 	} else {
@@ -279,6 +294,9 @@ func (a *App) Run(ctx context.Context) error {
 		case r := <-a.pathResults:
 			a.applyPaths(r)
 			a.draw()
+		case f := <-a.later:
+			f(ctx)
+			a.draw()
 		case <-a.Resize:
 			a.draw()
 		case <-ticker.C:
@@ -291,6 +309,7 @@ func (a *App) Run(ctx context.Context) error {
 // selectChat makes id the current chat: the view goes to the tail, menus
 // close and the editor takes that chat's prompt history.
 func (a *App) selectChat(id string) {
+	a.diff = nil
 	if a.ChatID != id {
 		a.saveHistory()
 	}
@@ -550,11 +569,7 @@ func (a *App) refreshMenu(ctx context.Context) {
 	c := a.chat()
 	switch t.Kind {
 	case "command":
-		var extra []Command
-		if a.ChatCommands != nil && c != nil {
-			extra = a.ChatCommands(c)
-		}
-		for _, cmd := range commandItems(t.Query, extra) {
+		for _, cmd := range commandItems(t.Query, a.chatCommands(c)) {
 			insert := "/" + cmd.Name
 			if cmd.Arg != "" {
 				insert += " "
@@ -675,6 +690,22 @@ func (a *App) submit(ctx context.Context, text string) {
 		a.setNotice("no chat selected; /new or /chats")
 		return
 	}
+	if cmd, ok := strings.CutPrefix(text, "!"); ok && strings.TrimSpace(cmd) != "" {
+		// A shell command by the person, not the agent: the card arrives
+		// over the stream; the request runs off the loop since a command
+		// may take up to a minute.
+		a.shell(ctx, c.ID, strings.TrimSpace(cmd))
+		return
+	}
+	if note, ok := strings.CutPrefix(text, "#"); ok && strings.TrimSpace(note) != "" {
+		if err := a.Client.Memory(ctx, c.ID, strings.TrimSpace(note)); err != nil {
+			a.setNotice(err.Error())
+			a.editor.Set(text)
+			return
+		}
+		a.setNotice("added to CLAUDE.md")
+		return
+	}
 	pending := c.Pending()
 	if len(pending) > 0 {
 		first := pending[0]
@@ -700,6 +731,12 @@ func (a *App) submit(ctx context.Context, text string) {
 			return
 		}
 	}
+	a.sendMessage(ctx, c, text)
+}
+
+// sendMessage sends text to chat c with the files waiting to go with it;
+// the draft comes back if the service refuses.
+func (a *App) sendMessage(ctx context.Context, c *Chat, text string) {
 	var ids []string
 	for _, at := range a.attachments[c.ID] {
 		ids = append(ids, at.ID)
@@ -710,6 +747,32 @@ func (a *App) submit(ctx context.Context, text string) {
 		return
 	}
 	delete(a.attachments, c.ID)
+}
+
+// shell runs a "!" command in the chat's workspace in the background and
+// reports how it ended when it does; the command card itself arrives with
+// the state stream (running, then with its output).
+func (a *App) shell(ctx context.Context, chatID, command string) {
+	a.setNotice("running in the workspace: " + truncate(command, 60))
+	go func() {
+		result, err := a.Client.Exec(ctx, chatID, command)
+		report := func(context.Context) {
+			switch {
+			case err != nil:
+				a.setNotice(err.Error())
+			case result.TimedOut:
+				a.setNotice("command timed out after 60s")
+			case result.ExitCode != 0:
+				a.setNotice(fmt.Sprintf("command exited %d", result.ExitCode))
+			default:
+				a.setNotice("command finished")
+			}
+		}
+		select {
+		case a.later <- report:
+		case <-ctx.Done():
+		}
+	}()
 }
 
 // answerPermission reads a typed answer to a tool ask: y allows, a allows
@@ -932,6 +995,44 @@ func (a *App) refreshState(ctx context.Context) {
 	}
 }
 
+// providerCommands are the agent's own slash commands the menu knows for
+// a chat's provider: their argument and hint (the chat's reported list
+// carries only a description for the workspace's own), and the menu until
+// the chat has reported its list. Sent as text, the agent expands them.
+var providerCommands = map[string][]Command{
+	"claude": {{"compact", "[INSTRUCTIONS]", "replace the history with a summary; say what to keep"}},
+}
+
+// chatCommands lists the commands the chat itself offers: what ChatCommands
+// says when set, else the chat's reported list (with the provider's
+// argument and hint where known), else the provider's known ones.
+func (a *App) chatCommands(c *Chat) []Command {
+	if c == nil {
+		return nil
+	}
+	if a.ChatCommands != nil {
+		return a.ChatCommands(c)
+	}
+	known := providerCommands[c.Provider]
+	if len(c.Commands) == 0 {
+		return known
+	}
+	var out []Command
+	for _, ac := range c.Commands {
+		cmd := Command{Name: ac.Name, Hint: ac.Description}
+		for _, k := range known {
+			if k.Name == ac.Name {
+				cmd.Arg = k.Arg
+				if cmd.Hint == "" {
+					cmd.Hint = k.Hint
+				}
+			}
+		}
+		out = append(out, cmd)
+	}
+	return out
+}
+
 func (a *App) command(ctx context.Context, line string) {
 	name, arg, _ := strings.Cut(strings.TrimPrefix(line, "/"), " ")
 	name = strings.ToLower(name)
@@ -1145,6 +1246,10 @@ func (a *App) command(ctx context.Context, line string) {
 		a.setNotice("draft cleared")
 	case "export":
 		a.export(c, arg)
+	case "rewind":
+		a.rewind(ctx, c, arg)
+	case "diff":
+		a.showDiff(ctx, c, arg)
 	case "verbose":
 		a.handleKey(ctx, Key{Kind: KeyCtrlO})
 	case "open":
@@ -1236,6 +1341,14 @@ func (a *App) command(ctx context.Context, line string) {
 			a.setNotice("unpublished; the URL now answers 410")
 		}
 	default:
+		// A command the chat itself offers (/compact and the agent's
+		// others) goes to the agent as the message, verbatim.
+		for _, cmd := range a.chatCommands(c) {
+			if cmd.Name == name {
+				a.sendMessage(ctx, c, line)
+				return
+			}
+		}
 		a.setNotice("unknown command /" + name + "; /help")
 	}
 }
@@ -1417,6 +1530,10 @@ func (a *App) compose(width int) []string {
 	default:
 		body = RenderTranscript(a.visible(c), width, a.expanded)
 		body = append(body, RenderApprovals(c, width)...)
+		if a.diff != nil {
+			body = append(body, "")
+			body = append(body, RenderChanges(a.diff, width, a.expanded)...)
+		}
 	}
 	// Notices sit under the transcript for a while.
 	if a.notice != "" && a.now().Sub(a.noticeAt) < 20*time.Second {

@@ -7,6 +7,8 @@ import {
   exactCommand,
   mentionFor,
   parseThinking,
+  prefixed,
+  quoteCommand,
   replaceTrigger,
   thinkingLabel,
   triggerAt,
@@ -258,6 +260,8 @@ describe("agent commands in the composer", () => {
       "thinking",
       "effort",
       "export",
+      "rewind",
+      "diff",
       "clear",
       "/compact",
       "/init",
@@ -300,5 +304,49 @@ describe("agent commands in the composer", () => {
       "Own words",
     );
     expect(agentHint({ name: "goal" })).toBe("");
+  });
+});
+
+describe("! and # prefixes", () => {
+  it("reads a leading ! as a shell command and # as a memory note", () => {
+    expect(prefixed("!ls -la")).toEqual({ kind: "shell", command: "ls -la" });
+    expect(prefixed("!  git status\n")).toEqual({
+      kind: "shell",
+      command: "git status",
+    });
+    expect(prefixed("#use tabs")).toEqual({ kind: "memory", note: "use tabs" });
+    expect(prefixed("# use tabs\nnot spaces")).toEqual({
+      kind: "memory",
+      note: "use tabs\nnot spaces",
+    });
+    for (const text of [
+      "!",
+      "#",
+      "! ",
+      "hello !world",
+      " #x",
+      "a\n!b",
+      "/stop",
+      "",
+    ])
+      expect(prefixed(text), text).toBeUndefined();
+  });
+
+  it("quotes a command card into a message for the agent", () => {
+    expect(
+      quoteCommand({
+        text: "git status",
+        detail: "On branch main\nnothing to commit\n",
+        tool: { status: "completed" },
+      }),
+    ).toBe(
+      "I ran `git status` in the workspace:\n```\nOn branch main\nnothing to commit\n```\n",
+    );
+    expect(
+      quoteCommand({ text: "false", detail: "", tool: { status: "exit 1" } }),
+    ).toBe("I ran `false` in the workspace (exit 1); it printed nothing.\n");
+    expect(quoteCommand({ text: "true", detail: "" })).toBe(
+      "I ran `true` in the workspace; it printed nothing.\n",
+    );
   });
 });
