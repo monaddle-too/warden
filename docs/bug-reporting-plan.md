@@ -341,3 +341,4 @@ Client track (`.local/warden-bugs-client`):
   test` (or `/test bugreporting` in the composer) → the review page →
   Send report → the id, then the report under Bug reports in the cloud
   admin console.
+- 2026-09-18: end to end on the owner's Mac against the cloud: `warden bugs test` on `~/.warden/release` (94490a8) → draft dcd02735… (36 KB, no e-mails or home paths left) → review page from the launcher → Send → 202 from cloud.warden.monaddle.com, draft cleared, resend of the id idempotent (202). Feature complete; open: ingress externalTrafficPolicy for per-IP limits.
