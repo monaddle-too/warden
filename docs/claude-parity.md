@@ -264,9 +264,9 @@ bundles, one worktree and one cloned home each; bundles A–D run first,
 E–G after.
 
 ### A. Titles, spend, model catalog (`feat/parity-r2-a-titles-spend`)
-- [ ] R2.1 **Auto-titles**: a chat titled "New chat" gets a title from its first exchange (a one-shot inside the sandbox on the cheapest model, as `/btw` runs; fallback the first message's first line); rename still wins; the sidebar and TUI show it.
-- [ ] R2.2 **Spend**: cost per chat (sum of turns) in the chat header/menu, per workspace in the workspace panel (all its chats), and today / 7 days / all-time totals in the admin console; Codex shows tokens without cost.
-- [ ] R2.3 **Model catalog from the CLI**: the picker's rows, effort levels and fast/1M availability come from `list_models` (per session, cached per provider), and disallowed costlier options show a hint instead of vanishing (item 9's leftover).
+- [x] R2.1 **Auto-titles**: a chat titled "New chat" gets a title from its first exchange (a one-shot inside the sandbox on the cheapest model, as `/btw` runs; fallback the first message's first line); rename still wins; the sidebar and TUI show it. Merged to main MERGE_SHA (2026-09-18); verified as the Round 2 A section says.
+- [x] R2.2 **Spend**: cost per chat (sum of turns) in the chat header/menu, per workspace in the workspace panel (all its chats), and today / 7 days / all-time totals in the admin console; Codex shows tokens without cost. Merged to main MERGE_SHA (2026-09-18); verified as the Round 2 A section says.
+- [x] R2.3 **Model catalog from the CLI**: the picker's rows, effort levels and fast/1M availability come from `list_models` (per session, cached per provider), and disallowed costlier options show a hint instead of vanishing (item 9's leftover). Merged to main MERGE_SHA (2026-09-18); verified as the Round 2 A section says.
 
 ### B. Permission rules (`feat/parity-r2-b-rules`)
 - [ ] R2.4 **Workspace-wide allow-always**: the "Allow always" answer offers this chat / this workspace; workspace rules apply to every chat of the environment.
@@ -435,6 +435,133 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 13 Per-user instructions and memory — merged to main a5012c0 (2026-09-18); verified as the Item 13 section says.
 - [ ] 14 Project MCP, OAuth, plugins.
 - [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
+
+### Round 2 A: auto-titles, spend, the model catalog
+
+Branch `feat/parity-r2-a-titles-spend`, worktree
+`.local/warden-parity-r2-a-titles-spend`, from main adbf4f5 (2026-09-18).
+
+What the pinned CLI (2.1.272) does, checked on the way: `list_models`
+answers at once after `initialize`, before any `system/init`, with
+`{models: [{value, resolvedModel, displayName, description,
+supportsEffort, supportedEffortLevels, supportsAdaptiveThinking,
+supportsFastMode, supportsAutoMode}]}` (the owner's account in the
+sandbox: `default` → sonnet, `sonnet`, `sonnet[1m]`, `opus`, `opus[1m]`,
+`haiku`; effort levels on every row but Haiku, fast mode on the Opus
+rows); the one-shot flags `--max-turns 1`, `--no-session-persistence`
+and `--system-prompt` exist on 2.1.272 (the binary's own strings, then
+the live run) and a `--system-prompt` of one sentence makes a Haiku
+title cost a fraction of a cent (46k-token conversation → the title in
+about 3 s).
+
+Design (as implemented):
+
+1. **Titles** (`chats/title.go`). `Chat.Titled` is "" while the chat has
+   the default title (`DefaultTitle`, "New chat") and waits to be named,
+   "auto" once it was, "manual" once a person named it: `CreateFrom`
+   sets "manual" for a title given at creation, `Edit` sets it when the
+   title changes (an archive with the same title changes nothing). After
+   every turn the run loop calls `autoTitle`: nothing unless the chat is
+   still untitled; on a resident Claude run it asks the runner op
+   `oneshot` (Haiku, `TitleSystemPrompt` as the whole system prompt,
+   "User: …\n\nAssistant: …" from the first user message and the first
+   reply, each cut to 2000 runes) beside the idle session — the gateway
+   serves the credential only while the run is live, so it goes at once,
+   in a goroutine so the session reports idle meanwhile; `CleanTitle`
+   takes the first line, strips quotes and a trailing period, cuts at 60
+   runes. Codex, a run that ended with the turn (`!a.resident`), or a
+   failed one-shot fall back to `FallbackTitle`: the first message's
+   first non-empty line, cut at a word to 60 runes with an ellipsis. The
+   store update checks the chat is still untitled, so a rename that
+   landed while the one-shot ran stays. One naming per chat at a time
+   (`Engine.titling`); no transcript entry; the log says which it was.
+   `warden chat new` and the TUI's `/new` without a title leave it to the
+   service (they used to say "Terminal chat <time>"); the web's name
+   field says so in its placeholder.
+2. **The runner op `oneshot`** (`sandbox/aside.go`): `aside` and
+   `oneshot` share `oneShotRun` (the active streaming Claude run's
+   brokered environment, `r.Model` when valid, the guest script that
+   feeds stdin and adds `--tools ""`, the parsed `result`); `OneShotCommand`
+   resumes nothing and adds `--max-turns 1 --no-session-persistence
+   --system-prompt <r.Instructions>`; `OneShotTimeout` is a minute.
+3. **Spend** (`chats/spend.go`). `Chat.Spend` (turns, input, output,
+   total, costUSD, priced) is filled in by `Engine.state` from the turn
+   records and never stored; `GET spend` (owner-only at the edge) sums
+   every chat's turns, archived included, into today (since the local
+   midnight), the last seven days and all time, each with the chats
+   that had a turn and a per-provider breakdown; a turn counts at its
+   end, or its start while it runs. Side questions and titles are not
+   turns and are left out. Web: a `spend-chip` beside the context meter
+   (`spend.ts`, the service's sum or the turns summed locally on an
+   older service), a Spend block in the workspace panel (this chat and
+   its siblings; "$0.06 · 139k tokens · 3 turns · 2 chats"), a Spend
+   section in the admin console (`SpendView.tsx`, a table by period and
+   provider). TUI: `/cost` ends with "this workspace: 2 chats · 3 turns
+   · 139k tokens · $0.06" when the chat shares its workspace.
+4. **Catalog** (`chats/catalog.go`). After `thread/start` on a Claude
+   chat the engine calls the adapter's `models/list` (→ `list_models`,
+   the answer as the reply, 10 s at most) and keeps the parsed rows
+   (`ModelInfo`: value, resolved, label, description, efforts,
+   adaptiveThinking, fastMode; strings bounded, at most 64 rows) in
+   `State.Catalog[provider]` with the time, replaced only when they
+   change; a refusal keeps the last. `View` hands them out as
+   `agentOptions.models` and drops them from the state. The engine
+   drives the request (not the adapter on its own) so the adapter tests'
+   synchronous pipes see no unexpected frame and the engine can skip
+   Codex. Web `models.ts`: `modelOptions` builds the picker's rows from
+   the catalog (the `default` row becomes "Provider default" with its
+   resolved model as the hint; "Claude " + displayName), the static rows
+   without one; a `[1m]` row the operator has not allowed is listed
+   disabled as "… (not allowed)" with `LONG_CONTEXT_HINT`;
+   `effortOptions` filters the Effort select to the chosen model's
+   levels (the default alone, disabled, for Haiku); `fastModeFor` keeps
+   the Fast checkbox visible, disabled with `FAST_MODE_HINT` until
+   allowed, and says when the model lacks it. The new-chat form's picker
+   gets the catalog too. TUI `complete.go`: `/model` and `/effort` gain
+   argument menus (`ModelRows`, `EffortsFor`), the 1M rows with "not
+   allowed here: enable providers.claude.allowLongContext"; the default
+   row inserts "default", which `/model` maps to "".
+
+Verified (2026-09-18): `gofmt -l`, `go vet ./...`, `go test ./...`
+(`sandbox/aside_test.go` the one-shot launch and op; `chats/title_test.go`
+the one-shot request and the cleaned title, no entry, no second naming,
+a created title kept, a rename before the turn and one landing while
+the one-shot runs, the Codex / failed / non-resident fallbacks,
+`CleanTitle` and `FallbackTitle`; `chats/spend_test.go` the sums, the
+state's spend, the report's periods and providers, the route;
+`chats/catalog_test.go` cached and exposed, a refusal, a replacement,
+Codex never asked, `ParseCatalog`; `agent/claude_test.go`
+`TestClaudeModelsList`; `tui/tui_test.go` the menus and the workspace
+line; `edge/edge_test.go` `api/spend` owner-only), `pnpm build`, `pnpm
+test` (200; `models.test.ts`, `spend.test.ts` new, `composer.test.ts`
+follows the disabled 1M rows). Live on a cloned home (`~/.warden-p13`,
+build d4ae6b2 then 79961e1, CLI 2.1.272): `warden chat new --provider
+claude` → "New chat"; one message → 10 s later `warden chat list`
+showed "Fibonacci Script with Recursion Explanation", the log
+"(generated)", `titled: auto`; `chats/{id}/edit` → "Fib demo (renamed
+by hand)", `titled: manual`, kept across the next turn; a second
+untitled chat on the same workspace → "Counting directory entries with
+wc" in the header, the sidebar and `/chats`. `GET state` carried
+`chat.spend` ($0.037 after two turns) and the six catalog rows; `GET
+spend` today / week / all by provider (claude and codex, the cloned
+chats). Web (1280 px): the picker's rows from the catalog with the
+resolved model and blurb as titles, "Claude Sonnet 5 (1M context) (not
+allowed)" disabled with the config hint, the Fast checkbox disabled with
+its hint, the model switched to haiku live ("Model → haiku") and the
+Effort select collapsed to "Effort: default" disabled with "The chosen
+model takes no effort level"; the "$0.02" chip beside the context meter;
+the panel's "Workspace $0.06 · 139k tokens · 3 turns · 2 chats" and
+"This chat $0.02 · 46k tokens · 1 turn"; the admin console's Spend table
+(Today $0.51 · 844k tokens, 11 turns, 6 chats; all time $1.83 with a
+Codex column of tokens). TUI in a pty: `/cost` with the workspace line,
+the `/model` menu's six rows with hints, `/chats` with the generated
+title. Codex titling is unit-tested only (usage exhausted).
+
+Left: the composer footer is crowded (the style, mode, context and
+spend controls ellipsise each other at 1280 px; the chip itself never
+shrinks); the aside op's cost is not in the spend; the catalog is asked
+at every session start (cheap, but a `list_models` refusal is only
+logged); the TUI's `/effort` menu was not seen live.
 
 ### Item 15: the long tail
 
