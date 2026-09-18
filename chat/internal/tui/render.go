@@ -177,17 +177,7 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 		text := sanitize(e.Text)
 		switch e.Role {
 		case "user":
-			// Another person's message carries their name (else email) on
-			// a shared web deployment; the owner's own is "you".
-			label := "you"
-			if e.Sender != nil && e.Sender.PrincipalID != "owner" {
-				switch {
-				case e.Sender.Name != "":
-					label = sanitize(e.Sender.Name)
-				case e.Sender.Email != "":
-					label = sanitize(e.Sender.Email)
-				}
-			}
+			label := senderLabel(e)
 			out = append(out, wrap(text, width, bold+cyan+label+" › "+reset, strings.Repeat(" ", len(label)+3))...)
 			if e.Delivery != "" && e.Delivery != "delivered" && e.Delivery != "confirmed" {
 				out = append(out, dim+"      ("+sanitize(e.Delivery)+")"+reset)
@@ -241,6 +231,20 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 		}
 	}
 	return out
+}
+
+// senderLabel names the person behind an entry: another person's name
+// (else email) on a shared web deployment; the owner's own is "you".
+func senderLabel(e Entry) string {
+	if e.Sender != nil && e.Sender.PrincipalID != "owner" {
+		switch {
+		case e.Sender.Name != "":
+			return sanitize(e.Sender.Name)
+		case e.Sender.Email != "":
+			return sanitize(e.Sender.Email)
+		}
+	}
+	return "you"
 }
 
 // renderSubagent lays out what a subagent did under its card: one line
@@ -314,7 +318,9 @@ func renderTool(e Entry, width int, expanded bool) []string {
 	if e.IsStreaming || t.Status == "running" {
 		marker = yellow + "  ⋯ "
 	}
-	failed := t.Status == "failed"
+	// Anything but running or completed is a failure, in the agent's own
+	// word (declined, "exit 3", timed out).
+	failed := !e.IsStreaming && t.Status != "running" && t.Status != "completed"
 	if failed {
 		marker = red + "  ✗ "
 	}
@@ -325,6 +331,10 @@ func renderTool(e Entry, width int, expanded bool) []string {
 	switch t.Kind {
 	case "command":
 		head = "$ " + head
+		if e.Sender != nil {
+			// A person's own command ("!cmd"), not the agent's.
+			head = bold + cyan + senderLabel(e) + reset + " " + head
+		}
 		fromEnd = true
 		body = strings.Split(detail, "\n")
 	case "edit":

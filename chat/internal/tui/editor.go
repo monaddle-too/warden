@@ -224,7 +224,13 @@ type Editor struct {
 	history []string
 	hist    int    // index into history while browsing; len(history) = not browsing
 	draft   string // the line being typed before browsing history
+	// pastes is the text behind each "[Pasted text #N — …]" placeholder in
+	// the draft (paste.go), numbered from 1; Submit puts it back.
+	pastes []string
 }
+
+// Pastes is the text kept aside for the draft's paste placeholders.
+func (e *Editor) Pastes() []string { return e.pastes }
 
 func (e *Editor) Text() string { return string(e.buf) }
 func (e *Editor) Cursor() int  { return e.cursor }
@@ -258,17 +264,18 @@ func (e *Editor) Remember(s string) {
 	e.hist = len(e.history)
 }
 
-// Submit returns the current text, records it in history and clears.
+// Submit returns the current text with its paste placeholders expanded,
+// records it in history and clears.
 func (e *Editor) Submit() string {
-	s := strings.TrimSpace(string(e.buf))
+	s := strings.TrimSpace(ExpandPastes(string(e.buf), e.pastes))
 	e.Remember(s)
-	e.buf, e.cursor, e.draft = nil, 0, ""
+	e.buf, e.cursor, e.draft, e.pastes = nil, 0, "", nil
 	return s
 }
 
 // Clear drops the text without recording it.
 func (e *Editor) Clear() {
-	e.buf, e.cursor, e.draft = nil, 0, ""
+	e.buf, e.cursor, e.draft, e.pastes = nil, 0, "", nil
 	e.hist = len(e.history)
 }
 
@@ -352,7 +359,14 @@ func (e *Editor) Handle(k Key) bool {
 	case KeyNewline:
 		e.Insert("\n")
 	case KeyPaste:
-		e.Insert(k.Text)
+		if LongPaste(k.Text) {
+			// A long paste stands in the draft as a placeholder; the text
+			// comes back when the prompt is sent.
+			e.pastes = append(e.pastes, k.Text)
+			e.Insert(PastePlaceholder(len(e.pastes), k.Text))
+		} else {
+			e.Insert(k.Text)
+		}
 	case KeyBackspace:
 		if e.cursor > 0 {
 			e.buf = append(e.buf[:e.cursor-1], e.buf[e.cursor:]...)

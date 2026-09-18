@@ -299,6 +299,29 @@ func (c *Client) Message(ctx context.Context, chatID, text, messageID string, at
 	return c.do(ctx, "POST", "chats/"+chatID+"/message", body, nil)
 }
 
+// Exec runs a shell command in the chat's workspace as the person (the
+// composer's "!cmd"); the transcript gets a command card attributed to
+// them, and the answer is what it came to.
+func (c *Client) Exec(ctx context.Context, chatID, command string) (ExecResult, error) {
+	var result ExecResult
+	err := c.do(ctx, "POST", "chats/"+chatID+"/exec", map[string]any{"text": command}, &result)
+	return result, err
+}
+
+// ExecResult mirrors chats.ExecResult.
+type ExecResult struct {
+	ID       string `json:"id"`
+	ExitCode int    `json:"exitCode"`
+	TimedOut bool   `json:"timedOut,omitempty"`
+	Output   string `json:"output"`
+}
+
+// Memory appends a note to the workspace's CLAUDE.md (the composer's
+// "#note"); the transcript gets a system line saying so.
+func (c *Client) Memory(ctx context.Context, chatID, note string) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/memory", map[string]any{"text": note}, nil)
+}
+
 // Upload stores one file for the chat (multipart field "file", as the web
 // composer sends it) and returns its record; a message then names its ID.
 func (c *Client) Upload(ctx context.Context, chatID, name string, data []byte) (Attachment, error) {

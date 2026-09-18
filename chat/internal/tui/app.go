@@ -59,6 +59,10 @@ type App struct {
 	menuOff     string // the draft the menu was dismissed for (Esc)
 	pathSeq     atomic.Int64
 	pathResults chan pathResult
+	// later carries what a background request (a "!" command, which may
+	// run for a minute) has to apply on the main loop: a notice, a state
+	// refresh.
+	later       chan func(context.Context)
 	search      *searchState
 	confirm     *confirmation
 	attachments map[string][]Attachment // uploads waiting for the next message, per chat
@@ -121,6 +125,9 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /stop /model M /provider P · /open /previews /preview N /unpublish N
            /find TEXT /copy /expand /verbose /clear /quit
 composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
+           a long paste becomes [Pasted text #N — M lines] and is sent in full
+           !cmd runs a shell command in the workspace as you (not the agent)
+           #note appends a bullet to the workspace's CLAUDE.md
            @path completes a workspace path (Tab or Enter accepts)
            Up/Down recall prompts (or move between lines) · Ctrl+R searches them
            Ctrl+A/E line start/end · Ctrl+U/K delete to line start/end · Ctrl+W a word
@@ -239,6 +246,9 @@ func (a *App) Run(ctx context.Context) error {
 	if a.pathResults == nil {
 		a.pathResults = make(chan pathResult, 4)
 	}
+	if a.later == nil {
+		a.later = make(chan func(context.Context), 8)
+	}
 	if s, err := a.Client.State(ctx); err == nil {
 		a.state, a.live = s, true
 	} else {
@@ -274,6 +284,9 @@ func (a *App) Run(ctx context.Context) error {
 			a.draw()
 		case r := <-a.pathResults:
 			a.applyPaths(r)
+			a.draw()
+		case f := <-a.later:
+			f(ctx)
 			a.draw()
 		case <-a.Resize:
 			a.draw()
@@ -671,6 +684,22 @@ func (a *App) submit(ctx context.Context, text string) {
 		a.setNotice("no chat selected; /new or /chats")
 		return
 	}
+	if cmd, ok := strings.CutPrefix(text, "!"); ok && strings.TrimSpace(cmd) != "" {
+		// A shell command by the person, not the agent: the card arrives
+		// over the stream; the request runs off the loop since a command
+		// may take up to a minute.
+		a.shell(ctx, c.ID, strings.TrimSpace(cmd))
+		return
+	}
+	if note, ok := strings.CutPrefix(text, "#"); ok && strings.TrimSpace(note) != "" {
+		if err := a.Client.Memory(ctx, c.ID, strings.TrimSpace(note)); err != nil {
+			a.setNotice(err.Error())
+			a.editor.Set(text)
+			return
+		}
+		a.setNotice("added to CLAUDE.md")
+		return
+	}
 	pending := c.Pending()
 	if len(pending) > 0 {
 		first := pending[0]
@@ -701,6 +730,32 @@ func (a *App) submit(ctx context.Context, text string) {
 		return
 	}
 	delete(a.attachments, c.ID)
+}
+
+// shell runs a "!" command in the chat's workspace in the background and
+// reports how it ended when it does; the command card itself arrives with
+// the state stream (running, then with its output).
+func (a *App) shell(ctx context.Context, chatID, command string) {
+	a.setNotice("running in the workspace: " + truncate(command, 60))
+	go func() {
+		result, err := a.Client.Exec(ctx, chatID, command)
+		report := func(context.Context) {
+			switch {
+			case err != nil:
+				a.setNotice(err.Error())
+			case result.TimedOut:
+				a.setNotice("command timed out after 60s")
+			case result.ExitCode != 0:
+				a.setNotice(fmt.Sprintf("command exited %d", result.ExitCode))
+			default:
+				a.setNotice("command finished")
+			}
+		}
+		select {
+		case a.later <- report:
+		case <-ctx.Done():
+		}
+	}()
 }
 
 func (a *App) resolve(ctx context.Context, chatID string, ap Approval, allow bool, answers map[string][]string) {

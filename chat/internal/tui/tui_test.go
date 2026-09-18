@@ -216,6 +216,7 @@ type fakeServer struct {
 	uploads []string // name:content, in upload order
 	srv     *httptest.Server
 	token   string
+	notes   []string // "#" notes the memory route received
 }
 
 func newFakeServer(t *testing.T, initial State) *fakeServer {
@@ -369,6 +370,41 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/stop")
 		f.mu.Lock()
 		f.state.Chat(id).Status = "idle"
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/exec"):
+		// A person's command: the card lands in the transcript with its
+		// output, attributed to the owner, and the answer says how it ended.
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/exec")
+		cmd := body["text"].(string)
+		code := 0
+		if strings.HasPrefix(cmd, "false") {
+			code = 1
+		}
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		entry := Entry{ID: "x" + cmd, Role: "activity", Text: cmd, Detail: "out of " + cmd + "\n", Tool: &Tool{Kind: "command", Name: "shell", Status: "completed"}}
+		if code != 0 {
+			entry.Tool.Status = "exit 1"
+		}
+		entry.Sender = &struct {
+			PrincipalID string `json:"principalID"`
+			Email       string `json:"email"`
+			Name        string `json:"name"`
+		}{PrincipalID: "owner"}
+		c.Conversation.Entries = append(c.Conversation.Entries, entry)
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"id": entry.ID, "exitCode": code, "output": entry.Detail})
+	case strings.HasSuffix(path, "/memory"):
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/memory")
+		f.mu.Lock()
+		f.notes = append(f.notes, body["text"].(string))
+		c := f.state.Chat(id)
+		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "note", Role: "system", Text: "Added to CLAUDE.md: “" + body["text"].(string) + "”."})
 		f.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/agent"), strings.HasSuffix(path, "/revoke"):
@@ -1623,5 +1659,99 @@ func TestRenderSubagentBackgroundAndTodo(t *testing.T) {
 	a := &App{quiet: true}
 	if v := a.visible(c); len(v.Conversation.Entries) != 0 {
 		t.Fatalf("quiet view shows a subagent's message: %+v", v.Conversation.Entries)
+	}
+}
+
+// "!cmd" runs the rest as a shell command in the workspace by the person
+// (off the loop, reported when it ends) and "#note" appends to CLAUDE.md;
+// neither is sent to the agent as a message.
+func TestBangAndHashPrefixes(t *testing.T) {
+	c := sampleChat()
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, later: make(chan func(context.Context), 8)}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+	app.submit(ctx, "!ls -la")
+	if !strings.Contains(app.notice, "running in the workspace: ls -la") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	select {
+	case fn := <-app.later:
+		fn(ctx)
+	case <-time.After(3 * time.Second):
+		t.Fatal("no report")
+	}
+	if app.notice != "command finished" {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.submit(ctx, "! false now")
+	select {
+	case fn := <-app.later:
+		fn(ctx)
+	case <-time.After(3 * time.Second):
+		t.Fatal("no report")
+	}
+	if app.notice != "command exited 1" {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.submit(ctx, "#use tabs")
+	if app.notice != "added to CLAUDE.md" {
+		t.Fatalf("notice %q", app.notice)
+	}
+	// A lone "!" or "#" is a message like any other.
+	app.submit(ctx, "!")
+	app.submit(ctx, "#")
+	time.Sleep(100 * time.Millisecond)
+	f.mu.Lock()
+	calls := strings.Join(f.calls, "\n")
+	notes := f.notes
+	f.mu.Unlock()
+	if strings.Count(calls, "POST chats/chat1/exec") != 2 || strings.Count(calls, "POST chats/chat1/memory") != 1 || strings.Count(calls, "POST chats/chat1/message") != 2 {
+		t.Fatalf("calls:\n%s", calls)
+	}
+	if len(notes) != 1 || notes[0] != "use tabs" {
+		t.Fatalf("notes %q", notes)
+	}
+	// The person's command renders as their own card, failure by status.
+	s, _ = app.Client.State(ctx)
+	app.state = s
+	lines := plain(strings.Join(RenderTranscript(app.chat(), 80, true), "\n"))
+	if !strings.Contains(lines, "you $ ls -la") || !strings.Contains(lines, "out of ls -la") || !strings.Contains(lines, "✗ you $ false now exit 1") || !strings.Contains(lines, "Added to CLAUDE.md") {
+		t.Fatalf("transcript:\n%s", lines)
+	}
+}
+
+// A long bracketed paste stands in the draft as a placeholder and is put
+// back when the prompt is sent; a short one is inserted as it is.
+func TestLongPasteCollapsesToAPlaceholder(t *testing.T) {
+	var e Editor
+	e.Handle(Key{Kind: KeyPaste, Text: "one\ntwo"})
+	if e.Text() != "one\ntwo" || len(e.Pastes()) != 0 {
+		t.Fatalf("short paste: %q %d", e.Text(), len(e.Pastes()))
+	}
+	e.Clear()
+	long := strings.Repeat("line\n", 20)
+	e.Insert("see ")
+	e.Handle(Key{Kind: KeyPaste, Text: long})
+	e.Insert(" and ")
+	wide := strings.Repeat("x", 1200)
+	e.Handle(Key{Kind: KeyPaste, Text: wide})
+	if e.Text() != "see [Pasted text #1 — 20 lines] and [Pasted text #2 — 1 line]" || len(e.Pastes()) != 2 {
+		t.Fatalf("placeholders: %q %d", e.Text(), len(e.Pastes()))
+	}
+	// Deleting a placeholder drops that paste from the prompt; a typed
+	// placeholder for a paste that does not exist stays as written.
+	e.Insert(" [Pasted text #9 — 3 lines]")
+	got := e.Submit()
+	want := "see " + long + " and " + wide + " [Pasted text #9 — 3 lines]"
+	if got != want {
+		t.Fatalf("expanded: %d chars, want %d: %q…", len(got), len(want), got[:40])
+	}
+	if e.Text() != "" || len(e.Pastes()) != 0 {
+		t.Fatal("editor not cleared")
+	}
+	if !LongPaste(strings.Repeat("a\n", 9)) || LongPaste(strings.Repeat("a\n", 8)) || !LongPaste(strings.Repeat("b", 1001)) || LongPaste(strings.Repeat("b", 1000)) {
+		t.Fatal("thresholds")
 	}
 }
