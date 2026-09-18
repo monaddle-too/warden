@@ -195,10 +195,15 @@ func TestKeysCommandPrintsTheTable(t *testing.T) {
 			t.Errorf("/keys lacks %q", want)
 		}
 	}
+	// Vim mode's rows are there under their heading (round 2 F), whether
+	// or not the mode is on.
+	if !strings.Contains(text, "\nvim mode (/vim on") || !strings.Contains(text, "  h j k l w b e 0 ^ $ gg G") {
+		t.Fatalf("/keys lacks the vim rows:\n%s", text)
+	}
 	// The keys column is aligned: every row's text starts at one column
 	// (the widest keys label plus the four spaces around it).
 	width := 0
-	for _, b := range keyBindings {
+	for _, b := range append(append([]binding(nil), keyBindings...), extraKeys(app)...) {
 		width = max(width, len([]rune(b.keys)))
 	}
 	for _, line := range strings.Split(text, "\n") {
@@ -213,14 +218,59 @@ func TestKeysCommandPrintsTheTable(t *testing.T) {
 	if !strings.Contains(helpText, "/keys") || strings.Contains(helpText, "Shift+Tab") || strings.Contains(helpText, "Ctrl+O") {
 		t.Fatalf("/help lists keys itself:\n%s", helpText)
 	}
-	// A mode's rows join the listing.
+	// The hook's rows join the listing; an area without rows is not
+	// printed.
+	was := extraKeys
 	extraKeys = func(*App) []binding {
-		return []binding{{keys: "gg", area: areaTranscript, what: "to the top (vim)", mode: modeText}}
+		return []binding{{keys: "zz", area: areaTranscript, what: "a hook's row", mode: modeText}}
 	}
-	defer func() { extraKeys = nil }()
+	defer func() { extraKeys = was }()
 	app.submit(ctx, "/keys")
-	if !strings.Contains(plain(app.notice), "  gg") {
-		t.Fatalf("the hook's rows are missing:\n%s", plain(app.notice))
+	if hooked := plain(app.notice); !strings.Contains(hooked, "  zz") || strings.Contains(hooked, "vim mode (") {
+		t.Fatalf("the hook's rows:\n%s", hooked)
+	}
+}
+
+// Vim mode's rows name every key vim.go switches on: the runes of
+// normal mode and its motions, the keys of its command line, and the
+// commands the line accepts.
+func TestVimKeysCoverVimGo(t *testing.T) {
+	src, err := os.ReadFile("vim.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := func(name string) string {
+		s := string(src)
+		i := strings.Index(s, "func "+name)
+		if i < 0 {
+			t.Fatalf("no %s in vim.go", name)
+		}
+		s = s[i:]
+		return s[:strings.Index(s, "\n}\n")]
+	}
+	var labels []string
+	for _, b := range vimRows(&App{}) {
+		labels = append(labels, b.keys, b.what)
+	}
+	all := strings.Join(labels, " ")
+	runeCase := regexp.MustCompile(`case ('[^']+'(?:, '[^']+')*)`)
+	for _, fn := range []string{"(v *Vim) normalRune", "motion("} {
+		for _, m := range runeCase.FindAllStringSubmatch(body(fn), -1) {
+			for _, lit := range strings.Split(m[1], ", ") {
+				r := strings.Trim(lit, "'")
+				if !strings.Contains(all, r) {
+					t.Errorf("vim.go %s handles %q, which no vim row names", fn, r)
+				}
+			}
+		}
+	}
+	for _, cmd := range []string{":w", ":wq", ":q", ":set novim", ":set vim"} {
+		if !strings.Contains(all, cmd) {
+			t.Errorf("vim.go's command %q is not in the vim rows", cmd)
+		}
+	}
+	if !strings.Contains(body("(v *Vim) command"), `"set novim"`) {
+		t.Fatal("vim.go's command line no longer knows :set novim; the rows are stale")
 	}
 }
 

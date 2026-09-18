@@ -294,9 +294,9 @@ E–G after.
 - [x] R2.15 **Rich Read results**: a Read of an image shows the image in the card (today "[image]"), PDFs and notebooks show a page/cell summary. Merged to main e465b66 (2026-09-18); verified as the Round 2 E section says.
 
 ### F. TUI: vim mode, attachments, unread (`feat/parity-r2-f-tui`)
-- [ ] R2.16 **Vim mode**: `/vim on|off` persisted; normal/insert, motions, operators, `u`, `:` commands.
-- [ ] R2.17 **Attachments and paste**: `/attach a b c`, a local `@file` path attaches, a paste-preview chip (items 6 and 12's leftovers).
-- [ ] R2.18 **Unread and jump**: unread markers per chat in `/chats` and the sidebar, an unread divider on switch, `G`/End jumps to the bottom.
+- [x] R2.16 **Vim mode**: `/vim on|off` persisted; normal/insert, motions, operators, `u`, `:` commands. Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says.
+- [x] R2.17 **Attachments and paste**: `/attach a b c`, a local `@file` path attaches, a paste-preview chip (items 6 and 12's leftovers). Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says.
+- [x] R2.18 **Unread and jump**: unread markers per chat in `/chats` and the sidebar, an unread divider on switch, `G`/End jumps to the bottom. Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says (the TUI's status bar is the sidebar's equivalent; on the scrollback TUI the jump is a reprint).
 
 ### G. Asides and shortcuts (`feat/parity-r2-g-asides-keys`)
 - [ ] R2.19 **`/btw` polish**: starts the session when it was released instead of refusing, cleans the aside's session copies in the guest, and an aside can be promoted into the chat as a message (item 15's leftovers).
@@ -557,10 +557,17 @@ Design (as implemented):
    and pasting aside) is a row, every kind the editor consumes is an
    editor row, every kind the menu/search switch on is a row of that
    mode, the app's handlers are one per kind, `handleKey` has no switch
-   left, `/keys` prints every row. **Hook for round 2 F**: `extraKeys`
-   (a function returning rows) is appended to `/keys` when set — vim
-   mode's normal-mode keys go there when F lands (its own key handling
-   in `vim.go` gates `handleKey` before the table).
+   left, `/keys` prints every row. Round 2 F's vim mode landed while
+   this was live-tested and was merged in: its gate (and the paste
+   preview's Ctrl+P) runs in `handleKey` before the table, F's `escape`
+   is the Esc handler, End on an empty draft is a table row (`bottom`),
+   and `extraKeys` — a function returning rows, appended to `/keys` —
+   is `vimRows`: normal mode's motions, operators and commands under a
+   "vim mode (/vim on …)" heading, listed whether or not the mode is on;
+   `TestVimKeysCoverVimGo` checks every rune `vim.go`'s `normalRune` and
+   `motion` switch on and every command of its `:` line is named in
+   them. `/help`'s composer, keys and vim blocks are gone: it points at
+   `/keys`.
 
 Verified (2026-09-18): `gofmt -l`, `go vet ./...`, `go test ./...`
 (`chats/fork_test.go`: `TestAsideStartsAReleasedSession` — the start
@@ -607,10 +614,173 @@ refused rather than started without sending; the web has no approval
 keys (the cards are buttons) and no Esc-to-stop, so its "approvals"
 area is Shift-Tab alone; the TUI's menu and prompt-search switches are
 described by the table and checked against it, not dispatched through
-it; vim mode's rows wait on round 2 F's `extraKeys`.
+it, as are vim mode's rune switches.
 
 Progress: started 2026-09-18 on `feat/parity-r2-g-asides-keys` from
-main 12e3ac8; implemented and live-verified 2026-09-18.
+main 12e3ac8; implemented and live-verified 2026-09-18 (builds c12a017
+and 5a6b0f9 on `~/.warden-p19`; the natural 10-minute idle release
+observed at 07:45 and `/btw` starting the session from it in 4 s);
+rounds 2 C, E and F merged in on the way (F's vim gate ported onto the
+key table).
+### Round 2 F: TUI vim mode, attachments and paste, unread
+
+Branch `feat/parity-r2-f-tui`, worktree `.local/warden-parity-r2-f-tui`,
+from main e5bf597 (2026-09-18). TUI only: R2.16 vim mode, R2.17
+attachments and paste, R2.18 unread markers and jump. No new
+dependencies. Built first on the alternate-screen TUI, then re-based on
+item 16's scrollback rendering when it landed (see "Decisions").
+
+What landed:
+
+- **R2.16 vim mode** (`tui/vim.go`, `vim_test.go`): `/vim on|off`, kept
+  in `<state>/tui/vim` beside the bell's file and read at start. Insert
+  mode is the editor as it was (completion, paste placeholders, history
+  and every key pass through the machine untouched); Esc enters normal
+  mode, shown as `-- NORMAL --` / `-- INSERT --` beside the run state in
+  the status bar, with a block cursor (DECSCUSR 2, the terminal's own
+  shape back in insert mode and at exit). Normal mode: counts; motions
+  `h j k l w b e 0 $ ^ gg G` (vim's word classes — blanks, keyword
+  characters, the rest; an empty line is a word; arrows, Home/End,
+  Backspace and Delete map to `h l k j 0 $ h x`); operators `d c y`
+  over a motion (`dw` on a line's last word stops at the line, `cw` on
+  a word is `ce`, `c$` on an empty line still inserts), `dd cc yy` with
+  a count on either side, `D C x X p P` (a linewise register puts on
+  its own line); `i a I A o O`; `u` and Ctrl-R over a snapshot stack
+  (one step per normal-mode change or insert session, the typing before
+  the first Esc included); `.` replays the last change's recorded keys
+  (an insert session up to its Esc; a count before `.` replaces the
+  change's own); `:w` sends, `:q` quits, `:wq`/`:x` send then quit,
+  `:set novim` turns it off, anything else is named as not a vim
+  command; `/TEXT` is item 6's `/find` (`n` repeats); Enter in normal
+  mode sends; `j`/`k` past the draft's edges recall the history as
+  Up/Down do. Esc in normal mode with nothing pending is the app's own
+  Escape (interrupt, cancel, Esc-Esc); `G` on an empty draft reprints
+  the chat to its end and `gg` says the transcript is the terminal's;
+  Ctrl-C, Ctrl-D, Ctrl-L, Ctrl-O, Tab, Shift-Tab stay the app's. A send,
+  Ctrl-C or `/clear` puts the machine back in insert mode with nothing
+  to undo.
+- **R2.17 attachments and paste** (`tui/attach.go`): `/attach a b c`
+  takes several paths, quoted for spaces, `~` and globs expanded on
+  this machine, each under the service's limits (8 MiB, 8 per message;
+  the count limit stops the batch and says so); the notice lists what
+  was attached and what failed. A local mention in the draft — `@./x`,
+  `@../x` or `@~/x`, told from a workspace `@path` by its prefix — is
+  uploaded when the message is sent and rewritten to the upload's
+  workspace path (`@.warden/attachments/<id>.<ext>`), so the agent reads
+  the file where it landed; a mention that names no local file is sent
+  as written with a notice; one that cannot be attached (empty, too
+  large, the count) keeps the draft. The `@` menu completes a local
+  prefix from this machine (closed with a space once it names a file)
+  and a workspace path from the `paths` op as before. `/attachments`
+  lists the waiting files with sizes and workspace paths (item 6's).
+  Pastes: the chip line `pasted: #1 30 lines (351 B) · …` above the
+  status bar while the draft holds collapsed pastes; `/paste` lists
+  them (lines, size, first line), `/paste N` prints one in full,
+  numbered, into the scrollback (the terminal is the pager); Ctrl+P on
+  a placeholder opens a bounded preview panel above the status bar (the
+  title, the first 8 lines, "… N more lines"), Ctrl+P again moves to
+  the draft's next placeholder and closes after the last, Esc closes it;
+  off a placeholder Ctrl+P is still the history's. A command typed as
+  its own draft (`/paste 1` is one) keeps the pastes for the next
+  message — a sent message, `/clear` or Ctrl-C drop them — and a
+  placeholder typed again names the kept paste.
+- **R2.18 unread and jump** (`tui/unread.go`): the last entry seen per
+  chat in `<state>/tui/seen.json` (`{chatID: {id, at}}`, the web's
+  localStorage mark), advanced with every frame of the selected chat
+  and written when it changes; a chat visited while empty gets a mark
+  with no entry and the moment, so what arrives later counts as new.
+  `/chats` appends `• N` to the other chats with new messages (tool
+  steps, thinking and compaction dividers not counted; a chat never
+  opened counts nothing, as the web's first visit), the `/switch` menu
+  puts it in the hint, and the status bar shows `N unread` across the
+  other chats while the selected one is idle. Switching in fixes the
+  divider's place from the mark as it is then (the web does the same
+  when a chat opens) and prints `── new ──…` before the first unseen
+  entry as part of that entry's block; the switch notice says `N new
+  messages since you were here; ── new ── marks the first` (no divider,
+  as on the web, when every entry is new). `/bottom`, End on an empty
+  draft and vim's `G` reprint the chat (Ctrl-L's clear-and-reprint),
+  which lands the terminal's view on its end.
+
+Decisions:
+
+1. **Vim is a machine over the editor's buffer, not a second editor.**
+   `Vim.Handle` takes the `Editor` and a key and answers with an action
+   (`VimPass` for a key that is the app's or the editor's as without
+   vim); the app's `handleKey` routes through it after the history
+   search and the menu, before its own switch. Insert mode passes every
+   key but Esc, so nothing the composer does today changed; the app's
+   Escape work moved into `escape()` so normal mode can hand a bare Esc
+   to it.
+2. **`.` replays keys.** The last change is the sequence of normal-mode
+   keys that made it (an insert session's typed keys up to its Esc
+   included), replayed through the same machine with recording off;
+   simpler than modelling each change, and it covers `cw…`, `3x`,
+   `A…<Esc>`, `dd`, `p` alike. Counts before `.` replace the recorded
+   leading digits.
+3. **Re-based on the scrollback TUI.** Item 16 landed while this bundle
+   was live-testing: no alternate screen, no app-level scroll, notices
+   of several lines printed once. The pager that stood in for the
+   transcript became the printed `/paste N` plus the bounded Ctrl+P
+   panel; "opens at the divider" became the divider printed in place
+   plus the count in the switch notice (nothing can scroll the normal
+   buffer's viewport; the terminal's own search finds `── new ──`);
+   "jump to the bottom" became the reprint the terminal follows.
+4. **A command keeps the pastes.** `/paste N` is a draft of its own, and
+   the editor's Submit dropped the pastes with the draft, so the command
+   found nothing in real use (the unit test called `submit` directly).
+   A command now puts the pastes back; the message being composed is
+   what they belong to.
+5. **Local mentions are rewritten.** The agent gets the attachment note
+   with the workspace path, so the mention in the text points there too
+   rather than at a path that exists only on this machine.
+6. **The `/switch` menu puts the chat numbered exactly as typed first**:
+   Enter picks the first row, and a title containing the digits
+   ("deploy smoke f998301" for 30) used to come before chat 30 (found
+   by the pty run).
+
+Found on the way: a reply whose entry arrived before its first delta
+crashed the renderer (`renderMarkdown("")` is no lines, the streaming
+cursor was appended to index −1) — fixed with a test, on main's code.
+
+Verified (2026-09-18): `go test ./internal/tui` (`-race` too), `go vet`,
+`gofmt`: `vim_test.go` (110 table cases over motions, operators, put,
+insert commands, undo/redo, repeat, pending state, the `:`/`/` lines,
+actions, pass-through), `tui_test.go` (`TestVimModeInTheApp`,
+`TestAttachSeveralFilesAndLocalMentions`, `TestPastePreviewAndChip`,
+`TestUnreadMarkersDividerAndJump`); the full Go suite on the merged
+tree. Live on a cloned home (`~/.warden-p20`, port 19000, build
+1e48674 = the merged tree; `~/.warden-p18` was bundle E's at the time)
+driving the real `warden chat` under a pty at 120×40 from
+`scratchpad/p20-tui.py`, every step checked against the bytes the TUI
+wrote: `/vim on` → `-- INSERT --`; "say only the word pong", Esc →
+`-- NORMAL --`, `0cw` `reply` Esc `$bdw` `Apong` Esc → the draft read
+`reply only the word pong`; `:w` showed as the composer line and sent
+it, the mode back to insert, the agent answered `pong`; `/attach
+p20-a.txt p20-b.txt` → "attached 2 files … (file, 29 B)" and the
+`attached:` line, the agent's reply carried 17 and 42 from the two
+files; a 30-line bracketed paste → `[Pasted text #1 — 30 lines]` and the
+chip, Ctrl+P → the panel with 8 lines and "… 22 more lines", Esc, Ctrl+U,
+`/paste 1` printed the title and all 30 numbered lines, the placeholder
+typed again in a message → the agent answered `log line 17`; `warden
+chat send "F other" … --wait` from outside → `/chats` showed `• 2` on F
+other, the status bar `2 unread`, the `/switch` menu row `… idle · •
+2`, `/switch` → "switched to F other · 2 new messages since you were
+here; ── new ── marks the first", the divider printed right after the
+last seen reply and before the new message, `/bottom` → "reprinted…",
+back in F vim nothing new; `:q` quit; `<state>/tui/vim` held `on` and
+`seen.json` both chats' marks. The home was torn down afterwards.
+
+Left: `/paste N` needs the command as its own draft (the text typed
+before it is lost, as with every command; Ctrl+P is the in-place way);
+the unread divider cannot scroll the terminal to itself; the web
+sidebar still has no unread badge (the plan named the TUI's status bar
+as its equivalent).
+
+Progress: started 2026-09-18; implemented, re-based on item 16 and
+live-verified the same day (1e48674); merged to main b7e7e8b
+(2026-09-18) after merging the bug-reports client track and round 2 E
+in. Not deployed beyond the test home.
 
 ### Round 2 C: live activity, nesting-aware search and export, TUI search across chats
 

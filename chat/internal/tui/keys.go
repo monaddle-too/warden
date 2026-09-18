@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 )
 
 // Every key the terminal client answers to, in one table
@@ -22,6 +21,7 @@ const (
 	areaTranscript = "transcript"
 	areaApprovals  = "approvals"
 	areaNavigation = "navigation"
+	areaVim        = "vim"
 )
 
 // A binding's mode says who handles the key: "" the app (run), modeEditor
@@ -66,6 +66,8 @@ func init() {
 		{kinds: []KeyKind{KeyTab}, keys: "Tab", area: areaComposer, what: "completes a / command or an @ path (with one match); on an empty draft expands or folds tool output and diffs", run: (*App).keyTab},
 		{kinds: []KeyKind{KeyLeft, KeyRight}, keys: "Left / Right", area: areaComposer, what: "move the cursor", mode: modeEditor},
 		{kinds: []KeyKind{KeyHome, KeyEnd, KeyCtrlA, KeyCtrlE}, keys: "Home / End, Ctrl+A / Ctrl+E", area: areaComposer, what: "the line's start / end", mode: modeEditor},
+		{kinds: []KeyKind{KeyEnd}, keys: "End", area: areaTranscript, what: "reprints the chat so the terminal's view is at its end (/bottom too)", when: "empty draft", run: (*App).keyEnd},
+		{kinds: []KeyKind{KeyCtrlP}, keys: "Ctrl+P", area: areaComposer, what: "previews the long paste under the cursor (/paste N prints it)", when: "on a [Pasted text #N] placeholder"},
 		{kinds: []KeyKind{KeyBackspace, KeyDelete}, keys: "Backspace / Delete", area: areaComposer, what: "delete before / after the cursor", mode: modeEditor},
 		{kinds: []KeyKind{KeyCtrlU, KeyCtrlK}, keys: "Ctrl+U / Ctrl+K", area: areaComposer, what: "delete to the line's start / end", mode: modeEditor},
 		{kinds: []KeyKind{KeyCtrlW}, keys: "Ctrl+W, Alt+Backspace", area: areaComposer, what: "delete the word before the cursor", mode: modeEditor},
@@ -97,12 +99,32 @@ func init() {
 		{kinds: []KeyKind{KeyEscape, KeyCtrlG, KeyCtrlC}, keys: "Esc, Ctrl+G, Ctrl+C", area: areaNavigation, what: "leave the prompt search", when: "Ctrl+R search open", mode: modeSearch},
 		{keys: "/keys", area: areaNavigation, what: "this list · /help lists the commands", mode: modeText},
 	}
+	extraKeys = vimRows
 }
 
-// extraKeys, when set, adds rows to /keys for a mode the app is in (round
-// 2 F's vim mode lists its normal-mode keys here when it lands: the
-// bindings live in vim.go, and the hook keeps this table the one place
-// /keys reads). Nil until then.
+// vimRows are vim mode's rows (vim.go; round 2 F): normal mode's motions,
+// operators and commands, listed whether or not the mode is on (the
+// heading says how to turn it on); keys_test.go checks every rune and
+// command vim.go switches on is in one of them.
+func vimRows(a *App) []binding {
+	on := "vim on (/vim on)"
+	return []binding{
+		{keys: "Esc", area: areaVim, what: "enters normal mode (-- NORMAL --) from insert mode; in normal mode with nothing pending, the app's Esc", when: on, mode: modeText},
+		{keys: "i a I A o O", area: areaVim, what: "insert: here, after the cursor, at the line's start, at its end, on a new line below, above", when: on, mode: modeText},
+		{keys: "h j k l w b e 0 ^ $ gg G", area: areaVim, what: "motions, with a count (5w); arrows move too; G on an empty draft reprints to the end", when: on, mode: modeText},
+		{keys: "d c y + motion, dd cc yy, D C", area: areaVim, what: "delete / change / yank over a motion, the whole line, to the line's end", when: on, mode: modeText},
+		{keys: "x X p P", area: areaVim, what: "delete the character under / before the cursor; put the yank after / before it", when: on, mode: modeText},
+		{keys: "u Ctrl+R .", area: areaVim, what: "undo, redo, repeat the last change", when: on, mode: modeText},
+		{keys: "Enter, :w", area: areaVim, what: "sends the draft", when: on, mode: modeText},
+		{keys: ":q :wq :set novim", area: areaVim, what: "quits; sends and quits; turns vim mode off (:set vim says it is on)", when: on, mode: modeText},
+		{keys: "/TEXT n", area: areaVim, what: "searches the transcript (/find); n repeats it", when: on, mode: modeText},
+		{keys: ":", area: areaVim, what: "a command line (Esc leaves it)", when: on, mode: modeText},
+	}
+}
+
+// extraKeys adds rows to /keys beyond the app's own table: vim mode's
+// (vimRows, whose handling lives in vim.go and gates handleKey before
+// the table), so /keys stays the one listing. A test may replace it.
 var extraKeys func(a *App) []binding
 
 // keyAreas are the areas in the order /keys prints them, with their
@@ -112,6 +134,7 @@ var keyAreas = []struct{ id, title string }{
 	{areaTranscript, "transcript"},
 	{areaApprovals, "approvals and permission mode (typed answers, then Enter)"},
 	{areaNavigation, "menus and search"},
+	{areaVim, "vim mode (/vim on; normal mode's keys)"},
 }
 
 // bindingFor is the app's own handler for a key kind (mode ""), nil when
@@ -139,11 +162,8 @@ func KeysText(rows []binding) string {
 		width = max(width, len([]rune(b.keys)))
 	}
 	var out strings.Builder
-	for i, area := range keyAreas {
-		if i > 0 {
-			out.WriteString("\n")
-		}
-		out.WriteString(area.title + "\n")
+	for _, area := range keyAreas {
+		var lines []string
 		for _, b := range rows {
 			if b.area != area.id {
 				continue
@@ -152,8 +172,15 @@ func KeysText(rows []binding) string {
 			if b.when != "" {
 				line += " [" + b.when + "]"
 			}
-			out.WriteString(line + "\n")
+			lines = append(lines, line)
 		}
+		if len(lines) == 0 {
+			continue
+		}
+		if out.Len() > 0 {
+			out.WriteString("\n")
+		}
+		out.WriteString(area.title + "\n" + strings.Join(lines, "\n") + "\n")
 	}
 	return strings.TrimRight(out.String(), "\n")
 }
@@ -184,6 +211,7 @@ func (a *App) keyCtrlC(ctx context.Context, k Key, c *Chat) {
 	if ed := a.editing; ed != nil {
 		a.editing = nil
 		a.editor.Clear()
+		a.vim.Reset()
 		a.menu = nil
 		a.ctrlC = now
 		a.setNotice("edit of " + ed.label + " cancelled · Ctrl+C again to quit")
@@ -191,6 +219,8 @@ func (a *App) keyCtrlC(ctx context.Context, k Key, c *Chat) {
 	}
 	if a.editor.Text() != "" || a.menu != nil {
 		a.editor.Clear()
+		a.vim.Reset()
+		a.preview = nil
 		a.menu = nil
 		a.ctrlC = now
 		a.setNotice("draft cleared · Ctrl+C again to quit")
@@ -212,32 +242,20 @@ func (a *App) keyCtrlL(ctx context.Context, k Key, c *Chat) {
 	a.redraw = true
 }
 
+// keyEscape: the Escape key's work is escape (app.go), which vim's
+// normal mode hands over to as well.
 func (a *App) keyEscape(ctx context.Context, k Key, c *Chat) {
-	switch {
-	case a.confirm != nil:
-		a.confirm = nil
-		a.setNotice("cancelled")
-	case a.editing != nil:
-		label := a.editing.label
-		a.editing = nil
-		a.editor.Clear()
-		a.setNotice("edit of " + label + " cancelled; nothing saved")
-	case c != nil && c.Running():
-		if err := a.Client.Stop(ctx, c.ID); err != nil {
-			a.setNotice(err.Error())
-		} else if len(queuedMessages(c)) > 0 {
-			a.setNotice("interrupting the agent; the queued messages are held (/queue send lets them go)")
-		} else {
-			a.setNotice("interrupting the agent")
-		}
-	case c != nil && a.editor.Text() == "" && !a.lastEsc.IsZero() && a.now().Sub(a.lastEsc) <= doubleEscape:
-		// Esc-Esc (Claude Code's): the last message back into the
-		// editor, the conversation rewound to before it (queue.go).
-		a.lastEsc = time.Time{}
-		a.editLast(ctx, c)
-	default:
-		a.lastEsc = a.now()
+	a.escape(ctx, c)
+}
+
+// keyEnd: with nothing typed, End goes back to the transcript's end (the
+// reprint lands the terminal there); while composing it moves the cursor.
+func (a *App) keyEnd(ctx context.Context, k Key, c *Chat) {
+	if a.editor.Text() == "" {
+		a.bottom()
+		return
 	}
+	a.editor.Handle(k)
 }
 
 func (a *App) keyCtrlO(ctx context.Context, k Key, c *Chat) {

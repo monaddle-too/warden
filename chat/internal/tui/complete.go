@@ -45,9 +45,10 @@ var Commands = []Command{
 	{"thinking", "on|off|TOKENS", "how much a Claude chat thinks: the model decides, none, or a budget (8k)"},
 	{"effort", "low|medium|high|xhigh|max|default", "effort level of a Claude chat"},
 	{"fast", "on|off", "fast mode of a Claude chat, where Warden allows it"},
-	{"attach", "PATH", "send a local file with the next message"},
+	{"attach", "PATH…", "send local files with the next message (several paths, globs)"},
 	{"attachments", "", "list the files waiting to be sent"},
 	{"detach", "N", "drop a waiting file"},
+	{"paste", "[N]", "list the draft's collapsed pastes, or print paste N in full"},
 	{"export", "[md|json] [all] [FILE]", "write the transcript to a file"},
 	{"rewind", "[N] [code|conv|both]", "go back to before message N: its code, the conversation or both"},
 	{"edit", "[N] [both]", "edit message N: a queued one in place (Enter saves it into its slot), a sent one is rewound to before and sent again (↑ edits the last queued, Esc Esc the last sent)"},
@@ -70,6 +71,8 @@ var Commands = []Command{
 	{"copy", "", "put the agent's last reply on the clipboard"},
 	{"find", "TEXT", "print the transcript lines containing TEXT, a subagent's steps and folded output too (your terminal's search jumps to them)"},
 	{"search", "TEXT | N", "search every chat's title and transcript; N opens a listed hit"},
+	{"bottom", "", "reprint the chat so the terminal shows its end (End on an empty draft, G in vim mode)"},
+	{"vim", "[on|off]", "vim keys in the composer: Esc for normal mode, i inserts, :w sends"},
 	{"expand", "", "toggle full tool output and diffs (Tab)"},
 	{"verbose", "", "show or hide tool steps and thinking (Ctrl+O)"},
 	{"open", "", "open this chat in the browser"},
@@ -84,7 +87,8 @@ var Commands = []Command{
 // Trigger is the completion the caret asks for.
 type Trigger struct {
 	// Kind is "command" (the name after "/"), "path" (an @-mention),
-	// "local" (a local file for /attach) or "chat" (a chat for /switch).
+	// "localpath" (an @-mention of this machine's file), "local" (a
+	// local file for /attach) or "chat" (a chat for /switch).
 	Kind string
 	// Start and End bound the runes replaced when a suggestion is picked.
 	Start, End int
@@ -140,7 +144,12 @@ func triggerAt(text []rune, caret int) (Trigger, bool) {
 	for end < len(text) && !isSpace(text[end]) {
 		end++
 	}
-	return Trigger{Kind: "path", Start: start, End: end, Query: string(text[start+1 : caret])}, true
+	query := string(text[start+1 : caret])
+	if IsLocalPath(query) {
+		// @./x, @../x, @~/x: a file on this machine (attach.go).
+		return Trigger{Kind: "localpath", Start: start, End: end, Query: query}, true
+	}
+	return Trigger{Kind: "path", Start: start, End: end, Query: query}, true
 }
 
 // commandItems are the commands whose name starts with the word typed;
@@ -381,8 +390,11 @@ func effortItems(c *Chat, options AgentOptions, query string) []MenuItem {
 }
 
 // chatItems are the chats a /switch argument can name: by number, or by a
-// word of the title.
-func chatItems(chats []*Chat, query string) []MenuItem {
+// word of the title, the chat whose number is exactly the query first
+// (Enter picks the first row, and a title may contain the digits typed);
+// unread, when given, counts a chat's unread messages for the hint
+// (unread.go).
+func chatItems(chats []*Chat, query string, unread func(*Chat) int) []MenuItem {
 	q := strings.ToLower(strings.TrimSpace(query))
 	var out []MenuItem
 	for i, c := range chats {
@@ -390,7 +402,18 @@ func chatItems(chats []*Chat, query string) []MenuItem {
 		if q != "" && !strings.HasPrefix(n, q) && !strings.Contains(strings.ToLower(c.Title), q) {
 			continue
 		}
-		out = append(out, MenuItem{Insert: n, Label: n + "  " + truncate(sanitize(c.Title), 40), Hint: c.Provider + " · " + c.Status, Run: true})
+		hint := c.Provider + " · " + c.Status
+		if unread != nil {
+			if u := unreadMark(unread(c)); u != "" {
+				hint += " · " + u
+			}
+		}
+		item := MenuItem{Insert: n, Label: n + "  " + truncate(sanitize(c.Title), 40), Hint: hint, Run: true}
+		if n == q {
+			out = append([]MenuItem{item}, out...)
+			continue
+		}
+		out = append(out, item)
 	}
 	return out
 }

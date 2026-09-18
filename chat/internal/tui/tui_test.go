@@ -99,6 +99,12 @@ func sampleChat() *Chat {
 }
 
 func TestRenderTranscriptSanitizesAndWraps(t *testing.T) {
+	// A reply that has not streamed a character yet shows its label with
+	// the cursor (this used to index an empty slice).
+	empty := &Chat{ID: "e", Provider: "claude", Status: "running", Conversation: Conversation{Entries: []Entry{{ID: "m0", Role: "assistant", IsStreaming: true}}}}
+	if got := RenderTranscript(empty, 40, false); len(got) != 2 || !strings.Contains(plain(got[0]), "claude › ▍") {
+		t.Fatalf("empty streaming reply: %q", got)
+	}
 	lines := RenderTranscript(sampleChat(), 40, false)
 	joined := plain(strings.Join(lines, "\n"))
 	if strings.Contains(strings.Join(lines, "\n"), "\x1b[31m") {
@@ -4771,6 +4777,604 @@ func TestDeliveryMarks(t *testing.T) {
 	}
 	if got := render("failed", ""); got != "you › hi ! not delivered" {
 		t.Fatalf("failed without detail: %q", got)
+	}
+}
+
+// keysOf feeds vim-notation keys (vim_test.go) to the app.
+func keysOf(app *App, ctx context.Context, s string) {
+	for _, k := range vimKeys(s) {
+		app.handleKey(ctx, k)
+	}
+}
+
+// Vim mode in the app (R2.16): /vim on is remembered in VimFile; the
+// status bar names the mode; Esc enters normal mode, where the keys edit
+// the draft, Enter and :w send it (the machine back in insert mode), :q
+// quits, :set novim turns it off, "/" searches the transcript and Esc
+// with nothing pending is the app's (interrupting a running agent).
+func TestVimModeInTheApp(t *testing.T) {
+	c := sampleChat()
+	c.Status = "idle"
+	c.Approvals = nil
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	dir := t.TempDir()
+	vimFile := filepath.Join(dir, "vim")
+	now := time.Unix(1000, 0)
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return now }, VimFile: vimFile}
+	ctx := context.Background()
+	app.state, _ = app.Client.State(ctx)
+	if app.vimOn() {
+		t.Fatal("vim on before /vim on")
+	}
+	status := func() string { return plain(strings.Join(app.frame(120, 24).Status, " ")) }
+	if strings.Contains(status(), "-- INSERT --") {
+		t.Fatalf("mode shown while off: %q", status())
+	}
+	app.submit(ctx, "/vim on")
+	if !app.vim.Enabled || !strings.Contains(app.notice, "vim mode on") {
+		t.Fatalf("/vim on: %v %q", app.vim.Enabled, app.notice)
+	}
+	if b, _ := os.ReadFile(vimFile); strings.TrimSpace(string(b)) != "on" {
+		t.Fatalf("vim file: %q", b)
+	}
+	if !strings.Contains(status(), "-- INSERT --") {
+		t.Fatalf("insert mode not shown: %q", status())
+	}
+	// Type, Esc to normal mode, edit with vim keys.
+	typeText(app, ctx, "hello there world")
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if app.vim.Mode != VimNormal || !strings.Contains(status(), "-- NORMAL --") {
+		t.Fatalf("normal mode: %v %q", app.vim.Mode, status())
+	}
+	if app.editor.Cursor() != len("hello there world")-1 {
+		t.Fatalf("cursor after Esc: %d", app.editor.Cursor())
+	}
+	keysOf(app, ctx, "bdw0")
+	if app.editor.Text() != "hello there " || app.editor.Cursor() != 0 {
+		t.Fatalf("bdw0: %q@%d", app.editor.Text(), app.editor.Cursor())
+	}
+	keysOf(app, ctx, "cwhi<Esc>")
+	if app.editor.Text() != "hi there " {
+		t.Fatalf("cw: %q", app.editor.Text())
+	}
+	// The block cursor is requested in normal mode, the default in insert.
+	var out bytes.Buffer
+	app.Output = &out
+	app.draw()
+	if !strings.Contains(out.String(), "\x1b[2 q") {
+		t.Fatal("no block cursor in normal mode")
+	}
+	// The : line shows in the composer; :w sends the draft, then insert mode.
+	keysOf(app, ctx, ":w")
+	if fr := app.frame(120, 24); len(fr.PromptLines) != 1 || fr.PromptLines[0] != ":w" || fr.CursorCol != 2 {
+		t.Fatalf("command line: %+v", fr.PromptLines)
+	}
+	keysOf(app, ctx, "<CR>")
+	time.Sleep(20 * time.Millisecond)
+	s, _ := app.Client.State(ctx)
+	last := s.Chats[0].Conversation.Entries[len(s.Chats[0].Conversation.Entries)-1]
+	if last.Role != "user" || last.Text != "hi there" {
+		t.Fatalf(":w did not send: %+v", last)
+	}
+	if app.vim.Mode != VimInsert || app.editor.Text() != "" {
+		t.Fatalf("after :w: mode %v text %q", app.vim.Mode, app.editor.Text())
+	}
+	out.Reset()
+	app.draw()
+	if !strings.Contains(out.String(), "\x1b[0 q") {
+		t.Fatal("cursor shape not restored in insert mode")
+	}
+	app.Output = io.Discard
+	// Enter in normal mode sends too.
+	typeText(app, ctx, "second")
+	keysOf(app, ctx, "<Esc><CR>")
+	time.Sleep(20 * time.Millisecond)
+	s, _ = app.Client.State(ctx)
+	if e := s.Chats[0].Conversation.Entries; e[len(e)-1].Text != "second" {
+		t.Fatalf("Enter in normal mode: %q", e[len(e)-1].Text)
+	}
+	// :w with nothing typed says so.
+	keysOf(app, ctx, "<Esc>:w<CR>")
+	if app.notice != "nothing to send" {
+		t.Fatalf(":w on empty: %q", app.notice)
+	}
+	// "/" searches the transcript (item 6's /find): the matching line is
+	// printed.
+	app.state, _ = app.Client.State(ctx)
+	keysOf(app, ctx, "/counter<CR>")
+	if !strings.Contains(app.notice, `contain "counter"`) || !strings.Contains(app.notice, "Create a counter page") {
+		t.Fatalf("/ search: %q", app.notice)
+	}
+	keysOf(app, ctx, "n")
+	if !strings.Contains(app.notice, `contain "counter"`) {
+		t.Fatalf("n: %q", app.notice)
+	}
+	// Esc in normal mode with nothing pending is the app's: on a running
+	// chat it interrupts the agent.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	if app.vim.Mode != VimNormal {
+		t.Fatalf("mode before Esc: %v", app.vim.Mode)
+	}
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if !strings.Contains(strings.Join(f.calls, "\n"), "POST chats/chat1/stop") || !strings.Contains(app.notice, "interrupting") {
+		t.Fatalf("Esc did not interrupt: %q", app.notice)
+	}
+	// Esc in insert mode enters normal mode instead of interrupting.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.calls = nil
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	app.vim.Reset()
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if strings.Contains(strings.Join(f.calls, "\n"), "/stop") || app.vim.Mode != VimNormal {
+		t.Fatalf("Esc from insert interrupted or did not switch: %v %v", f.calls, app.vim.Mode)
+	}
+	// G on an empty draft reprints the chat so the terminal shows its
+	// end; gg says the transcript is the terminal's.
+	app.redraw = false
+	keysOf(app, ctx, "G")
+	if !app.redraw || !strings.Contains(app.notice, "reprinted") {
+		t.Fatalf("G: redraw %v notice %q", app.redraw, app.notice)
+	}
+	app.redraw = false
+	keysOf(app, ctx, "gg")
+	if app.redraw || !strings.Contains(app.notice, "scroll up") {
+		t.Fatalf("gg: redraw %v notice %q", app.redraw, app.notice)
+	}
+	if !strings.Contains(helpText, "vim        /vim on") {
+		t.Fatal("help does not describe vim mode")
+	}
+	// :set novim turns it off and remembers; a new app reads the file.
+	keysOf(app, ctx, ":set novim<CR>")
+	if app.vim.Enabled || !strings.Contains(app.notice, "vim mode off") {
+		t.Fatalf(":set novim: %v %q", app.vim.Enabled, app.notice)
+	}
+	if b, _ := os.ReadFile(vimFile); strings.TrimSpace(string(b)) != "off" {
+		t.Fatalf("vim file after novim: %q", b)
+	}
+	os.WriteFile(vimFile, []byte("on\n"), 0600)
+	again := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, VimFile: vimFile}
+	if !again.vimOn() || again.vim.Mode != VimInsert {
+		t.Fatal("a new app did not read the vim setting")
+	}
+	// :q quits.
+	again.state, _ = again.Client.State(ctx)
+	keysOf(again, ctx, "<Esc>:q<CR>")
+	if !again.quit {
+		t.Fatal(":q did not quit")
+	}
+	// /vim with no argument reports; a bad argument is refused.
+	app.submit(ctx, "/vim")
+	if !strings.Contains(app.notice, "vim mode off") {
+		t.Fatalf("/vim: %q", app.notice)
+	}
+	app.submit(ctx, "/vim sideways")
+	if app.notice != "/vim on|off" {
+		t.Fatalf("/vim sideways: %q", app.notice)
+	}
+	// Ctrl-C in normal mode clears the draft and returns to insert mode.
+	app.submit(ctx, "/vim on")
+	typeText(app, ctx, "draft")
+	keysOf(app, ctx, "<Esc><C-c>")
+	if app.editor.Text() != "" || app.vim.Mode != VimInsert {
+		t.Fatalf("Ctrl-C in normal mode: %q %v", app.editor.Text(), app.vim.Mode)
+	}
+	// The / menu still completes in insert mode.
+	typeText(app, ctx, "/vi")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Label != "/vim [on|off]" {
+		t.Fatalf("menu in insert mode: %+v", app.menu)
+	}
+	app.handleKey(ctx, Key{Kind: KeyEscape}) // closes the menu
+	app.handleKey(ctx, Key{Kind: KeyEscape}) // normal mode
+	if app.menu != nil || app.vim.Mode != VimNormal {
+		t.Fatalf("Esc Esc with a menu: %v %v", app.menu != nil, app.vim.Mode)
+	}
+}
+
+// /attach takes several paths and globs (R2.17); a local @./path or
+// @~/path mention in the draft is attached when the message is sent and
+// rewritten to the upload's workspace path; the local prefix completes
+// this machine's files while a workspace path still asks the service.
+func TestAttachSeveralFilesAndLocalMentions(t *testing.T) {
+	c := sampleChat()
+	c.Status = "idle"
+	c.Approvals = nil
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	os.WriteFile(filepath.Join(home, "a.txt"), []byte("aaa"), 0600)
+	os.WriteFile(filepath.Join(home, "b.txt"), []byte("bb"), 0600)
+	os.WriteFile(filepath.Join(home, "c.md"), []byte("c"), 0600)
+	os.WriteFile(filepath.Join(home, "with space.txt"), []byte("sp"), 0600)
+	os.MkdirAll(filepath.Join(home, "sub"), 0700)
+	os.WriteFile(filepath.Join(home, "sub", "d.txt"), []byte("dddd"), 0600)
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	ctx := context.Background()
+	app.state, _ = app.Client.State(ctx)
+	// Several paths, quotes, a glob and ~.
+	app.submit(ctx, `/attach ~/a.txt "~/with space.txt" `+filepath.Join(home, "*.md")+" ~/missing.txt")
+	if got := f.uploads; len(got) != 3 || got[0] != "a.txt:aaa" || got[1] != "with space.txt:sp" || got[2] != "c.md:c" {
+		t.Fatalf("uploads %v", got)
+	}
+	if !strings.Contains(app.notice, "attached 3 files: a.txt (file, 3 B), with space.txt (file, 2 B), c.md (file, 1 B)") || !strings.Contains(app.notice, "missing.txt") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	if paths := AttachArgs(`x "y z" 'w'`); strings.Join(paths, "|") != "x|y z|w" {
+		t.Fatalf("AttachArgs %v", paths)
+	}
+	// The count limit stops the batch and says so.
+	for i := 0; i < 5; i++ {
+		os.WriteFile(filepath.Join(home, fmt.Sprintf("n%d.txt", i)), []byte("n"), 0600)
+	}
+	app.submit(ctx, "/attach ~/n*.txt ~/b.txt")
+	if len(app.attachments["chat1"]) != 8 || !strings.Contains(app.notice, "at most 8 attachments") || !strings.Contains(app.notice, "attached 5 files") {
+		t.Fatalf("limit: %d %q", len(app.attachments["chat1"]), app.notice)
+	}
+	app.submit(ctx, "/clear")
+	f.mu.Lock()
+	f.uploads = nil
+	f.mu.Unlock()
+	// A local mention in the message attaches the file and is rewritten;
+	// a workspace mention and a mention of a missing file stay as written.
+	app.submit(ctx, "compare @~/sub/d.txt with @src/app.go and @./nope.txt, then @~/b.txt.")
+	time.Sleep(20 * time.Millisecond)
+	if got := f.uploads; len(got) != 2 || got[0] != "d.txt:dddd" || got[1] != "b.txt:bb" {
+		t.Fatalf("mention uploads %v", got)
+	}
+	s, _ := app.Client.State(ctx)
+	var sent Entry
+	for _, e := range s.Chats[0].Conversation.Entries {
+		if strings.HasPrefix(e.Text, "compare ") {
+			sent = e
+		}
+	}
+	want := "compare @.warden/attachments/00000000000000000000000000000001.bin with @src/app.go and @./nope.txt, then @.warden/attachments/00000000000000000000000000000002.bin."
+	if sent.Text != want || len(sent.Attachments) != 2 {
+		t.Fatalf("sent %q with %d attachments, want %q", sent.Text, len(sent.Attachments), want)
+	}
+	if !strings.Contains(app.notice, "attached d.txt (4 B)") || !strings.Contains(app.notice, "no local file ./nope.txt") {
+		t.Fatalf("mention notice %q", app.notice)
+	}
+	if m := LocalMentions("a @./x.txt, @../y @~/z) @src/w @./x.txt"); strings.Join(m, "|") != "./x.txt|../y|~/z" {
+		t.Fatalf("LocalMentions %v", m)
+	}
+	// A local mention completes from this machine, closed with a space;
+	// a workspace mention still asks the service.
+	typeText(app, ctx, "see @~/su")
+	if app.menu == nil || app.menu.Trigger.Kind != "localpath" || len(app.menu.Items) != 1 || app.menu.Items[0].Insert != "@~/sub/" {
+		t.Fatalf("local mention menu: %+v", app.menu)
+	}
+	app.handleKey(ctx, Key{Kind: KeyTab})
+	typeText(app, ctx, "d")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Insert != "@~/sub/d.txt " {
+		t.Fatalf("local file menu: %+v", app.menu)
+	}
+	app.handleKey(ctx, Key{Kind: KeyTab})
+	if app.editor.Text() != "see @~/sub/d.txt " {
+		t.Fatalf("completed %q", app.editor.Text())
+	}
+	typeText(app, ctx, "and @sr")
+	if app.menu == nil || app.menu.Trigger.Kind != "path" {
+		t.Fatalf("workspace mention menu: %+v", app.menu)
+	}
+	app.editor.Clear()
+	app.menu = nil
+	// An attachment that cannot be made keeps the draft.
+	os.WriteFile(filepath.Join(home, "empty.txt"), nil, 0600)
+	app.submit(ctx, "read @~/empty.txt")
+	if app.editor.Text() != "read @~/empty.txt" || !strings.Contains(app.notice, "is empty") {
+		t.Fatalf("empty mention: %q %q", app.editor.Text(), app.notice)
+	}
+}
+
+// A collapsed paste can be looked at (R2.17): /paste lists the draft's
+// pastes with sizes, /paste N shows one in the pager in place of the
+// transcript, Ctrl+P on a placeholder previews it, cycles to the next and
+// closes after the last (elsewhere Ctrl+P is the history's), and a chip
+// above the status bar lists the pastes while the draft holds them.
+func TestPastePreviewAndChip(t *testing.T) {
+	c := sampleChat()
+	c.Status = "idle"
+	c.Approvals = nil
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	ctx := context.Background()
+	app.state, _ = app.Client.State(ctx)
+	app.editor.SetHistory([]string{"earlier prompt"})
+	app.submit(ctx, "/paste")
+	if !strings.Contains(app.notice, "no collapsed paste") {
+		t.Fatalf("/paste empty: %q", app.notice)
+	}
+	var long strings.Builder
+	for i := 1; i <= 30; i++ {
+		fmt.Fprintf(&long, "log line %d\n", i)
+	}
+	typeText(app, ctx, "see ")
+	app.handleKey(ctx, Key{Kind: KeyPaste, Text: long.String()})
+	typeText(app, ctx, " and ")
+	app.handleKey(ctx, Key{Kind: KeyPaste, Text: strings.Repeat("y", 1200)})
+	if app.editor.Text() != "see [Pasted text #1 — 30 lines] and [Pasted text #2 — 1 line]" {
+		t.Fatalf("draft %q", app.editor.Text())
+	}
+	fr := app.frame(120, 30)
+	if !strings.Contains(plain(strings.Join(fr.Extra, "\n")), "pasted: #1 30 lines (351 B) · #2 1 line (1 KB)") {
+		t.Fatalf("chip: %q", fr.Extra)
+	}
+	app.submit(ctx, "/paste")
+	if !strings.Contains(app.notice, "#1  30 lines, 351 B: log line 1") || !strings.Contains(app.notice, "#2  1 line, 1 KB: yyy") {
+		t.Fatalf("/paste listing: %q", app.notice)
+	}
+	if app.editor.Text() == "" {
+		t.Fatal("/paste cleared the draft")
+	}
+	// /paste 1 prints the whole paste into the scrollback, numbered. Typed
+	// as its own draft, the command does not consume the kept pastes.
+	app.prints = nil
+	app.submit(ctx, "/paste 1")
+	if !strings.HasPrefix(app.notice, "Pasted text #1 — 30 lines, 351 B\n   1 log line 1\n   2 log line 2") || !strings.HasSuffix(app.notice, "  30 log line 30") || len(app.prints) != 1 {
+		t.Fatalf("/paste 1: %q (%d to print)", app.notice, len(app.prints))
+	}
+	app.submit(ctx, "/paste 7")
+	if !strings.Contains(app.notice, "/paste N with N from /paste (the draft holds 2)") {
+		t.Fatalf("/paste 7: %q", app.notice)
+	}
+	// Ctrl+P on the first placeholder previews its first lines above the
+	// status bar, again moves to the second, again closes; off a
+	// placeholder it recalls the history.
+	app.editor.SetCursor(6)
+	app.handleKey(ctx, Key{Kind: KeyCtrlP})
+	if app.preview == nil || app.preview.paste != 1 {
+		t.Fatalf("Ctrl+P: %+v", app.preview)
+	}
+	extra := plain(strings.Join(app.frame(120, 30).Extra, "\n"))
+	if !strings.Contains(extra, "Pasted text #1 — 30 lines, 351 B") || !strings.Contains(extra, "   1 log line 1") || !strings.Contains(extra, "   8 log line 8") || strings.Contains(extra, "log line 9") || !strings.Contains(extra, "… 22 more lines") {
+		t.Fatalf("preview: %q", extra)
+	}
+	app.handleKey(ctx, Key{Kind: KeyCtrlP})
+	if app.preview == nil || app.preview.paste != 2 {
+		t.Fatalf("Ctrl+P cycle: %+v", app.preview)
+	}
+	if extra := plain(strings.Join(app.frame(120, 30).Extra, "\n")); !strings.Contains(extra, "   1 yyyy") || strings.Contains(extra, "more line") {
+		t.Fatalf("second paste not shown: %q", extra)
+	}
+	app.handleKey(ctx, Key{Kind: KeyCtrlP})
+	if app.preview != nil {
+		t.Fatal("Ctrl+P did not close after the last paste")
+	}
+	if app.editor.Text() != "see [Pasted text #1 — 30 lines] and [Pasted text #2 — 1 line]" {
+		t.Fatalf("Ctrl+P touched the draft: %q", app.editor.Text())
+	}
+	app.handleKey(ctx, Key{Kind: KeyCtrlP})
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if app.preview != nil {
+		t.Fatal("Esc did not close the preview")
+	}
+	app.editor.SetCursor(0)
+	app.handleKey(ctx, Key{Kind: KeyCtrlP})
+	if app.editor.Text() != "earlier prompt" || app.preview != nil {
+		t.Fatalf("Ctrl+P off a placeholder: %q", app.editor.Text())
+	}
+	app.handleKey(ctx, Key{Kind: KeyCtrlN})
+	// The preview closes when the draft is sent, and the message carries
+	// the pastes in full.
+	app.editor.SetCursor(6)
+	app.handleKey(ctx, Key{Kind: KeyCtrlP})
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	time.Sleep(20 * time.Millisecond)
+	s, _ := app.Client.State(ctx)
+	last := s.Chats[0].Conversation.Entries[len(s.Chats[0].Conversation.Entries)-1]
+	if app.preview != nil || !strings.HasPrefix(last.Text, "see log line 1\nlog line 2") || !strings.HasSuffix(last.Text, strings.Repeat("y", 1200)) {
+		t.Fatalf("sent: preview %v text %.40q", app.preview != nil, last.Text)
+	}
+	if len(app.frame(120, 30).Extra) != 0 {
+		t.Fatal("chip still shown")
+	}
+	// A command typed as its own draft keeps the pastes; a message sends
+	// and drops them; the placeholder typed again names the kept paste.
+	app.handleKey(ctx, Key{Kind: KeyPaste, Text: strings.Repeat("z\n", 12)})
+	app.editor.Clear()
+	app.handleKey(ctx, Key{Kind: KeyPaste, Text: strings.Repeat("z\n", 12)})
+	app.editor.Set("")
+	app.editor.SetPastes([]string{strings.Repeat("z\n", 12)})
+	typeText(app, ctx, "/paste")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if len(app.editor.Pastes()) != 1 || !strings.Contains(app.notice, "#1  12 lines") {
+		t.Fatalf("a command consumed the pastes: %d %q", len(app.editor.Pastes()), app.notice)
+	}
+	typeText(app, ctx, "here: [Pasted text #1 — 12 lines]")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	time.Sleep(20 * time.Millisecond)
+	s, _ = app.Client.State(ctx)
+	last = s.Chats[0].Conversation.Entries[len(s.Chats[0].Conversation.Entries)-1]
+	if last.Text != "here: "+strings.TrimSpace(strings.Repeat("z\n", 12)) || len(app.editor.Pastes()) != 0 {
+		t.Fatalf("typed placeholder: %q, %d pastes left", last.Text, len(app.editor.Pastes()))
+	}
+	if placeholderAt("a [Pasted text #3 — 2 lines] b", 1) != 0 || placeholderAt("a [Pasted text #3 — 2 lines] b", 2) != 3 || placeholderAt("a [Pasted text #3 — 2 lines] b", 28) != 3 || placeholderAt("a [Pasted text #3 — 2 lines] b", 29) != 0 {
+		t.Fatal("placeholderAt")
+	}
+}
+
+// Unread entries (R2.18): the last entry seen per chat is kept in
+// SeenFile and advances with every frame of the selected chat; /chats
+// and the /switch menu mark the other chats' new messages, the status
+// bar counts them while the chat is idle, switching into a chat prints
+// "── new ──" before the first unseen entry with a notice counting them,
+// and End, /bottom and vim's G reprint the chat so the terminal shows its
+// end.
+func TestUnreadMarkersDividerAndJump(t *testing.T) {
+	c1 := &Chat{ID: "chat1", Title: "First", Provider: "codex", Status: "idle"}
+	c1.Conversation.Entries = []Entry{{ID: "u1", Role: "user", Text: "hi", CreatedAt: 1}, {ID: "m1", Role: "assistant", Text: "hello", CreatedAt: 2}}
+	c2 := &Chat{ID: "chat2", Title: "Second", Provider: "claude", Status: "idle"}
+	c2.Conversation.Entries = []Entry{{ID: "u2", Role: "user", Text: "start", CreatedAt: 1}, {ID: "m2", Role: "assistant", Text: "ok", CreatedAt: 2}}
+	c3 := &Chat{ID: "chat3", Title: "Never opened", Provider: "codex", Status: "idle"}
+	c3.Conversation.Entries = []Entry{{ID: "u3", Role: "user", Text: "x", CreatedAt: 1}}
+	f := newFakeServer(t, State{Chats: []*Chat{c1, c2, c3}})
+	seenFile := filepath.Join(t.TempDir(), "seen.json")
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }, SeenFile: seenFile}
+	ctx := context.Background()
+	app.state, _ = app.Client.State(ctx)
+	app.markUnread()
+	if app.unreadID != "" {
+		t.Fatalf("a first visit has no divider: %q", app.unreadID)
+	}
+	// Following the tail marks the last entry seen; the frame writes it.
+	app.draw()
+	if app.seen["chat1"].ID != "m1" {
+		t.Fatalf("seen after a frame: %+v", app.seen)
+	}
+	if got := LoadSeen(seenFile); got["chat1"].ID != "m1" || got["chat1"].At != 2 {
+		t.Fatalf("seen file: %+v", got)
+	}
+	// Switch to chat2 and back: chat2 is now marked at m2.
+	app.submit(ctx, "/switch 2")
+	app.draw()
+	app.submit(ctx, "/switch 1")
+	app.draw()
+	if app.seen["chat2"].ID != "m2" {
+		t.Fatalf("seen for chat2: %+v", app.seen)
+	}
+	// New entries arrive in chat2 (a message sent from elsewhere and the
+	// reply, with tool steps that do not count) and in chat3, never opened.
+	f.mu.Lock()
+	f.state.Chats[1].Conversation.Entries = append(f.state.Chats[1].Conversation.Entries,
+		Entry{ID: "u4", Role: "user", Text: "another question", CreatedAt: 3},
+		Entry{ID: "a4", Role: "activity", Text: "ls", CreatedAt: 4},
+		Entry{ID: "t4", Role: "thinking", Text: "hmm", CreatedAt: 4.5},
+		Entry{ID: "m4", Role: "assistant", Text: "the answer", CreatedAt: 5},
+	)
+	f.state.Chats[2].Conversation.Entries = append(f.state.Chats[2].Conversation.Entries, Entry{ID: "m3", Role: "assistant", Text: "y", CreatedAt: 2})
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	if n := app.unreadOf(app.state.Chats[1]); n != 2 {
+		t.Fatalf("unread of chat2: %d", n)
+	}
+	if n := app.unreadOf(app.state.Chats[2]); n != 0 {
+		t.Fatalf("a chat never opened counts nothing: %d", n)
+	}
+	app.submit(ctx, "/chats")
+	lines := strings.Split(plain(app.notice), "\n")
+	if len(lines) != 3 || strings.Contains(lines[0], "•") || !strings.HasSuffix(lines[1], "• 2") || strings.Contains(lines[2], "•") {
+		t.Fatalf("/chats: %q", lines)
+	}
+	if !strings.Contains(plain(strings.Join(app.frame(120, 24).Status, " ")), "2 unread") {
+		t.Fatalf("status: %q", app.frame(120, 24).Status)
+	}
+	typeText(app, ctx, "/switch ")
+	if app.menu == nil || len(app.menu.Items) != 3 || !strings.HasSuffix(plain(app.menu.Items[1].Hint), "• 2") || strings.Contains(app.menu.Items[0].Hint, "•") {
+		t.Fatalf("/switch menu: %+v", app.menu)
+	}
+	app.handleKey(ctx, Key{Kind: KeyDown})
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.ChatID != "chat2" || app.unreadID != "u4" || !app.redraw {
+		t.Fatalf("switch: chat %s divider %q redraw %v", app.ChatID, app.unreadID, app.redraw)
+	}
+	if app.notice != "switched to Second · 2 new messages since you were here; ── new ── marks the first" {
+		t.Fatalf("notice on switch: %q", app.notice)
+	}
+	// The divider is printed before "another question", after what was
+	// seen, and is part of that entry's block (committed with it).
+	body, _ := app.compose(80)
+	view := plain(strings.Join(body, "\n"))
+	div, first := strings.Index(view, UnreadDivider), strings.Index(view, "another question")
+	if div < 0 || first < div || strings.Index(view, "ok") > div {
+		t.Fatalf("divider: %d %d\n%s", div, first, view)
+	}
+	var out bytes.Buffer
+	app.Output = &out
+	app.draw()
+	if printed := plain(out.String()); strings.Index(printed, UnreadDivider) < 0 || strings.Index(printed, UnreadDivider) > strings.Index(printed, "another question") {
+		t.Fatalf("divider not printed before the entry:\n%q", printed)
+	}
+	app.Output = io.Discard
+	// The mark advanced with the frame, the divider stays.
+	if app.seen["chat2"].ID != "m4" || app.unreadID != "u4" {
+		t.Fatalf("after the frame: seen %+v divider %q", app.seen["chat2"], app.unreadID)
+	}
+	if strings.Contains(plain(strings.Join(app.frame(120, 24).Status, " ")), "unread") {
+		t.Fatal("status still counts chat2's own entries")
+	}
+	// Switching back and forth with nothing new draws no divider and says
+	// nothing.
+	app.submit(ctx, "/switch 1")
+	app.submit(ctx, "/switch 2")
+	if app.unreadID != "" || app.notice != "switched to Second" {
+		t.Fatalf("nothing new: divider %q notice %q", app.unreadID, app.notice)
+	}
+	// End on an empty draft, /bottom and vim's G reprint the chat so the
+	// terminal shows its end; End with a draft moves the cursor.
+	app.redraw = false
+	app.handleKey(ctx, Key{Kind: KeyEnd})
+	if !app.redraw || !strings.Contains(app.notice, "reprinted") {
+		t.Fatalf("End: redraw %v notice %q", app.redraw, app.notice)
+	}
+	app.redraw = false
+	typeText(app, ctx, "ab")
+	app.handleKey(ctx, Key{Kind: KeyLeft})
+	app.handleKey(ctx, Key{Kind: KeyEnd})
+	if app.redraw || app.editor.Cursor() != 2 {
+		t.Fatalf("End with a draft: redraw %v cursor %d", app.redraw, app.editor.Cursor())
+	}
+	app.editor.Clear()
+	app.submit(ctx, "/bottom")
+	if !app.redraw {
+		t.Fatal("/bottom did not reprint")
+	}
+	app.redraw = false
+	app.vim.Enable()
+	keysOf(app, ctx, "<Esc>G")
+	if !app.redraw {
+		t.Fatal("G did not reprint")
+	}
+	// The marks survive in the file for the next session.
+	app.flushSeen()
+	if got := LoadSeen(seenFile); got["chat2"].ID != "m4" || got["chat1"].ID != "m1" {
+		t.Fatalf("seen file at the end: %+v", got)
+	}
+	// A mark whose entry is gone (a rewound transcript) divides by time; a
+	// chat seen empty (a mark with no entry) counts everything since as
+	// new but gets no divider, as on the web; nothing is new without a
+	// mark.
+	entries := []Entry{{ID: "a", Role: "user", CreatedAt: 1}, {ID: "b", Role: "assistant", CreatedAt: 2}, {ID: "c", Role: "assistant", CreatedAt: 3}}
+	if UnreadStart(entries, Seen{ID: "gone", At: 1.5}, true) != 1 || UnreadStart(entries, Seen{ID: "c", At: 3}, true) != -1 || UnreadStart(entries, Seen{}, false) != -1 || UnreadStart(entries, Seen{At: 0.5}, true) != -1 {
+		t.Fatal("UnreadStart")
+	}
+	if UnreadCount(entries, Seen{At: 0.5}, true) != 3 || UnreadCount(entries, Seen{At: 2.5}, true) != 1 || UnreadCount(entries, Seen{}, false) != 0 || UnreadCount(entries, Seen{ID: "gone", At: 9}, true) != 0 {
+		t.Fatal("UnreadCount")
+	}
+	// Visiting an empty chat marks it: what arrives later is new.
+	f.mu.Lock()
+	f.state.Chats = append(f.state.Chats, &Chat{ID: "chat4", Title: "Empty", Provider: "codex", Status: "idle"})
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	app.selectChat("chat4")
+	app.frame(80, 24)
+	if m, ok := app.seen["chat4"]; !ok || m.ID != "" {
+		t.Fatalf("empty chat not marked: %+v %v", m, ok)
+	}
+	f.mu.Lock()
+	f.state.Chats[3].Conversation.Entries = []Entry{{ID: "u5", Role: "user", Text: "later", CreatedAt: 1e12}, {ID: "m5", Role: "assistant", Text: "reply", CreatedAt: 1e12 + 1}}
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	app.selectChat("chat1")
+	if n := app.unreadOf(app.state.Chats[3]); n != 2 {
+		t.Fatalf("unread of a chat seen empty: %d", n)
+	}
+	app.submit(ctx, "/switch 4")
+	if app.notice != "switched to Empty · 2 new messages since you were here" || app.unreadID != "" {
+		t.Fatalf("switch into a chat seen empty: %q divider %q", app.notice, app.unreadID)
+	}
+	if LoadSeen(filepath.Join(t.TempDir(), "none.json")) == nil {
+		t.Fatal("LoadSeen of a missing file")
+	}
+	// The chat whose number is exactly what was typed comes first in the
+	// /switch menu, ahead of a title that contains the digits.
+	items := chatItems([]*Chat{{ID: "a", Title: "build 12"}, {ID: "b", Title: "two"}}, "2", nil)
+	if len(items) != 2 || items[0].Insert != "2" || items[1].Insert != "1" {
+		t.Fatalf("chat menu order: %+v", items)
 	}
 }
 

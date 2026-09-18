@@ -43,6 +43,12 @@ type App struct {
 	// BellFile keeps the /bell setting ("on" or "off"); empty keeps it for
 	// the session.
 	BellFile string
+	// VimFile keeps the /vim setting ("on" or "off"); empty keeps it for
+	// the session (vim.go).
+	VimFile string
+	// SeenFile keeps the last entry seen per chat (unread.go); empty keeps
+	// it for the session.
+	SeenFile string
 
 	mu       sync.Mutex
 	bell     *bool // the bell setting once read (longtail.go)
@@ -92,6 +98,16 @@ type App struct {
 	attachments map[string][]Attachment // uploads waiting for the next message, per chat
 	histories   map[string][]string     // in-memory history per chat when HistoryDir is empty
 	historyChat string                  // chat whose history the editor holds
+
+	vim        Vim             // the composer's vim mode (vim.go)
+	vimRead    bool            // VimFile has been read
+	cursorSt   string          // the cursor shape last set (DECSCUSR)
+	preview    *pasteView      // the paste previewed above the status bar (attach.go)
+	seen       map[string]Seen // the last entry seen per chat (unread.go)
+	seenRead   bool            // SeenFile has been read
+	seenDirty  bool            // seen has changes not yet written
+	unreadID   string          // the entry the "new" divider goes before in the selected chat
+	unreadNote string          // what selectChat found new, for the switch's notice
 }
 
 const ctrlCQuit = 2 * time.Second
@@ -148,7 +164,7 @@ type editing struct {
 
 const helpText = `commands   type / for the menu (Tab or Enter completes); /help lists them
            /new [title] /chats /switch N · /rename TITLE /archive /restore /delete
-           /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
+           /attach PATH… (globs) /attachments /detach N · /paste [N] · /export [md|json] [all] [FILE]
            /stop /model M /provider P /mode M · /open /previews /preview N /unpublish N
            /review [N] opens the app on this chat for a pull request proposal, document suggestions or a document choice
            /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
@@ -158,16 +174,19 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /bug TEXT reports a bug to Monaddle (you review it first) · /test bugreporting
            /style [default|Explanatory|Learning] · /bell [on|off]
            /find TEXT (this chat) · /search TEXT (every chat; /search N opens hit N)
-           /copy /expand /verbose /clear /quit
+           /copy /expand /verbose /clear /quit · /bottom · /vim [on|off]
            /instructions [edit|clear] your standing instructions, given to the agent in every chat
            /memory [FILE] [edit FILE] the workspace's CLAUDE.md, rules and auto-memory files
            /rules (list) /rules add allow|deny|ask PATTERN · /rules rm N — permission rules of the workspace
            /permissions how this chat's tool asks were decided and by whom · /allow [chat] answers the first ask always
            /compact [what to keep] asks Claude to replace the history with a summary
-composer   a long paste becomes [Pasted text #N — M lines] and is sent in full
+composer   a long paste becomes [Pasted text #N — M lines] and is sent in full; Ctrl+P on it previews, /paste N prints it
+           @./file or @~/file attaches a local file when sent
+           /chats and /switch mark chats with unread messages (• N); switching prints ── new ── before them
            a message sent while the agent runs is queued (↑ on an empty draft edits the last one)
            the transcript is your terminal's: scroll, search and select text as you always do
-keys       /keys lists every key by area (composer, transcript, approvals, menus), from the table the keys are handled with`
+keys       /keys lists every key by area (composer, transcript, approvals, menus and search, vim mode), from the table the keys are handled with
+vim        /vim on: Esc enters normal mode, Enter or :w sends, :q quits, :set novim turns it off · /keys lists the motions and operators`
 
 // NewMessageID is a fresh client message id (retries reuse it).
 func NewMessageID() string {
@@ -300,6 +319,10 @@ func (a *App) Run(ctx context.Context) error {
 		a.setNotice(err.Error())
 	}
 	a.loadHistory()
+	a.vimOn()
+	if note := a.markUnread(); note != "" {
+		a.setNotice(note)
+	}
 	// Bracketed paste, and the terminal's title pushed (xterm's title
 	// stack) and popped at exit so the person gets theirs back; setTitle
 	// keeps it current. The cursor is hidden only while a draw writes.
@@ -383,7 +406,9 @@ func (a *App) selectChat(id string) {
 	}
 	a.ChatID = id
 	a.menu, a.confirm, a.search = nil, nil, nil
+	a.preview = nil
 	a.loadHistory()
+	a.unreadNote = a.markUnread()
 }
 
 // loadHistory gives the editor the current chat's prompts.
@@ -430,6 +455,7 @@ func (a *App) send(ctx context.Context) {
 		}
 		a.editing = nil
 		a.editor.Clear()
+		a.vim.Reset()
 		a.setNotice("saved " + ed.label)
 		return
 	}
@@ -438,12 +464,20 @@ func (a *App) send(ctx context.Context) {
 		text = strings.TrimSpace(a.editor.Text())
 		a.editor.Clear()
 	} else {
+		pastes := a.editor.Pastes()
 		text = a.editor.Submit()
 		if text != "" && a.HistoryDir != "" && a.ChatID != "" {
 			AppendHistory(a.HistoryDir, a.ChatID, text)
 		}
+		if strings.HasPrefix(text, "/") {
+			// A command does not consume the pastes kept for the next
+			// message (/paste N is one; the placeholder can be typed again).
+			a.editor.SetPastes(pastes)
+		}
 	}
+	a.vim.Reset()
 	a.menu = nil
+	a.preview = nil
 	if text == "" {
 		return
 	}
@@ -458,6 +492,12 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 	if a.menu != nil && a.menuKey(ctx, k) {
 		return
 	}
+	if a.vimOn() && !(k.Kind == KeyEscape && (a.confirm != nil || a.preview != nil)) && a.vimKey(ctx, k) {
+		return
+	}
+	if k.Kind == KeyCtrlP && a.pastePreview() {
+		return
+	}
 	c := a.chat()
 	// The app's own keys are the table's (keys.go, which /keys prints);
 	// everything else is the editor's.
@@ -467,6 +507,144 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 	}
 	if a.editor.Handle(k) {
 		a.refreshMenu(ctx)
+	}
+}
+
+// escape is the Escape key's own work (vim's normal mode hands it over
+// when nothing is pending): a confirmation or an edit is cancelled, a
+// paste preview closed, a running agent interrupted; on an idle chat
+// with an empty draft a second Escape edits the last message.
+func (a *App) escape(ctx context.Context, c *Chat) {
+	switch {
+	case a.confirm != nil:
+		a.confirm = nil
+		a.setNotice("cancelled")
+	case a.preview != nil:
+		a.preview = nil
+	case a.editing != nil:
+		label := a.editing.label
+		a.editing = nil
+		a.editor.Clear()
+		a.vim.Reset()
+		a.setNotice("edit of " + label + " cancelled; nothing saved")
+	case c != nil && c.Running():
+		if err := a.Client.Stop(ctx, c.ID); err != nil {
+			a.setNotice(err.Error())
+		} else if len(queuedMessages(c)) > 0 {
+			a.setNotice("interrupting the agent; the queued messages are held (/queue send lets them go)")
+		} else {
+			a.setNotice("interrupting the agent")
+		}
+	case c != nil && a.editor.Text() == "" && !a.lastEsc.IsZero() && a.now().Sub(a.lastEsc) <= doubleEscape:
+		// Esc-Esc (Claude Code's): the last message back into the
+		// editor, the conversation rewound to before it (queue.go).
+		a.lastEsc = time.Time{}
+		a.editLast(ctx, c)
+	default:
+		a.lastEsc = a.now()
+	}
+}
+
+// bottom takes the terminal back to the transcript's end: the screen is
+// cleared and the chat printed again, which lands the terminal's view on
+// the last lines (Ctrl-L's reprint; End on an empty draft, /bottom, vim's
+// G).
+func (a *App) bottom() {
+	a.redraw = true
+	a.setNotice("reprinted; the terminal's view is at the end of the chat")
+}
+
+// vimKey routes a key through vim mode (vim.go) and acts on the outcome;
+// false when the key is the app's as without vim.
+func (a *App) vimKey(ctx context.Context, k Key) bool {
+	r := a.vim.Handle(&a.editor, k)
+	switch r.Action {
+	case VimPass:
+		return false
+	case VimSend:
+		if r.Text == "quit" {
+			if strings.TrimSpace(a.editor.Text()) != "" {
+				a.send(ctx)
+			}
+			a.quit = true
+			return true
+		}
+		if strings.TrimSpace(a.editor.Text()) == "" && a.editing == nil {
+			a.setNotice("nothing to send")
+			return true
+		}
+		a.send(ctx)
+	case VimQuit:
+		a.quit = true
+	case VimDisable:
+		a.setVim(false)
+		a.setNotice("vim mode off · /vim on turns it back on")
+	case VimFind:
+		a.find(r.Text)
+	case VimScroll:
+		if r.Text == "bottom" {
+			a.bottom()
+		} else {
+			a.setNotice("the transcript is your terminal's: scroll up to its start")
+		}
+	case VimEscape:
+		a.escape(ctx, a.chat())
+	case VimNotice:
+		a.setNotice(r.Text)
+	}
+	return true
+}
+
+// vimOn reports whether vim mode is on, reading VimFile once.
+func (a *App) vimOn() bool {
+	if !a.vimRead {
+		a.vimRead = true
+		if a.VimFile != "" {
+			if b, err := os.ReadFile(a.VimFile); err == nil && strings.TrimSpace(string(b)) == "on" {
+				a.vim.Enable()
+			}
+		}
+	}
+	return a.vim.Enabled
+}
+
+// setVim turns vim mode on or off and remembers it.
+func (a *App) setVim(on bool) {
+	a.vimRead = true
+	if on {
+		a.vim.Enable()
+	} else {
+		a.vim.Disable()
+	}
+	if a.VimFile == "" {
+		return
+	}
+	value := "off"
+	if on {
+		value = "on"
+	}
+	if err := os.MkdirAll(filepath.Dir(a.VimFile), 0700); err == nil {
+		_ = os.WriteFile(a.VimFile, []byte(value+"\n"), 0600)
+	}
+}
+
+// vimCommand: /vim shows the setting, /vim on|off changes it.
+func (a *App) vimCommand(arg string) {
+	switch strings.ToLower(arg) {
+	case "":
+		if a.vimOn() {
+			a.setNotice("vim mode on (" + a.vim.Mode.String() + "): Esc for normal mode, i inserts, Enter or :w sends, :q quits, :set novim or /vim off turns it off")
+		} else {
+			a.setNotice("vim mode off · /vim on: Esc for normal mode with vim's motions and operators, Enter or :w sends")
+		}
+	case "on":
+		a.setVim(true)
+		a.setNotice("vim mode on: Esc for normal mode, i inserts, Enter or :w sends, :q quits, :set novim turns it off")
+	case "off":
+		a.setVim(false)
+		a.setNotice("vim mode off")
+	default:
+		a.setNotice("/vim on|off")
 	}
 }
 
@@ -593,8 +771,18 @@ func (a *App) refreshMenu(ctx context.Context) {
 		for _, p := range localPaths(t.Query) {
 			m.Items = append(m.Items, MenuItem{Insert: p, Label: p, Run: !strings.HasSuffix(p, "/")})
 		}
+	case "localpath":
+		// A local mention (@./x, @~/x): this machine's files, the
+		// mention closed with a space once it names one.
+		for _, p := range localPaths(t.Query) {
+			insert := "@" + p
+			if !strings.HasSuffix(p, "/") {
+				insert += " "
+			}
+			m.Items = append(m.Items, MenuItem{Insert: insert, Label: p, Hint: "a file on this machine, attached when the message is sent"})
+		}
 	case "chat":
-		m.Items = chatItems(a.sortedChats(), t.Query)
+		m.Items = chatItems(a.sortedChats(), t.Query, a.unreadOf)
 	case "model":
 		provider := a.Provider
 		if c != nil {
@@ -750,6 +938,12 @@ func (a *App) submit(ctx context.Context, text string) {
 // sendMessage sends text to chat c with the files waiting to go with it;
 // the draft comes back if the service refuses.
 func (a *App) sendMessage(ctx context.Context, c *Chat, text string) {
+	text, err := a.attachMentions(ctx, c, text)
+	if err != nil {
+		a.setNotice(err.Error())
+		a.editor.Set(text)
+		return
+	}
 	var ids []string
 	for _, at := range a.attachments[c.ID] {
 		ids = append(ids, at.ID)
@@ -1088,7 +1282,11 @@ func (a *App) command(ctx context.Context, line string) {
 			if c != nil && ch.ID == c.ID {
 				mark = "*"
 			}
-			b.WriteString(mark + ChatLine(i+1, ch) + "\n")
+			line := mark + ChatLine(i+1, ch)
+			if u := unreadMark(a.unreadOf(ch)); u != "" && (c == nil || ch.ID != c.ID) {
+				line += "  " + u
+			}
+			b.WriteString(line + "\n")
 		}
 		if b.Len() == 0 {
 			b.WriteString("no chats; /new [title]")
@@ -1102,7 +1300,11 @@ func (a *App) command(ctx context.Context, line string) {
 			return
 		}
 		a.selectChat(chats[n-1].ID)
-		a.setNotice("switched to " + sanitize(chats[n-1].Title))
+		note := "switched to " + sanitize(chats[n-1].Title)
+		if a.unreadNote != "" {
+			note += " · " + a.unreadNote
+		}
+		a.setNotice(note)
 	case "new":
 		// No title: the service names the chat from its first exchange.
 		title := arg
@@ -1279,6 +1481,8 @@ func (a *App) command(ctx context.Context, line string) {
 		a.setNotice("dropped " + sanitize(at.Name))
 	case "clear":
 		a.editor.Clear()
+		a.vim.Reset()
+		a.preview = nil
 		a.menu = nil
 		if c != nil {
 			for _, at := range a.attachments[c.ID] {
@@ -1325,6 +1529,12 @@ func (a *App) command(ctx context.Context, line string) {
 		a.style(ctx, c, arg)
 	case "bell":
 		a.bellCommand(arg)
+	case "vim":
+		a.vimCommand(arg)
+	case "paste":
+		a.pasteCommand(arg)
+	case "bottom":
+		a.bottom()
 	case "verbose":
 		a.handleKey(ctx, Key{Kind: KeyCtrlO})
 	case "open":
@@ -1606,54 +1816,6 @@ const (
 	maxAttachments     = 8
 )
 
-// attach uploads a local file for the next message.
-func (a *App) attach(ctx context.Context, c *Chat, arg string) {
-	if c == nil {
-		a.setNotice("no chat selected")
-		return
-	}
-	arg = strings.Trim(arg, `"'`)
-	if arg == "" {
-		a.setNotice("/attach PATH (a local file; Tab completes)")
-		return
-	}
-	if len(a.attachments[c.ID]) >= maxAttachments {
-		a.setNotice(fmt.Sprintf("a message can carry at most %d attachments; /detach N drops one", maxAttachments))
-		return
-	}
-	path := expandHome(arg)
-	info, err := os.Stat(path)
-	switch {
-	case err != nil:
-		a.setNotice(err.Error())
-		return
-	case info.IsDir():
-		a.setNotice(arg + " is a directory; attach a file")
-		return
-	case info.Size() == 0:
-		a.setNotice(arg + " is empty")
-		return
-	case info.Size() > maxAttachmentBytes:
-		a.setNotice(arg + " is larger than 8 MiB")
-		return
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		a.setNotice(err.Error())
-		return
-	}
-	at, err := a.Client.Upload(ctx, c.ID, filepath.Base(path), data)
-	if err != nil {
-		a.setNotice(err.Error())
-		return
-	}
-	if a.attachments == nil {
-		a.attachments = map[string][]Attachment{}
-	}
-	a.attachments[c.ID] = append(a.attachments[c.ID], at)
-	a.setNotice(fmt.Sprintf("attached %s (%s, %s); it goes with the next message as %s", sanitize(at.Name), at.Kind, FormatSize(at.Size), at.Path))
-}
-
 // export writes the transcript: /export [md|json] [all] [FILE].
 func (a *App) export(c *Chat, arg string) {
 	if c == nil {
@@ -1808,6 +1970,9 @@ func (a *App) compose(width int) (body []string, final int) {
 	default:
 		allFinal := true
 		for _, b := range RenderBlocks(a.visible(c), width, a.expanded) {
+			if a.unreadID != "" && b.ID == a.unreadID {
+				body = append(body, unreadDividerLine(width))
+			}
 			body = append(body, b.Lines...)
 			if allFinal && b.Final {
 				final = len(body)
@@ -1898,6 +2063,8 @@ func (a *App) extraLines(width int) []string {
 		}
 		out = append(out, wrap(strings.Join(names, " · "), width, cyan+"attached: "+reset, "          ")...)
 	}
+	out = append(out, pasteChip(a.editor.Pastes(), width)...)
+	out = append(out, a.previewLines(width)...)
 	if q := a.confirm; q != nil {
 		out = append(out, wrap(q.prompt, width, bold+yellow+"? "+reset, "  ")...)
 	}
@@ -1920,6 +2087,9 @@ func (a *App) promptLines(width, maxLines int) (lines []string, row, col int) {
 		}
 		line := fmt.Sprintf("(reverse-i-search)'%s': %s", s.query, match)
 		return []string{line}, 0, min(width-1, utf8.RuneCountInString("(reverse-i-search)'"+s.query+"': "))
+	}
+	if line := a.vim.Line(); line != "" {
+		return []string{line}, 0, min(width-1, visibleWidth(line))
 	}
 	raw, r, c := a.editor.Lines()
 	for i, l := range raw {
@@ -2003,6 +2173,7 @@ func (a *App) frame(width, height int) Frame {
 	f.Commit = body[len(committed):commit]
 	f.Lines = body[commit:]
 	f.committed = body[:commit]
+	a.markSeen(a.chat())
 	return f
 }
 
@@ -2050,8 +2221,14 @@ func (a *App) statusRows(width, height int) []string {
 	switch {
 	case c != nil:
 		parts = StatusParts(c, a.stateports(), a.live, a.now())
+		if a.vimOn() {
+			parts = append(parts[:3], append([]string{bold + "-- " + a.vim.Mode.String() + " --" + reset}, parts[3:]...)...)
+		}
 		if a.quiet {
 			parts = append(parts, dim+"steps hidden"+reset)
+		}
+		if n := a.unreadElsewhere(c); n > 0 && !c.Running() {
+			parts = append(parts, fmt.Sprintf("%s%d unread%s", cyan, n, reset))
 		}
 		parts = append(parts, dim+"/help"+reset)
 	case a.state != nil:
@@ -2090,7 +2267,17 @@ func (a *App) draw() {
 	width, height := a.size()
 	f := a.frame(width, height)
 	a.setTitle()
+	a.flushSeen()
 	s := &a.screen
+	// A block cursor in vim's normal mode, the terminal's own otherwise.
+	shape := "\x1b[0 q"
+	if a.vim.Enabled && a.vim.Mode != VimInsert {
+		shape = "\x1b[2 q"
+	}
+	if shape != a.cursorSt {
+		a.cursorSt = shape
+		io.WriteString(a.Output, shape)
+	}
 	tail := f.tail()
 	var t strings.Builder
 	for i, l := range tail {
@@ -2145,6 +2332,9 @@ func (a *App) finish() {
 	}
 	if s.painted {
 		b.WriteString("\r\n")
+	}
+	if a.cursorSt != "" && a.cursorSt != "\x1b[0 q" {
+		b.WriteString("\x1b[0 q") // the block cursor of vim's normal mode
 	}
 	b.WriteString("\x1b[?2004l\x1b[?25h\x1b[23;0t")
 	io.WriteString(a.Output, b.String())

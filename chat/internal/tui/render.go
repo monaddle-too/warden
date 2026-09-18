@@ -225,6 +225,7 @@ func RenderTranscript(c *Chat, width int, expanded bool) []string {
 // the painter can write its lines to the terminal's scrollback once and
 // never touch them again.
 type Block struct {
+	ID    string // the entry's
 	Lines []string
 	Final bool
 }
@@ -250,12 +251,12 @@ func RenderBlocks(c *Chat, width int, expanded bool) []Block {
 			}
 		default:
 			lines := renderEntry(c, e, width, expanded, children, "")
-			out = append(out, Block{Lines: append(lines, ""), Final: entryFinal(c, e, children)})
+			out = append(out, Block{ID: e.ID, Lines: append(lines, ""), Final: entryFinal(c, e, children)})
 		}
 	}
 	for _, e := range append(todos, queued...) {
 		lines := renderEntry(c, e, width, expanded, children, "")
-		out = append(out, Block{Lines: append(lines, "")})
+		out = append(out, Block{ID: e.ID, Lines: append(lines, "")})
 	}
 	return out
 }
@@ -368,6 +369,10 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 			}
 			out = append(out, renderMarkdown(text, width, bold+green+name+" › "+reset, strings.Repeat(" ", utf8.RuneCountInString(name)+3))...)
 			if e.IsStreaming {
+				if len(out) == 0 {
+					// Nothing streamed yet: the label alone carries the cursor.
+					out = append(out, bold+green+name+" ›"+reset)
+				}
 				out[len(out)-1] += dim + " ▍" + reset
 			}
 		case "activity":

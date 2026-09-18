@@ -210,7 +210,7 @@ func (c *cli) chat(args []string) error {
 		return nil
 	}
 	// Interactive.
-	app := &tui.App{Client: client, Provider: *provider, OpenURL: openBrowser, Clipboard: copyToClipboard, HistoryDir: filepath.Join(cfg.Paths.State, "tui", "history"), BellFile: filepath.Join(cfg.Paths.State, "tui", "bell")}
+	app := &tui.App{Client: client, Provider: *provider, OpenURL: openBrowser, Clipboard: copyToClipboard, HistoryDir: filepath.Join(cfg.Paths.State, "tui", "history"), BellFile: filepath.Join(cfg.Paths.State, "tui", "bell"), VimFile: filepath.Join(cfg.Paths.State, "tui", "vim"), SeenFile: filepath.Join(cfg.Paths.State, "tui", "seen.json")}
 	if url, err := launchURL(cfg.OwnerTokenFile(), time.Now()); err == nil {
 		if cfg.Auth.Mode == "owner" && cfg.Auth.PublicURL != "" {
 			url, _ = throughEdge(url, cfg.Auth.PublicURL)
