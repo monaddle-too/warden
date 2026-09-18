@@ -137,10 +137,25 @@ func StatusLine(c *Chat, ports []Port, live bool, now time.Time) string {
 	if model == "" {
 		model = "default"
 	}
+	if c.Session != nil && c.Session.Model != "" && c.Session.Model != model {
+		// The model the session resolved is the truth (a live switch is
+		// reported at the next turn): "opus (claude-opus-5)".
+		model += " (" + sanitize(c.Session.Model) + ")"
+	}
 	agent := c.Provider + " · " + model
 	if c.Provider == "claude" {
-		// The permission mode (Shift+Tab cycles it) beside the model.
+		// The permission mode (Shift+Tab cycles it) beside the model, and
+		// the session settings when they are not the defaults.
 		agent += " · " + orMode(c.Mode)
+		if c.Thinking != "" {
+			agent += " · thinking " + strings.TrimSuffix(thinkingLabel(c.Thinking), " tokens")
+		}
+		if c.Effort != "" {
+			agent += " · effort " + c.Effort
+		}
+		if c.Fast {
+			agent += " · fast"
+		}
 	}
 	parts := []string{fmt.Sprintf("%s %s%s%s", link, bold, sanitize(c.Title), reset), agent, status}
 	if n := len(c.Pending()); n > 0 {

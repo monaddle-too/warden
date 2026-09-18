@@ -730,6 +730,10 @@ export function ChatShell({
                   })
                 }
                 onMode={(mode) => api(`chats/${chat.id}/mode`, { mode })}
+                onSettings={(change) =>
+                  api(`chats/${chat.id}/settings`, change)
+                }
+                agentOptions={state.agentOptions}
               />
               <Previews
                 key={chat.id + "preview"}

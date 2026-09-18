@@ -216,6 +216,8 @@ type fakeServer struct {
 	uploads []string // name:content, in upload order
 	srv     *httptest.Server
 	token   string
+	// fastMode is whether the fake Warden allows fast mode.
+	fastMode bool
 }
 
 func newFakeServer(t *testing.T, initial State) *fakeServer {
@@ -388,6 +390,28 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.Mode = body["mode"].(string)
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/settings"):
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/settings")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		if fast, ok := body["fast"].(bool); ok && fast && !f.fastMode {
+			f.mu.Unlock()
+			http.Error(w, `{"error":"fast mode is not enabled on this Warden (providers.claude.allowFastMode)"}`, 409)
+			return
+		}
+		if v, ok := body["thinking"].(string); ok {
+			c.Thinking = v
+		}
+		if v, ok := body["effort"].(string); ok {
+			c.Effort = v
+		}
+		if v, ok := body["fast"].(bool); ok {
+			c.Fast = v
+		}
 		f.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/agent"), strings.HasSuffix(path, "/revoke"):
@@ -1758,5 +1782,88 @@ func TestRenderSubagentBackgroundAndTodo(t *testing.T) {
 	a := &App{quiet: true}
 	if v := a.visible(c); len(v.Conversation.Entries) != 0 {
 		t.Fatalf("quiet view shows a subagent's message: %+v", v.Conversation.Entries)
+	}
+}
+
+// /thinking, /effort and /fast set a Claude chat's session settings (a
+// budget as 8k, a level, on/off), say what is set when bare, refuse what
+// the service refuses, and the status line shows the settings and the
+// model the session resolved.
+func TestThinkingEffortAndFastCommands(t *testing.T) {
+	claude := &Chat{ID: "c1", Title: "Claude", Provider: "claude", Model: "opus", Status: "idle"}
+	codex := &Chat{ID: "c2", Title: "Codex", Provider: "codex", Status: "idle"}
+	f := newFakeServer(t, State{Chats: []*Chat{claude, codex}})
+	app := &App{Client: f.client(), ChatID: "c1", Output: io.Discard}
+	ctx := context.Background()
+	refresh := func() { s, _ := app.Client.State(ctx); app.state = s }
+	refresh()
+	app.submit(ctx, "/thinking")
+	if !strings.Contains(app.notice, "thinking default") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/thinking 8k")
+	refresh()
+	if app.state.Chats[0].Thinking != "8000" || !strings.Contains(app.notice, "thinking 8k tokens") {
+		t.Fatalf("%q %q", app.state.Chats[0].Thinking, app.notice)
+	}
+	app.submit(ctx, "/thinking off")
+	refresh()
+	if app.state.Chats[0].Thinking != "off" {
+		t.Fatal(app.state.Chats[0].Thinking)
+	}
+	app.submit(ctx, "/thinking lots")
+	if !strings.Contains(app.notice, "on, off or a budget") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/effort low")
+	refresh()
+	if app.state.Chats[0].Effort != "low" || !strings.Contains(app.notice, "effort low") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/effort ultra")
+	if !strings.Contains(app.notice, "/effort low|medium|high|xhigh|max|default") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/fast on")
+	if !strings.Contains(app.notice, "allowFastMode") {
+		t.Fatal(app.notice)
+	}
+	f.mu.Lock()
+	f.fastMode = true
+	f.mu.Unlock()
+	app.submit(ctx, "/fast on")
+	refresh()
+	if !app.state.Chats[0].Fast || !strings.Contains(app.notice, "fast mode on") {
+		t.Fatal(app.notice)
+	}
+	f.mu.Lock()
+	f.state.Chats[0].Session = &struct {
+		Model    string `json:"model"`
+		FastMode string `json:"fastMode"`
+	}{Model: "claude-opus-5", FastMode: "on"}
+	f.mu.Unlock()
+	refresh()
+	line := plain(StatusLine(app.state.Chats[0], nil, true, time.Unix(0, 0)))
+	for _, want := range []string{"claude · opus (claude-opus-5)", "· thinking off", "· effort low", "· fast"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("status line %q lacks %q", line, want)
+		}
+	}
+	app.submit(ctx, "/fast")
+	if !strings.Contains(app.notice, "fast mode on (session: on)") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/effort default")
+	refresh()
+	if app.state.Chats[0].Effort != "" {
+		t.Fatal(app.state.Chats[0].Effort)
+	}
+	app.ChatID = "c2"
+	app.submit(ctx, "/effort low")
+	if !strings.Contains(app.notice, "Claude chats") {
+		t.Fatal(app.notice)
+	}
+	if items := commandItems("thi", nil); len(items) != 1 || items[0].Name != "thinking" {
+		t.Fatalf("%+v", items)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -89,6 +90,11 @@ type Engine struct {
 	// LocalMode: a single-owner install (auth.mode owner). Host directory
 	// grants exist only there.
 	LocalMode bool
+	// AllowFastMode and AllowLongContext are the operator's leave for the
+	// costlier Claude session features (config providers.claude.*): fast
+	// mode as a chat setting, the 1M-context model variants as choices.
+	AllowFastMode    bool
+	AllowLongContext bool
 	// Now is the clock (tests replace it); nil means time.Now.
 	Now func() time.Time
 	// limits is the runner's size offer, asked for on demand and kept for
@@ -283,7 +289,7 @@ func (e *Engine) Create(title, shared, repository string, resources *sandbox.Res
 	if len(selection) > 1 {
 		model = selection[1]
 	}
-	if err := sandbox.ValidateAgent(provider, model); err != nil {
+	if err := e.validateAgent(provider, model); err != nil {
 		return "", err
 	}
 	if provider == "" {
@@ -459,10 +465,20 @@ type View struct {
 	// Sandboxes is the runner's size offer; nil while the runner is
 	// unreachable, when clients offer no size choice.
 	Sandboxes *sandbox.ResourceLimits `json:"sandboxes,omitempty"`
+	// AgentOptions are the Claude session features this Warden allows,
+	// so clients offer them only then.
+	AgentOptions AgentOptions `json:"agentOptions"`
+}
+
+// AgentOptions are the optional, costlier Claude features an operator
+// enables (config providers.claude.allowFastMode, allowLongContext).
+type AgentOptions struct {
+	FastMode    bool `json:"fastMode"`
+	LongContext bool `json:"longContext"`
 }
 
 func (e *Engine) View() View {
-	return View{State: e.state(), Sandboxes: e.Limits(context.Background())}
+	return View{State: e.state(), Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext}}
 }
 
 // state is the store with typing indicators filled in.
@@ -1002,7 +1018,7 @@ func (e *Engine) run(parent context.Context, id string) {
 	if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 		return
 	}
-	e.applyMode(ctx, id, &current, client)
+	e.applySession(ctx, id, &current, client)
 	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 	if err != nil {
 		return
@@ -1049,7 +1065,7 @@ func (e *Engine) run(parent context.Context, id string) {
 		if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 			return
 		}
-		e.applyMode(ctx, id, &current, client)
+		e.applySession(ctx, id, &current, client)
 		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 		if err != nil {
 			return
@@ -1601,8 +1617,31 @@ func (e *Engine) Answer(chatID, approvalID string, answer Answer, actor cv.Actor
 
 func (e *Engine) Done() <-chan struct{} { return e.done }
 
-func (e *Engine) ConfigureAgent(id, provider, model string) error {
+// validateAgent is sandbox.ValidateAgent plus this Warden's leave: the
+// 1M-context variants only when the operator allows them.
+func (e *Engine) validateAgent(provider, model string) error {
 	if err := sandbox.ValidateAgent(provider, model); err != nil {
+		return err
+	}
+	if longContextModel(model) && !e.AllowLongContext {
+		return errors.New("1M-context models are not enabled on this Warden (providers.claude.allowLongContext)")
+	}
+	return nil
+}
+
+// ConfigureAgent records a chat's provider and model for its next session
+// (an idle chat only). ConfigureAgentAndRelease is the route's entry: it
+// applies the model to a live session where it can.
+func (e *Engine) ConfigureAgent(id, provider, model string) error {
+	return e.configureAgent(id, provider, model, true)
+}
+
+// configureAgent stores the selection; with idleOnly the chat must not be
+// running (the session is about to be released), otherwise the model was
+// applied to the live session and a running turn is fine. A model change
+// on a conversation leaves a marker.
+func (e *Engine) configureAgent(id, provider, model string, idleOnly bool) error {
+	if err := e.validateAgent(provider, model); err != nil {
 		return err
 	}
 	if provider == "" {
@@ -1613,7 +1652,7 @@ func (e *Engine) ConfigureAgent(id, provider, model string) error {
 		if c == nil {
 			return errors.New("chat not found")
 		}
-		if c.Status == "running" || c.Status == "queued" || c.Status == "stopping" {
+		if idleOnly && (c.Status == "running" || c.Status == "queued" || c.Status == "stopping") {
 			return errors.New("wait until the conversation is idle")
 		}
 		old := c.Provider
@@ -1625,6 +1664,9 @@ func (e *Engine) ConfigureAgent(id, provider, model string) error {
 		}
 		if provider != old {
 			c.Commands, c.Session = nil, nil
+		}
+		if model != c.Model && len(c.Conversation.Entries) > 0 {
+			c.Conversation.Entries = append(c.Conversation.Entries, cv.NewEntry("notice", modelNotice(model)))
 		}
 		c.Provider = provider
 		c.Model = model
@@ -1660,9 +1702,35 @@ func formatTokens(n float64) string {
 	return strconv.FormatFloat(n, 'f', 0, 64)
 }
 
-// ConfigureAgentAndRelease applies ConfigureAgent and ends the chat's resident
-// session, so the next message starts an agent with the new selection.
+// ConfigureAgentAndRelease applies a provider and model choice. A model
+// change on a Claude chat with a live session is made on that session
+// (set_model through the adapter): the process, its thread and its
+// context stay, and the CLI's next system/init reports the model it
+// resolved (chat.session.model). A model the CLI does not know is refused
+// with its message and nothing changes. Otherwise (no live session, the
+// CLI refusing the request for another reason, a Codex chat, whose
+// app-server takes the model at launch here) the selection is recorded
+// and the resident session ends, so the next message starts an agent
+// with it.
 func (e *Engine) ConfigureAgentAndRelease(ctx context.Context, id, provider, model string) error {
+	if provider == "" {
+		provider = "codex"
+	}
+	if current := e.Store.Snapshot().chat(id); current != nil && current.Provider == "claude" && provider == "claude" && model != current.Model {
+		if client := e.liveClient(id); client != nil {
+			if err := e.validateAgent(provider, model); err != nil {
+				return err
+			}
+			err := e.pushModel(ctx, client, model)
+			if err == nil {
+				return e.configureAgent(id, provider, model, false)
+			}
+			if modelRefused(err) {
+				return err
+			}
+			log.Printf("model %s not applied to the running session of chat %s (%v); restarting the session", model, id, err)
+		}
+	}
 	if err := e.ConfigureAgent(id, provider, model); err != nil {
 		return err
 	}

@@ -22,8 +22,9 @@ import (
 // stream-json, so the engine's permission handling is exercised through
 // the adapter. Each user message is one turn: the scripted asks are sent
 // as can_use_tool requests, their answers recorded, then a result ends
-// the turn. Control requests from Warden (set_permission_mode) are
-// recorded and answered with success.
+// the turn. Control requests from Warden (set_permission_mode, set_model,
+// set_max_thinking_tokens, apply_flag_settings) are recorded and answered
+// with success (bar two models, see below).
 type claudeWorker struct {
 	mu       sync.Mutex
 	asks     [][]map[string]any // per turn, the can_use_tool requests to make
@@ -34,6 +35,24 @@ type claudeWorker struct {
 	hold chan struct{}
 	// frames are extra CLI frames to emit at the start of a turn.
 	frames []map[string]any
+}
+
+// initModel is the model the scripted CLI reports in its system/init: the
+// last set_model it accepted, resolved the way the CLI names models, else
+// sonnet.
+func (w *claudeWorker) initModel() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	model := "sonnet"
+	for _, c := range w.controls {
+		if m, ok := c["model"].(string); ok && c["subtype"] == "set_model" && m != "bogus" && m != "unswitchable" {
+			model = m
+		}
+	}
+	if model == "default" {
+		model = "sonnet"
+	}
+	return "claude-" + model + "-5"
 }
 
 func (w *claudeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
@@ -66,6 +85,22 @@ func (w *claudeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWrit
 					w.mu.Unlock()
 					send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{"mode": req["mode"]}}})
 					send(map[string]any{"type": "system", "subtype": "status", "status": nil, "permissionMode": req["mode"]})
+				case "set_model", "set_max_thinking_tokens", "apply_flag_settings":
+					// The session settings (settings_test.go): recorded and
+					// accepted, except a model the CLI does not know
+					// ("bogus", as the real CLI words it) and one it
+					// cannot switch to for another reason ("unswitchable").
+					w.mu.Lock()
+					w.controls = append(w.controls, req)
+					w.mu.Unlock()
+					switch req["model"] {
+					case "bogus":
+						send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": v["request_id"], "error": "Model 'bogus' not found"}})
+					case "unswitchable":
+						send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": v["request_id"], "error": "set_model is not available here"}})
+					default:
+						send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"]}})
+					}
 				}
 			case "control_response":
 				w.mu.Lock()
@@ -84,7 +119,7 @@ func (w *claudeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWrit
 				hold := w.hold
 				w.mu.Unlock()
 				go func() {
-					send(map[string]any{"type": "system", "subtype": "init", "session_id": "claude-session"})
+					send(map[string]any{"type": "system", "subtype": "init", "session_id": "claude-session", "model": w.initModel(), "fast_mode_state": "off"})
 					for _, f := range frames {
 						send(f)
 					}

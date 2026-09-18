@@ -35,8 +35,16 @@ type Chat struct {
 	Resources *sandbox.Resources `json:"resources,omitempty"`
 	// Mode is the chat's permission mode (permissions.go): auto when
 	// empty. Allowed are its allow-always rules, in the order given.
-	Mode         string                    `json:"mode,omitempty"`
-	Allowed      []PermissionRule          `json:"allowed,omitempty"`
+	Mode    string           `json:"mode,omitempty"`
+	Allowed []PermissionRule `json:"allowed,omitempty"`
+	// Thinking, Effort and Fast are the chat's session settings
+	// (settings.go): the thinking budget ("" the agent's default, "off",
+	// or a number of tokens), the effort level ("" the model's default)
+	// and fast mode. Applied to a live Claude session at once and to every
+	// session at its start.
+	Thinking     string                    `json:"thinking,omitempty"`
+	Effort       string                    `json:"effort,omitempty"`
+	Fast         bool                      `json:"fast,omitempty"`
 	Status       string                    `json:"status"`
 	RunID        string                    `json:"runID"`
 	Error        string                    `json:"error,omitempty"`
@@ -66,11 +74,14 @@ type Command struct {
 	Description string `json:"description,omitempty"`
 }
 
-// Session is the agent's own report of its session settings.
+// Session is the agent's own report of its session settings: the model
+// it resolved (the truth after a live model change), its permission mode,
+// output style and whether fast mode is serving ("on", "off", "cooldown").
 type Session struct {
 	Model          string `json:"model,omitempty"`
 	PermissionMode string `json:"permissionMode,omitempty"`
 	OutputStyle    string `json:"outputStyle,omitempty"`
+	FastMode       string `json:"fastMode,omitempty"`
 }
 
 // sessionStarted records what the agent sent with `thread/started`: the
@@ -93,8 +104,9 @@ func (c *Chat) sessionStarted(thread map[string]any) {
 	model, _ := thread["model"].(string)
 	mode, _ := thread["permissionMode"].(string)
 	style, _ := thread["outputStyle"].(string)
+	fast, _ := thread["fastMode"].(string)
 	if model != "" || mode != "" || style != "" {
-		c.Session = &Session{Model: model, PermissionMode: mode, OutputStyle: style}
+		c.Session = &Session{Model: model, PermissionMode: mode, OutputStyle: style, FastMode: fast}
 	}
 }
 

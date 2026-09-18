@@ -185,11 +185,11 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
-| Model choice | ✅ | ✅ | fixed per chat |
-| Change model mid-session | ✗ | ✗ | `set_model` |
-| Effort level | ✗ | ✗ | |
-| Thinking on/off, budget | ✗ | ✗ | `set_max_thinking_tokens` |
-| Fast mode, 1M context | ✗ | ✗ | policy |
+| Model choice | ✅ | ✅ | per chat; the session's resolved model shown |
+| Change model mid-session | ✅ | ✅ | item 9: `set_model` on the live session; Codex relaunches |
+| Effort level | ✅ | ✅ | item 9: `apply_flag_settings` `effortLevel`; `/effort` |
+| Thinking on/off, budget | ✅ | ✅ | item 9: `set_max_thinking_tokens`; `/thinking` |
+| Fast mode, 1M context | ✅ | ✅ | item 9: behind `providers.claude.allowFastMode` / `allowLongContext`, off by default |
 | Output style | ✗ | ✗ | |
 | Status line, terminal title | — | ✗ | |
 | `/cost`, `/context`, `/usage` | ◐ | ✗ | plan limits n/a behind the gateway |
@@ -377,7 +377,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 6 TUI catch-up — merged to main c60d938 (2026-09-17); verified as the Item 6 section says.
 - [x] 7 Workspace `.claude/` loading — verified on CLI 2.1.272, merged to main 32138ea (2026-09-17); the launch-flag change (`--setting-sources=project` + `disableAllHooks`) is recommended under "Decisions needed", not made.
 - [ ] 8 Compaction and context.
-- [ ] 9 Mid-session model, effort, thinking.
+- [ ] 9 Mid-session model, effort, thinking — implemented and live-verified 2026-09-17; see the Item 9 section.
 - [ ] 10 Queueing and rewind.
 - [ ] 11 Checkpoints and session diff.
 - [ ] 12 Composer polish.
@@ -798,6 +798,133 @@ ask; the web UI (selector, `/mode plan` from the composer, the command
 card, the diff card, the plan card rendered as markdown, the markers);
 the TUI in a pty (Shift-Tab auto → ask → plan, `/mode`, the status
 line, the command and diff cards, `a`, `n <message>`, `y`).
+
+### Item 9: mid-session model, effort and thinking
+
+Branch `feat/parity-9-model-controls`, worktree
+`.local/warden-parity-9-model-controls`, from main 05df4fa (2026-09-17).
+
+What the pinned CLI (2.1.272) accepts, probed inside a sandbox with a
+second CLI driven over stream-json with the resident one's env and argv
+(the item-7 method; the probe driver answered the SDK-MCP handshake and
+every `can_use_tool`, and the gateway's credential lapsed twice at the
+10-minute idle mark, each time revived with one message on the chat):
+
+- **`set_model`** `{"subtype":"set_model","model":…}` → `{"subtype":
+  "success"}` (no body); the next `system/init` reports the resolved
+  model (`claude-opus-5`) and the model answers as it ("I'm Opus 5 … the
+  session switched models after my previous answer"). Accepted: `opus`,
+  `sonnet`, `haiku`, `default` (the session default), `sonnet[1m]`,
+  `opusplan`, a dated name (`claude-haiku-4-5` → `claude-haiku-4-5-
+  20251001`). Refused: an unknown name, `{"subtype":"error","error":
+  "Model 'bogus-model-x' not found"}`. `model` null or omitted resets to
+  the default; an `@internal system_prompt` field exists. Cost: `result`'s
+  `total_cost_usd` keeps running across the switch (0.054 → 0.466 → 0.535
+  over sonnet → opus → haiku), with a per-model `modelUsage` breakdown, so
+  the adapter's per-turn cost (growth of the total) is right as it was.
+- **`list_models`** → the account's catalog: `default` (→ sonnet),
+  `sonnet`, `sonnet[1m]`, `opus`, `opus[1m]`, `haiku`, each with
+  `supportsEffort`, `supportedEffortLevels` (`low medium high xhigh
+  max` on the Sonnet/Opus rows, none on Haiku), `supportsAdaptiveThinking`
+  (Sonnet/Opus), `supportsFastMode` (the Opus rows only); `opusplan` is
+  accepted by `set_model` but not listed. The binary's alias list is
+  `sonnet opus haiku fable best sonnet[1m] opus[1m] fable[1m] opusplan`.
+- **`set_max_thinking_tokens`** `{"max_thinking_tokens": int|null,
+  "thinking_display"?: "summarized"|"omitted"|null}` → success; a
+  non-integer is refused with `max_thinking_tokens must be an integer or
+  null…` (a negative integer is accepted). The value maps to the CLI's
+  thinking config: `0` → disabled, `n` → enabled with budget n, `null` →
+  the default (adaptive on Sonnet 5 / Opus 5). Live on Haiku 4.5 (fixed-
+  budget thinking, on by default): `0` → no thinking block, 0 thinking
+  tokens; `2048` → a thinking block (69 tokens); `null` → thinking again.
+  On Sonnet 5 the model decides: neither `0` nor `8000` produced thinking
+  on the puzzles tried, so the budget is a cap there, `0` the switch off.
+  Launch equivalents: `--thinking enabled|adaptive|disabled`,
+  `--max-thinking-tokens N` (deprecated, `-p` only), env
+  `MAX_THINKING_TOKENS` (0 = off), `CLAUDE_CODE_DISABLE_THINKING`.
+- **Effort**: no `set_effort`; the control request is
+  **`apply_flag_settings`** `{"settings":{"effortLevel":"low"}}` (the
+  session-scoped flag layer) → success; `get_settings` then reports
+  `effective.effortLevel` and `applied.effort` (`low`, `max`, back to
+  `high` — the model's default — on `null`). Levels `low medium high
+  xhigh max` (`max` applies although the settings schema lists only the
+  first four); an unknown level is *accepted and dropped* (no error),
+  so Warden validates. Launch equivalents: `--effort <level>`, env
+  `CLAUDE_CODE_EFFORT_LEVEL` (which then pins effort for the session),
+  the `effortLevel` setting.
+- **Fast mode**: `system/init` carries `fast_mode_state` (`off`,
+  `cooldown`, `on`) and `fast_mode_disabled_reason`
+  (`sdk_opt_in_required` under `-p` until opted in; `not_first_party`,
+  `model_not_allowed`, `disabled_by_env`…). `apply_flag_settings
+  {"settings":{"fastMode":true}}` is the opt-in: the next init says
+  `off` on Sonnet (no reason: the model has no fast mode) and `on` once
+  the model is Opus; `false` turns it off. No `--fast` flag; the launch
+  equivalent is `--settings '{"fastMode":true}'`; env
+  `CLAUDE_CODE_DISABLE_FAST_MODE` forbids it.
+- **1M context**: the `[1m]` aliases; env `CLAUDE_CODE_DISABLE_1M_CONTEXT`
+  forbids them.
+- Also there, unused: `get_session_cost`, `get_context_usage` (item 8),
+  `rewind_conversation`, `fork_conversation`, `update_settings`
+  (writes the project's local settings file).
+
+Design (as implemented):
+
+1. **Model.** `chats/{id}/agent` on a Claude chat with a live session
+   sends `model/set` → `set_model` and keeps the session (`Chat.RunID`,
+   the thread and the CLI's context unchanged); the store follows with a
+   `notice` marker "Model → opus". A "not found" refusal is returned to
+   the caller and nothing changes; any other refusal falls back to the
+   old path (record, release the session, relaunch with `--model`). A
+   Claude chat's model may change while a turn runs (the CLI applies it
+   to the next model call); a Codex chat's still waits for idle and
+   relaunches (its app-server's `turn/start` has `model` and `effort`
+   fields — 24 in this build — but the account's Codex usage was
+   exhausted, so that path is untouched and unverified). The CLI's
+   resolved model rides on `thread/started` as before
+   (`chat.session.model`); the web's picker shows it on the chosen option
+   ("Claude Opus · claude-opus-5") and the TUI's status line as
+   "opus (claude-opus-5)".
+2. **Settings.** `Chat.Thinking` ("" default, "off", or a budget in
+   tokens), `Chat.Effort` ("" default, else a level), `Chat.Fast`;
+   `POST chats/{id}/settings` `{thinking?, effort?, fast?}` sets what is
+   present (`Engine.SetSettings`), Claude chats only, each change a
+   `notice` marker. Pushed at once to a live session (`thinking/set` →
+   `set_max_thinking_tokens`, `effort/set` and `fastMode/set` →
+   `apply_flag_settings`) and, with the permission mode, before every
+   turn (`applySession`), so a fresh process gets them before its first
+   model call; the adapter sends each only when it changes what the CLI
+   has (a new process starts at the defaults). Launch flags were not
+   used: the push is one code path and leaves the runner protocol alone.
+3. **Policy.** `providers.claude.allowFastMode` and `allowLongContext`
+   (config, default off; Helm `providers.claude.allowFastMode` /
+   `allowLongContext`) reach the engine as `AllowFastMode` /
+   `AllowLongContext` and clients as `GET state` → `agentOptions`
+   `{fastMode, longContext}`. Fast mode on is refused unless allowed; the
+   `[1m]` models are refused by `Create` and the agent route unless
+   allowed (`sandbox.ValidateAgent` now admits the suffix). The picker
+   offers the "Claude Sonnet 1M" / "Claude Opus 1M" rows and the Fast
+   checkbox only when allowed; the CLI's `fast_mode_state` is
+   `chat.session.fastMode` for the checkbox's title and the TUI's `/fast`.
+4. **Surfaces.** Web: beside the model, "Thinking: default / off / 4k /
+   16k / 32k" and "Effort: default / low … max" selects (Claude chats),
+   the Fast checkbox when allowed; `/thinking on|off|<tokens>` (8k
+   accepted) and `/effort <level>|default` in the composer, run locally
+   like `/mode`. TUI: `/thinking`, `/effort`, `/fast on|off` (bare: what
+   is set), the status line adds "thinking off", "effort low", "fast"
+   when set.
+
+Verified (2026-09-17): `gofmt -l`, `go vet ./...`, `go test ./...`;
+`pnpm build`, `pnpm test` (138 tests; `composer.test.ts` thinking,
+effort and the 1M rows); `deploy/helm/warden/test.sh` (goldens
+unchanged: the switches render only when true). Unit: `agent/claude_test.go`
+`TestClaudeModelThinkingEffortAndFastMode` (each request's shape, the
+refusal path, dedup, the init's fast-mode state);
+`chats/settings_test.go` (validation and markers, the route's policy,
+the live switch keeping the run, the not-found refusal, the fallback
+release and the settings pushed to the new session, a switch during a
+running turn); `config/config_test.go` (the switches parse, the secret
+rule still applies); `tui/tui_test.go` `TestThinkingEffortAndFastCommands`.
+Live: see the progress line below.
 
 ### Item 5: slash-command pass-through
 

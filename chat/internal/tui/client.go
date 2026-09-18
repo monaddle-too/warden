@@ -144,8 +144,19 @@ type Chat struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	// Mode is a Claude chat's permission mode: auto (also when empty),
-	// ask or plan (chats/permissions.go).
-	Mode         string       `json:"mode"`
+	// ask or plan (chats/permissions.go). Thinking, Effort and Fast are
+	// its session settings (chats/settings.go): "" is the default
+	// thinking or effort, "off" or a token budget the thinking.
+	Mode     string `json:"mode"`
+	Thinking string `json:"thinking"`
+	Effort   string `json:"effort"`
+	Fast     bool   `json:"fast"`
+	// Session is what the agent reported when its session started; its
+	// Model is the one it resolved, the truth after a live model change.
+	Session *struct {
+		Model    string `json:"model"`
+		FastMode string `json:"fastMode"`
+	} `json:"session"`
 	SandboxID    string       `json:"sandboxID"`
 	Repository   string       `json:"repository,omitempty"`
 	Status       string       `json:"status"`
@@ -433,6 +444,12 @@ func (c *Client) Answer(ctx context.Context, chatID, approvalID string, allow, a
 // Mode sets a Claude chat's permission mode (auto, ask or plan).
 func (c *Client) Mode(ctx context.Context, chatID, mode string) error {
 	return c.do(ctx, "POST", "chats/"+chatID+"/mode", map[string]any{"mode": mode}, nil)
+}
+
+// Settings changes a Claude chat's session settings: the keys given
+// (thinking, effort, fast) apply, the rest stay.
+func (c *Client) Settings(ctx context.Context, chatID string, change map[string]any) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/settings", change, nil)
 }
 
 func (c *Client) RevokePort(ctx context.Context, id string) error {

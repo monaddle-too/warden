@@ -641,6 +641,27 @@
   opacity: 0.6;
   cursor: default;
 }
+/* Fast mode, a checkbox after the Claude settings when the service
+   offers it. */
+.composer-fast {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.composer-fast:hover {
+  background-color: var(--surface-3);
+  color: var(--text);
+}
+.composer-fast input {
+  margin: 0;
+}
 /* The permission mode picker sits beside the model on Claude chats. */
 .composer-mode select {
   width: auto;

@@ -186,6 +186,11 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Resources *sandbox.Resources `json:"resources"`
 		// Attachments are upload IDs a message sends along.
 		Attachments []string `json:"attachments"`
+		// Thinking, Effort and Fast are the body of chats/{id}/settings
+		// (Engine.SetSettings): each applies when present.
+		Thinking *string `json:"thinking"`
+		Effort   *string `json:"effort"`
+		Fast     *bool   `json:"fast"`
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
 	dec.DisallowUnknownFields()
@@ -222,6 +227,8 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			err = h.Engine.ConfigureAgentAndRelease(r.Context(), parts[1], body.Provider, body.Model)
 		case "mode":
 			err = h.Engine.SetMode(r.Context(), parts[1], body.Mode)
+		case "settings":
+			err = h.Engine.SetSettings(r.Context(), parts[1], Settings{Thinking: body.Thinking, Effort: body.Effort, Fast: body.Fast})
 		case "message":
 			err = h.Engine.MessageFrom(parts[1], body.Text, body.ID, requester(r), body.Attachments...)
 		case "typing":

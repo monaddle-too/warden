@@ -123,6 +123,9 @@ func run(args []string) error {
 	// single-owner install on a machine with such directories, which the
 	// Kubernetes shape is not (the runner is a pod).
 	engine.LocalMode = s.cfg.Auth.Mode == config.AuthOwner && s.cfg.RuntimeKind() != config.RuntimeKubernetes
+	if claude := s.cfg.Providers.Claude; claude != nil {
+		engine.AllowFastMode, engine.AllowLongContext = claude.AllowFastMode, claude.AllowLongContext
+	}
 	handler.Engine = engine
 	go engine.Serve(ctx)
 	defer func() { cancel(); <-engine.Done() }()

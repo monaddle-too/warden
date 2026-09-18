@@ -15,11 +15,13 @@ import {
   ArrowDown,
   ArrowUp,
   Bot,
+  Brain,
   Cpu,
   Download,
   Eraser,
   File as FileIcon,
   Folder,
+  Gauge,
   Paperclip,
   ShieldCheck,
   Slash,
@@ -59,7 +61,7 @@ import {
   unreadIndex,
 } from "../transcript";
 import { sameFooter, turnFooters, type TurnFooter } from "../turns";
-import type { Chat, Entry } from "../types";
+import type { AgentOptions, Chat, Entry, SessionSettings } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
 import { chatStatusLabel, startupLine } from "../stages";
 import { pendingReply } from "../thinking";
@@ -121,6 +123,10 @@ const commandIcon = (name: string) =>
     <Cpu size={15} />
   ) : name === "mode" ? (
     <ShieldCheck size={15} />
+  ) : name === "thinking" ? (
+    <Brain size={15} />
+  ) : name === "effort" ? (
+    <Gauge size={15} />
   ) : name === "export" ? (
     <Download size={15} />
   ) : (
@@ -133,6 +139,8 @@ export function Conversation({
   find,
   onModel,
   onMode,
+  onSettings,
+  agentOptions,
   onExport,
 }: {
   chat: Chat;
@@ -145,6 +153,11 @@ export function Conversation({
   onModel: (model: string) => Promise<unknown>;
   /* The permission mode selector and /mode (Claude chats). */
   onMode?: (mode: string) => Promise<unknown>;
+  /* The thinking, effort and fast-mode controls beside the model and
+     /thinking, /effort (Claude chats); agentOptions says which of the
+     costlier choices this Warden offers. */
+  onSettings?: (change: SessionSettings) => Promise<unknown>;
+  agentOptions?: AgentOptions;
   /* The /export command; the chat menu's dialog lives in the shell. */
   onExport?: () => void;
 }) {
@@ -453,12 +466,16 @@ export function Conversation({
   const open =
     !!trigger && focused && !chat.archived && dismissed !== triggerKey;
   const models = useMemo(
-    () => modelOptions(chat.provider || "codex"),
-    [chat.provider],
+    () => modelOptions(chat.provider || "codex", agentOptions),
+    [chat.provider, agentOptions],
   );
   // Permission modes are a Claude chat's (the service refuses them for
   // Codex); the mode can change at any time, a running turn included.
   const modes = chat.provider === "claude" && !!onMode;
+  // So are the session settings (thinking, effort, fast mode). A Claude
+  // chat's model changes on its live session too; Codex's at the next run.
+  const settings = chat.provider === "claude" && !!onSettings;
+  const modelLocked = running && chat.provider !== "claude";
   // The agent's own commands (Claude Code's built-ins and the workspace's)
   // join the list after the chat's; "/name …" goes to the agent as text.
   const agentCommands = useMemo(() => chat.commands ?? [], [chat.commands]);
@@ -493,10 +510,13 @@ export function Conversation({
                   item.command.name === "stop"
                     ? !running || chat.status === "stopping"
                     : item.command.name === "model"
-                      ? running
+                      ? modelLocked
                       : item.command.name === "mode"
                         ? !modes
-                        : false,
+                        : item.command.name === "thinking" ||
+                            item.command.name === "effort"
+                          ? !settings
+                          : false,
               }
             : item.kind === "mode"
               ? {
@@ -506,21 +526,37 @@ export function Conversation({
                   icon: <ShieldCheck size={15} />,
                   disabled: !modes || chat.archived,
                 }
-              : item.kind === "model"
+              : item.kind === "thinking"
                 ? {
-                    id: "model:" + item.model.value,
-                    label: item.model.label,
-                    hint: item.model.value,
-                    icon: <Cpu size={15} />,
-                    disabled: running,
+                    id: "thinking:" + item.thinking.value,
+                    label: item.thinking.label,
+                    hint: item.thinking.hint,
+                    icon: <Brain size={15} />,
+                    disabled: !settings || chat.archived,
                   }
-                : {
-                    id: "agent:" + item.command.name,
-                    label: "/" + item.command.name,
-                    hint: agentHint(item.command),
-                    icon: <Slash size={15} />,
-                    group: agentGroup,
-                  },
+                : item.kind === "effort"
+                  ? {
+                      id: "effort:" + item.effort.value,
+                      label: item.effort.label,
+                      hint: item.effort.hint,
+                      icon: <Gauge size={15} />,
+                      disabled: !settings || chat.archived,
+                    }
+                  : item.kind === "model"
+                    ? {
+                        id: "model:" + item.model.value,
+                        label: item.model.label,
+                        hint: item.model.value,
+                        icon: <Cpu size={15} />,
+                        disabled: modelLocked,
+                      }
+                    : {
+                        id: "agent:" + item.command.name,
+                        label: "/" + item.command.name,
+                        hint: agentHint(item.command),
+                        icon: <Slash size={15} />,
+                        group: agentGroup,
+                      },
       );
       if (items.length) return { items };
       // An agent command with its argument typed: nothing to pick, the
@@ -671,6 +707,16 @@ export function Conversation({
       place({ text: rest, caret: 0 });
       return;
     }
+    if (item.kind === "thinking" || item.kind === "effort") {
+      setError(settings ? "" : "thinking and effort apply to Claude chats");
+      const change: SessionSettings =
+        item.kind === "thinking"
+          ? { thinking: item.thinking.value }
+          : { effort: item.effort.value };
+      if (settings) void onSettings(change).catch((e) => setError(String(e)));
+      place({ text: rest, caret: 0 });
+      return;
+    }
     if (item.kind === "agent") {
       // Filled in, not sent: the person adds an argument or sends it as
       // it is, and the agent expands it.
@@ -679,10 +725,12 @@ export function Conversation({
       return;
     }
     if (item.kind === "model") {
-      // The list disables models while the agent runs; "/model x" typed in
-      // full and sent gets the same answer the service would give.
-      setError(running ? "wait until the conversation is idle" : "");
-      if (!running)
+      // The list disables a Codex chat's models while the agent runs;
+      // "/model x" typed in full and sent gets the same answer the
+      // service would give. A Claude chat's live session takes the model
+      // at any time.
+      setError(modelLocked ? "wait until the conversation is idle" : "");
+      if (!modelLocked)
         void onModel(item.model.value).catch((e) => setError(String(e)));
       place({ text: rest, caret: 0 });
       return;
@@ -698,6 +746,12 @@ export function Conversation({
         break;
       case "mode":
         place({ text: "/mode " + rest, caret: 6 });
+        break;
+      case "thinking":
+        place({ text: "/thinking " + rest, caret: 10 });
+        break;
+      case "effort":
+        place({ text: "/effort " + rest, caret: 8 });
         break;
       case "export":
         onExport?.();
@@ -723,9 +777,13 @@ export function Conversation({
           ? "command:" + c.command.name
           : c.kind === "mode"
             ? "mode:" + c.mode.value
-            : c.kind === "model"
-              ? "model:" + c.model.value
-              : "agent:" + c.command.name) === item.id,
+            : c.kind === "thinking"
+              ? "thinking:" + c.thinking.value
+              : c.kind === "effort"
+                ? "effort:" + c.effort.value
+                : c.kind === "model"
+                  ? "model:" + c.model.value
+                  : "agent:" + c.command.name) === item.id,
     );
     if (chosen) runCommand(chosen, withoutCommand(text, trigger));
   }
@@ -1037,12 +1095,33 @@ export function Conversation({
                 <ModelSelect
                   provider={chat.provider || "codex"}
                   value={chat.model || ""}
-                  disabled={running || chat.archived}
+                  disabled={modelLocked || chat.archived}
                   onChange={(model) => {
                     setError("");
                     void onModel(model).catch((e) => setError(String(e)));
                   }}
                   label="Model for the next turn"
+                  session={chat.session}
+                  settings={
+                    settings
+                      ? {
+                          thinking: chat.thinking,
+                          effort: chat.effort,
+                          fast: chat.fast,
+                        }
+                      : undefined
+                  }
+                  options={agentOptions}
+                  onSettings={
+                    settings
+                      ? (change) => {
+                          setError("");
+                          void onSettings(change).catch((e) =>
+                            setError(String(e)),
+                          );
+                        }
+                      : undefined
+                  }
                 />
               </span>
               {modes && (

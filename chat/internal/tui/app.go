@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+	"warden/chat/internal/chats"
 )
 
 // App is the interactive terminal client for one chat at a time.
@@ -787,6 +788,98 @@ func (a *App) setMode(ctx context.Context, c *Chat, mode string) {
 	a.setNotice("permission mode " + mode + ": " + modeHint(mode))
 }
 
+// setSetting handles /thinking, /effort and /fast: with no argument it
+// says what the chat has, otherwise it sends the change (the service
+// validates and refuses what this Warden does not offer).
+func (a *App) setSetting(ctx context.Context, c *Chat, name, arg string) {
+	if c == nil {
+		a.setNotice("no chat selected")
+		return
+	}
+	if c.Provider != "claude" {
+		a.setNotice("thinking, effort and fast mode apply to Claude chats")
+		return
+	}
+	change := map[string]any{}
+	switch name {
+	case "thinking":
+		if arg == "" {
+			a.setNotice("thinking " + thinkingLabel(c.Thinking) + " · /thinking on|off|TOKENS (8k)")
+			return
+		}
+		v, err := chats.ParseThinking(arg)
+		if err != nil {
+			a.setNotice(err.Error())
+			return
+		}
+		change["thinking"] = v
+	case "effort":
+		if arg == "" {
+			a.setNotice("effort " + orDefault(c.Effort) + " · /effort " + strings.Join(chats.Efforts, "|") + "|default")
+			return
+		}
+		if arg == "default" {
+			arg = ""
+		}
+		if !chats.ValidEffort(arg) {
+			a.setNotice("/effort " + strings.Join(chats.Efforts, "|") + "|default")
+			return
+		}
+		change["effort"] = arg
+	case "fast":
+		switch arg {
+		case "":
+			state := "off"
+			if c.Fast {
+				state = "on"
+			}
+			if c.Session != nil && c.Session.FastMode != "" {
+				state += " (session: " + c.Session.FastMode + ")"
+			}
+			a.setNotice("fast mode " + state + " · /fast on|off")
+			return
+		case "on", "off":
+			change["fast"] = arg == "on"
+		default:
+			a.setNotice("/fast on|off")
+			return
+		}
+	}
+	if err := a.Client.Settings(ctx, c.ID, change); err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	for k, v := range change {
+		switch k {
+		case "thinking":
+			a.setNotice("thinking " + thinkingLabel(v.(string)))
+		case "effort":
+			a.setNotice("effort " + orDefault(v.(string)))
+		case "fast":
+			if v.(bool) {
+				a.setNotice("fast mode on: faster answers at a higher price, on the models that offer it")
+			} else {
+				a.setNotice("fast mode off")
+			}
+		}
+	}
+}
+
+// thinkingLabel words a thinking setting: default, off, or the budget
+// (8k for 8000).
+func thinkingLabel(setting string) string {
+	switch setting {
+	case "":
+		return "default (the model decides)"
+	case "off":
+		return "off"
+	}
+	if n, err := strconv.Atoi(setting); err == nil && n >= 1000 && n%1000 == 0 {
+		return strconv.Itoa(n/1000) + "k tokens"
+	}
+	return setting + " tokens"
+}
+
 func orMode(mode string) string {
 	if mode == "" {
 		return "auto"
@@ -999,6 +1092,8 @@ func (a *App) command(ctx context.Context, line string) {
 		default:
 			a.setNotice("/mode auto|ask|plan")
 		}
+	case "thinking", "effort", "fast":
+		a.setSetting(ctx, c, name, arg)
 	case "attach":
 		a.attach(ctx, c, arg)
 	case "attachments":
