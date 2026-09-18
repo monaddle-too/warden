@@ -237,10 +237,10 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
-| Project `CLAUDE.md`, imports, rules | ✗ | ✗ | not loaded under `--setting-sources=` (item 7); needs `project` |
-| User-level `CLAUDE.md` | ✗ | ✗ | policy: per principal |
-| Auto-memory | ◐ | ◐ | per sandbox home, not per principal |
-| `/memory` editor | ✗ | ✗ | |
+| Project `CLAUDE.md`, imports, rules | ✗ | ✗ | not loaded under `--setting-sources=` (item 7); needs `project`; viewed and edited from the memory view (item 13) |
+| User-level `CLAUDE.md` | ✅ | ✅ | per principal: standing instructions in the chat store, appended to the system prompt (item 13) |
+| Auto-memory | ◐ | ◐ | per sandbox home; the directory is listed and its files editable (item 13); the CLI wrote none under Warden's flags |
+| `/memory` editor | ✅ | ✅ | workspace panel "Memory", TUI `/memory` (item 13) |
 | Warden's appended system prompt | ✅ | ✅ | |
 
 ### MCP, hooks, integrations
@@ -291,9 +291,10 @@ until the owner confirms.
   wanted.
 - **Per-principal instructions and memory.** The CLI reports
   `memory_paths.auto` = `~/.claude/projects/<cwd>/memory/` in the sandbox
-  home, so auto-memory is per sandbox; a per-principal layout needs
-  Warden to set `HOME`/`CLAUDE_CONFIG_DIR` or to inject the user's
-  `CLAUDE.md` — item 13.
+  home, so auto-memory is per sandbox; item 13 injects each person's
+  instructions into the system prompt instead and lists that directory
+  in the memory view. A per-principal auto-memory (`HOME` or
+  `CLAUDE_CONFIG_DIR` per person) remains open.
 
 ## To verify on the pinned CLI
 
@@ -409,29 +410,40 @@ chats/{id}/memory`.
 Steps:
 
 1. Per-principal instructions in the chat store (`State.Instructions`,
-   keyed by principal), `GET`/`POST me/instructions`; web "Instructions…"
-   in the sidebar footer (a markdown textarea dialog), TUI
-   `/instructions` shows and `/instructions edit` loads them into the
-   composer, Enter saves.
-2. Delivery: at a Claude launch the runner appends, after Warden's own
-   prompt, one block per participant — "Instructions from <name>:" + text
-   — for the chat's creator and every sender so far (`Request.
-   Instructions` on the `stream` op → `RunSpec.Instructions` →
-   `claudeSystemPrompt`); Codex gets the same blocks appended to
-   `developerInstructions`. A person whose block the live session has not
-   seen (a late joiner, or instructions changed since) gets it once as a
-   prefix on their next message, both providers.
+   keyed by principal, never in the streamed state), `GET`/`POST
+   me/instructions`; web "Instructions" in the sidebar footer (a markdown
+   textarea dialog; a blank save removes), TUI `/instructions` shows,
+   `/instructions edit` loads them into the composer (Enter saves, Esc
+   cancels), `/instructions clear`.
+2. Delivery: at a launch the runner appends, after Warden's own prompt, a
+   header and one block per participant — `From "<name>":` + text — for
+   the chat's creator (now recorded, `Chat.Creator`) and every sender so
+   far (`Request.Instructions` on the `stream` op → `RunSpec.Instructions`
+   → `claudeSystemPrompt`); Codex gets the same on `developerInstructions`.
+   A queued message whose sender's current text is not what the idle
+   session was launched with (a late joiner; text changed or removed)
+   ends the run cleanly and the chat's next run relaunches with
+   everyone's current blocks (`thread/resume` keeps the conversation);
+   Codex steering leaves such a message queued the same way. The launch
+   passes `--system-prompt-snapshot off` (see decision 7).
 3. Memory view: `GET chats/{id}/memory` lists the workspace's `CLAUDE.md`,
    `CLAUDE.local.md`, `AGENTS.md`, `.claude/CLAUDE.md`, `.claude/rules/**.md`
-   and the CLI's auto-memory directory (`memory_paths.auto` from
-   `system/init`, kept on `Chat.Session`, validated by the runner; else
-   derived) with contents; `POST chats/{id}/memory/write` writes one file
-   (runner op `memory-write`: staged and copied in like an attachment,
-   placed by a descriptor-relative script, paths limited to those
-   locations). Web: a "Memory" section in the workspace panel with an
-   editor dialog; TUI `/memory`, `/memory FILE`, `/memory edit FILE`.
-4. Attribution: every write leaves a `notice` entry "<name> edited
-   CLAUDE.md" with `Sender`.
+   (three levels) and the CLI's auto-memory directory (`memory_paths.auto`
+   from `system/init`, kept as `Chat.Session.AutoMemory`, validated by the
+   runner as a `memory` directory under the home's `.claude/projects`;
+   derived from the workspace path otherwise) with contents (256 KiB per
+   file, marked when cut); `POST chats/{id}/memory/write` `{scope, path,
+   text}` replaces one file (runner op `memory-write`: staged 0644 on the
+   worker host, copied into the agent home, placed by a descriptor-relative
+   script that creates missing folders and follows no symlink; paths
+   limited to those locations, validated on both sides). Web: a "Memory"
+   section in the workspace panel (opened on demand like Access history,
+   files grouped Instructions / Rules / Auto-memory, an editor dialog,
+   Create CLAUDE.md / New rule…); TUI `/memory`, `/memory N|FILE`,
+   `/memory edit N|FILE` (`auto:PATH` for an auto-memory file; a new
+   workspace path can be edited into being).
+4. Attribution: every write leaves a `notice` entry with `Sender`
+   ("The owner edited CLAUDE.md", "Ada edited auto-memory MEMORY.md").
 5. Tests, feature map, live check on a cloned home, merge.
 
 Decisions:
@@ -439,24 +451,111 @@ Decisions:
 1. Instructions live in Warden's store, keyed by principal, never in the
    sandbox: a workspace is shared by chats and people, and the sandbox
    home is the agent's; the store is where the principal already exists.
-   Display name for the block: the person's name, else email, else "the
-   owner" for the owner principal.
-2. Delivery is plain text in the system prompt (and a message prefix),
-   never a policy change; a block is quoted as the person's, so
-   instructions that read like commands to Warden stay text.
-3. The instructions ride the `stream` request as data (`AgentCommand`'s
+   Display name for a block: the person's name, else email, else "the
+   owner" for the owner principal, else the name stored with the text.
+2. Delivery is plain text in the system prompt, never a policy change,
+   introduced in Warden's own voice: a bare quoted `Instructions from
+   "the owner":` block was refused by the model as an injection on the
+   first live probe ("that text appeared … not through any legitimate
+   system or Warden channel"); with a header saying what the blocks are
+   and that Warden keeps and delivers them, the same text was followed.
+3. **No message prefix** (deviation from the design's "delivered once as
+   a prefix"): Claude Code declines standing instructions carried inside
+   a user message — live, it kept the haiku rule from the system prompt
+   and refused the one in the prefix, saying genuine updates arrive as a
+   system-reminder, not as chat text. A late joiner or a change relaunches
+   the session instead (step 2); the cost is one CLI start (a few seconds,
+   `--resume`) per change, and one prompt-cache miss.
+4. The instructions ride the `stream` request as data (`AgentCommand`'s
    argument list; the drivers never go through a shell); one person's
-   text is capped at 16 KiB so the argument list stays small.
-4. `GET`/`POST` rather than `PUT`: the service answers `GET` and `POST`
-   only and the web client speaks those two.
-5. The memory listing shows what exists even though the launch reads
-   none of it (item 7); each file carries `read: true|false` so the
-   surfaces can say so, and the auto-memory directory is listed only when
-   it exists.
-6. `#` (item 12) is left as it is; the write route is separate
-   (`memory/write`) so append and replace do not share one verb.
+   text is capped at 16 KiB, the assembled text at 96 KiB (cut, not
+   failed: a guest argument has a hard size on Linux).
+5. `GET`/`POST` rather than `PUT`: the service answers `GET` and `POST`
+   only and the web client speaks those two. The write route is
+   `chats/{id}/memory/write`, separate from item 12's append on
+   `chats/{id}/memory`, so append and replace do not share one verb.
+6. The memory listing shows what exists even though the launch reads
+   none of it (item 7): the view carries `read` and a `hint` sentence
+   (Claude: read only once the workspace's settings are loaded; Codex:
+   reads `AGENTS.md`), which both surfaces show.
+7. `--system-prompt-snapshot off` on every Claude launch. The pinned CLI
+   records the system prompt at a conversation's first request and reuses
+   it verbatim on every later request and resume, "even when a later
+   launch passes different text, until the conversation is compacted"
+   (its own option text); live, a relaunched session quoted the old
+   instructions while its command line carried the new ones. Off renders
+   the prompt fresh each request, which is what a relaunch needs.
+8. The staged copy of a memory file goes to `<home>/.warden-memory-<id>`,
+   not `/tmp`: the runtime copies it in as the host's uid with the host
+   mode, and at 0600 in sticky `/tmp` the agent user could neither read
+   nor remove it (the first live write failed that way).
 
-Progress: started 2026-09-17.
+Findings on the pinned CLI (2.1.272), for the record:
+
+- `system/init` `memory_paths.auto` is
+  `/home/agent/.claude/projects/-home-agent-workspace/memory/` (trailing
+  slash; the project directory name is the workspace path with every
+  character outside `[a-zA-Z0-9_-]` replaced by a dash, which the runner
+  derives when the chat has no report). The CLI creates that directory at
+  session start (with `sessions/`, `backups/`, the session `.jsonl`) under
+  Warden's flags; across some fifteen turns in three sessions it wrote
+  nothing into it, so whether `-p` mode ever writes auto-memory under
+  `--setting-sources=` is not established. Files a person puts there are
+  listed and editable, and readable by the agent by path.
+- The agent, asked to `cat` files that appeared in its workspace between
+  turns, flagged them as untrusted data and asked how they got there —
+  the launch does not read them as instructions (item 7), and it does not
+  treat them as such either.
+- `--system-prompt-snapshot` (decision 7) and `--append-system-prompt-file`
+  exist in this version.
+
+Also fixed on the way: `conversation.css` had lost the closing brace of
+`.todo-active` in item 12's merge, nesting the context meter's rules under
+it, and the stylesheet brace-balance test never saw it because a `?raw`
+stylesheet import is empty under vitest (the test asserted on ""); the
+test now reads both files from disk (`src/node-fs.d.ts` types the one
+call).
+
+Verified 2026-09-18 on a cloned home (`~/.warden-p10`, CLI 2.1.272,
+builds 7d55238 → bb2b993): unit — `go test ./...` (`sandbox/memory_test.go`
+runs both guest scripts locally: the fixed files, rules three levels down,
+the reported or derived auto-memory directory, symlinks never followed on
+read or write, a cut file marked, folders created on write; the ops
+through the fake runtime with the reported directory, path and scope
+refusals, the staged copy and its placement; `claudeSystemPrompt` and the
+launch flag; `chats/instructions_test.go`: the routes per principal, the
+blocks, the launch's `stream` request and `developerInstructions`, the
+relaunch for a late joiner / changed / removed text and none for a known
+sender, the memory routes with the notice; `agent/claude_test.go` the
+`autoMemory` on `thread/started`; `tui/tui_test.go` both commands and the
+editing mode), `pnpm test` (161: `memory.test.ts`, the CSS test now
+real). Live: instructions set through the API, a new Claude chat answered
+"What is the capital of France?" as a haiku signed WARDENHAIKU; the block
+read back from the CLI's `/proc/<pid>/cmdline`; `GET chats/{id}/memory`
+listed the empty workspace with the auto-memory directory; writes of
+`CLAUDE.md`, `.claude/rules/style.md` and `auto:MEMORY.md` through the
+API, then the agent's `cat` showing all three (owned `agent agent`, 0644,
+no staged file left in the home) and three notices in the transcript;
+the refused `README.md`. Browser: the Instructions dialog loaded the text
+with its saved stamp, a change saved and read back; the workspace panel's
+Memory section listed the three files under their groups with the hint,
+the editor opened `CLAUDE.md`, a saved change appeared as "The owner
+edited CLAUDE.md" and the panel refreshed to 76 B. TUI in a pty: `/memory`
+(listing with sizes and the directories), `/memory 1`, `/memory 3`,
+`/instructions`, `/memory edit auto:MEMORY.md` → the editing banner,
+Alt+Enter, Enter → "saved auto:MEMORY.md" and its notice. Changing the
+owner's instructions while a session was live: the next message
+relaunched the CLI (`--resume`, the new block in its command line) and,
+with the snapshot off, the answer followed the new text ("two lines of
+prose … GIRAFFE"); before the flag the relaunched session still quoted
+the old text. Codex is unit-tested only (usage exhausted).
+
+Left: Google mode (a second principal) is unit-tested only — the cloned
+home runs in owner mode; the auto-memory question above; the memory view
+needs a running sandbox (the runner refuses with "sandbox is stopped",
+which the panel shows); no `#`-style append for rules or auto-memory.
+
+Progress: started 2026-09-17; implemented and live-verified 2026-09-18.
 
 ### Item 12: composer polish
 
