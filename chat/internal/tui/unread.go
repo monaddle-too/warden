@@ -58,30 +58,36 @@ func SaveSeen(path string, marks map[string]Seen) error {
 	return os.WriteFile(path, append(b, '\n'), 0600)
 }
 
-// UnreadStart is the index of the first entry the reader has not seen:
-// the one after the mark, or the first newer than the mark's time when
-// its entry is gone. -1 without a mark (a first visit: everything would
-// be new, so a divider would say nothing), when nothing follows the
-// mark, and when every entry is new.
-func UnreadStart(entries []Entry, mark Seen, ok bool) int {
-	if !ok || mark.ID == "" {
+// unreadFrom is the index of the first entry the reader has not seen:
+// the one after the mark's entry, or the first newer than the mark's
+// time when that entry is gone (a rewound transcript) or the chat was
+// seen empty (a mark with no entry); len(entries) when nothing is new,
+// -1 without a mark (a first visit).
+func unreadFrom(entries []Entry, mark Seen, ok bool) int {
+	if !ok {
 		return -1
 	}
-	start := -1
-	for i, e := range entries {
-		if e.ID == mark.ID {
-			start = i + 1
-			break
-		}
-	}
-	if start < 0 {
+	if mark.ID != "" {
 		for i, e := range entries {
-			if e.CreatedAt > mark.At {
-				start = i
-				break
+			if e.ID == mark.ID {
+				return i + 1
 			}
 		}
 	}
+	for i, e := range entries {
+		if e.CreatedAt > mark.At {
+			return i
+		}
+	}
+	return len(entries)
+}
+
+// UnreadStart is where the divider goes: the first unseen entry's index,
+// or -1 when there is none, on a first visit (everything would be new, so
+// a divider would say nothing) and when every entry is new (the chat was
+// seen empty; it starts at the top anyway, as the web's does).
+func UnreadStart(entries []Entry, mark Seen, ok bool) int {
+	start := unreadFrom(entries, mark, ok)
 	if start <= 0 || start >= len(entries) {
 		return -1
 	}
@@ -89,10 +95,10 @@ func UnreadStart(entries []Entry, mark Seen, ok bool) int {
 }
 
 // UnreadCount is how many messages (not tool steps, thinking or
-// compaction dividers; the subagents' own entries not counted) follow
-// the mark; 0 without a mark.
+// compaction dividers; the subagents' own entries not counted) the
+// reader has not seen; 0 without a mark.
 func UnreadCount(entries []Entry, mark Seen, ok bool) int {
-	start := UnreadStart(entries, mark, ok)
+	start := unreadFrom(entries, mark, ok)
 	if start < 0 {
 		return 0
 	}
@@ -159,15 +165,16 @@ func (a *App) markUnread() string {
 	}
 	a.loadSeen()
 	mark, ok := a.seen[c.ID]
-	i := UnreadStart(c.Conversation.Entries, mark, ok)
-	if i < 0 {
+	n := UnreadCount(c.Conversation.Entries, mark, ok)
+	if n == 0 {
 		return ""
 	}
-	a.unreadID = c.Conversation.Entries[i].ID
-	if n := UnreadCount(c.Conversation.Entries, mark, ok); n > 0 {
-		return fmt.Sprintf("%d new %s since you were here; %s marks the first", n, plural2(n, "message"), UnreadDivider)
+	note := fmt.Sprintf("%d new %s since you were here", n, plural2(n, "message"))
+	if i := UnreadStart(c.Conversation.Entries, mark, ok); i >= 0 {
+		a.unreadID = c.Conversation.Entries[i].ID
+		note += "; " + UnreadDivider + " marks the first"
 	}
-	return ""
+	return note
 }
 
 // unreadDividerLine is the divider as printed, across the width.
@@ -175,12 +182,21 @@ func unreadDividerLine(width int) string {
 	return cyan + UnreadDivider + strings.Repeat("─", max(0, width-len([]rune(UnreadDivider))-1)) + reset
 }
 
-// markSeen advances the selected chat's mark to its last entry.
+// markSeen advances the selected chat's mark to its last entry; a chat
+// seen empty gets a mark with no entry and this moment, so what arrives
+// later counts as new.
 func (a *App) markSeen(c *Chat) {
-	if c == nil || len(c.Conversation.Entries) == 0 {
+	if c == nil {
 		return
 	}
 	a.loadSeen()
+	if len(c.Conversation.Entries) == 0 {
+		if _, ok := a.seen[c.ID]; !ok {
+			a.seen[c.ID] = Seen{At: float64(a.now().UnixMilli()) / 1000}
+			a.seenDirty = true
+		}
+		return
+	}
 	last := c.Conversation.Entries[len(c.Conversation.Entries)-1]
 	if a.seen[c.ID].ID == last.ID {
 		return

@@ -4949,10 +4949,38 @@ func TestUnreadMarkersDividerAndJump(t *testing.T) {
 	if got := LoadSeen(seenFile); got["chat2"].ID != "m4" || got["chat1"].ID != "m1" {
 		t.Fatalf("seen file at the end: %+v", got)
 	}
-	// A mark whose entry is gone (a rewound transcript) divides by time.
-	entries := []Entry{{ID: "a", CreatedAt: 1}, {ID: "b", CreatedAt: 2}, {ID: "c", CreatedAt: 3}}
-	if UnreadStart(entries, Seen{ID: "gone", At: 1.5}, true) != 1 || UnreadStart(entries, Seen{ID: "c", At: 3}, true) != -1 || UnreadStart(entries, Seen{}, false) != -1 || UnreadStart(entries, Seen{ID: "gone", At: 0}, true) != -1 {
+	// A mark whose entry is gone (a rewound transcript) divides by time; a
+	// chat seen empty (a mark with no entry) counts everything since as
+	// new but gets no divider, as on the web; nothing is new without a
+	// mark.
+	entries := []Entry{{ID: "a", Role: "user", CreatedAt: 1}, {ID: "b", Role: "assistant", CreatedAt: 2}, {ID: "c", Role: "assistant", CreatedAt: 3}}
+	if UnreadStart(entries, Seen{ID: "gone", At: 1.5}, true) != 1 || UnreadStart(entries, Seen{ID: "c", At: 3}, true) != -1 || UnreadStart(entries, Seen{}, false) != -1 || UnreadStart(entries, Seen{At: 0.5}, true) != -1 {
 		t.Fatal("UnreadStart")
+	}
+	if UnreadCount(entries, Seen{At: 0.5}, true) != 3 || UnreadCount(entries, Seen{At: 2.5}, true) != 1 || UnreadCount(entries, Seen{}, false) != 0 || UnreadCount(entries, Seen{ID: "gone", At: 9}, true) != 0 {
+		t.Fatal("UnreadCount")
+	}
+	// Visiting an empty chat marks it: what arrives later is new.
+	f.mu.Lock()
+	f.state.Chats = append(f.state.Chats, &Chat{ID: "chat4", Title: "Empty", Provider: "codex", Status: "idle"})
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	app.selectChat("chat4")
+	app.frame(80, 24)
+	if m, ok := app.seen["chat4"]; !ok || m.ID != "" {
+		t.Fatalf("empty chat not marked: %+v %v", m, ok)
+	}
+	f.mu.Lock()
+	f.state.Chats[3].Conversation.Entries = []Entry{{ID: "u5", Role: "user", Text: "later", CreatedAt: 1e12}, {ID: "m5", Role: "assistant", Text: "reply", CreatedAt: 1e12 + 1}}
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	app.selectChat("chat1")
+	if n := app.unreadOf(app.state.Chats[3]); n != 2 {
+		t.Fatalf("unread of a chat seen empty: %d", n)
+	}
+	app.submit(ctx, "/switch 4")
+	if app.notice != "switched to Empty · 2 new messages since you were here" || app.unreadID != "" {
+		t.Fatalf("switch into a chat seen empty: %q divider %q", app.notice, app.unreadID)
 	}
 	if LoadSeen(filepath.Join(t.TempDir(), "none.json")) == nil {
 		t.Fatal("LoadSeen of a missing file")
