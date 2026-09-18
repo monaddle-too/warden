@@ -59,10 +59,12 @@ Two new pieces and a plist:
    endpoint answers and reports `service: stopped|starting|running`
    otherwise (asking the manager whether the unit runs while it is
    unreachable). Each line:
-   `{"service":"running","state":"/Users/o/.warden","app":"<launch URL>",
-   "attention":[{"chatID","chatTitle","kind":"approval|review|error",
-   "label"}],"chats":[{"id","title","status","activity","idleFor"}],
-   "spend":{"today":4.12,"turns":3,"priced":true}}`.
+   `{"service":"running","registered":true,"state":"/Users/o/.warden",
+   "attention":[{"chatID","chat","kind":"approval|review|error","label"}],
+   "chats":[{"id","title","status","activity","lastActive"}],"more":3,
+   "working":1,"spend":{"todayUSD":4.12,"turns":3,"priced":true}}`
+   (`lastActive` is unix seconds; the item renders "idle 4 min" when the
+   menu opens, so the feed need not tick).
    Also `warden open --chat ID` and `warden open --new` so the menu opens
    the app on a chat or on the New chat form (`?new=1`, read by
    `ChatShell.tsx`).
@@ -87,7 +89,7 @@ Two new pieces and a plist:
 The dropdown (final order):
 
 ```
-Warden · running · 2 workspaces          (disabled)
+Warden · running · 1 working             (disabled)
 ─────
 Approve: run command: go test ./… — Fix build     → open --chat
 Review: pull request — Add tray                  → open --chat
