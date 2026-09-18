@@ -209,6 +209,46 @@ func TestCheckpointRepositoryStoreSnapshotsRestoresAndDiffs(t *testing.T) {
 		t.Fatalf("diff after restore: %+v %v", res.Changes, err)
 	}
 
+	// A restore asked to record the workspace as it was (Request.Before,
+	// a rewind's marker ID) writes that snapshot as a checkpoint first, so
+	// the restore can be undone by restoring it.
+	write(t, dir, "a.txt", "three\n")
+	write(t, dir, "e.txt", "eee\n")
+	before := "55555555555555555555555555555555"
+	req.Before = before
+	res, err = checkpointCall(t, w, req, "restore", checkpointOne)
+	req.Before = ""
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Restore.Before == nil || res.Restore.Before.ID != before || !res.Restore.Before.Changed || !commit.MatchString(res.Restore.Before.Commit) || res.Restore.Before.Store != "repository" {
+		t.Fatalf("before record: %+v", res.Restore.Before)
+	}
+	if got := git("rev-parse", "refs/warden/checkpoints/"+before); got != res.Restore.Before.Commit {
+		t.Fatalf("before ref names %s, record %s", got, res.Restore.Before.Commit)
+	}
+	if list := w.managed.Sandboxes[req.SandboxID].Checkpoints; len(list) != 4 || list[3].ID != before {
+		t.Fatalf("records after the recorded restore: %+v", list)
+	}
+	if read(t, dir, "a.txt") != "one\n" || read(t, dir, "e.txt") != "<"+"open "+filepath.Join(dir, "e.txt")+": no such file or directory>" {
+		t.Fatal("the recorded restore did not restore")
+	}
+	res, err = checkpointCall(t, w, req, "restore", before)
+	if err != nil || !reflect.DeepEqual(res.Restore.Restored, []string{"a.txt", "e.txt"}) || len(res.Restore.Removed) != 0 || res.Restore.Before != nil {
+		t.Fatalf("restoring the before checkpoint: %+v %v", res.Restore, err)
+	}
+	if read(t, dir, "a.txt") != "three\n" || read(t, dir, "e.txt") != "eee\n" {
+		t.Fatal("the workspace as it was before the restore did not come back")
+	}
+	req.Before = "not-an-id"
+	if _, err = checkpointCall(t, w, req, "restore", checkpointOne); err == nil {
+		t.Fatal("accepted a bad before ID")
+	}
+	req.Before = ""
+	if _, err = checkpointCall(t, w, req, "restore", checkpointOne); err != nil {
+		t.Fatal(err)
+	}
+
 	// A ref the agent moved is not restored from.
 	git("update-ref", "refs/warden/checkpoints/"+checkpointOne, head)
 	if _, err = checkpointCall(t, w, req, "restore", checkpointOne); err == nil || !strings.Contains(err.Error(), "altered") {

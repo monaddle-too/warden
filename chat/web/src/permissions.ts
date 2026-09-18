@@ -50,9 +50,30 @@ export function askedCommand(params: PermissionParams): string {
   return params.entry.text || String(params.input?.command ?? "");
 }
 
-/* What "Allow always" remembers, as the service labelled it. */
-export function alwaysLabel(params: PermissionParams): string {
-  return params.always ? "Allow always: " + params.always : "Allow always";
+/* The "Allow always" button for a scope: what it remembers, as the
+   service labelled it, and where — this chat or every chat of the
+   workspace. */
+export function alwaysLabel(
+  params: PermissionParams,
+  scope: "chat" | "workspace" = "chat",
+): string {
+  const where = scope === "workspace" ? "in this workspace" : "in this chat";
+  return params.always
+    ? `Always allow ${params.always} ${where}`
+    : `Allow always ${where}`;
+}
+
+/* The button's title: the rule it records and its reach. */
+export function alwaysHint(
+  params: PermissionParams,
+  scope: "chat" | "workspace" = "chat",
+): string {
+  const reach =
+    scope === "workspace"
+      ? "every chat of this workspace, present and future"
+      : "the rest of this chat";
+  const rule = params.rule ? ` — the rule ${params.rule}` : "";
+  return `Allow ${params.always || "this"} without asking in ${reach}${rule}`;
 }
 
 /* The mode a plan is approved into and its button. */

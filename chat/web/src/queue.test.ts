@@ -3,6 +3,7 @@ import {
   canEditAndResend,
   canWithdraw,
   editingScope,
+  heldHint,
   lastQueued,
   queueHeld,
   queueHint,
@@ -141,5 +142,18 @@ describe("edit and resend", () => {
     ).toBe(
       "1 file restored, 0 files removed; the agent forgets the messages when its session resumes; 1 queued message withdrawn",
     );
+  });
+});
+
+describe("the held queue and the composer's prefixes", () => {
+  it("says a ! command or # note runs beside a held queue and leaves it held", () => {
+    expect(heldHint(chat("interrupted"), "shell")).toBe(
+      "The command runs beside the held queue: 2 messages stay held until Send on a card or your next message",
+    );
+    expect(heldHint(chat("idle", [entries[5]]), "memory")).toBe(
+      "The note is added beside the held queue: 1 message stays held until Send on a card or your next message",
+    );
+    expect(heldHint(chat("running"), "shell")).toBe("");
+    expect(heldHint(chat("idle", [entries[0]]), "shell")).toBe("");
   });
 });

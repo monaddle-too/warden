@@ -31,6 +31,7 @@ func chatFixture(t *testing.T) (configPath string, calls func() []string) {
 		Approvals []map[string]any `json:"approvals"`
 		Conv      struct {
 			Entries []map[string]any `json:"entries"`
+			Turns   []map[string]any `json:"turns,omitempty"`
 		} `json:"conversation"`
 	}
 	chats := []*chat{{ID: "abc123", Title: "First", Provider: "codex", Status: "idle", Approvals: []map[string]any{{"id": "ap1", "method": "warden/ports/bind", "state": "pending", "params": map[string]any{"port": 8000}}}}}
@@ -69,8 +70,12 @@ func chatFixture(t *testing.T) (configPath string, calls func() []string) {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
 			mu.Lock()
+			// The message keeps its ID and opens a turn the reply belongs
+			// to, as the service records it; the turn is over at once.
 			mid, _ := body["id"].(string)
-			chats[0].Conv.Entries = append(chats[0].Conv.Entries, map[string]any{"id": "u-" + mid, "role": "user", "text": body["text"]}, map[string]any{"id": "a-" + mid, "role": "assistant", "text": "reply to " + body["text"].(string)})
+			turn := "t-" + mid
+			chats[0].Conv.Entries = append(chats[0].Conv.Entries, map[string]any{"id": mid, "role": "user", "text": body["text"], "delivery": "sent", "turnID": turn}, map[string]any{"id": "a-" + mid, "role": "assistant", "text": "reply to " + body["text"].(string), "turnID": turn})
+			chats[0].Conv.Turns = append(chats[0].Conv.Turns, map[string]any{"id": turn, "startedAt": 1, "endedAt": 2})
 			mu.Unlock()
 			w.Write([]byte(`{"ok":true}`))
 		case strings.Contains(path, "/approvals/"):
@@ -106,9 +111,16 @@ func TestChatListNewSendApprove(t *testing.T) {
 		}
 	}
 	// Flags may follow the positional arguments, as people type them.
+	// --wait follows the message's own turn: the earlier "hello world"
+	// replies are not reprinted.
 	code, out = runCLI("", false, "chat", "send", "1", "with wait", "--wait", "--config", configPath)
-	if code != 0 || !strings.Contains(out, "codex: reply to with wait") || !strings.Contains(out, "approval pending (warden/ports/bind)") {
+	if code != 0 || !strings.Contains(out, "you: with wait") || !strings.Contains(out, "codex: reply to with wait") || strings.Contains(out, "reply to hello") || !strings.Contains(out, "approval pending (warden/ports/bind)") {
 		t.Fatalf("send --wait (%d):\n%s", code, out)
+	}
+	// --wait-all follows the chat until it is idle.
+	code, out = runCLI("", false, "chat", "send", "1", "wait for all", "--wait-all", "--config", configPath)
+	if code != 0 || !strings.Contains(out, "codex: reply to wait for all") {
+		t.Fatalf("send --wait-all (%d):\n%s", code, out)
 	}
 	code, out = runCLI("", false, "chat", "approve", "--config", configPath, "abc123")
 	if code != 0 || !strings.Contains(out, "allowed warden/ports/bind") {
@@ -178,8 +190,78 @@ func TestNotifyCommandPassesTextAsArguments(t *testing.T) {
 func TestStartRejectsUnknownPopupsMode(t *testing.T) {
 	_, configPath := loginFixture(t)
 	code, out := runCLI("", false, "start", "--config", configPath, "--popups", "loud")
-	if code == 0 || !strings.Contains(out, "--popups must be") {
+	if code == 0 || !strings.Contains(out, "--popups must be auto, browser, notify, none or silent") {
 		t.Fatalf("(%d) %s", code, out)
+	}
+}
+
+// A review only the app can do opens the app on its chat under every
+// popups mode but silent, the default none included; an approval opens
+// nothing under none and is notified only in notify and browser modes.
+func TestPopupsOpenTheAppForReviews(t *testing.T) {
+	chat := &tui.Chat{ID: "abc123", Title: "Docs", Provider: "claude"}
+	review := tui.Review{ID: "pr1", Kind: "pull_request", Status: "pending", Title: "Fix the README", Repository: "owner/repo"}
+	approval := tui.Approval{ID: "ap1", Method: "warden/ports/bind", State: "pending", Params: map[string]any{"port": 8000, "title": "Counter"}}
+	for _, tc := range []struct {
+		mode                         string
+		detached                     bool
+		reviewOpens, reviewNotes     bool
+		approvalOpens, approvalNotes bool
+	}{
+		{popupsNone, false, true, false, false, false},
+		{popupsNone, true, true, false, false, false},
+		{popupsSilent, true, false, false, false, false},
+		{popupsNotify, false, true, true, false, true},
+		{popupsBrowser, false, true, true, true, true},
+		{popupsAuto, true, true, true, true, true},
+		{popupsAuto, false, true, true, false, true},
+	} {
+		var opened, notified []string
+		var log strings.Builder
+		p := &popupper{mode: resolvePopups(tc.mode, tc.detached), appURL: "http://127.0.0.1:18781/?launch=5#session=abc", log: &log,
+			notify: func(title, body string) error { notified = append(notified, title+": "+body); return nil },
+			open:   func(url string) error { opened = append(opened, url); return nil }}
+		p.review(chat, review)
+		if got := len(opened) == 1; got != tc.reviewOpens {
+			t.Fatalf("%s detached=%v: review opened %v (%v)", tc.mode, tc.detached, opened, log.String())
+		}
+		if tc.reviewOpens && (opened[0] != "http://127.0.0.1:18781/?launch=5&chat=abc123#session=abc" || !strings.Contains(log.String(), `review pending in "Docs": Claude proposed a pull request “Fix the README” to owner/repo; opening the app`)) {
+			t.Fatalf("%s: review opened %v, log %q", tc.mode, opened, log.String())
+		}
+		if got := len(notified) == 1; got != tc.reviewNotes {
+			t.Fatalf("%s detached=%v: review notified %v", tc.mode, tc.detached, notified)
+		}
+		if tc.reviewNotes && notified[0] != "Warden: Docs: Claude proposed a pull request “Fix the README” to owner/repo — review it in the app" {
+			t.Fatalf("%s: notification %q", tc.mode, notified[0])
+		}
+		opened, notified = nil, nil
+		p.approval(chat, approval)
+		if got := len(opened) == 1; got != tc.approvalOpens {
+			t.Fatalf("%s detached=%v: approval opened %v", tc.mode, tc.detached, opened)
+		}
+		if got := len(notified) == 1; got != tc.approvalNotes {
+			t.Fatalf("%s detached=%v: approval notified %v", tc.mode, tc.detached, notified)
+		}
+	}
+	// $BROWSER names the command openBrowser runs with the URL.
+	stub := filepath.Join(t.TempDir(), "browser.sh")
+	seen := filepath.Join(t.TempDir(), "opened")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s' \"$1\" > "+seen+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BROWSER", stub)
+	if err := openBrowser("http://127.0.0.1:1/?chat=abc123"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(seen); string(b) != "http://127.0.0.1:1/?chat=abc123" {
+		t.Fatalf("opened %q", b)
+	}
+	// Without a launch URL the review is logged, not opened.
+	var log strings.Builder
+	p := &popupper{mode: popupsNone, log: &log, notify: desktopNotify, open: func(string) error { t.Fatal("opened without a URL"); return nil }}
+	p.review(chat, review)
+	if !strings.Contains(log.String(), `cannot open the app on "Docs": no launch URL`) {
+		t.Fatalf("log: %q", log.String())
 	}
 }
 

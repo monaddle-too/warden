@@ -437,3 +437,86 @@ func TestValidationByRuntimeKind(t *testing.T) {
 		t.Fatal("long state accepted for the sbx kind")
 	}
 }
+
+// edge.bugReports (docs/bug-reporting-plan.md): off with the defaults, on
+// with the cloud values, its numbers defaulted and bounded.
+func TestEdgeBugReports(t *testing.T) {
+	c := Defaults("/tmp/w")
+	if b := c.Edge.BugReports; b.Enabled || b.RetentionDays != 90 || b.MaxPerHour != 30 || b.MaxPerDay != 500 {
+		t.Fatalf("defaults: %+v", b)
+	}
+	c, err := Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"edge":{"bugReports":{"enabled":true}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := c.Edge.BugReports; !b.Enabled || b.RetentionDays != 90 || b.MaxPerHour != 30 || b.MaxPerDay != 500 {
+		t.Fatalf("enabled with defaults: %+v", b)
+	}
+	c, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"edge":{"bugReports":{"enabled":true,"retentionDays":7,"maxPerHour":5,"maxPerDay":50}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := c.Edge.BugReports; !b.Enabled || b.RetentionDays != 7 || b.MaxPerHour != 5 || b.MaxPerDay != 50 {
+		t.Fatalf("overrides: %+v", b)
+	}
+	for _, bad := range []string{
+		`{"version":1,"paths":{"state":"/tmp/w"},"edge":{"bugReports":{"retentionDays":-1}}}`,
+		`{"version":1,"paths":{"state":"/tmp/w"},"edge":{"bugReports":{"retentionDays":4000}}}`,
+		`{"version":1,"paths":{"state":"/tmp/w"},"edge":{"bugReports":{"maxPerHour":-3}}}`,
+		`{"version":1,"paths":{"state":"/tmp/w"},"edge":{"bugReports":{"maxPerDay":-3}}}`,
+		`{"version":1,"paths":{"state":"/tmp/w"},"edge":{"bogus":true}}`,
+	} {
+		if _, err := Parse([]byte(bad)); err == nil {
+			t.Fatalf("accepted: %s", bad)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "warden.json")
+	if err := Write(path, Defaults("/tmp/w")); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), `"bugReports": {`) || !strings.Contains(string(raw), `"enabled": false`) {
+		t.Fatalf("written file lacks the edge section: %s", raw)
+	}
+}
+
+// Bug reporting (docs/bug-reporting-plan.md): off by default with the
+// cloud receiver as the URL, an opt-in that survives a round trip, and a
+// URL that is https or a loopback http.
+func TestReportingDefaultsOptInAndURL(t *testing.T) {
+	c := Defaults("/tmp/w")
+	if c.Reporting.Enabled || c.Reporting.URL != DefaultReportingURL {
+		t.Fatalf("%+v", c.Reporting)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "warden.json")
+	c.Reporting.Enabled = true
+	if err := Write(path, c); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path, "")
+	if err != nil || !loaded.Reporting.Enabled || loaded.Reporting.URL != DefaultReportingURL {
+		t.Fatalf("%+v %v", loaded.Reporting, err)
+	}
+	// A file without the section reads as off with the default URL.
+	old, err := Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"}}`))
+	if err != nil || old.Reporting.Enabled || old.Reporting.URL != DefaultReportingURL {
+		t.Fatalf("%+v %v", old.Reporting, err)
+	}
+	for url, ok := range map[string]bool{
+		"https://cloud.warden.monaddle.com/api/bug-reports": true,
+		"http://127.0.0.1:9999/api/bug-reports":             true,
+		"http://[::1]:9999/api/bug-reports":                 true,
+		"http://example.com/api/bug-reports":                false,
+		"http://localhost:9999/x":                           false,
+		"ftp://127.0.0.1/x":                                 false,
+		"cloud.warden.monaddle.com/api/bug-reports":         false,
+		"": false,
+	} {
+		c := Defaults("/tmp/w")
+		c.Reporting.URL = url
+		if err := c.Validate(); (err == nil) != ok {
+			t.Errorf("reporting.url %q: %v", url, err)
+		}
+	}
+}

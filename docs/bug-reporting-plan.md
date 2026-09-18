@@ -192,25 +192,25 @@ no attachment names; `context` carries ids only.
 ## Steps
 
 Server track (`.local/warden-bugs-server`):
-1. Config + chart values + `warden.config` rendering; chart goldens.
-2. Edge receiver (`POST /api/bug-reports`), storage, limits, retention; tests.
-3. Admin routes + console page; tests.
-4. Merge to main; deploy to GKE (`gke-deploy`); `curl` a sample report
+1. ✓ Config + chart values + `warden.config` rendering; chart goldens.
+2. ✓ Edge receiver (`POST /api/bug-reports`), storage, limits, retention; tests.
+3. ✓ Admin routes + console page; tests.
+4. ✓ Merge to main; deploy to GKE (`gke-deploy`); `curl` a sample report
    (`docs/bug-report-sample.json`) at the cloud URL and see it in the
    console.
 
 Client track (`.local/warden-bugs-client`):
-1. `bugreport` package: schema, gather, redact, capture, send; tests
+1. [x] `bugreport` package: schema, gather, redact, capture, send; tests
    (redaction is the one to be thorough about).
-2. Config + `warden install` question/flag + `warden bugs`; tests.
-3. Present: the page and the loopback server; a test drives it with an
+2. [x] Config + `warden install` question/flag + `warden bugs`; tests.
+3. [x] Present: the page and the loopback server; a test drives it with an
    HTTP client.
-4. Triggers: installer, launcher (service exit + pending watcher),
+4. [x] Triggers: installer, launcher (service exit + pending watcher),
    service panics; `/test bugreporting` route; tests with a fake state dir.
-5. `/bug` route + composer + TUI; `warden bugs send/test`; tests.
-6. Merge to main; `deploy-local`; end to end against the cloud receiver
-   once the server track is live (`/test bugreporting` → page → Send →
-   the report in the cloud admin console).
+5. [x] `/bug` route + composer + TUI; `warden bugs send/test`; tests.
+6. [x] Merge to main; `deploy-local`; [ ] end to end against the cloud
+   receiver (`/test bugreporting` → page → Send → the report in the cloud
+   admin console) — the owner's run.
 
 ## Key decisions
 
@@ -227,7 +227,118 @@ Client track (`.local/warden-bugs-client`):
    write.
 5. `kind: error` reports are drafted only when reporting is enabled;
    disabled means no files, no page, nothing.
+6. Server: a report whose `id` is not 32 hex is stored under the
+   server-assigned id *and* its `id` field is rewritten to it, so the file
+   name and the document always agree. Unknown `before` cursors on the
+   list route are `400`, not an empty page. The list route answers a bare
+   JSON array (the contract's "list of"); `DELETE` answers `204`. The
+   source address behind the ingress is `X-Forwarded-For`'s **last** entry,
+   taken only when the connection's peer is a private or loopback address
+   (ingress-nginx on GKE runs without `use-forwarded-headers`, so it
+   replaces the header with what it saw; a public peer's header is
+   ignored). The daily cap is a sliding 24 h over the stored files (the
+   index is rebuilt from disk at start, so a restart does not reset it).
+   The admin list/get/delete routes answer `404` where the receiver is
+   disabled, and the console hides the section on that.
+7. (client) A recovered panic is captured and then raised again, so a
+   process fails exactly as before (net/http logs a handler's, a worker
+   op's or run goroutine's takes the service down); only the deliberate
+   `/test bugreporting` panic is kept in the process. The launcher skips
+   its `service-exit` draft when that service drafted a `panic` within
+   the last 30 s: the panic draft has the stack, the exit would only
+   repeat it.
+8. (client) "Was the question asked?" is the presence of a `reporting`
+   section in `warden.json` (install always writes one, `warden bugs
+   on|off` too), so a re-run keeps the answer without another record;
+   without a terminal and without the flag the answer is no, printed with
+   the way to change it.
+9. (client) The chat's `/bug` notice is a line in the composer (not a
+   transcript entry) and the TUI's status notice; the route answers
+   `{drafted, id, notice}` so both surfaces show the same words.
 
 ## Progress log
 
 - 2026-09-18: plan written; tracks start.
+- 2026-09-18 (server track, `feat/bug-reports-server`): steps 1–3 done.
+  Config `edge.bugReports` + chart values + `warden.config` rendering
+  (goldens updated, `helm_test.go` checks both states; GKE values enable
+  it); the receiver `chat/internal/edge/bugreports.go` (validation,
+  storage, per-IP hour / global day limits, retention + 10 000 cap, the
+  owner's list/get/delete) with `bugreports_test.go` against
+  `docs/bug-report-sample.json`; the console section `BugReports.tsx` +
+  `bugreports.ts` (vitest). Live-checked on a cloned home
+  (`.local/clone-warden-home.sh bugs 18820`, receiver enabled by hand):
+  `curl` of the sample → 202, resend → same id/time, 300 KB → 413,
+  unknown kind → 400; the section listed both reports, opened the error
+  one (stack, two log files, environment, raw JSON); `DELETE` through the
+  edge → 204 then 404. Left: merge, GKE deploy, the cloud `curl` check.
+- 2026-09-18 (server track landed): merged to main as **c86ae18**
+  (fast-forward; conflicts only in the feature map's Admin console row,
+  unioned with round 2 A's spend section). Deployed to GKE as image
+  `v0.1.0-alpha.12-326-gc86ae18` (helm revision 23); the rendered
+  `warden.json` on the cluster has `edge.bugReports.enabled: true`. At
+  `https://cloud.warden.monaddle.com/api/bug-reports`: the sample → `202
+  {"id":"3f2a…5e6f","received":"2026-09-18T13:40:23Z"}`, the same body
+  again → `202` with the same id and time (one file on the edge PVC,
+  `bug-reports/2026-09-18/<id>.json`, mode 0600, `source` a 64-hex hash),
+  300 KB → `413`, `{"schema":1}` → `400 kind is required`, `GET` → `405`,
+  `/api/admin/bug-reports` signed out → `403`. The cloud admin console
+  (owner session) lists the report and opens it. Server step 4 done.
+  Finding: ingress-nginx runs with the default `externalTrafficPolicy:
+  Cluster`, so the address it forwards is often a node-internal
+  `10.128.x.x` (kube-proxy SNAT) rather than the client's; the per-IP
+  hourly limit and the source hash are therefore coarse on GKE. The fix
+  is `--set controller.service.externalTrafficPolicy=Local` on the
+  ingress-nginx release in `scripts/k8s-gke.sh` (`up`); not applied, an
+  operator decision.
+- 2026-09-18 (client, `.local/warden-bugs-client`, `feat/bug-reports-client`):
+  steps 1–5 implemented and unit-tested. `chat/internal/bugreport` (schema,
+  gatherers, `Redact` with the table test, `Capture` → pending only while
+  `reporting.enabled` — re-read from `warden.json` at each capture so
+  `warden bugs on` reaches running services —, `Recover`/`Trap`/`Handler`
+  guards, `Send` with the contract's 202/404/413/429/400 mapping, `Present`
+  with the embedded `page.html`); `config.Reporting`; `warden install`
+  question/flag/re-run/summary and the install-step trigger; `warden bugs
+  status|on|off|send|test|pending`; the launcher's 3 s watch over the
+  pending directory and the service-exit trigger; guards in the chat
+  (handler, engine loop, run goroutines, sharing delivery), runner
+  (connection/op, preview server), policy (control loop, both gateways)
+  and edge (handler, run loop); `POST chats/{id}/bug` and `POST bug-test`
+  (owner-only at the edge); composer `/bug`, `/test bugreporting` with a
+  notice line; TUI `/bug`, `/test bugreporting`, `/help`. Verified: `go
+  test ./...` (kube alone), `pnpm build && pnpm test`.
+- 2026-09-18 (client, live on a cloned home `~/.warden-bugs` with a
+  loopback receiver answering `202 {"id"}`): `warden install
+  --bug-reports=no` writes `reporting.enabled=false`; on a pty the question
+  is asked once, `y` turns it on, a re-run keeps it without asking;
+  `warden bugs status|on|off`, a non-loopback http URL refused. `/test
+  bugreporting` from the web composer → notice in the composer → the
+  detached launcher presented the page (URL in `warden.log`, browser
+  opened, desktop notified): every section present; Send with an edited
+  description → the receiver logged the JSON (2.5 KiB, `<email>`,
+  `token=<token>`, home as `~`, both log tails) and the page showed the
+  id; a second one with Don't send → draft deleted, nothing received.
+  `/bug` and `/test bugreporting` from the TUI → drafts with ids only
+  (no title, no message), presented one after the other. `kill -9` of
+  the runner → `service-exit` draft (signal: killed, the runner's log
+  tail + the launcher's) presented before the launcher exited; a seeded
+  log line came out as `contact <email>, Authorization: <token>, bare
+  <secret>` (the owner capability). `warden bugs test` with Warden
+  stopped → in-process; SIGTERM → "interrupted; the draft stays";
+  `warden bugs pending` listed and re-offered it → sent. Home torn down.
+- 2026-09-18 (client track landed): merged to main as **94490a8**
+  (fast-forward; two merges of main into the branch: the server track +
+  parity round 2 / item 16, then reviews-open-the-app; conflicts in
+  `config.go`/`config_test.go` (both sections), `chats/http.go` (both
+  cases), `edge.go` `ownerOnly`, the TUI command table and fake server,
+  the feature map's rows and the plan's log). Verified on the merged
+  tree: vet, `go test` every package (kube alone), `pnpm build` + 250
+  web tests, the three chart goldens. Deployed to `~/.warden/release`
+  as `v0.0.0-dev.94490a891274` and `warden bugs on` run there (the
+  owner's `warden.json` had no `reporting`; URL the cloud default);
+  smoke: a Claude chat ran `uname -a` in a sandbox. Client step 6 is
+  done but for the cloud end to end, which the owner runs: `warden bugs
+  test` (or `/test bugreporting` in the composer) → the review page →
+  Send report → the id, then the report under Bug reports in the cloud
+  admin console.
+- 2026-09-18: end to end on the owner's Mac against the cloud: `warden bugs test` on `~/.warden/release` (94490a8) → draft dcd02735… (36 KB, no e-mails or home paths left) → review page from the launcher → Send → 202 from cloud.warden.monaddle.com, draft cleared, resend of the id idempotent (202). Feature complete; open: ingress externalTrafficPolicy for per-IP limits.

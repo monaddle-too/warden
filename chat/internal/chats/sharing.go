@@ -183,6 +183,9 @@ func (e *Engine) sharingTool(ctx context.Context, c *Chat, client *agent.Client,
 		return client.Reply(f.ID, sharingToolResult(result, err))
 	}
 	id := agent.String(result["request_id"])
+	// The request waits for the person in the app: the chat records it
+	// while it does (reviews.go), for the clients that cannot answer it.
+	e.recordReview(c.ID, op, result)
 	// The request is already durable; this goroutine is just its live delivery path.
 	go func() {
 		ticker := time.NewTicker(time.Second)
@@ -197,6 +200,7 @@ func (e *Engine) sharingTool(ctx context.Context, c *Chat, client *agent.Client,
 					active.sharingResults = append(active.sharingResults, id)
 				}
 				e.mu.Unlock()
+				e.dropReview(id)
 				_ = client.Reply(f.ID, sharingToolResult(result, nil))
 				return
 			}
@@ -215,6 +219,7 @@ func (e *Engine) sharingTool(ctx context.Context, c *Chat, client *agent.Client,
 			next, err := e.sharingCall(ctx, pollOp, map[string]any{"id": id, "chatID": c.ID, "sandboxID": c.SandboxID})
 			if err == nil {
 				result = next
+				e.recordReview(c.ID, pollOp, result)
 			}
 		}
 	}()
@@ -224,13 +229,22 @@ func (e *Engine) sharingTool(ctx context.Context, c *Chat, client *agent.Client,
 // Once the old run is gone, resume with a durable, deduplicated message instead
 // of replaying a stale tool RPC ID. Never automatically retry the original task.
 func (e *Engine) sharingDelivery(ctx context.Context) {
+	// The reviews recorded on the chats are matched to what waits in the
+	// policy service at the start (a restart lost the runs' polls) and
+	// every reconcileEvery ticks after (a review settled in the app while
+	// no run polled it, and its result acknowledged before this loop saw
+	// it, would otherwise stay).
+	e.reconcileReviews(ctx)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	for {
+	for tick := 1; ; tick++ {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+		if tick%reconcileEvery == 0 {
+			e.reconcileReviews(ctx)
 		}
 		result, err := e.sharingCall(ctx, "undelivered", map[string]any{})
 		if err != nil {
@@ -242,6 +256,7 @@ func (e *Engine) sharingDelivery(ctx context.Context) {
 			if len(id) != 64 {
 				continue
 			}
+			e.dropReview(id) // settled, whichever chat holds it and whatever its run is doing
 			chatID := agent.String(r["chatID"])
 			e.mu.Lock()
 			active := e.active[chatID] != nil

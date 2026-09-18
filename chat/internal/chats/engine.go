@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 	"warden/chat/internal/agent"
+	"warden/chat/internal/bugreport"
 	cv "warden/chat/internal/conversation"
 	"warden/chat/internal/sandbox"
 	"warden/chat/internal/transport"
@@ -99,6 +100,8 @@ type Engine struct {
 	// mode as a chat setting, the 1M-context model variants as choices.
 	AllowFastMode    bool
 	AllowLongContext bool
+	// Bugs drafts this service's bug reports (bugs.go); nil reports nothing.
+	Bugs *bugreport.Capturer
 	// Now is the clock (tests replace it); nil means time.Now.
 	Now func() time.Time
 	// NormalizeImage replaces the imageguard subprocess (images.go) in
@@ -212,10 +215,11 @@ func (e *Engine) Wake() {
 }
 func (e *Engine) Serve(ctx context.Context) {
 	defer close(e.done)
+	defer e.Bugs.Recover("engine serve loop")
 	if e.PolicyAddress != "" {
 		deliveryCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
-		go func() { defer close(done); e.sharingDelivery(deliveryCtx) }()
+		go func() { defer close(done); defer e.Bugs.Recover("sharing delivery"); e.sharingDelivery(deliveryCtx) }()
 		defer func() { cancel(); <-done }()
 	}
 	running := map[string]string{}
@@ -255,7 +259,7 @@ func (e *Engine) Serve(ctx context.Context) {
 			id := c.ID
 			running[id] = c.SandboxID
 			workers.Add(1)
-			go func() { defer workers.Done(); e.run(ctx, id); finished <- id }()
+			go func() { defer workers.Done(); defer e.Bugs.Recover("chat run " + id); e.run(ctx, id); finished <- id }()
 		}
 		select {
 		case <-ctx.Done():
@@ -514,14 +518,20 @@ func (e *Engine) View() View {
 
 // state is the store with typing indicators and each chat's spend filled
 // in, and the people's instructions left out (each person reads their
-// own through me/instructions).
+// own through me/instructions); a kept rewind tail becomes the marker it
+// can undo (rewind.go).
 func (e *Engine) state() State {
 	st := e.Store.Snapshot()
 	st.Instructions = nil
 	now := float64(e.now().UnixNano()) / 1e9
 	for _, c := range st.Chats {
+		c.Permissions = nil // chats/{id}/permissions serves the history
 		if c.Status == "queued" || c.Status == "running" {
 			c.Startup = e.startupOf(c.ID)
+		}
+		if c.RewoundTail != nil {
+			c.UndoRewind = c.RewoundTail.MarkerID
+			c.RewoundTail = nil
 		}
 		spend := spendOf(c.Conversation.Turns)
 		c.Spend = &spend
@@ -1368,6 +1378,7 @@ func (e *Engine) beginAgentTurn(id, turn string) error {
 		c.Status = "running"
 		c.Error = ""
 		c.Conversation.Begin(turn, e.at())
+		dropRewoundTail(c) // a turn started: the last rewind is final (rewind.go)
 		return nil
 	})
 }
@@ -1403,6 +1414,7 @@ func (e *Engine) resume(id string) (*cv.Entry, error) {
 		}
 		c.Status = "running"
 		c.Error = ""
+		dropRewoundTail(c) // a turn starts: the last rewind is final (rewind.go)
 		return nil
 	})
 	return message, err
@@ -1426,6 +1438,9 @@ func (e *Engine) attempt(id, turn string) (*cv.Entry, error) {
 				message = &copy
 				break
 			}
+		}
+		if message != nil {
+			dropRewoundTail(c) // a turn starts: the last rewind is final (rewind.go)
 		}
 		return nil
 	})
@@ -1585,17 +1600,30 @@ func (e *Engine) request(ctx context.Context, c *Chat, client *agent.Client, f a
 		// owner does from a card that shows the call as its transcript
 		// card and, for a plan, the plan (permissions.go).
 		tool, input := agent.String(f.Params["tool"]), agent.Map(f.Params["input"])
-		decision := ""
+		var verdict *Verdict
 		err := e.Store.update(func(st *State) error {
 			chat := st.chat(c.ID)
-			if decision = chat.decide(tool, input); decision != "" {
+			entry := permissionEntry(f.Params)
+			if verdict = st.decide(chat, tool, input); verdict != nil {
+				// Answered by a rule or the mode: history only (rules.go).
+				ev := PermissionEvent{At: e.at(), Tool: tool, Summary: askSummary(tool, input, entry), Decision: "allow", How: "auto"}
+				if verdict.Decision == "decline" {
+					ev.Decision, ev.Message = "deny", verdict.Message
+				}
+				if verdict.Rule != nil {
+					rule := verdict.Rule.Rule
+					ev.How, ev.Rule, ev.Scope = "rule", &rule, verdict.Rule.Scope
+				}
+				chat.record(ev)
 				return nil
 			}
 			params := map[string]any{"tool": tool, "input": input}
 			if tool != "ExitPlanMode" {
-				params["always"] = RuleFor(tool, input).Label() // a plan is never remembered
+				// What "Allow always" would remember; a plan never is.
+				pattern := RuleFor(tool, input)
+				params["rule"], params["always"] = pattern, RuleLabel(pattern)
 			}
-			if entry := permissionEntry(f.Params); entry != nil {
+			if entry != nil {
 				params["entry"] = entry
 			}
 			for _, k := range []string{"description", "plan"} {
@@ -1606,10 +1634,14 @@ func (e *Engine) request(ctx context.Context, c *Chat, client *agent.Client, f a
 			chat.Approvals = append(chat.Approvals, Approval{ID: cv.ID(), RunID: c.RunID, RPCID: append(json.RawMessage(nil), f.ID...), Method: f.Method, Params: params, State: "pending"})
 			return nil
 		})
-		if err != nil || decision == "" {
+		if err != nil || verdict == nil {
 			return err
 		}
-		return client.Reply(f.ID, map[string]any{"decision": decision})
+		reply := map[string]any{"decision": verdict.Decision}
+		if verdict.Message != "" {
+			reply["message"] = verdict.Message
+		}
+		return client.Reply(f.ID, reply)
 	default:
 		return client.Send(agent.Frame{ID: f.ID, Error: &agent.RPCError{Code: -32601, Message: "Unsupported Warden agent request"}})
 	}
@@ -1626,13 +1658,15 @@ func (e *Engine) ResolveAs(chatID, approvalID string, allow bool, answers map[st
 
 // Answer is what the person says to an approval. Allow and Answers (a
 // question's) serve every kind; a tool permission ask also takes Always
-// (allow, and remember the call's rule for the chat), Message (why it is
-// denied, read by the model) and, for a plan, Mode (the permission mode
-// the chat moves to on approval: auto or ask).
+// (allow, and remember the call's rule for the chat, or for every chat of
+// the workspace when Scope is "workspace"), Message (why it is denied,
+// read by the model) and, for a plan, Mode (the permission mode the chat
+// moves to on approval: auto or ask).
 type Answer struct {
 	Allow   bool
 	Answers map[string][]string
 	Always  bool
+	Scope   string
 	Message string
 	Mode    string
 }
@@ -1707,20 +1741,38 @@ func (e *Engine) Answer(chatID, approvalID string, answer Answer, actor cv.Actor
 		}
 		err = e.Store.update(func(st *State) error {
 			c := st.chat(chatID)
+			entry := permissionEntry(approval.Params)
+			ev := PermissionEvent{At: e.at(), Tool: tool, Summary: askSummary(tool, input, entry), Decision: "deny", How: "card", By: &actor, Message: answer.Message}
+			if allow {
+				ev.Decision, ev.Message = "allow", ""
+			}
 			switch {
 			case plan && allow:
 				mode := agent.String(decision["mode"])
 				c.Mode = mode
 				c.Conversation.Entries = append(c.Conversation.Entries, cv.NewEntry("notice", "Plan approved — "+strings.TrimPrefix(modeNotice(mode), "Permission mode: ")))
 			case answer.Always && !plan:
-				rule := RuleFor(tool, input)
-				for _, r := range c.Allowed {
-					if r == rule {
-						return nil
+				// The call's rule, remembered for this chat or, at the
+				// workspace scope, for every chat of the sandbox (rules.go).
+				rule := Rule{Kind: RuleAllow, Pattern: RuleFor(tool, input)}.stamp("always", actor, e.at())
+				ev.Rule, ev.Scope = &rule, "chat"
+				if answer.Scope == "workspace" {
+					rule.ChatID = chatID
+					ev.Scope = "workspace"
+					if st.Environments == nil {
+						st.Environments = map[string]*EnvironmentRecord{}
 					}
+					env := st.Environments[c.SandboxID]
+					if env == nil {
+						env = &EnvironmentRecord{}
+						st.Environments[c.SandboxID] = env
+					}
+					env.Rules, _ = addRule(env.Rules, rule)
+				} else {
+					c.Rules, _ = addRule(c.Rules, rule)
 				}
-				c.Allowed = append(c.Allowed, rule)
 			}
+			c.record(ev)
 			return nil
 		})
 		if err != nil {

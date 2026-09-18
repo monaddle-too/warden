@@ -92,10 +92,15 @@ export const ToolSummary = memo(function ToolSummary({
   const counts = useMemo(() => {
     if (tool.kind === "task") {
       const parts: string[] = [];
-      const { steps: calls } = subagentProgress(steps ?? []);
+      const { steps: calls, step } = subagentProgress(
+        steps ?? [],
+        tool.progress,
+      );
       if (calls) parts.push(`${calls} tool call${calls === 1 ? "" : "s"}`);
       const elapsed = taskElapsed(entry, now);
       if (elapsed >= 1) parts.push(formatElapsed(elapsed));
+      // What the agent says the subagent is doing, while it runs.
+      if (running && step) parts.push(step);
       return parts.join(" · ");
     }
     if (tool.kind === "todo") return todoProgress(todoItems(tool));
@@ -308,8 +313,7 @@ export const ToolBody = memo(function ToolBody({
       )}
       {tool.kind === "command" && running && tool.background && (
         <p className="tool-meta muted">
-          Running in the background; the output arrives when the agent
-          reads it.
+          Running in the background; the output arrives when the agent reads it.
         </p>
       )}
       {tool.kind === "command" && !running && !entry.detail && (

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"warden/chat/internal/bugreport"
 	"warden/chat/internal/release"
 	"warden/chat/internal/transport"
 )
@@ -1391,6 +1392,7 @@ func (s *ControlServer) serve() {
 		go func() {
 			defer s.wg.Done()
 			defer func() { <-s.slots }()
+			defer bugreport.Recover("policy control connection")
 			s.handle(conn)
 		}()
 	}

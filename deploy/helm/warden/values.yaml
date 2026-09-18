@@ -163,6 +163,21 @@ edge:
   service:
     type: ClusterIP
     annotations: {}
+  # The bug-report receiver (docs/bug-reporting-plan.md): POST
+  # /api/bug-reports, unauthenticated, answered by the edge itself and
+  # stored on its state PVC under bug-reports/<date>/<id>.json; the owner
+  # reads them in the admin console. Off by default: only the one Warden
+  # that other installs report to turns it on (edge.bugReports in
+  # warden.json).
+  bugReports:
+    enabled: false
+    # Days a report is kept; the oldest go first, and never more than
+    # 10 000 files.
+    retentionDays: 90
+    # Reports accepted per source IP per hour and overall per day; beyond
+    # them the edge answers 429.
+    maxPerHour: 30
+    maxPerDay: 500
 
 # The policy service's shared gateway (plan decision 4): one listener behind
 # the warden-gateway Service; sandbox pods with the egress label may reach

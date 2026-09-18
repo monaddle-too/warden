@@ -36,6 +36,16 @@ export type Entry = {
      answered from a copy of the agent's session (`detail`), its cost,
      never sent to the session. */
   aside?: Aside;
+  /* What a rewind marker records: the message the chat went back to
+     before, the scope, how the session followed and the checkpoint of
+     the workspace as it was before a code rewind (`before`; rewind.ts). */
+  rewind?: RewindMark;
+};
+export type RewindMark = {
+  messageID: string;
+  what: "code" | "conversation" | "both";
+  conversation?: "rewound" | "pending" | "fresh" | "";
+  before?: string;
 };
 export type Fork = {
   chatID: string;
@@ -85,7 +95,8 @@ export type Context = {
    `query` a search's pattern or a fetch's URL, `input` the call's input
    where the card shows it as given (a todo list's items), `background`
    a command or subagent the agent runs in the background, whose card
-   stays running until the task reports back. */
+   stays running until the task reports back, `progress` a running
+   subagent's own account of its work as the agent reports it. */
 export type Tool = {
   kind: ToolKind;
   name?: string;
@@ -99,6 +110,7 @@ export type Tool = {
   /* What a read of an image, a PDF or a notebook carried (conversation
      Read); absent for a text read. */
   read?: ToolRead;
+  progress?: Progress;
 };
 export type ToolRead = {
   kind: "image" | "pdf" | "notebook";
@@ -110,6 +122,16 @@ export type ToolRead = {
   bytes?: number;
   pages?: number;
   cells?: { type: string; language?: string; text: string }[];
+};
+/* What a running subagent has done so far (conversation.Progress): what
+   it is doing now in the agent's words, the tool calls it made, the tool
+   it used last, its time and tokens. */
+export type Progress = {
+  activity?: string;
+  toolCalls: number;
+  lastTool?: string;
+  durationMS?: number;
+  tokens?: number;
 };
 export type ToolKind =
   | "command"
@@ -167,9 +189,51 @@ export type PermissionParams = {
   tool: string;
   input?: Record<string, unknown>;
   entry?: Entry;
+  /* What "Allow always" remembers: the label and the rule pattern. */
   always?: string;
+  rule?: string;
   description?: string;
   plan?: string;
+};
+
+/* A permission rule (chats/rules.go): allow, deny or ask by a tool
+   pattern in Claude Code's syntax (Bash(git *), Edit(src/**), Read,
+   WebFetch(domain:x), mcp__warden__*). origin is "editor" for one typed
+   into the rules editor, "always" for an "Allow always" answer (chatID
+   that chat when the rule is the workspace's); by is who added it. */
+export type Rule = {
+  id: string;
+  kind: "allow" | "deny" | "ask";
+  pattern: string;
+  origin?: string;
+  chatID?: string;
+  by?: Actor;
+  at?: number;
+};
+export type Actor = { principalID: string; email?: string; name?: string };
+
+/* One decision on a tool ask (the chat's permission history): how it was
+   decided — "auto" by the mode, "rule" by a rule (rule, scope), "card" by
+   the person (by), with the rule an "Allow always" made and a denial's
+   message. */
+export type PermissionEvent = {
+  id: string;
+  at: number;
+  tool: string;
+  summary: string;
+  decision: "allow" | "deny";
+  how: "auto" | "rule" | "card";
+  rule?: Rule;
+  scope?: "chat" | "workspace";
+  by?: Actor;
+  message?: string;
+};
+
+/* What environments/{id}/rules and chats/{id}/rules answer. */
+export type RulesView = {
+  workspace: string;
+  rules: Rule[];
+  chats: { id: string; title: string; rules: Rule[] }[];
 };
 export type Approval = {
   id: string;
@@ -191,11 +255,11 @@ export type ResourceLimits = {
 export type Chat = {
   provider?: string;
   model?: string;
-  /* A Claude chat's permission mode (auto when absent) and its
-     allow-always rules: the tool (Bash, edit for any file tool, or a
-     tool's name) and, for Bash, the command prefix. */
+  /* A Claude chat's permission mode (auto when absent) and its own
+     permission rules ("Allow always" answers kept to this chat, and rules
+     added to it); the workspace's are on Environment.rules. */
   mode?: string;
-  allowed?: { tool: string; command?: string }[];
+  rules?: Rule[];
   /* A Claude chat's session settings (chats/settings.go): the thinking
      budget ("" the agent's default, "off", or tokens), the effort level
      ("" the model's default) and fast mode. */
@@ -242,6 +306,9 @@ export type Chat = {
   /* The chat was forked from another and its first run still has to copy
      the source's session. */
   forkSession?: boolean;
+  /* The rewind marker whose conversation rewind can still be undone (the
+     removed transcript is kept until the next turn; rewind.ts). */
+  undoRewind?: string;
   /* How the chat got its title: absent while it still has the default one
      and waits to be named from its first exchange, "auto" once it was,
      "manual" once a person named it (chats/title.go). */
@@ -450,6 +517,8 @@ export type Environment = {
     access_summary?: string;
   }[];
   ports: { id: string; port: number; title: string; url: string }[];
+  /* The workspace's permission rules, applied to every chat of it. */
+  rules?: Rule[];
   deleted: boolean;
   archived: boolean;
   /* Set on a workspace created as a copy of another (a fork with "copy

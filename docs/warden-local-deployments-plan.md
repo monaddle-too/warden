@@ -838,6 +838,34 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   scrolling, follow-until-idle and submit semantics against a fake chat
   service, and the launcher subcommands against a fake endpoint.
   Native Codex remote-TUI relay and subagent nesting remain future work.
+- 2026-09-18: approval popups default to `none`: a question asked in the
+  terminal client opened the browser although the client showed and could
+  answer it; approvals now wait in whichever client is open (`--popups
+  notify|browser|auto` opt back in).
+- 2026-09-18 (later): reviews only the app can do open the app. A pull
+  request proposal, suggested document edits and a document selection or
+  creation were invisible outside the web (they are not approvals; the
+  engine polls the policy service for them). The chat now records them as
+  `chats[].reviews` (`chats/reviews.go`: added when the submission waits,
+  dropped when the poll or the delivery loop sees them settled, matched to
+  `pr_state`/`doc_state`/`state` when the delivery loop starts and every
+  30 s). The launcher opens the app on the chat for a review under every
+  `--popups` value, `none` included — there is nowhere else to do it — and
+  the new `silent` value suppresses even that; approvals keep the 2026-09-18
+  rule. The terminal client shows a review card above the approvals,
+  `/review [N]` opens the app on the chat (URL shown when it cannot), the
+  status line, title and bell count reviews with approvals, `send --wait`
+  announces them. Decision: one knob (`--popups`), no separate flag for
+  reviews. The web's polling of the three state routes is unchanged.
+  Landed on main as 971eee0 (dd4fafc, 842d7bf: `openBrowser` honours
+  `$BROWSER`). Live on a cloned home: two document proposals still pending
+  in the policy database reappeared as reviews at start and the launcher
+  opened the app on each (through a `$BROWSER` stub); the TUI card, status
+  count, title, `/review` and `send --wait` line verified under a pty; a
+  `doc_resolve` rejection and a `resolve` denial each removed the review at
+  once. Not verified live: the pull request path (the owner's GitHub
+  sign-in had expired; the engine test covers submit, settle and
+  reconcile). Not deployed to `~/.warden`.
 - 2026-09-16: approval popups. The launcher watches the event stream and
   surfaces each newly pending approval once (desktop notification; browser
   opened on the chat in `--popups browser`, the default when detached); the

@@ -24,6 +24,7 @@ import { resourcesLabel } from "./Approvals";
 import { SizeSelect, sameSize } from "./SizeSelect";
 import type { DocumentProposal } from "./DocumentReview";
 import { MemorySection } from "./MemorySection";
+import { PermissionsSection } from "./PermissionsSection";
 import { chatSpend, spendLine, spendSummary, workspaceSpend } from "../spend";
 
 const remaining = (value: number | null) => {
@@ -633,6 +634,15 @@ export function WorkspacePanel({
         </ul>
       </section>
       <MemorySection chat={chat} disabled={!!ws?.deleted} />
+      {chat.provider === "claude" && (
+        <PermissionsSection
+          chat={chat}
+          workspace={ws}
+          siblings={siblings}
+          disabled={!!ws?.deleted}
+          onChanged={onChanged}
+        />
+      )}
       {ws && (
         <section className="workspace-section">
           <details

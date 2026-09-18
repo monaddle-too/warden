@@ -16,9 +16,11 @@ import {
   ArrowUp,
   Bot,
   Brain,
+  Bug,
   Cpu,
   Download,
   Eraser,
+  FlaskConical,
   GitFork,
   MessageCircleQuestion,
   Receipt,
@@ -45,19 +47,23 @@ import {
 import {
   api,
   askAside,
+  editQueued as editQueuedMessage,
   me,
   newID,
   downloadFile,
   rewindChat,
   sendQueued,
+  undoRewind,
   uploadAttachment,
   withdrawMessage,
 } from "../api";
 import {
   agentCommandNamed,
   agentHint,
+  bugReport,
   commandItems,
   exactCommand,
+  isBugTest,
   mentionFor,
   prefixed,
   quoteCommand,
@@ -105,6 +111,7 @@ import {
   canEditAndResend,
   canWithdraw,
   editingScope,
+  heldHint,
   lastQueued,
   queueHeld,
   queueHint,
@@ -112,7 +119,7 @@ import {
   queuedLast,
   type Editing,
 } from "../queue";
-import { canRewind, doubleEscape, excerpt } from "../rewind";
+import { canRewind, canUndoRewind, doubleEscape, excerpt } from "../rewind";
 import { sameFooter, turnFooters, type TurnFooter } from "../turns";
 import type { AgentOptions, Chat, Entry, SessionSettings } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
@@ -206,6 +213,10 @@ const commandIcon = (name: string) =>
     <MessageCircleQuestion size={15} />
   ) : name === "cost" ? (
     <Receipt size={15} />
+  ) : name === "bug" ? (
+    <Bug size={15} />
+  ) : name === "test" ? (
+    <FlaskConical size={15} />
   ) : name === "style" ? (
     <SlidersHorizontal size={15} />
   ) : (
@@ -267,6 +278,9 @@ export function Conversation({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // A line the composer says back (a bug report drafted, or how to turn
+  // reporting on); cleared by the next send.
+  const [notice, setNotice] = useState("");
   // Files chosen for the next message. Each uploads as soon as it is added
   // and the message names the uploaded IDs; a chip that failed stays until
   // removed so the reason is visible.
@@ -577,25 +591,62 @@ export function Conversation({
     setPending([]);
     input.current?.focus();
   }
-  // A queued message edited: it leaves the queue for the composer (nothing
-  // is sent while it is being edited) and goes at the end when sent again.
-  const editQueued = useCallback(
-    async (entry: Entry) => {
+  // A queued message edited on its card (queue.ts): the draft lives here
+  // so it survives the card, and the save keeps the message's slot. A
+  // message the agent gets meanwhile ends the edit with the draft moved
+  // into the composer, to send as a new message.
+  const [queuedEdit, setQueuedEdit] = useState<{
+    id: string;
+    text: string;
+  } | null>(null);
+  const editQueued = useCallback((entry: Entry) => {
+    setError("");
+    setQueuedEdit({ id: entry.id, text: entry.text });
+  }, []);
+  const overtaken = useCallback(
+    (draft: string) => {
+      setQueuedEdit(null);
+      if (draft.trim())
+        setText((text) => (text.trim() ? text + "\n" : "") + draft);
+      setError(
+        "The agent got the message before your edit was saved; the edit is in the composer to send as a new message",
+      );
+    },
+    [],
+  );
+  const saveQueued = useCallback(
+    async (entry: Entry, text: string, attachments: string[]) => {
+      try {
+        await editQueuedMessage(chat.id, entry.id, text, attachments);
+        setQueuedEdit(null);
+      } catch (e) {
+        if (/already sent/.test(String(e))) {
+          overtaken(text);
+          return;
+        }
+        throw e;
+      }
+    },
+    [chat.id, overtaken],
+  );
+  useEffect(() => {
+    if (!queuedEdit) return;
+    const entry = chat.conversation.entries.find((e) => e.id === queuedEdit.id);
+    if (entry && entry.delivery === "queued") return;
+    // Withdrawn elsewhere, or handed to the agent: the card is gone.
+    overtaken(entry ? queuedEdit.text : "");
+  }, [chat.conversation.entries, queuedEdit, overtaken]);
+  const undo = useCallback(
+    async (entry: Entry, code: boolean) => {
       setError("");
       try {
-        const withdrawn = await withdrawMessage(chat.id, entry.id);
-        if (!load(withdrawn)) {
-          // The draft stays: the withdrawn text is lost unless kept here.
-          setText(
-            (text) => (text.trim() ? text + "\n" : "") + withdrawn.text,
-          );
-        }
-        setEditing(null);
+        await undoRewind(chat.id, entry.id, code);
+        setFollow(true);
       } catch (e) {
         setError(String(e));
       }
     },
-    [chat.id, load],
+    [chat.id, setFollow],
   );
   const withdraw = useCallback(
     async (entry: Entry) => {
@@ -617,6 +668,11 @@ export function Conversation({
       setError(String(e));
     }
   }, [chat.id, setFollow]);
+  const changeQueuedEdit = useCallback(
+    (text: string) => setQueuedEdit((q) => (q ? { ...q, text } : q)),
+    [],
+  );
+  const cancelQueuedEdit = useCallback(() => setQueuedEdit(null), []);
   // The message a rewind went back to before, into an empty composer.
   useEffect(() => {
     if (!prefill || current.current.text.trim() !== "") return;
@@ -767,6 +823,21 @@ export function Conversation({
                       },
       );
       if (items.length) return { items };
+      if (/^bug(\s|$)/i.test(trigger.query.trimStart()))
+        return {
+          items,
+          note:
+            bugReport(text) === undefined
+              ? "Type what went wrong; sending drafts a bug report you review before it goes to Monaddle"
+              : `${modifierKey}Enter drafts the report; you review it before it is sent`,
+        };
+      if (/^test(\s|$)/i.test(trigger.query.trimStart()))
+        return {
+          items,
+          note: isBugTest(text)
+            ? `${modifierKey}Enter raises a test exception in the chat service; its report opens for review`
+            : "/test bugreporting raises a test exception in the chat service; its report opens for review",
+        };
       if (/^btw(\s|$)/i.test(trigger.query.trimStart()))
         return {
           items,
@@ -1070,6 +1141,13 @@ export function Conversation({
         setFollow(true);
         place({ text: rest, caret: 0 });
         break;
+      case "bug":
+        // The report is typed after it; Enter then drafts it.
+        place({ text: "/bug " + rest, caret: 5 });
+        break;
+      case "test":
+        place({ text: "/test bugreporting", caret: 18 });
+        break;
       case "style":
         place({ text: "/style " + rest, caret: 7 });
         break;
@@ -1141,6 +1219,48 @@ export function Conversation({
       setBusy(false);
     }
   }
+  // A "/bug" report: drafted by the service with this chat's ids, shown
+  // for review by the launcher; the answer is a line, not a card. Off,
+  // the draft stays in the composer beside the way to turn reporting on.
+  async function reportBug(text: string) {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await api<{ drafted: boolean; notice: string }>(
+        `chats/${chat.id}/bug`,
+        { text },
+      );
+      setNotice(result.notice);
+      if (result.drafted) {
+        setText("");
+        setPastes([]);
+        setRecall(NOT_BROWSING);
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  // "/test bugreporting": a test exception in the chat service.
+  async function testBugReporting() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await api<{ drafted: boolean; notice: string }>(
+        "bug-test",
+        {},
+      );
+      setNotice(result.notice);
+      if (result.drafted) setText("");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
   // A "/btw" question: asked of a copy of the agent's session; the card
   // arrives over the event stream (running, then answered).
   async function ask(question: string) {
@@ -1172,6 +1292,15 @@ export function Conversation({
     const asked = sideQuestion(expandPastes(text, pastes));
     if (asked !== undefined && !busy) {
       void ask(asked);
+      return;
+    }
+    const bug = bugReport(expandPastes(text, pastes));
+    if (bug !== undefined && !busy) {
+      void reportBug(bug);
+      return;
+    }
+    if (isBugTest(text) && !busy) {
+      void testBugReporting();
       return;
     }
     if (prefix && !busy) {
@@ -1241,6 +1370,7 @@ export function Conversation({
           root={transcript}
           scroller={scroll}
           request={finding}
+          entries={all}
           onClose={() => {
             setFinding(undefined);
             input.current?.focus();
@@ -1322,6 +1452,16 @@ export function Conversation({
                       onEditQueued={editQueued}
                       onWithdraw={withdraw}
                       onSendQueued={sendQueuedNow}
+                      queuedEdit={
+                        queuedEdit?.id === item.entry.id
+                          ? queuedEdit.text
+                          : undefined
+                      }
+                      onQueuedEditChange={changeQueuedEdit}
+                      onSaveQueued={saveQueued}
+                      onCancelQueuedEdit={cancelQueuedEdit}
+                      onUndoRewind={undo}
+                      undoable={canUndoRewind(item.entry, chat)}
                       queue={
                         item.entry.delivery === "queued"
                           ? {
@@ -1422,6 +1562,19 @@ export function Conversation({
         {error && (
           <p className="error" role="alert">
             {error}
+          </p>
+        )}
+        {notice && !error && (
+          <p className="composer-notice" role="status">
+            {notice}
+            <button
+              type="button"
+              className="link"
+              onClick={() => setNotice("")}
+              aria-label="Dismiss"
+            >
+              Dismiss
+            </button>
           </p>
         )}
         <p className="typing-line" aria-live="polite">
@@ -1615,7 +1768,7 @@ export function Conversation({
                 const last = lastQueued(all, me);
                 if (last) {
                   e.preventDefault();
-                  void editQueued(last);
+                  editQueued(last);
                   return;
                 }
               }
@@ -1805,11 +1958,13 @@ export function Conversation({
           {!live
             ? "Reconnecting · your draft is preserved"
             : prefix?.kind === "shell"
-              ? "Runs as a shell command in the workspace, by you — the agent sees it only if you send the result to it"
+              ? heldHint(chat, "shell") ||
+                "Runs as a shell command in the workspace, by you — the agent sees it only if you send the result to it"
               : prefix?.kind === "memory"
-                ? chat.provider === "codex"
-                  ? "Appends a note to CLAUDE.md in the workspace (Codex reads AGENTS.md, not CLAUDE.md)"
-                  : "Appends a note to CLAUDE.md in the workspace — the agent reads it only once the workspace's settings are loaded"
+                ? heldHint(chat, "memory") ||
+                  (chat.provider === "codex"
+                    ? "Appends a note to CLAUDE.md in the workspace (Codex reads AGENTS.md, not CLAUDE.md)"
+                    : "Appends a note to CLAUDE.md in the workspace — the agent reads it only once the workspace's settings are loaded")
                 : question !== undefined
                   ? asides
                     ? "Asks a copy of the agent's session, from this chat's context — the agent never sees the question or the answer"

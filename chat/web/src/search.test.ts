@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  entryHits,
+  entryMatch,
   findMatches,
   fold,
   locate,
@@ -157,5 +159,68 @@ describe("searchChats", () => {
     expect(searchChats([old], "bash").hits[0]).toMatchObject({
       field: "text",
     });
+  });
+  it("reaches a subagent's entries, naming their card, and the person's commands", () => {
+    const nested = chat("nested", "Nested", [
+      entry({
+        id: "agent",
+        role: "activity",
+        text: "Agent: look around (Explore)",
+        detail: "Found the parser in lex.go",
+        tool: { kind: "task", name: "Agent", status: "completed" },
+        createdAt: 1,
+      }),
+      entry({
+        id: "child",
+        role: "activity",
+        text: "Grep \"tokenizer\" in .",
+        detail: "lex.go:12: func tokenizer()",
+        parentID: "agent",
+        tool: { kind: "search", name: "Grep", status: "completed" },
+        createdAt: 2,
+      }),
+      entry({
+        id: "said",
+        role: "assistant",
+        text: "The tokenizer lives in lex.go.",
+        parentID: "agent",
+        createdAt: 3,
+      }),
+      entry({
+        id: "mine",
+        role: "activity",
+        text: "git status",
+        detail: "?? scratch.txt",
+        sender: { principalID: "owner" },
+        tool: { kind: "command", name: "Bash", status: "completed" },
+        createdAt: 4,
+      }),
+    ]);
+    const { hits } = searchChats([nested], "tokenizer");
+    expect(
+      hits.map((h) => h.kind === "entry" && [h.entry.id, h.parent?.id]),
+    ).toEqual([
+      ["said", "agent"],
+      ["child", "agent"],
+    ]);
+    expect(searchChats([nested], "scratch").hits[0]).toMatchObject({
+      entry: { id: "mine" },
+      field: "detail",
+      parent: undefined,
+    });
+    // What the find bar has to open: every entry with a match.
+    expect(entryHits(nested.conversation.entries, "tokenizer")).toEqual([
+      { id: "child", field: "text" },
+      { id: "said", field: "text" },
+    ]);
+    expect(entryHits(nested.conversation.entries, "lex.go")).toEqual([
+      { id: "agent", field: "detail" },
+      { id: "child", field: "detail" },
+      { id: "said", field: "text" },
+    ]);
+    expect(entryHits(nested.conversation.entries, " ")).toEqual([]);
+    expect(
+      entryMatch(entry({ role: "user", detail: "hidden" }), "hidden"),
+    ).toBeUndefined();
   });
 });

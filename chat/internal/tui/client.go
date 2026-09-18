@@ -46,7 +46,11 @@ type Entry struct {
 	Fork *Fork `json:"fork,omitempty"`
 	// Aside is what an aside entry records (conversation.Aside): a side
 	// question (Text) answered from a copy of the session (Detail).
-	Aside  *Aside `json:"aside,omitempty"`
+	Aside *Aside `json:"aside,omitempty"`
+	// Rewind is what a rewind marker records (conversation.Rewind): the
+	// message the chat went back to before, the scope, how the session
+	// followed and the checkpoint of the workspace before a code rewind.
+	Rewind *RewindMark `json:"rewind,omitempty"`
 	Sender *struct {
 		PrincipalID string `json:"principalID"`
 		Email       string `json:"email"`
@@ -221,12 +225,20 @@ type Chat struct {
 	Archived     bool         `json:"archived"`
 	Conversation Conversation `json:"conversation"`
 	Approvals    []Approval   `json:"approvals"`
+	// Reviews are the agent's requests only the app can settle (a pull
+	// request proposal, suggested document edits, a document selection or
+	// creation), listed while they wait (chats/reviews.go); /review opens
+	// the app on them.
+	Reviews []Review `json:"reviews"`
 	// Commands are the slash commands the agent's session offers (Claude
 	// Code's built-ins and the workspace's own), for the / menu.
 	Commands []AgentCommand `json:"commands"`
 	// OutputStyle is a Claude chat's output style for its next launch ("":
 	// the default); Session.OutputStyle is what the running one has.
 	OutputStyle string `json:"outputStyle"`
+	// UndoRewind is the rewind marker whose conversation rewind can still
+	// be undone (/undo-rewind; rewind.go), "" when none.
+	UndoRewind string `json:"undoRewind"`
 	// Startup is where the chat's start is while its message waits for the
 	// agent: the stage and the runtime's detail.
 	Startup *struct {
@@ -252,6 +264,7 @@ type Permission struct {
 	Tool        string `json:"tool"`
 	Description string `json:"description"`
 	Always      string `json:"always"`
+	Rule        string `json:"rule"` // the pattern "allow always" records (rules.go)
 	Plan        string `json:"plan"`
 	Entry       *Entry `json:"entry"`
 }
@@ -274,6 +287,44 @@ func (a Approval) Permission() *Permission {
 
 // IsPlan reports whether the ask is the model's plan.
 func (p *Permission) IsPlan() bool { return p != nil && p.Tool == "ExitPlanMode" }
+
+// Review mirrors chats.Review: what the agent proposed and where.
+type Review struct {
+	ID          string  `json:"id"`
+	Kind        string  `json:"kind"` // pull_request, document_edit, document_access, document_create
+	Status      string  `json:"status"`
+	Title       string  `json:"title"`
+	Repository  string  `json:"repository"`
+	Document    string  `json:"document"`
+	Changes     int     `json:"changes"`
+	RequestedAt float64 `json:"requestedAt"`
+}
+
+// Summary is the one line a card, a notification or a log names the
+// review by: who proposed what, sanitised.
+func (r Review) Summary(provider string) string {
+	who := ProviderName(provider)
+	switch r.Kind {
+	case "pull_request":
+		s := who + " proposed a pull request “" + r.Title + "”"
+		if r.Repository != "" {
+			s += " to " + r.Repository
+		}
+		return sanitize(s)
+	case "document_edit":
+		if r.Status == "applying" {
+			return sanitize("Writing the suggested edits to “" + r.Document + "”")
+		}
+		n := "changes"
+		if r.Changes == 1 {
+			n = "change"
+		}
+		return sanitize(fmt.Sprintf("%s suggested %d %s to “%s”", who, r.Changes, n, r.Document))
+	case "document_create":
+		return sanitize(who + " asked to create a document “" + r.Document + "”")
+	}
+	return who + " asked to choose documents"
+}
 
 // Pending returns the approvals still waiting for the owner.
 func (c *Chat) Pending() []Approval {
@@ -559,11 +610,11 @@ func (c *Client) Resolve(ctx context.Context, chatID, approvalID string, allow b
 }
 
 // Answer resolves a tool permission ask: allow, allow always (the call's
-// rule is remembered for the chat), or deny with a message the model
-// reads; for a plan, allow with the mode the chat moves to (auto or ask)
-// or deny with feedback.
-func (c *Client) Answer(ctx context.Context, chatID, approvalID string, allow, always bool, message, mode string) error {
-	return c.do(ctx, "POST", "chats/"+chatID+"/approvals/"+approvalID, map[string]any{"allow": allow, "always": always, "message": message, "mode": mode, "answers": map[string][]string{}}, nil)
+// rule is remembered for the chat, or for the workspace when scope is
+// "workspace"), or deny with a message the model reads; for a plan, allow
+// with the mode the chat moves to (auto or ask) or deny with feedback.
+func (c *Client) Answer(ctx context.Context, chatID, approvalID string, allow, always bool, scope, message, mode string) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/approvals/"+approvalID, map[string]any{"allow": allow, "always": always, "scope": scope, "message": message, "mode": mode, "answers": map[string][]string{}}, nil)
 }
 
 // Mode sets a Claude chat's permission mode (auto, ask or plan).
@@ -744,6 +795,43 @@ type RewindResult struct {
 	Withdrawn int `json:"withdrawn"`
 }
 
+// RewindMark mirrors conversation.Rewind.
+type RewindMark struct {
+	MessageID    string `json:"messageID"`
+	What         string `json:"what"`
+	Conversation string `json:"conversation"`
+	Before       string `json:"before"`
+}
+
+// UndoResult is what undoing a rewind did (chats.UndoResult).
+type UndoResult struct {
+	MessageID string   `json:"messageID"`
+	What      string   `json:"what"`
+	Entries   int      `json:"entries"`
+	Requeued  int      `json:"requeued"`
+	Session   string   `json:"session"`
+	Code      string   `json:"code"`
+	Restored  []string `json:"restored"`
+	Removed   []string `json:"removed"`
+}
+
+// EditQueued replaces a queued message's text in place, keeping its slot
+// and ID (queue.go); the edited entry comes back. A message the agent got
+// meanwhile is refused.
+func (c *Client) EditQueued(ctx context.Context, chatID, messageID, text string) (Entry, error) {
+	var out Entry
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/queued/"+url.PathEscape(messageID)+"/edit", map[string]string{"text": text}, &out)
+	return out, err
+}
+
+// UndoRewind puts back what the rewind marked by markerID removed; code
+// asks for the workspace as it was before the rewind too (rewind.go).
+func (c *Client) UndoRewind(ctx context.Context, chatID, markerID string, code bool) (UndoResult, error) {
+	var out UndoResult
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/undo-rewind", map[string]any{"id": markerID, "code": code}, &out)
+	return out, err
+}
+
 // Withdraw takes a queued message out of the chat before the agent gets
 // it; the entry comes back for the editor (queue.go).
 func (c *Client) Withdraw(ctx context.Context, chatID, messageID string) (Entry, error) {
@@ -816,4 +904,28 @@ func (c *Client) Diff(ctx context.Context, chatID string) (*WorkspaceChanges, er
 		return nil, err
 	}
 	return &out, nil
+}
+
+// BugResult is what the bug routes answer (docs/bug-reporting-plan.md):
+// whether a draft was written, its id, and the line to show the person.
+type BugResult struct {
+	Drafted bool   `json:"drafted"`
+	ID      string `json:"id,omitempty"`
+	Notice  string `json:"notice"`
+}
+
+// Bug drafts a user bug report from the chat (the composer's /bug); the
+// launcher presents it for review.
+func (c *Client) Bug(ctx context.Context, chatID, text string) (BugResult, error) {
+	var out BugResult
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/bug", map[string]string{"text": text}, &out)
+	return out, err
+}
+
+// BugTest raises the test exception in the chat service (/test
+// bugreporting), which drafts a report through its own recovery.
+func (c *Client) BugTest(ctx context.Context) (BugResult, error) {
+	var out BugResult
+	err := c.do(ctx, "POST", "bug-test", map[string]string{}, &out)
+	return out, err
 }

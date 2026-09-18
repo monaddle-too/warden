@@ -4,7 +4,7 @@
 // here is string work over what the service recorded; nothing is
 // interpreted, so the cards only ever render text nodes.
 import { hasDiff, looseDiff, parseDiff, type DiffSegment } from "./diff";
-import type { Entry, ToolRead, Tool, ToolKind } from "./types";
+import type { Entry, Progress, ToolRead, Tool, ToolKind } from "./types";
 
 /* Lines of output a card shows before its "+N lines" control. */
 export const FOLD_LINES = 12;
@@ -169,10 +169,16 @@ export function toolTitle(entry: Entry): string {
 }
 
 /* What a subagent's card says about its work: how many tool calls its
-   entries record and whether any still runs. */
-export function subagentProgress(children: Entry[]): {
+   entries record (or the agent's own count when it runs ahead), whether
+   any still runs, and what the agent says the subagent is doing now (its
+   own words, else the tool it used last). */
+export function subagentProgress(
+  children: Entry[],
+  progress?: Progress,
+): {
   steps: number;
   running: boolean;
+  step: string;
 } {
   let steps = 0;
   let running = false;
@@ -180,7 +186,11 @@ export function subagentProgress(children: Entry[]): {
     if (e.tool) steps++;
     if (e.isStreaming || e.tool?.status === "running") running = true;
   }
-  return { steps, running };
+  if (progress && progress.toolCalls > steps) steps = progress.toolCalls;
+  const step =
+    progress?.activity ||
+    (progress?.lastTool ? `using ${progress.lastTool}` : "");
+  return { steps, running, step };
 }
 
 /* How long a subagent (a task entry) has been at work, in seconds: from

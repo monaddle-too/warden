@@ -18,6 +18,7 @@ import (
 // error rather than a silent precedence.
 type settings struct {
 	cfg              config.Config
+	configPath       string // the warden.json the settings came from ("" for flags only)
 	state            string // policy state directory (paths.state/policy)
 	listen           string // services.policy.listen (unix://<state>/sbx-control.sock)
 	tls              *transport.TLS
@@ -64,7 +65,7 @@ func resolveSettings(fs *flag.FlagSet, f policyFlags) (settings, error) {
 		return settings{}, err
 	}
 	o := config.NewOverrides(fs, source)
-	s := settings{cfg: cfg}
+	s := settings{cfg: cfg, configPath: source}
 	s.state = config.Override(o, "state", *f.state, "paths.state (policy directory)", cfg.PolicyState())
 	// The listener: the file's services.policy.listen, or, with the legacy
 	// --state flag alone, the socket inside that directory as before.

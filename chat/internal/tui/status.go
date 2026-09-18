@@ -5,7 +5,6 @@ import (
 	"math"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -154,8 +153,9 @@ const StatusMaxRows = 4
 
 // StatusParts are the pieces of the status bar in order of importance,
 // which is what a narrow screen keeps first: the connection and the
-// chat's title, provider and model, what the agent is doing (with the
-// startup stage or the run's elapsed time) — always these three — then
+// chat's title, provider and model, what the agent is doing (the startup
+// stage, then the step it is on, with the run's elapsed time; activity.go)
+// — always these three — then
 // pending approvals, the chat's error, the turn's tokens and cost, the
 // context and previews. Each part is one styled string that is kept whole.
 func StatusParts(c *Chat, ports []Port, live bool, now time.Time) []string {
@@ -177,6 +177,12 @@ func StatusParts(c *Chat, ports []Port, live bool, now time.Time) []string {
 			stage += ": " + sanitize(c.Startup.Detail)
 		}
 		status = yellow + stage + reset
+	} else if c.Status == "running" {
+		// What the agent is doing (activity.go): the step it is on, the
+		// subagent it waits for, its thinking; "running" when nothing says.
+		if what := ActivityLabel(c.Conversation.Entries); what != "" {
+			status = yellow + sanitize(what) + reset
+		}
 	}
 	if ind := RunIndicator(c, now); ind != "" {
 		status = ind + " " + status
@@ -206,12 +212,8 @@ func StatusParts(c *Chat, ports []Port, live bool, now time.Time) []string {
 		}
 	}
 	parts := []string{fmt.Sprintf("%s %s%s%s", link, bold, sanitize(c.Title), reset), agent, status}
-	if n := len(c.Pending()); n > 0 {
-		word := "approvals"
-		if n == 1 {
-			word = "approval"
-		}
-		parts = append(parts, fmt.Sprintf("%s⚠ %d %s%s", yellow, n, word, reset))
+	if waiting := WaitingLabel(c); waiting != "" {
+		parts = append(parts, yellow+"⚠ "+waiting+reset)
 	}
 	if c.Error != "" {
 		parts = append(parts, red+sanitize(c.Error)+reset)
@@ -232,6 +234,28 @@ func StatusParts(c *Chat, ports []Port, live bool, now time.Time) []string {
 		parts = append(parts, fmt.Sprintf("previews:%d", published))
 	}
 	return parts
+}
+
+// WaitingLabel counts what waits for the person: the pending approvals
+// and the reviews open in the app ("1 approval · 2 reviews"); "" when
+// nothing does.
+func WaitingLabel(c *Chat) string {
+	var parts []string
+	if n := len(c.Pending()); n > 0 {
+		word := "approvals"
+		if n == 1 {
+			word = "approval"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", n, word))
+	}
+	if n := len(c.Reviews); n > 0 {
+		word := "reviews"
+		if n == 1 {
+			word = "review"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", n, word))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // LayoutStatus packs the status parts into rows no wider than width,
@@ -270,8 +294,8 @@ func LayoutStatus(parts []string, width, maxRows int) []string {
 	return rows
 }
 
-// visibleWidth counts the runes of s that reach the screen: the styling
-// (escape sequences) takes no columns.
+// visibleWidth is the columns s takes on the screen: the styling (escape
+// sequences) takes none, a wide rune two (width.go).
 func visibleWidth(s string) int {
-	return utf8.RuneCountInString(plainText(s))
+	return textWidth(plainText(s))
 }

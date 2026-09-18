@@ -74,6 +74,16 @@ export const COMMANDS: Command[] = [
     hint: "This chat's turns, tokens and cost so far",
   },
   {
+    name: "bug",
+    label: "Report a bug",
+    hint: "Report a bug to Monaddle — you review it first",
+  },
+  {
+    name: "test",
+    label: "Test bug reporting",
+    hint: "/test bugreporting — raise a test exception; its report opens for review",
+  },
+  {
     name: "style",
     label: "Output style",
     hint: "Claude's output style for the next session: default, Explanatory or Learning",
@@ -366,6 +376,22 @@ export function sideQuestion(text: string): string | undefined {
   if (!m) return undefined;
   const question = m[1].trim();
   return question || undefined;
+}
+
+/* The text of a "/bug …" draft: a bug report in the person's words, sent
+   to Warden's bug route (never to the agent) once they review it. Undefined
+   for anything else, a bare "/bug" included. */
+export function bugReport(text: string): string | undefined {
+  const m = /^\/bug(?:\s+|$)([\s\S]*)$/i.exec(text.trim());
+  if (!m) return undefined;
+  const report = m[1].trim();
+  return report || undefined;
+}
+
+/* "/test bugreporting": raise a test exception in the chat service so the
+   automatic report can be seen end to end. */
+export function isBugTest(text: string): boolean {
+  return /^\/test\s+bugreporting$/i.test(text.trim());
 }
 
 /* A draft that starts with "!" runs the rest as a shell command in the

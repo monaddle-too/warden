@@ -67,6 +67,9 @@ type Config struct {
 	// ledger, keeps them in memory.
 	SessionsFile string `json:"sessionsFile,omitempty"`
 	Listen       string `json:"listen"`
+	// BugReports turns on POST /api/bug-reports (bugreports.go); nil or
+	// disabled, the route answers 404.
+	BugReports *BugReportsConfig `json:"bugReports,omitempty"`
 }
 type previewSession struct {
 	Parent, Binding string
@@ -119,6 +122,7 @@ type Server struct {
 	lastRefresh time.Time
 	Client      *http.Client
 	logins      *ledger
+	bugs        *bugReports // nil unless Config.BugReports is enabled
 }
 
 var idPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -214,6 +218,13 @@ func New(c Config) (*Server, error) {
 		s.logins, _ = newLedger("")
 	default:
 		return nil, errors.New("https origins use Google sign-in; owner mode is loopback http only")
+	}
+	if c.BugReports != nil && c.BugReports.Enabled {
+		bugs, err := newBugReports(*c.BugReports, func(format string, args ...any) { s.Logf(format, args...) })
+		if err != nil {
+			return nil, fmt.Errorf("bug reports: %w", err)
+		}
+		s.bugs = bugs
 	}
 	return s, nil
 }
@@ -392,6 +403,16 @@ func (s *Server) main(w http.ResponseWriter, r *http.Request) {
 		s.Auth.Handler().ServeHTTP(w, r)
 		return
 	}
+	// Bug reports come from other installs, not from anyone signed in
+	// here: the one unauthenticated /api/ route, answered by the edge.
+	if strings.Trim(r.URL.Path, "/") == "api/bug-reports" {
+		if s.bugs == nil {
+			http.Error(w, "not found", 404)
+			return
+		}
+		s.bugs.receive(w, r)
+		return
+	}
 	// The demo shares chats and grants, but provider account connections, the
 	// admin console and "unsharable with AI" tags remain owner-only.
 	if ownerOnly(r.URL.Path) {
@@ -445,6 +466,8 @@ func (s *Server) main(w http.ResponseWriter, r *http.Request) {
 func ownerOnly(path string) bool {
 	trimmed := strings.Trim(path, "/")
 	return strings.HasPrefix(path, "/oauth/") || strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/cluster") || trimmed == "api/spend" ||
+		// /test bugreporting raises an exception in the chat service.
+		trimmed == "api/bug-test" ||
 		trimmed == "api/sharing/connect" || trimmed == "api/sharing/disconnect" || trimmed == "api/sharing/egress_set" || trimmed == "api/sharing/block" || trimmed == "api/sharing/unblock" ||
 		// The GitHub sign-in code binds whichever account types it to this
 		// Warden, so only the owner may see or start one.
@@ -454,7 +477,16 @@ func ownerOnly(path string) bool {
 // admin answers from the edge's own login ledger; identity is verified only here
 // and the upstream never learns which admitted user is browsing.
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" || strings.Trim(r.URL.Path, "/") != "api/admin/users" {
+	path := strings.Trim(r.URL.Path, "/")
+	if rest, ok := strings.CutPrefix(path, "api/admin/bug-reports"); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
+		if s.bugs == nil {
+			http.Error(w, "not found", 404)
+			return
+		}
+		s.bugs.admin(w, r, rest)
+		return
+	}
+	if r.Method != "GET" || path != "api/admin/users" {
 		http.Error(w, "not found", 404)
 		return
 	}

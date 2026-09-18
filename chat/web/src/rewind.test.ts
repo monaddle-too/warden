@@ -1,12 +1,16 @@
 import { describe, it, expect } from "vitest";
 import {
   canRewind,
+  canUndoRewind,
   changesSummary,
   doubleEscape,
   excerpt,
   rewindOutcome,
   rewindTargets,
   splitDiff,
+  undoHint,
+  undoOffersCode,
+  undoOutcome,
   whatAllowed,
 } from "./rewind";
 import type { Entry } from "./types";
@@ -137,5 +141,130 @@ new file mode 100644
         { path: "b", added: 0, removed: 0, binary: true },
       ]),
     ).toEqual({ files: 2, added: 3, removed: 1 });
+  });
+});
+
+describe("undoing a rewind", () => {
+  const marker = entry({
+    id: "m1",
+    role: "rewind",
+    text: "Rewound to before “x” (code and conversation)",
+    rewind: {
+      messageID: "u2",
+      what: "both",
+      conversation: "rewound",
+      before: "m1",
+    },
+  });
+  it("offers Undo on the marker the chat still keeps the tail for, while idle", () => {
+    expect(
+      canUndoRewind(marker, {
+        status: "idle",
+        archived: false,
+        undoRewind: "m1",
+      }),
+    ).toBe(true);
+    expect(
+      canUndoRewind(marker, {
+        status: "interrupted",
+        archived: false,
+        undoRewind: "m1",
+      }),
+    ).toBe(true);
+    expect(
+      canUndoRewind(marker, {
+        status: "idle",
+        archived: false,
+        undoRewind: "m2",
+      }),
+    ).toBe(false);
+    expect(canUndoRewind(marker, { status: "idle", archived: false })).toBe(
+      false,
+    );
+    expect(
+      canUndoRewind(marker, {
+        status: "running",
+        archived: false,
+        undoRewind: "m1",
+      }),
+    ).toBe(false);
+    expect(
+      canUndoRewind(marker, {
+        status: "idle",
+        archived: true,
+        undoRewind: "m1",
+      }),
+    ).toBe(false);
+    expect(
+      canUndoRewind(entry({ id: "m1", role: "system" }), {
+        status: "idle",
+        archived: false,
+        undoRewind: "m1",
+      }),
+    ).toBe(false);
+  });
+  it("offers the files back only for a both-rewind that recorded them", () => {
+    expect(undoOffersCode(marker)).toBe(true);
+    expect(undoOffersCode({ rewind: { messageID: "u2", what: "both" } })).toBe(
+      false,
+    );
+    expect(
+      undoOffersCode({
+        rewind: { messageID: "u2", what: "conversation", before: "m1" },
+      }),
+    ).toBe(false);
+    expect(undoOffersCode({})).toBe(false);
+    expect(undoHint(marker)).toBe(
+      "Undo puts the removed messages back (until the next turn); the files can come back too",
+    );
+    expect(undoHint({ rewind: { messageID: "u2", what: "both" } })).toBe(
+      "Undo puts the removed messages back (until the next turn); the workspace stays as it is",
+    );
+    expect(
+      undoHint({ rewind: { messageID: "u2", what: "conversation" } }),
+    ).toBe("Undo puts the removed messages back (until the next turn)");
+  });
+  it("says what an undo did", () => {
+    expect(
+      undoOutcome({
+        messageID: "u2",
+        what: "conversation",
+        entries: 1,
+        session: "cancelled",
+      }),
+    ).toBe("1 entry restored; the agent's session never saw the rewind");
+    expect(
+      undoOutcome({
+        messageID: "u2",
+        what: "conversation",
+        entries: 3,
+        requeued: 1,
+        session: "resumed",
+      }),
+    ).toBe(
+      "3 entries restored; 1 message queued again and held; the agent's session continues where it was",
+    );
+    expect(
+      undoOutcome({
+        messageID: "u2",
+        what: "both",
+        entries: 2,
+        session: "fresh",
+        code: "restored",
+        restored: ["a.txt", "b.txt"],
+        removed: [],
+      }),
+    ).toBe(
+      "2 entries restored; the agent's session cannot take the messages back; the next message starts a new one with the conversation so far as context; the workspace is back as it was before the rewind (2 files restored, 0 files removed)",
+    );
+    expect(
+      undoOutcome({
+        messageID: "u2",
+        what: "both",
+        entries: 2,
+        session: "",
+        code: "kept",
+      }),
+    ).toBe("2 entries restored; the workspace stays as the rewind left it");
   });
 });

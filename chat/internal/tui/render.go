@@ -38,8 +38,13 @@ func sanitize(s string) string {
 			}
 		case r == 0x1b:
 			inEscape = true
-		case r == '\n' || r == '\t':
+		case r == '\n':
 			b.WriteRune(r)
+		case r == '\t':
+			// A tab's width depends on the column it lands in, which the
+			// painter cannot know once the line is prefixed and wrapped;
+			// four spaces keep the rows countable.
+			b.WriteString("    ")
 		case r < 0x20 || r == 0x7f:
 			// dropped
 		default:
@@ -124,15 +129,20 @@ func wrap(text string, width int, prefix, indent string) []string {
 	return out
 }
 
-// cutVisible splits s after n visible runes, keeping every escape
-// sequence with the part it precedes.
+// cutVisible splits s after n visible columns, keeping every escape
+// sequence with the part it precedes and never splitting a rune from the
+// zero-width marks that follow it.
 func cutVisible(s string, n int) (head, tail string) {
 	var b strings.Builder
 	seen := 0
 	inEscape := false
 	for i, r := range s {
-		if seen >= n && !inEscape && r != 0x1b {
-			return b.String(), s[i:]
+		if !inEscape && r != 0x1b {
+			w := runeWidth(r)
+			if w > 0 && seen+w > n {
+				return b.String(), s[i:]
+			}
+			seen += w
 		}
 		b.WriteRune(r)
 		switch {
@@ -142,8 +152,6 @@ func cutVisible(s string, n int) (head, tail string) {
 			}
 		case r == 0x1b:
 			inEscape = true
-		default:
-			seen++
 		}
 	}
 	return b.String(), ""
@@ -205,13 +213,103 @@ func lastLines(text string, n int) []string {
 // output and diffs in full instead of their last lines, and a subagent's
 // own transcript under its card.
 func RenderTranscript(c *Chat, width int, expanded bool) []string {
-	top, children := nestEntries(c.Conversation.Entries)
 	var out []string
-	for _, e := range queuedLast(top) {
-		out = append(out, renderEntry(c, e, width, expanded, children, "")...)
-		out = append(out, "")
+	for _, b := range RenderBlocks(c, width, expanded) {
+		out = append(out, b.Lines...)
 	}
 	return out
+}
+
+// Block is one entry as the painter sees it: its lines (a blank separator
+// last) and whether the entry is final — nothing about it will change, so
+// the painter can write its lines to the terminal's scrollback once and
+// never touch them again.
+type Block struct {
+	Lines []string
+	Final bool
+}
+
+// RenderBlocks lays out the chat's entries one block each, in the order
+// the transcript shows them: the conversation, then the agent's todo
+// list, then the queued messages. The todo list is one entry the agent
+// rewrites in place with every write, in this turn and the next, so it
+// is never final: it is a live panel at the bottom of the transcript, as
+// Claude Code shows its own above the composer, and goes away once the
+// chat is idle with every item done (the web and an export keep it).
+func RenderBlocks(c *Chat, width int, expanded bool) []Block {
+	top, children := nestEntries(c.Conversation.Entries)
+	var out []Block
+	var todos, queued []Entry
+	for _, e := range top {
+		switch {
+		case e.Role == "user" && e.ParentID == "" && e.Delivery == "queued":
+			queued = append(queued, e)
+		case e.Tool != nil && e.Tool.Kind == "todo":
+			if c.Running() || !todoDone(e) {
+				todos = append(todos, e)
+			}
+		default:
+			lines := renderEntry(c, e, width, expanded, children, "")
+			out = append(out, Block{Lines: append(lines, ""), Final: entryFinal(c, e, children)})
+		}
+	}
+	for _, e := range append(todos, queued...) {
+		lines := renderEntry(c, e, width, expanded, children, "")
+		out = append(out, Block{Lines: append(lines, "")})
+	}
+	return out
+}
+
+// todoDone reports a todo list with every item checked off (conversation
+// todoText: one `[x]`, `[>]` or `[ ]` line per item).
+func todoDone(e Entry) bool {
+	for _, l := range strings.Split(strings.TrimRight(e.Detail, "\n"), "\n") {
+		if strings.HasPrefix(l, "[ ] ") || strings.HasPrefix(l, "[>] ") {
+			return false
+		}
+	}
+	return true
+}
+
+// entryFinal reports an entry the service will not change any more: not
+// streaming, not a running tool (a background command counts as running
+// until its notification lands), not a message still queued or being
+// handed over ("sending" until the agent confirms the turn), not a
+// compaction or an aside under way, and not a subagent's card while any
+// entry under it is still one of these. The todo list never reaches
+// here (RenderBlocks keeps it live).
+func entryFinal(c *Chat, e Entry, children map[string][]Entry) bool {
+	if e.IsStreaming {
+		return false
+	}
+	switch e.Role {
+	case "user":
+		if e.Delivery == "queued" || e.Delivery == "sending" {
+			return false
+		}
+	case "activity":
+		if t := e.Tool; t != nil {
+			if t.Status == "running" {
+				return false
+			}
+			if t.Kind == "task" {
+				for _, k := range children[e.ID] {
+					if !entryFinal(c, k, children) {
+						return false
+					}
+				}
+			}
+		}
+	case "compaction":
+		if e.Compaction != nil && e.Compaction.Status == "running" {
+			return false
+		}
+	case "aside":
+		if e.Aside != nil && e.Aside.Status == "running" {
+			return false
+		}
+	}
+	return true
 }
 
 // nestEntries splits the entries into the conversation's own and, by the
@@ -306,10 +404,14 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 			out = append(out, wrap(text, width, red+"  ! "+reset, "    ")...)
 		case "rewind":
 			// The marker a rewind leaves: the message the chat went back to
-			// before and what was taken back, then what that did.
+			// before and what was taken back, then what that did, and the
+			// undo while the removed transcript is still kept (rewind.go).
 			out = append(out, wrap(yellow+text+reset, width, yellow+"  ↶ "+reset, "    ")...)
 			if e.Detail != "" {
 				out = append(out, wrap(dim+e.Detail+reset, width, "    ", "    ")...)
+			}
+			if c.UndoRewind != "" && c.UndoRewind == e.ID {
+				out = append(out, wrap(dim+undoHint(e)+reset, width, "    ", "    ")...)
 			}
 		case "notice":
 			out = append(out, wrap(dim+text+reset, width, dim+"  · ", "    ")...)
@@ -364,6 +466,9 @@ func renderSubagent(c *Chat, e Entry, width int, expanded bool, children map[str
 				messages++
 			}
 		}
+		if p := e.Tool.Progress; p != nil && int(p.ToolCalls) > steps {
+			steps = int(p.ToolCalls) // the agent's count runs ahead of the entries
+		}
 		out = append(out, dim+fmt.Sprintf("    │ … %d tool calls, %d messages (Tab to expand)", steps, messages)+reset)
 	} else if len(kids) > 0 {
 		label := "subagent"
@@ -403,6 +508,9 @@ type Tool struct {
 	// Read is what a read of an image, a PDF or a notebook carried
 	// (conversation.Read); nil for a text read.
 	Read *Read `json:"read"`
+	// Progress is a running subagent's own account of its work
+	// (conversation.Progress), nil until the agent reports one.
+	Progress *Progress `json:"progress"`
 }
 
 // Read mirrors conversation.Read.
@@ -444,6 +552,30 @@ func readCount(r *Read) string {
 		return "PDF"
 	case "notebook":
 		return fmt.Sprintf("%d cell%s", len(r.Cells), plural(len(r.Cells)))
+	}
+	return ""
+}
+
+// Progress mirrors conversation.Progress: what a running subagent has
+// done so far as its agent reports it.
+type Progress struct {
+	Activity   string `json:"activity"`
+	ToolCalls  int64  `json:"toolCalls"`
+	LastTool   string `json:"lastTool"`
+	DurationMS int64  `json:"durationMS"`
+	Tokens     int64  `json:"tokens"`
+}
+
+// progressStep is what a running subagent is doing, in its agent's own
+// words when it gives them, else by the tool it used last; "" for none.
+func progressStep(p *Progress) string {
+	switch {
+	case p == nil:
+		return ""
+	case p.Activity != "":
+		return p.Activity
+	case p.LastTool != "":
+		return "using " + p.LastTool
 	}
 	return ""
 }
@@ -510,6 +642,10 @@ func renderTool(e Entry, width int, expanded bool) []string {
 		// final text below.
 		if secs := taskSeconds(e); secs > 0 {
 			head += fmt.Sprintf("  %s%s%s", dim, formatSeconds(secs), reset)
+		}
+		if step := progressStep(t.Progress); step != "" && (e.IsStreaming || t.Status == "running") {
+			// The agent's own account of the subagent's work while it runs.
+			head += fmt.Sprintf("  %s%s%s", dim, sanitize(trimCommand(step, 60)), reset)
 		}
 		if t.Input != nil {
 			if p, ok := t.Input["prompt"].(string); ok && strings.TrimSpace(p) != "" && t.Description == "" {
@@ -732,6 +868,28 @@ func inputLines(input map[string]any) []string {
 	return out
 }
 
+// RenderReviews lays out the reviews waiting in the app, above the
+// approvals: nothing here answers them, /review opens the app on the chat.
+func RenderReviews(c *Chat, width int) []string {
+	var out []string
+	for i, r := range c.Reviews {
+		hint := "review it in the app: /review"
+		if len(c.Reviews) > 1 {
+			hint = fmt.Sprintf("review it in the app: /review %d", i+1)
+		}
+		if r.Kind == "document_edit" && r.Status == "applying" {
+			hint = "the app is writing it"
+		}
+		out = append(out, bold+yellow+"⚑ "+r.Summary(c.Provider)+reset+dim+"   "+hint+reset)
+		if r.Kind != "pull_request" && r.Title != "" {
+			// A pull request's title is its summary; the others carry the
+			// agent's reason or summary under the headline.
+			out = append(out, wrap(sanitize(strings.ReplaceAll(r.Title, "\n", " ")), width, "  ", "  ")...)
+		}
+	}
+	return out
+}
+
 // RenderApprovals lays out the pending approvals with the keys that answer
 // them. The first pending approval is the one y/n and typed answers address.
 func RenderApprovals(c *Chat, width int) []string {
@@ -837,7 +995,7 @@ func renderPermission(a Approval, p *Permission, width int, later bool) []string
 		if p.Always != "" {
 			hint += " (" + p.Always + ")"
 		}
-		hint += " · n [message] = deny"
+		hint += " · A = for the workspace · n [message] = deny"
 	}
 	if later {
 		hint = "answered after the one above"
