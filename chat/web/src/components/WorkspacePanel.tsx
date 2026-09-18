@@ -21,7 +21,8 @@ import { cpu, memory } from "../units";
 import { api } from "../api";
 import type { PullRequestProposal } from "./PullRequestReview";
 import { resourcesLabel } from "./Approvals";
-import { SizeSelect, sameSize } from "./SizeSelect";
+import { SizeSelect } from "./SizeSelect";
+import { sameSize } from "../sizes";
 import { NetworkSelect } from "./NetworkSelect";
 import {
   effectiveNetwork,
