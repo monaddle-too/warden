@@ -370,7 +370,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 
 - [x] Design discussion, inventory and priority order (this document).
 - [x] 1 Typed tool cards and diffs — merged to main 5715a02 (2026-09-17); verified as the Item 1 section says.
-- [ ] 2 Subagents and background tasks — in progress on `feat/parity-2-subagents`.
+- [x] 2 Subagents and background tasks — merged to main 38daa78 (2026-09-17); verified as the Item 2 section says.
 - [ ] 3 Permission model.
 - [ ] 4 Plan mode.
 - [ ] 5 Slash-command pass-through.
@@ -569,6 +569,10 @@ Left: a subagent's entries are not found by the transcript search or
 counted in the export as nested; `task_progress` (the subagent's current
 step) is not shown while it runs beyond the child cards themselves; the
 todo card has no live test until the pinned CLI offers a todo tool.
+
+Progress: started 2026-09-17; implemented and live-verified 2026-09-17
+(97e22d6); merged to main 38daa78 (2026-09-17) after merging item 6's
+TUI catch-up in (the plan document was the only conflict).
 
 ### Item 6: TUI catch-up
 
