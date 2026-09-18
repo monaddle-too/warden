@@ -106,10 +106,33 @@ func TurnStats(c *Chat) string {
 	return strings.Join(parts, " · ")
 }
 
+// ContextIndicator is how full the agent's context is, "ctx 43k/200k
+// (21%)": plain under 80 % of the window, yellow from there, red from
+// 95 % (the agent compacts on its own a little under the window). Empty
+// when the agent has reported none.
+func ContextIndicator(c *Chat) string {
+	ctx := c.Conversation.Context
+	if ctx == nil || ctx.Used == 0 {
+		return ""
+	}
+	if ctx.Window <= 0 {
+		return "ctx " + FormatTokens(ctx.Used)
+	}
+	fraction := float64(ctx.Used) / float64(ctx.Window)
+	text := fmt.Sprintf("ctx %s/%s (%d%%)", FormatTokens(ctx.Used), FormatTokens(ctx.Window), int(math.Round(math.Min(1, fraction)*100)))
+	switch {
+	case fraction >= 0.95:
+		return red + text + reset
+	case fraction >= 0.8:
+		return yellow + text + reset
+	}
+	return text
+}
+
 // StatusLine is the one-line status bar: the connection, the chat's title,
 // provider and model, what the agent is doing (with the startup stage or
 // the run's elapsed time), pending approvals, the turn's tokens and cost,
-// previews and the chat's error.
+// the context, previews and the chat's error.
 func StatusLine(c *Chat, ports []Port, live bool, now time.Time) string {
 	link := green + "●" + reset
 	if !live {
@@ -147,6 +170,9 @@ func StatusLine(c *Chat, ports []Port, live bool, now time.Time) string {
 	}
 	if stats := TurnStats(c); stats != "" {
 		parts = append(parts, dim+stats+reset)
+	}
+	if ind := ContextIndicator(c); ind != "" {
+		parts = append(parts, ind)
 	}
 	published := 0
 	for _, p := range ports {

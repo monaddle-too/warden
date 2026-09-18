@@ -831,11 +831,12 @@ func TestSlashMenuCompletesAndRuns(t *testing.T) {
 	app.editor.Clear()
 	app.menu = nil
 	typeText(app, ctx, "/")
-	if app.menu == nil || len(app.menu.Items) != len(Commands) {
+	// chat2 is a Claude chat, so the agent's /compact joins the built-ins.
+	if app.menu == nil || len(app.menu.Items) != len(Commands)+1 || app.menu.Items[len(Commands)].Label != "/compact [INSTRUCTIONS]" {
 		t.Fatalf("all commands: %+v", app.menu)
 	}
 	app.handleKey(ctx, Key{Kind: KeyUp})
-	if app.menu.Selected != len(Commands)-1 {
+	if app.menu.Selected != len(Commands) {
 		t.Fatalf("up wraps to the last item: %d", app.menu.Selected)
 	}
 	// Commands the chat offers join the menu after the built-ins.
@@ -1574,5 +1575,101 @@ func TestRenderToolEntries(t *testing.T) {
 	// A removed line that itself starts with "-- " is a change, not a header.
 	if lines, _, dels = diffLines("a\ndiff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1,1 +0,0 @@\n---- rule\n"); dels != 1 || lines[len(lines)-1] != "---- rule" {
 		t.Fatalf("header ambiguity: %q", lines)
+	}
+}
+
+// A compaction entry is a divider: the trigger and the token counts, the
+// summary only when expanded, yellow while it runs and red when it
+// failed. The status line shows the context against the window, yellow
+// from 80 % and red from 95 %. /compact, with or without instructions,
+// goes to a Claude chat as the message; a Codex chat does not offer it.
+func TestCompactionDividerContextAndPassthrough(t *testing.T) {
+	c := &Chat{ID: "c", Title: "t", Provider: "claude", Status: "idle"}
+	c.Conversation.Entries = []Entry{
+		{ID: "k1", Role: "compaction", Text: "Compacting context…", IsStreaming: true, Compaction: &Compaction{Status: "running"}},
+		{ID: "k2", Role: "compaction", Text: "Context compacted", Detail: "Summary:\n1. Files read: a.txt (lima)", Compaction: &Compaction{Status: "completed", Trigger: "manual", PreTokens: 171238, PostTokens: 2194}},
+		{ID: "k3", Role: "compaction", Text: "Context compacted", Compaction: &Compaction{Status: "completed", Trigger: "auto", PreTokens: 184293}},
+		{ID: "k4", Role: "compaction", Text: "Compaction failed", Compaction: &Compaction{Status: "failed", Error: "API Error: refused"}},
+		{ID: "k5", Role: "compaction", Text: "Context compacted"},
+	}
+	collapsed := plain(strings.Join(RenderTranscript(c, 70, false), "\n"))
+	for _, want := range []string{"── Compacting context… ──", "── Context compacted · manual · 171k → 2.2k tokens ──", "── Context compacted · automatic · from 184k tokens ──", "── Compaction failed: API Error: refused ──", "── Context compacted ──"} {
+		if !strings.Contains(collapsed, want) {
+			t.Fatalf("missing %q in:\n%s", want, collapsed)
+		}
+	}
+	if strings.Contains(collapsed, "Files read") {
+		t.Fatalf("summary shown collapsed:\n%s", collapsed)
+	}
+	styled := strings.Join(RenderTranscript(c, 70, false), "\n")
+	if !strings.Contains(styled, yellow+"  ── Compacting") || !strings.Contains(styled, red+"  ── Compaction failed") {
+		t.Fatalf("colours:\n%s", styled)
+	}
+	if expanded := plain(strings.Join(RenderTranscript(c, 70, true), "\n")); !strings.Contains(expanded, "     1. Files read: a.txt (lima)") {
+		t.Fatalf("summary not expanded:\n%s", expanded)
+	}
+	md := ExportMarkdown(c, false, time.Unix(0, 0), func(float64) string { return "t" })
+	if !strings.Contains(md, "### Context compacted · manual · 171k → 2.2k tokens\n\n> Summary:\n> 1. Files read: a.txt (lima)") || !strings.Contains(md, "### Compaction failed: API Error: refused") {
+		t.Fatalf("export:\n%s", md)
+	}
+	// The context indicator.
+	now := time.Unix(1000, 0)
+	if s := plain(StatusLine(c, nil, true, now)); strings.Contains(s, "ctx") {
+		t.Fatalf("indicator without a context: %q", s)
+	}
+	c.Conversation.Context = &Context{Used: 42787, Window: 200000, Model: "claude-sonnet-5"}
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, "  ctx 43k/200k (21%)") || strings.Contains(s, yellow+"ctx") {
+		t.Fatalf("indicator: %q", s)
+	}
+	c.Conversation.Context.Used = 171238
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, yellow+"ctx 171k/200k (86%)"+reset) {
+		t.Fatalf("yellow indicator: %q", s)
+	}
+	c.Conversation.Context.Used = 191000
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, red+"ctx 191k/200k (96%)"+reset) {
+		t.Fatalf("red indicator: %q", s)
+	}
+	c.Conversation.Context = &Context{Used: 42787}
+	if s := plain(StatusLine(c, nil, true, now)); !strings.Contains(s, "ctx 43k") || strings.Contains(s, "/") {
+		t.Fatalf("windowless indicator: %q", s)
+	}
+	// /compact is sent as text to a Claude chat.
+	codex := sampleChat()
+	codex.Status = "idle"
+	f := newFakeServer(t, State{Chats: []*Chat{c, codex}})
+	app := &App{Client: f.client(), ChatID: "c", Output: io.Discard, Now: func() time.Time { return now }}
+	ctx := context.Background()
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/comp")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Label != "/compact [INSTRUCTIONS]" || !app.menu.Items[0].Run {
+		t.Fatalf("menu: %+v", app.menu)
+	}
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	time.Sleep(100 * time.Millisecond)
+	s, _ := app.Client.State(ctx)
+	entries := s.Chats[0].Conversation.Entries
+	if got := entries[len(entries)-1].Text; got != "echo: /compact" {
+		t.Fatalf("enter on /compact: %q (notice %q)", got, app.notice)
+	}
+	app.submit(ctx, "/compact keep the file list")
+	time.Sleep(100 * time.Millisecond)
+	s, _ = app.Client.State(ctx)
+	entries = s.Chats[0].Conversation.Entries
+	if got := entries[len(entries)-1].Text; got != "echo: /compact keep the file list" {
+		t.Fatalf("/compact with instructions: %q", got)
+	}
+	// A Codex chat has no /compact: the menu leaves it out and typing it
+	// is an unknown command.
+	app.ChatID = "chat1"
+	app.editor.Clear()
+	app.menu = nil
+	typeText(app, ctx, "/comp")
+	if app.menu != nil && len(app.menu.Items) > 0 {
+		t.Fatalf("codex menu offers: %+v", app.menu.Items)
+	}
+	app.editor.Clear()
+	app.submit(ctx, "/compact")
+	if !strings.Contains(app.notice, "unknown command /compact") {
+		t.Fatalf("codex notice: %q", app.notice)
 	}
 }

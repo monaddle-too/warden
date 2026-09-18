@@ -34,7 +34,10 @@ type Entry struct {
 	IsStreaming bool    `json:"isStreaming"`
 	Delivery    string  `json:"delivery"`
 	Tool        *Tool   `json:"tool"` // the tool call an activity entry records (render.go)
-	Sender      *struct {
+	// Compaction is what a compaction entry records (conversation.Compaction):
+	// the agent compacted its context here; Detail is the summary.
+	Compaction *Compaction `json:"compaction,omitempty"`
+	Sender     *struct {
 		PrincipalID string `json:"principalID"`
 		Email       string `json:"email"`
 		Name        string `json:"name"`
@@ -49,6 +52,25 @@ type Attachment struct {
 	Path string `json:"path"`
 	Kind string `json:"kind"`
 	Size int64  `json:"size"`
+}
+
+// Compaction mirrors conversation.Compaction: how the agent's context was
+// compacted (manual for /compact, auto), the context before and the
+// summary after in tokens, and whether it is running, completed or failed.
+type Compaction struct {
+	Trigger    string `json:"trigger"`
+	PreTokens  int64  `json:"preTokens"`
+	PostTokens int64  `json:"postTokens"`
+	Status     string `json:"status"`
+	Error      string `json:"error"`
+}
+
+// Context mirrors conversation.Context: what the agent's latest model call
+// was given against the model's window, in tokens.
+type Context struct {
+	Used   int64  `json:"used"`
+	Window int64  `json:"window"`
+	Model  string `json:"model"`
 }
 
 // Turn and Usage mirror conversation.Turn: what one agent turn took.
@@ -76,6 +98,7 @@ type Conversation struct {
 	ActiveTurnID *string           `json:"activeTurnID,omitempty"`
 	Entries      []Entry           `json:"entries"`
 	Turns        []Turn            `json:"turns,omitempty"`
+	Context      *Context          `json:"context,omitempty"`
 	Raw          []json.RawMessage `json:"-"`
 }
 
@@ -85,11 +108,12 @@ func (c *Conversation) UnmarshalJSON(b []byte) error {
 		ActiveTurnID *string           `json:"activeTurnID"`
 		Entries      []json.RawMessage `json:"entries"`
 		Turns        []Turn            `json:"turns"`
+		Context      *Context          `json:"context"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
-	c.ThreadID, c.ActiveTurnID, c.Turns, c.Raw = raw.ThreadID, raw.ActiveTurnID, raw.Turns, raw.Entries
+	c.ThreadID, c.ActiveTurnID, c.Turns, c.Context, c.Raw = raw.ThreadID, raw.ActiveTurnID, raw.Turns, raw.Context, raw.Entries
 	c.Entries = make([]Entry, 0, len(raw.Entries))
 	for _, r := range raw.Entries {
 		var e Entry

@@ -197,6 +197,11 @@ func RenderTranscript(c *Chat, width int, expanded bool) []string {
 			}
 		case "system":
 			out = append(out, wrap(text, width, red+"  ! "+reset, "    ")...)
+		case "compaction":
+			// The agent compacted its context here: a divider with the
+			// trigger and the token counts, the summary it continues from
+			// when expanded; the error when it failed.
+			out = append(out, renderCompaction(e, width, expanded)...)
 		default:
 			out = append(out, wrap(text, width, dim+"  "+e.Role+": "+reset, "    ")...)
 		}
@@ -494,4 +499,68 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string([]rune(s)[:n-1]) + "…"
+}
+
+// CompactionText is the divider's line: "Context compacted · manual ·
+// 171k → 2.2k tokens", "Compacting context…" while it runs, or the
+// failure with its error (context.ts says the same on the web).
+func CompactionText(e Entry) string {
+	c := e.Compaction
+	if c == nil {
+		if e.Text != "" {
+			return e.Text
+		}
+		return "Context compacted"
+	}
+	switch c.Status {
+	case "running":
+		return "Compacting context…"
+	case "failed":
+		if c.Error != "" {
+			return "Compaction failed: " + c.Error
+		}
+		return "Compaction failed"
+	}
+	var parts []string
+	switch c.Trigger {
+	case "manual":
+		parts = append(parts, "manual")
+	case "auto":
+		parts = append(parts, "automatic")
+	case "":
+	default:
+		parts = append(parts, c.Trigger)
+	}
+	switch {
+	case c.PreTokens > 0 && c.PostTokens > 0:
+		parts = append(parts, FormatTokens(c.PreTokens)+" → "+FormatTokens(c.PostTokens)+" tokens")
+	case c.PreTokens > 0:
+		parts = append(parts, "from "+FormatTokens(c.PreTokens)+" tokens")
+	}
+	if len(parts) == 0 {
+		return "Context compacted"
+	}
+	return "Context compacted · " + strings.Join(parts, " · ")
+}
+
+func renderCompaction(e Entry, width int, expanded bool) []string {
+	text := sanitize(CompactionText(e))
+	colour := dim
+	if e.Compaction != nil {
+		switch e.Compaction.Status {
+		case "running":
+			colour = yellow
+		case "failed":
+			colour = red
+		}
+	} else if e.IsStreaming {
+		colour = yellow
+	}
+	rule := "──"
+	out := wrap(text, width, colour+"  "+rule+" ", "     ")
+	out[len(out)-1] += " " + rule + reset
+	if expanded && strings.TrimSpace(e.Detail) != "" && (e.Compaction == nil || e.Compaction.Status == "completed") {
+		out = append(out, wrap(dim+sanitize(e.Detail)+reset, width, "     ", "     ")...)
+	}
+	return out
 }

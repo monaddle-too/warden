@@ -120,6 +120,7 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
            /stop /model M /provider P · /open /previews /preview N /unpublish N
            /find TEXT /copy /expand /verbose /clear /quit
+           /compact [what to keep] asks Claude to replace the history with a summary
 composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
            @path completes a workspace path (Tab or Enter accepts)
            Up/Down recall prompts (or move between lines) · Ctrl+R searches them
@@ -546,11 +547,7 @@ func (a *App) refreshMenu(ctx context.Context) {
 	c := a.chat()
 	switch t.Kind {
 	case "command":
-		var extra []Command
-		if a.ChatCommands != nil && c != nil {
-			extra = a.ChatCommands(c)
-		}
-		for _, cmd := range commandItems(t.Query, extra) {
+		for _, cmd := range commandItems(t.Query, a.chatCommands(c)) {
 			insert := "/" + cmd.Name
 			if cmd.Arg != "" {
 				insert += " "
@@ -691,6 +688,12 @@ func (a *App) submit(ctx context.Context, text string) {
 			return
 		}
 	}
+	a.sendMessage(ctx, c, text)
+}
+
+// sendMessage sends text to chat c with the files waiting to go with it;
+// the draft comes back if the service refuses.
+func (a *App) sendMessage(ctx context.Context, c *Chat, text string) {
 	var ids []string
 	for _, at := range a.attachments[c.ID] {
 		ids = append(ids, at.ID)
@@ -736,6 +739,25 @@ func (a *App) refreshState(ctx context.Context) {
 	if s, err := a.Client.State(ctx); err == nil {
 		a.state = s
 	}
+}
+
+// providerCommands are the agent's own slash commands the menu offers for
+// a chat's provider until the chat reports its list (ChatCommands): sent
+// as text, the agent expands them.
+var providerCommands = map[string][]Command{
+	"claude": {{"compact", "[INSTRUCTIONS]", "replace the history with a summary; say what to keep"}},
+}
+
+// chatCommands lists the commands the chat itself offers: what the chat
+// reports through ChatCommands, else the provider's known ones.
+func (a *App) chatCommands(c *Chat) []Command {
+	if c == nil {
+		return nil
+	}
+	if a.ChatCommands != nil {
+		return a.ChatCommands(c)
+	}
+	return providerCommands[c.Provider]
 }
 
 func (a *App) command(ctx context.Context, line string) {
@@ -1023,6 +1045,14 @@ func (a *App) command(ctx context.Context, line string) {
 			a.setNotice("unpublished; the URL now answers 410")
 		}
 	default:
+		// A command the chat itself offers (/compact and the agent's
+		// others) goes to the agent as the message, verbatim.
+		for _, cmd := range a.chatCommands(c) {
+			if cmd.Name == name {
+				a.sendMessage(ctx, c, line)
+				return
+			}
+		}
 		a.setNotice("unknown command /" + name + "; /help")
 	}
 }
