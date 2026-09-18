@@ -307,3 +307,36 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 - [ ] 13 Per-user instructions and memory.
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
+
+### Item 6: TUI catch-up
+
+Branch `feat/parity-6-tui`, worktree `.local/warden-parity-6-tui`, from
+main 5ff4767 (2026-09-17). TUI only; `render.go`'s entry rendering is item
+1's and is left alone.
+
+Steps:
+
+1. Composer completion: `@path` from the `paths` route, a `/` menu with
+   hints (fuzzy prefix match as `composer.ts`), Tab/Enter accept.
+2. Attachments: `/attach PATH` uploads through `chats/{id}/attachments`,
+   sent with the next message; `/attachments`, `/detach N`.
+3. `/export [md|json] [all] [FILE]`, the same content as `export.ts`.
+4. `/rename`, `/archive`, `/restore`, `/delete` (confirmed).
+5. Keys: Ctrl-C (clear, twice quits), Ctrl-D (quit on empty), Esc
+   (interrupt), Ctrl-O (verbose), Ctrl-L (redraw), Ctrl-U/K/W/A/E, Ctrl-R,
+   Up/Down history; history persisted per chat under `<state>/tui/`.
+6. Status line: model, provider, running/idle with elapsed, pending
+   approvals, the turn's tokens and cost.
+7. Tests, feature map, live smoke, merge.
+
+Decisions:
+
+- `/delete` deletes the chat's workspace (`environments/{id}/delete`, what
+  the web's Delete does; there is no per-chat delete route) after a typed
+  confirmation.
+- Prompt history lives in `<state>/tui/history/<chatID>` (the CLI kept no
+  client state before; `<state>/app/` is the service's).
+- The JSON export keeps each entry's JSON as the service sent it, so
+  fields the client does not model (item 1's typed cards) survive.
+
+Progress: started 2026-09-17.
