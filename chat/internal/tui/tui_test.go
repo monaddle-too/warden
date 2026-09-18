@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -491,6 +492,10 @@ type fakeServer struct {
 	// permission history.
 	rules  RulesView
 	events []PermissionEvent
+	// bugs are the /bug texts and bug-test calls received; bugsOff makes
+	// the fake answer as a Warden with reporting off.
+	bugs    []string
+	bugsOff bool
 }
 
 func newFakeServer(t *testing.T, initial State) *fakeServer {
@@ -916,6 +921,23 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "aside1", Role: "aside", Text: body.Text, Detail: "Forty-two.", Aside: &Aside{Status: "completed", CostUSD: 0.03, Input: 1200, Output: 8, DurationMS: 2600}})
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(AsideResult{ID: "aside1", Text: "Forty-two.", CostUSD: 0.03})
+	case strings.HasSuffix(path, "/bug"):
+		var body struct{ Text string }
+		json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.bugs = append(f.bugs, strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/bug")+": "+body.Text)
+		off := f.bugsOff
+		f.mu.Unlock()
+		if off {
+			json.NewEncoder(w).Encode(BugResult{Notice: "Bug reporting is off — `warden bugs on` to enable it"})
+			return
+		}
+		json.NewEncoder(w).Encode(BugResult{Drafted: true, ID: strings.Repeat("b", 32), Notice: "Bug report drafted — review it in the window that opened (or `warden bugs pending`)"})
+	case path == "bug-test":
+		f.mu.Lock()
+		f.bugs = append(f.bugs, "test")
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(BugResult{Drafted: true, ID: strings.Repeat("c", 32), Notice: "Bug report drafted — review it in the window that opened (or `warden bugs pending`)"})
 	case strings.HasSuffix(path, "/style"):
 		var body struct{ Style string }
 		json.NewDecoder(r.Body).Decode(&body)
@@ -1246,25 +1268,160 @@ func TestWatchReportsEachPendingApprovalOnce(t *testing.T) {
 	var got []string
 	done := make(chan struct{})
 	go func() {
-		Watch(ctx, f.client(), func(ch *Chat, a Approval) {
-			mu.Lock()
-			got = append(got, ch.Title+": "+a.Summary())
-			if len(got) == 2 {
-				cancel()
-			}
-			mu.Unlock()
+		Watch(ctx, f.client(), Watcher{
+			Approval: func(ch *Chat, a Approval) {
+				mu.Lock()
+				got = append(got, ch.Title+": "+a.Summary())
+				if len(got) == 3 {
+					cancel()
+				}
+				mu.Unlock()
+			},
+			Review: func(ch *Chat, r Review) {
+				mu.Lock()
+				got = append(got, ch.Title+": review "+r.Summary(ch.Provider))
+				if len(got) == 3 {
+					cancel()
+				}
+				mu.Unlock()
+			},
 		})
 		close(done)
 	}()
 	time.Sleep(150 * time.Millisecond)
 	f.mu.Lock()
 	f.state.Chats[0].Approvals = append(f.state.Chats[0].Approvals, Approval{ID: "q", Method: "item/tool/requestUserInput", State: "pending", Params: map[string]any{"questions": []any{map[string]any{"id": "q1", "question": "Deploy?"}}}})
+	f.state.Chats[0].Reviews = []Review{{ID: "pr1", Kind: "pull_request", Status: "pending", Title: "Fix the README", Repository: "owner/repo"}}
 	f.mu.Unlock()
 	<-done
 	mu.Lock()
 	defer mu.Unlock()
-	if len(got) != 2 || got[0] != "Local preview test: bind sandbox port 8000 (Counter)" || got[1] != "Local preview test: question: Deploy?" {
+	if len(got) != 3 || got[0] != "Local preview test: bind sandbox port 8000 (Counter)" || got[1] != "Local preview test: question: Deploy?" || got[2] != "Local preview test: review Codex proposed a pull request “Fix the README” to owner/repo" {
 		t.Fatalf("notifications: %v", got)
+	}
+}
+
+// A review is a request only the app can settle: the card names it above
+// the approvals and points at /review, which opens the app on the chat
+// (or shows the URL when it cannot); the status line, the title and the
+// bell count it with the approvals; nothing answers it from here.
+func TestReviewCardAndCommand(t *testing.T) {
+	c := sampleChat()
+	c.Provider = "claude"
+	c.Reviews = []Review{
+		{ID: "pr1", Kind: "pull_request", Status: "pending", Title: "Fix the README", Repository: "owner/repo"},
+		{ID: "d1", Kind: "document_edit", Status: "pending", Title: "Tighten the intro\x1b[31m", Document: "Roadmap", Changes: 3},
+		{ID: "a1", Kind: "document_access", Status: "pending", Title: "read the brief"},
+		{ID: "c1", Kind: "document_create", Status: "pending", Title: "a report", Document: "Q3 report"},
+	}
+	lines := plain(strings.Join(RenderReviews(c, 80), "\n"))
+	for _, want := range []string{
+		"⚑ Claude proposed a pull request “Fix the README” to owner/repo   review it in the app: /review 1",
+		"⚑ Claude suggested 3 changes to “Roadmap”   review it in the app: /review 2",
+		"  Tighten the intro",
+		"⚑ Claude asked to choose documents   review it in the app: /review 3",
+		"  read the brief",
+		"⚑ Claude asked to create a document “Q3 report”   review it in the app: /review 4",
+	} {
+		if !strings.Contains(lines, want) {
+			t.Fatalf("missing %q in:\n%s", want, lines)
+		}
+	}
+	if strings.Contains(strings.Join(RenderReviews(c, 80), ""), "\x1b[31m") {
+		t.Fatal("agent text leaked an escape sequence")
+	}
+	one := &Chat{Provider: "claude", Reviews: c.Reviews[:1]}
+	if got := plain(strings.Join(RenderReviews(one, 80), "\n")); !strings.Contains(got, "review it in the app: /review\n") && !strings.HasSuffix(got, "review it in the app: /review") {
+		t.Fatalf("single review hint: %q", got)
+	}
+	applying := &Chat{Provider: "claude", Reviews: []Review{{ID: "d1", Kind: "document_edit", Status: "applying", Document: "Roadmap"}}}
+	if got := plain(strings.Join(RenderReviews(applying, 80), "\n")); !strings.Contains(got, "Writing the suggested edits to “Roadmap”   the app is writing it") {
+		t.Fatalf("applying: %q", got)
+	}
+	// The status line counts reviews with the approvals; the title and
+	// the bell treat a new review as an approval.
+	if got := WaitingLabel(c); got != "1 approval · 4 reviews" {
+		t.Fatalf("waiting: %q", got)
+	}
+	if got := WaitingLabel(&Chat{Reviews: c.Reviews[:1]}); got != "1 review" {
+		t.Fatalf("waiting: %q", got)
+	}
+	if got := plain(strings.Join(StatusParts(c, nil, true, time.Unix(0, 0)), " | ")); !strings.Contains(got, "⚠ 1 approval · 4 reviews") {
+		t.Fatalf("status: %q", got)
+	}
+	quiet := &Chat{ID: "c", Title: "Docs", Status: "running"}
+	reviewing := &Chat{ID: "c", Title: "Docs", Status: "running", Reviews: c.Reviews[:1]}
+	if got := TitleFor(reviewing); got != "Warden · Docs · approval" {
+		t.Fatalf("title: %q", got)
+	}
+	if got := BellEvents(quiet, reviewing); len(got) != 1 || got[0] != "approval" {
+		t.Fatalf("bell: %v", got)
+	}
+	if got := BellEvents(reviewing, reviewing); len(got) != 0 {
+		t.Fatalf("a known review rang again: %v", got)
+	}
+	// /review opens the app on this chat; N picks one; without a browser
+	// the URL is shown; with none pending it says so.
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	var opened []string
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, AppURL: "http://127.0.0.1:18781/?launch=5#session=abc", OpenURL: func(u string) error { opened = append(opened, u); return nil }}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+	app.submit(ctx, "/review")
+	if len(opened) != 1 || opened[0] != "http://127.0.0.1:18781/?launch=5&chat=chat1#session=abc" || !strings.Contains(app.notice, "opened the app on this chat: Claude proposed a pull request “Fix the README” to owner/repo") {
+		t.Fatalf("/review: %v %q", opened, app.notice)
+	}
+	app.submit(ctx, "/review 2")
+	if len(opened) != 2 || !strings.Contains(app.notice, "Claude suggested 3 changes to “Roadmap”") {
+		t.Fatalf("/review 2: %v %q", opened, app.notice)
+	}
+	app.submit(ctx, "/review 9")
+	if len(opened) != 2 || app.notice != "/review N with N from 1 to 4" {
+		t.Fatalf("/review 9: %v %q", opened, app.notice)
+	}
+	app.OpenURL = func(string) error { return errors.New("no display") }
+	app.submit(ctx, "/review")
+	if !strings.Contains(app.notice, "could not open the browser (no display); review it in the app: http://127.0.0.1:18781/?launch=5&chat=chat1#session=abc") {
+		t.Fatalf("failed open: %q", app.notice)
+	}
+	app.OpenURL = nil
+	app.submit(ctx, "/review")
+	if app.notice != "review it in the app: http://127.0.0.1:18781/?launch=5&chat=chat1#session=abc" {
+		t.Fatalf("no opener: %q", app.notice)
+	}
+	app.AppURL = ""
+	app.submit(ctx, "/review")
+	if !strings.Contains(app.notice, "open the Warden app on this chat to review it") {
+		t.Fatalf("no URL: %q", app.notice)
+	}
+	f.mu.Lock()
+	f.state.Chats[0].Reviews = nil
+	f.mu.Unlock()
+	s, _ = app.Client.State(ctx)
+	app.state = s
+	app.submit(ctx, "/review")
+	if !strings.Contains(app.notice, "nothing to review") {
+		t.Fatalf("none: %q", app.notice)
+	}
+	// A pending review is not an approval: "y" is a message, not an answer.
+	if len(app.state.Chats[0].Pending()) != 1 {
+		t.Fatal("the port approval should still be pending")
+	}
+}
+
+// `warden chat send --wait` announces a review once, pointing at the app.
+func TestFollowAnnouncesReviews(t *testing.T) {
+	c := &Chat{ID: "c1", Title: "one", Provider: "claude", Status: "idle", Reviews: []Review{{ID: "pr1", Kind: "pull_request", Status: "pending", Title: "Fix the README", Repository: "owner/repo"}}}
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	if _, err := Follow(ctx, f.client(), "c1", &out, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out.String(), "review pending: Claude proposed a pull request “Fix the README” to owner/repo — review it in the Warden app\n") != 1 {
+		t.Fatalf("output:\n%s", out.String())
 	}
 }
 
@@ -4996,5 +5153,54 @@ func TestUnreadMarkersDividerAndJump(t *testing.T) {
 	items := chatItems([]*Chat{{ID: "a", Title: "build 12"}, {ID: "b", Title: "two"}}, "2", nil)
 	if len(items) != 2 || items[0].Insert != "2" || items[1].Insert != "1" {
 		t.Fatalf("chat menu order: %+v", items)
+	}
+}
+
+// /bug and /test bugreporting (docs/bug-reporting-plan.md): the routes
+// are called and their notice shown; a bare /bug explains itself; off,
+// the notice says how to turn reporting on.
+func TestBugAndTestBugreportingCommands(t *testing.T) {
+	c := sampleChat()
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, later: make(chan func(context.Context), 8)}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+	app.command(ctx, "/bug")
+	if !strings.Contains(app.notice, "/bug TEXT reports a bug") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.command(ctx, "/bug the spinner never stops")
+	if !strings.HasPrefix(app.notice, "Bug report drafted — review it in the window that opened") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.command(ctx, "/test")
+	if !strings.Contains(app.notice, "/test bugreporting raises a test exception") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.command(ctx, "/test bugreporting")
+	if !strings.HasPrefix(app.notice, "Bug report drafted") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	f.mu.Lock()
+	f.bugsOff = true
+	got := strings.Join(f.bugs, "|")
+	f.mu.Unlock()
+	if got != "chat1: the spinner never stops|test" {
+		t.Fatalf("calls %q", got)
+	}
+	app.command(ctx, "/bug still broken")
+	if app.notice != "Bug reporting is off — `warden bugs on` to enable it" {
+		t.Fatalf("notice %q", app.notice)
+	}
+	// Both are in the / menu and in /help.
+	var names []string
+	for _, cmd := range Commands {
+		if cmd.Name == "bug" || cmd.Name == "test" {
+			names = append(names, cmd.Name+" "+cmd.Arg)
+		}
+	}
+	if strings.Join(names, ",") != "bug TEXT,test bugreporting" || !strings.Contains(helpText, "/bug TEXT") || !strings.Contains(helpText, "/test bugreporting") {
+		t.Fatalf("%v", names)
 	}
 }

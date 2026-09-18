@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"warden/chat/internal/bugreport"
 	"warden/chat/internal/transport"
 )
 
@@ -257,7 +258,7 @@ func (w *Worker) attachmentURL(p *publication) string {
 // (against the advertised address, https://) are the same consistency
 // checks the loopback listeners make, no more.
 func (w *Worker) previewServer() *http.Server {
-	return &http.Server{Handler: http.HandlerFunc(w.serveSharedPreview), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32768}
+	return &http.Server{Handler: bugreport.Handler(http.HandlerFunc(w.serveSharedPreview)), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32768}
 }
 func (w *Worker) serveSharedPreview(rw http.ResponseWriter, r *http.Request) {
 	id, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")

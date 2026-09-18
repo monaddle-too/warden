@@ -222,6 +222,11 @@ type Chat struct {
 	Archived     bool         `json:"archived"`
 	Conversation Conversation `json:"conversation"`
 	Approvals    []Approval   `json:"approvals"`
+	// Reviews are the agent's requests only the app can settle (a pull
+	// request proposal, suggested document edits, a document selection or
+	// creation), listed while they wait (chats/reviews.go); /review opens
+	// the app on them.
+	Reviews []Review `json:"reviews"`
 	// Commands are the slash commands the agent's session offers (Claude
 	// Code's built-ins and the workspace's own), for the / menu.
 	Commands []AgentCommand `json:"commands"`
@@ -279,6 +284,44 @@ func (a Approval) Permission() *Permission {
 
 // IsPlan reports whether the ask is the model's plan.
 func (p *Permission) IsPlan() bool { return p != nil && p.Tool == "ExitPlanMode" }
+
+// Review mirrors chats.Review: what the agent proposed and where.
+type Review struct {
+	ID          string  `json:"id"`
+	Kind        string  `json:"kind"` // pull_request, document_edit, document_access, document_create
+	Status      string  `json:"status"`
+	Title       string  `json:"title"`
+	Repository  string  `json:"repository"`
+	Document    string  `json:"document"`
+	Changes     int     `json:"changes"`
+	RequestedAt float64 `json:"requestedAt"`
+}
+
+// Summary is the one line a card, a notification or a log names the
+// review by: who proposed what, sanitised.
+func (r Review) Summary(provider string) string {
+	who := ProviderName(provider)
+	switch r.Kind {
+	case "pull_request":
+		s := who + " proposed a pull request “" + r.Title + "”"
+		if r.Repository != "" {
+			s += " to " + r.Repository
+		}
+		return sanitize(s)
+	case "document_edit":
+		if r.Status == "applying" {
+			return sanitize("Writing the suggested edits to “" + r.Document + "”")
+		}
+		n := "changes"
+		if r.Changes == 1 {
+			n = "change"
+		}
+		return sanitize(fmt.Sprintf("%s suggested %d %s to “%s”", who, r.Changes, n, r.Document))
+	case "document_create":
+		return sanitize(who + " asked to create a document “" + r.Document + "”")
+	}
+	return who + " asked to choose documents"
+}
 
 // Pending returns the approvals still waiting for the owner.
 func (c *Chat) Pending() []Approval {
@@ -848,4 +891,28 @@ func (c *Client) Diff(ctx context.Context, chatID string) (*WorkspaceChanges, er
 		return nil, err
 	}
 	return &out, nil
+}
+
+// BugResult is what the bug routes answer (docs/bug-reporting-plan.md):
+// whether a draft was written, its id, and the line to show the person.
+type BugResult struct {
+	Drafted bool   `json:"drafted"`
+	ID      string `json:"id,omitempty"`
+	Notice  string `json:"notice"`
+}
+
+// Bug drafts a user bug report from the chat (the composer's /bug); the
+// launcher presents it for review.
+func (c *Client) Bug(ctx context.Context, chatID, text string) (BugResult, error) {
+	var out BugResult
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/bug", map[string]string{"text": text}, &out)
+	return out, err
+}
+
+// BugTest raises the test exception in the chat service (/test
+// bugreporting), which drafts a report through its own recovery.
+func (c *Client) BugTest(ctx context.Context) (BugResult, error) {
+	var out BugResult
+	err := c.do(ctx, "POST", "bug-test", map[string]string{}, &out)
+	return out, err
 }

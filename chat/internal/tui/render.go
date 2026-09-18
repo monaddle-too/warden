@@ -821,6 +821,28 @@ func inputLines(input map[string]any) []string {
 	return out
 }
 
+// RenderReviews lays out the reviews waiting in the app, above the
+// approvals: nothing here answers them, /review opens the app on the chat.
+func RenderReviews(c *Chat, width int) []string {
+	var out []string
+	for i, r := range c.Reviews {
+		hint := "review it in the app: /review"
+		if len(c.Reviews) > 1 {
+			hint = fmt.Sprintf("review it in the app: /review %d", i+1)
+		}
+		if r.Kind == "document_edit" && r.Status == "applying" {
+			hint = "the app is writing it"
+		}
+		out = append(out, bold+yellow+"⚑ "+r.Summary(c.Provider)+reset+dim+"   "+hint+reset)
+		if r.Kind != "pull_request" && r.Title != "" {
+			// A pull request's title is its summary; the others carry the
+			// agent's reason or summary under the headline.
+			out = append(out, wrap(sanitize(strings.ReplaceAll(r.Title, "\n", " ")), width, "  ", "  ")...)
+		}
+	}
+	return out
+}
+
 // RenderApprovals lays out the pending approvals with the keys that answer
 // them. The first pending approval is the one y/n and typed answers address.
 func RenderApprovals(c *Chat, width int) []string {
