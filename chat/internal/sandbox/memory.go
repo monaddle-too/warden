@@ -204,19 +204,22 @@ del out['total']
 print(json.dumps(out))
 `
 
-// memoryWriteScript moves a staged file (copied into the guest's /tmp) to
+// memoryWriteScript moves a staged file (copied into the agent home) to
 // its place: the scope root is opened O_NOFOLLOW, intermediate directories
 // are opened descriptor-relative (created, for a rule's folder or the
 // auto-memory directory, when missing), and the target is opened
 // O_NOFOLLOW|O_CREAT|O_TRUNC relative to its directory, so nothing follows
 // a symlink the agent planted. Arguments: the scope root, the relative
-// path, the staged file.
+// path, the staged file. The copy arrives owned by the host's uid (the
+// runtime copies as root), so it is staged world-readable and put in the
+// agent's home, where the agent user can remove it; /tmp is sticky.
 const memoryWriteScript = `import sys,os,stat
 root,path,staged=sys.argv[1:4]
 parts=path.split('/')
 assert parts and all((p and p not in ('.','..') and not p.startswith('.')) or p=='.claude' for p in parts)
 data=open(staged,'rb').read()
-os.unlink(staged)
+try: os.unlink(staged)
+except OSError: pass
 fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
 try:
  for p in parts[:-1]:
@@ -330,9 +333,10 @@ func (w *Worker) writeMemory(ctx context.Context, r Request) (Response, error) {
 	}
 	w.mu.Lock()
 	s := w.managed.Sandboxes[r.SandboxID]
-	var root, path string
+	var root, path, home string
 	if s != nil {
-		workspace, home, autoDir := w.memoryRoots(s, r.Path)
+		var workspace, autoDir string
+		workspace, home, autoDir = w.memoryRoots(s, r.Path)
 		root, path = workspace, r.Directory
 		if r.Scope == MemoryScopeAuto {
 			// Relative to the home, so the projects tree and the memory
@@ -351,13 +355,15 @@ func (w *Worker) writeMemory(ctx context.Context, r Request) (Response, error) {
 		return Response{}, err
 	}
 	staged := filepath.Join(stage, base)
-	if err = os.WriteFile(staged, r.Bytes, 0600); err != nil {
+	// World-readable: the guest copy keeps the mode but not the owner (the
+	// staging directory itself is the worker's, 0700).
+	if err = os.WriteFile(staged, r.Bytes, 0644); err != nil {
 		return Response{}, err
 	}
 	defer os.Remove(staged)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	guest := "/tmp/" + base
+	guest := home + "/." + base
 	if err = w.Runtime.Copy(ctx, name, staged, guest); err != nil {
 		return Response{}, errors.New("could not copy the file into the sandbox")
 	}

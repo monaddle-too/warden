@@ -278,7 +278,7 @@ func TestMemoryOpsRunThroughTheRuntime(t *testing.T) {
 	d.mu.Lock()
 	calls := append([]string(nil), d.calls[before:]...)
 	d.mu.Unlock()
-	if len(calls) != 2 || !strings.HasPrefix(calls[0], "copy:"+name+":/tmp/warden-memory-") {
+	if len(calls) != 2 || !strings.HasPrefix(calls[0], "copy:"+name+":/home/agent/.warden-memory-") {
 		t.Fatalf("%q", calls)
 	}
 	guest := strings.TrimPrefix(calls[0], "copy:"+name+":")
@@ -300,7 +300,7 @@ func TestMemoryOpsRunThroughTheRuntime(t *testing.T) {
 	d.mu.Lock()
 	call = d.calls[before+1]
 	d.mu.Unlock()
-	if !strings.Contains(call, " /home/agent .claude/projects/-reported/memory/MEMORY.md /tmp/warden-memory-") {
+	if !strings.Contains(call, " /home/agent .claude/projects/-reported/memory/MEMORY.md /home/agent/.warden-memory-") {
 		t.Fatalf("%q", call)
 	}
 	r.Path = ""
@@ -313,7 +313,7 @@ func TestMemoryOpsRunThroughTheRuntime(t *testing.T) {
 	d.mu.Lock()
 	call = d.calls[before+1]
 	d.mu.Unlock()
-	if !strings.Contains(call, " /home/agent .claude/projects/-home-agent-workspace/memory/MEMORY.md /tmp/warden-memory-") {
+	if !strings.Contains(call, " /home/agent .claude/projects/-home-agent-workspace/memory/MEMORY.md /home/agent/.warden-memory-") {
 		t.Fatalf("%q", call)
 	}
 	// A guest failure is reported without the runtime's detail.
