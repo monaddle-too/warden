@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+	"warden/chat/internal/chats"
 )
 
 // App is the interactive terminal client for one chat at a time.
@@ -58,10 +59,11 @@ type App struct {
 	quiet    bool // hide tool steps and thinking (Ctrl+O)
 	// diff is the session diff /diff fetched, shown under the transcript
 	// (one line per file; Tab expands the hunks) until /diff again.
-	diff   *WorkspaceChanges
-	redraw bool // clear the screen on the next draw (Ctrl+L)
-	quit   bool
-	ctrlC  time.Time // last Ctrl+C; a second within ctrlCQuit quits
+	diff    *WorkspaceChanges
+	redraw  bool // clear the screen on the next draw (Ctrl+L)
+	quit    bool
+	ctrlC   time.Time // last Ctrl+C; a second within ctrlCQuit quits
+	lastEsc time.Time // last Esc on an idle chat; a second within doubleEscape edits the last message
 
 	menu        *Menu
 	menuOff     string // the draft the menu was dismissed for (Esc)
@@ -70,9 +72,15 @@ type App struct {
 	// later carries what a background request (a "!" command, which may
 	// run for a minute) has to apply on the main loop: a notice, a state
 	// refresh.
-	later       chan func(context.Context)
-	search      *searchState
-	confirm     *confirmation
+	later   chan func(context.Context)
+	search  *searchState
+	confirm *confirmation
+	// editing is set while the composer holds a file or the person's
+	// instructions (/memory edit, /instructions edit): Enter saves it
+	// through save, Esc cancels. memoryFiles is the last listing per chat,
+	// so /memory N can name a file by number.
+	editing     *editing
+	memoryFiles map[string][]MemoryFile
 	attachments map[string][]Attachment // uploads waiting for the next message, per chat
 	histories   map[string][]string     // in-memory history per chat when HistoryDir is empty
 	historyChat string                  // chat whose history the editor holds
@@ -119,6 +127,14 @@ type confirmation struct {
 	run    func(context.Context)
 }
 
+// editing is what the composer is editing instead of a message: a label
+// for the status, and save, which stores the text (the draft comes back
+// when it fails).
+type editing struct {
+	label string
+	save  func(context.Context, string) error
+}
+
 // page is how far PgUp/PgDn move: a screen minus two lines of context.
 func (a *App) page() int {
 	if a.rows > 4 {
@@ -132,10 +148,13 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
            /stop /model M /provider P /mode M · /open /previews /preview N /unpublish N
            /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
+           /queue (list) /queue send · /withdraw N · /edit [N] [both] (N from /rewind)
            /fork (list) /fork N|all copies the chat into a sibling · /cost totals so far
            /btw QUESTION asks a copy of the session (never sent to the agent)
            /style [default|Explanatory|Learning] · /bell [on|off]
            /find TEXT /copy /expand /verbose /clear /quit
+           /instructions [edit|clear] your standing instructions, given to the agent in every chat
+           /memory [FILE] [edit FILE] the workspace's CLAUDE.md, rules and auto-memory files
            /compact [what to keep] asks Claude to replace the history with a summary
 composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
            a long paste becomes [Pasted text #N — M lines] and is sent in full
@@ -143,6 +162,8 @@ composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste ke
            #note appends a bullet to the workspace's CLAUDE.md
            @path completes a workspace path (Tab or Enter accepts)
            Up/Down recall prompts (or move between lines) · Ctrl+R searches them
+           a message sent while the agent runs is queued: ↑ (empty draft) edits the last one
+           Esc Esc (empty draft, agent idle) edits your last message: the conversation rewinds to before it
            Ctrl+A/E line start/end · Ctrl+U/K delete to line start/end · Ctrl+W a word
 keys       y / n answer the first pending approval; typed text answers a question
            tool asks: y allow · a allow always · n [message] deny
@@ -357,6 +378,21 @@ func (a *App) saveHistory() {
 // set) and then to the chat or the command.
 func (a *App) send(ctx context.Context) {
 	var text string
+	if ed := a.editing; ed != nil {
+		// The composer holds a file: Enter saves it as typed (no trimming,
+		// no history), and the draft stays if the save fails.
+		text = a.editor.Text()
+		a.menu = nil
+		a.scroll = 0
+		if err := ed.save(ctx, text); err != nil {
+			a.setNotice(err.Error())
+			return
+		}
+		a.editing = nil
+		a.editor.Clear()
+		a.setNotice("saved " + ed.label)
+		return
+	}
 	if a.confirm != nil {
 		// An answer to a confirmation is not a prompt worth recalling.
 		text = strings.TrimSpace(a.editor.Text())
@@ -397,6 +433,14 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 	case KeyCtrlC:
 		a.confirm = nil
 		now := a.now()
+		if ed := a.editing; ed != nil {
+			a.editing = nil
+			a.editor.Clear()
+			a.menu = nil
+			a.ctrlC = now
+			a.setNotice("edit of " + ed.label + " cancelled · Ctrl+C again to quit")
+			return
+		}
 		if a.editor.Text() != "" || a.menu != nil {
 			a.editor.Clear()
 			a.menu = nil
@@ -421,13 +465,26 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 		case a.confirm != nil:
 			a.confirm = nil
 			a.setNotice("cancelled")
+		case a.editing != nil:
+			label := a.editing.label
+			a.editing = nil
+			a.editor.Clear()
+			a.setNotice("edit of " + label + " cancelled; nothing saved")
 		case c != nil && c.Running():
 			if err := a.Client.Stop(ctx, c.ID); err != nil {
 				a.setNotice(err.Error())
+			} else if len(queuedMessages(c)) > 0 {
+				a.setNotice("interrupting the agent; the queued messages are held (/queue send lets them go)")
 			} else {
 				a.setNotice("interrupting the agent")
 			}
+		case c != nil && a.editor.Text() == "" && !a.lastEsc.IsZero() && a.now().Sub(a.lastEsc) <= doubleEscape:
+			// Esc-Esc (Claude Code's): the last message back into the
+			// editor, the conversation rewound to before it (queue.go).
+			a.lastEsc = time.Time{}
+			a.editLast(ctx, c)
 		default:
+			a.lastEsc = a.now()
 			a.scroll = 0
 		}
 	case KeyCtrlO:
@@ -478,6 +535,15 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 		}
 	case KeyEnter:
 		a.send(ctx)
+	case KeyUp:
+		// On an empty draft with a message queued, ↑ edits the last one
+		// (Claude Code's); otherwise the line above, or the history.
+		if a.editor.Text() == "" && a.editLastQueued(ctx, c) {
+			return
+		}
+		if a.editor.Handle(k) {
+			a.refreshMenu(ctx)
+		}
 	default:
 		if a.editor.Handle(k) {
 			a.refreshMenu(ctx)
@@ -861,6 +927,98 @@ func (a *App) setMode(ctx context.Context, c *Chat, mode string) {
 	a.setNotice("permission mode " + mode + ": " + modeHint(mode))
 }
 
+// setSetting handles /thinking, /effort and /fast: with no argument it
+// says what the chat has, otherwise it sends the change (the service
+// validates and refuses what this Warden does not offer).
+func (a *App) setSetting(ctx context.Context, c *Chat, name, arg string) {
+	if c == nil {
+		a.setNotice("no chat selected")
+		return
+	}
+	if c.Provider != "claude" {
+		a.setNotice("thinking, effort and fast mode apply to Claude chats")
+		return
+	}
+	change := map[string]any{}
+	switch name {
+	case "thinking":
+		if arg == "" {
+			a.setNotice("thinking " + thinkingLabel(c.Thinking) + " · /thinking on|off|TOKENS (8k)")
+			return
+		}
+		v, err := chats.ParseThinking(arg)
+		if err != nil {
+			a.setNotice(err.Error())
+			return
+		}
+		change["thinking"] = v
+	case "effort":
+		if arg == "" {
+			a.setNotice("effort " + orDefault(c.Effort) + " · /effort " + strings.Join(chats.Efforts, "|") + "|default")
+			return
+		}
+		if arg == "default" {
+			arg = ""
+		}
+		if !chats.ValidEffort(arg) {
+			a.setNotice("/effort " + strings.Join(chats.Efforts, "|") + "|default")
+			return
+		}
+		change["effort"] = arg
+	case "fast":
+		switch arg {
+		case "":
+			state := "off"
+			if c.Fast {
+				state = "on"
+			}
+			if c.Session != nil && c.Session.FastMode != "" {
+				state += " (session: " + c.Session.FastMode + ")"
+			}
+			a.setNotice("fast mode " + state + " · /fast on|off")
+			return
+		case "on", "off":
+			change["fast"] = arg == "on"
+		default:
+			a.setNotice("/fast on|off")
+			return
+		}
+	}
+	if err := a.Client.Settings(ctx, c.ID, change); err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	for k, v := range change {
+		switch k {
+		case "thinking":
+			a.setNotice("thinking " + thinkingLabel(v.(string)))
+		case "effort":
+			a.setNotice("effort " + orDefault(v.(string)))
+		case "fast":
+			if v.(bool) {
+				a.setNotice("fast mode on: faster answers at a higher price, on the models that offer it")
+			} else {
+				a.setNotice("fast mode off")
+			}
+		}
+	}
+}
+
+// thinkingLabel words a thinking setting: default, off, or the budget
+// (8k for 8000).
+func thinkingLabel(setting string) string {
+	switch setting {
+	case "":
+		return "default (the model decides)"
+	case "off":
+		return "off"
+	}
+	if n, err := strconv.Atoi(setting); err == nil && n >= 1000 && n%1000 == 0 {
+		return strconv.Itoa(n/1000) + "k tokens"
+	}
+	return setting + " tokens"
+}
+
 func orMode(mode string) string {
 	if mode == "" {
 		return "auto"
@@ -1095,6 +1253,10 @@ func (a *App) command(ctx context.Context, line string) {
 		}
 		if err := a.Client.Agent(ctx, c.ID, provider, model); err != nil {
 			a.setNotice(err.Error())
+		} else if name == "model" && provider == "claude" {
+			// A Claude chat's live session takes the model now; the
+			// status line shows what it resolved after the next turn.
+			a.setNotice(fmt.Sprintf("model %s · a running session switches now, otherwise the next run", orDefault(model)))
 		} else {
 			a.setNotice(fmt.Sprintf("next run uses %s · %s", provider, orDefault(model)))
 		}
@@ -1111,6 +1273,8 @@ func (a *App) command(ctx context.Context, line string) {
 		default:
 			a.setNotice("/mode auto|ask|plan")
 		}
+	case "thinking", "effort", "fast":
+		a.setSetting(ctx, c, name, arg)
 	case "attach":
 		a.attach(ctx, c, arg)
 	case "attachments":
@@ -1160,8 +1324,18 @@ func (a *App) command(ctx context.Context, line string) {
 		a.export(c, arg)
 	case "rewind":
 		a.rewind(ctx, c, arg)
+	case "queue":
+		a.queue(ctx, c, arg)
+	case "withdraw":
+		a.withdraw(ctx, c, arg)
+	case "edit":
+		a.edit(ctx, c, arg)
 	case "diff":
 		a.showDiff(ctx, c, arg)
+	case "instructions":
+		a.instructions(ctx, arg)
+	case "memory":
+		a.memory(ctx, c, arg)
 	case "fork":
 		a.fork(ctx, c, arg)
 	case "btw":
@@ -1273,6 +1447,174 @@ func (a *App) command(ctx context.Context, line string) {
 		}
 		a.setNotice("unknown command /" + name + "; /help")
 	}
+}
+
+// instructions shows, edits or clears the person's standing instructions
+// (delivered to the agent in every chat they take part in). "edit" loads
+// the text into the composer; Enter saves it.
+func (a *App) instructions(ctx context.Context, arg string) {
+	switch strings.ToLower(arg) {
+	case "":
+		v, err := a.Client.Instructions(ctx)
+		if err != nil {
+			a.setNotice(err.Error())
+			return
+		}
+		if strings.TrimSpace(v.Text) == "" {
+			a.setNotice("no standing instructions; /instructions edit writes them (the agent gets them in every chat you take part in)")
+			return
+		}
+		a.setNotice("your instructions (the agent gets them in every chat you take part in; /instructions edit changes them):\n" + sanitize(v.Text))
+	case "edit":
+		v, err := a.Client.Instructions(ctx)
+		if err != nil {
+			a.setNotice(err.Error())
+			return
+		}
+		a.menu = nil
+		a.editor.Set(v.Text)
+		a.editing = &editing{label: "your instructions", save: a.Client.SetInstructions}
+		a.setNotice("editing your instructions · Enter saves, Esc cancels")
+	case "clear":
+		if err := a.Client.SetInstructions(ctx, ""); err != nil {
+			a.setNotice(err.Error())
+			return
+		}
+		a.setNotice("instructions cleared")
+	default:
+		a.setNotice("/instructions [edit|clear]")
+	}
+}
+
+// memory lists the workspace's memory files, shows one, or loads one into
+// the composer to edit (Enter saves). A file is named by its number in
+// the last listing or by its label (the path; auto:PATH for an auto-memory
+// file); a workspace path that does not exist yet can be edited into
+// being (CLAUDE.md, .claude/rules/NAME.md).
+func (a *App) memory(ctx context.Context, c *Chat, arg string) {
+	if c == nil {
+		a.setNotice("no chat selected")
+		return
+	}
+	verb, rest, _ := strings.Cut(arg, " ")
+	rest = strings.TrimSpace(rest)
+	edit := strings.EqualFold(verb, "edit")
+	target := arg
+	if edit {
+		target = rest
+	}
+	if arg == "" || (edit && target == "") {
+		view, err := a.Client.MemoryFiles(ctx, c.ID)
+		if err != nil {
+			a.setNotice(err.Error())
+			return
+		}
+		if a.memoryFiles == nil {
+			a.memoryFiles = map[string][]MemoryFile{}
+		}
+		a.memoryFiles[c.ID] = view.Files
+		a.setNotice(memoryListing(view))
+		return
+	}
+	f, ok := a.memoryFile(ctx, c, target)
+	if !ok {
+		if !edit {
+			a.setNotice("no such memory file: " + sanitize(target) + "; /memory lists them")
+			return
+		}
+		// A new workspace file (the service validates the path).
+		f = MemoryFile{Scope: "workspace", Path: target}
+		if strings.HasPrefix(target, "auto:") {
+			f = MemoryFile{Scope: "auto", Path: strings.TrimPrefix(target, "auto:")}
+		}
+	}
+	if !edit {
+		a.setNotice(memoryText(f))
+		return
+	}
+	if f.Truncated {
+		a.setNotice(f.Label() + " is larger than the view shows; editing it here would cut it")
+		return
+	}
+	scope, path, label := f.Scope, f.Path, f.Label()
+	a.menu = nil
+	a.editor.Set(f.Text)
+	a.editing = &editing{label: label, save: func(ctx context.Context, text string) error {
+		return a.Client.WriteMemory(ctx, c.ID, scope, path, text)
+	}}
+	a.setNotice("editing " + label + " · Enter saves, Esc cancels")
+}
+
+// memoryFile finds a file by number in the last listing or by label,
+// fetching the listing when there is none yet.
+func (a *App) memoryFile(ctx context.Context, c *Chat, target string) (MemoryFile, bool) {
+	files, ok := a.memoryFiles[c.ID]
+	if !ok {
+		view, err := a.Client.MemoryFiles(ctx, c.ID)
+		if err != nil {
+			return MemoryFile{}, false
+		}
+		if a.memoryFiles == nil {
+			a.memoryFiles = map[string][]MemoryFile{}
+		}
+		a.memoryFiles[c.ID] = view.Files
+		files = view.Files
+	}
+	if n, err := strconv.Atoi(target); err == nil {
+		if n >= 1 && n <= len(files) {
+			return files[n-1], true
+		}
+		return MemoryFile{}, false
+	}
+	for _, f := range files {
+		if f.Label() == target || f.Path == target {
+			return f, true
+		}
+	}
+	return MemoryFile{}, false
+}
+
+// memoryListing is the /memory notice: one numbered line per file with its
+// size, then where they are and whether the agent reads them.
+func memoryListing(view MemoryView) string {
+	var b strings.Builder
+	for i, f := range view.Files {
+		fmt.Fprintf(&b, "%2d  %-40s %s\n", i+1, truncate(sanitize(f.Label()), 40), FormatSize(f.Size))
+	}
+	if len(view.Files) == 0 {
+		b.WriteString("no memory files yet; /memory edit CLAUDE.md creates one\n")
+	}
+	fmt.Fprintf(&b, "workspace: %s", sanitize(view.Root))
+	if view.Exists {
+		fmt.Fprintf(&b, " · auto-memory: %s", sanitize(view.AutoDir))
+	}
+	b.WriteString("\n/memory N shows a file · /memory edit N (or a path) edits it")
+	if view.Hint != "" {
+		b.WriteString("\n" + view.Hint)
+	}
+	return b.String()
+}
+
+// memoryShowLines bounds what /memory FILE prints.
+const memoryShowLines = 60
+
+// memoryText is the /memory FILE notice: the file's text, cut after
+// memoryShowLines lines with a pointer to editing it.
+func memoryText(f MemoryFile) string {
+	lines := strings.Split(strings.TrimRight(f.Text, "\n"), "\n")
+	head := fmt.Sprintf("%s (%s)", f.Label(), FormatSize(f.Size))
+	if len(lines) == 1 && lines[0] == "" {
+		return head + ": empty"
+	}
+	cut := ""
+	if len(lines) > memoryShowLines {
+		cut = fmt.Sprintf("\n… %d more lines; /memory edit %s opens all of it", len(lines)-memoryShowLines, f.Label())
+		lines = lines[:memoryShowLines]
+	}
+	if f.Truncated {
+		cut += "\n(the view shows the first " + FormatSize(int64(len(f.Text))) + " only)"
+	}
+	return head + ":\n" + sanitize(strings.Join(lines, "\n")) + cut
 }
 
 // Attachment limits, the chat service's (chats/attachments.go).
@@ -1518,6 +1860,9 @@ func (a *App) extraLines(width int) []string {
 	}
 	if q := a.confirm; q != nil {
 		out = append(out, wrap(q.prompt, width, bold+yellow+"? "+reset, "  ")...)
+	}
+	if ed := a.editing; ed != nil {
+		out = append(out, wrap("editing "+ed.label+" · Enter saves · Alt+Enter (or Ctrl+J) inserts a line · Esc cancels", width, bold+cyan+"✎ "+reset, "  ")...)
 	}
 	return out
 }

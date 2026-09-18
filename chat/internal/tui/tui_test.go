@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -217,6 +218,14 @@ type fakeServer struct {
 	srv     *httptest.Server
 	token   string
 	notes   []string // "#" notes the memory route received
+	// fastMode is whether the fake Warden allows fast mode.
+	fastMode bool
+	// instructions is the person's text (me/instructions); memory the
+	// listing chats/{id}/memory answers; writes what memory/write received
+	// as scope:path=text.
+	instructions string
+	memory       MemoryView
+	writes       []string
 }
 
 func newFakeServer(t *testing.T, initial State) *fakeServer {
@@ -402,6 +411,33 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		c.Conversation.Entries = append(c.Conversation.Entries, entry)
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]any{"id": entry.ID, "exitCode": code, "output": entry.Detail})
+	case path == "me/instructions":
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if r.Method == "POST" {
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			f.instructions = strings.TrimSpace(body["text"].(string))
+		}
+		json.NewEncoder(w).Encode(Instructions{Text: f.instructions, Name: "the owner"})
+	case strings.HasSuffix(path, "/memory") && r.Method == "GET":
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		json.NewEncoder(w).Encode(f.memory)
+	case strings.HasSuffix(path, "/memory/write"):
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		scope, _ := body["scope"].(string)
+		file, _ := body["path"].(string)
+		text, _ := body["text"].(string)
+		if file == "README.md" {
+			http.Error(w, `{"error":"a workspace memory file is CLAUDE.md, CLAUDE.local.md, AGENTS.md, .claude/CLAUDE.md or a .md file under .claude/rules"}`, 409)
+			return
+		}
+		f.mu.Lock()
+		f.writes = append(f.writes, scope+":"+file+"="+text)
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/memory"):
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -424,6 +460,28 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.Mode = body["mode"].(string)
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/settings"):
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/settings")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		if fast, ok := body["fast"].(bool); ok && fast && !f.fastMode {
+			f.mu.Unlock()
+			http.Error(w, `{"error":"fast mode is not enabled on this Warden (providers.claude.allowFastMode)"}`, 409)
+			return
+		}
+		if v, ok := body["thinking"].(string); ok {
+			c.Thinking = v
+		}
+		if v, ok := body["effort"].(string); ok {
+			c.Effort = v
+		}
+		if v, ok := body["fast"].(bool); ok {
+			c.Fast = v
+		}
 		f.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/agent"), strings.HasSuffix(path, "/revoke"):
@@ -506,6 +564,45 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "marker", Role: "rewind", Text: "Rewound to before “" + body.TurnID + "” (" + body.What + ")", Detail: "1 file restored, 0 files removed"})
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(RewindResult{MessageID: body.TurnID, What: body.What, Restored: []string{"a.txt"}, Conversation: "rewound"})
+	case strings.HasSuffix(path, "/withdraw"):
+		// A queued message out of the queue, returned; a sent one refused.
+		var body struct{ ID string }
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/withdraw")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		for i, e := range c.Conversation.Entries {
+			if e.ID != body.ID {
+				continue
+			}
+			if e.Delivery != "queued" {
+				f.mu.Unlock()
+				http.Error(w, `{"error":"that message was already sent to the agent"}`, 409)
+				return
+			}
+			c.Conversation.Entries = append(c.Conversation.Entries[:i:i], c.Conversation.Entries[i+1:]...)
+			f.mu.Unlock()
+			json.NewEncoder(w).Encode(e)
+			return
+		}
+		f.mu.Unlock()
+		http.Error(w, `{"error":"no such message in this chat"}`, 409)
+	case strings.HasSuffix(path, "/send-queued"):
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/send-queued")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		queued := false
+		for _, e := range c.Conversation.Entries {
+			queued = queued || e.Delivery == "queued"
+		}
+		if !queued {
+			f.mu.Unlock()
+			http.Error(w, `{"error":"nothing is queued"}`, 409)
+			return
+		}
+		c.Status = "queued"
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/diff"):
 		json.NewEncoder(w).Encode(WorkspaceChanges{Base: "u2", Files: []ChangedFile{{Path: "src/app.go", Added: 2, Removed: 1}, {Path: "logo.png", Binary: true}}, Diff: "diff --git a/src/app.go b/src/app.go\n--- a/src/app.go\n+++ b/src/app.go\n@@ -1,2 +1,3 @@\n-old\n+new\n+more\n context\n"})
 	default:
@@ -942,8 +1039,9 @@ func TestSlashMenuCompletesAndRuns(t *testing.T) {
 	if app.ChatID != "chat2" || app.editor.Text() != "" {
 		t.Fatalf("enter on a chat: %q draft %q", app.ChatID, app.editor.Text())
 	}
-	// Enter on a command without an argument runs it.
-	typeText(app, ctx, "/qu")
+	// Enter on a command without an argument runs it ("/qu" would also
+	// match /queue).
+	typeText(app, ctx, "/qui")
 	app.handleKey(ctx, Key{Kind: KeyEnter})
 	if !app.quit {
 		t.Fatal("enter on /quit did not quit")
@@ -1878,6 +1976,96 @@ func TestRenderSubagentBackgroundAndTodo(t *testing.T) {
 	}
 }
 
+// /thinking, /effort and /fast set a Claude chat's session settings (a
+// budget as 8k, a level, on/off), say what is set when bare, refuse what
+// the service refuses, and the status line shows the settings and the
+// model the session resolved.
+func TestThinkingEffortAndFastCommands(t *testing.T) {
+	claude := &Chat{ID: "c1", Title: "Claude", Provider: "claude", Model: "opus", Status: "idle"}
+	codex := &Chat{ID: "c2", Title: "Codex", Provider: "codex", Status: "idle"}
+	f := newFakeServer(t, State{Chats: []*Chat{claude, codex}})
+	app := &App{Client: f.client(), ChatID: "c1", Output: io.Discard}
+	ctx := context.Background()
+	refresh := func() { s, _ := app.Client.State(ctx); app.state = s }
+	refresh()
+	app.submit(ctx, "/thinking")
+	if !strings.Contains(app.notice, "thinking default") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/thinking 8k")
+	refresh()
+	if app.state.Chats[0].Thinking != "8000" || !strings.Contains(app.notice, "thinking 8k tokens") {
+		t.Fatalf("%q %q", app.state.Chats[0].Thinking, app.notice)
+	}
+	app.submit(ctx, "/thinking off")
+	refresh()
+	if app.state.Chats[0].Thinking != "off" {
+		t.Fatal(app.state.Chats[0].Thinking)
+	}
+	app.submit(ctx, "/thinking lots")
+	if !strings.Contains(app.notice, "on, off or a budget") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/effort low")
+	refresh()
+	if app.state.Chats[0].Effort != "low" || !strings.Contains(app.notice, "effort low") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/effort ultra")
+	if !strings.Contains(app.notice, "/effort low|medium|high|xhigh|max|default") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/fast on")
+	if !strings.Contains(app.notice, "allowFastMode") {
+		t.Fatal(app.notice)
+	}
+	f.mu.Lock()
+	f.fastMode = true
+	f.mu.Unlock()
+	app.submit(ctx, "/fast on")
+	refresh()
+	if !app.state.Chats[0].Fast || !strings.Contains(app.notice, "fast mode on") {
+		t.Fatal(app.notice)
+	}
+	f.mu.Lock()
+	f.state.Chats[0].Session = &SessionInfo{Model: "claude-opus-5", FastMode: "on"}
+	f.mu.Unlock()
+	refresh()
+	line := plain(StatusLine(app.state.Chats[0], nil, true, time.Unix(0, 0)))
+	for _, want := range []string{"claude · opus (claude-opus-5)", "· thinking off", "· effort low", "· fast"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("status line %q lacks %q", line, want)
+		}
+	}
+	app.submit(ctx, "/fast")
+	if !strings.Contains(app.notice, "fast mode on (session: on)") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/effort default")
+	refresh()
+	if app.state.Chats[0].Effort != "" {
+		t.Fatal(app.state.Chats[0].Effort)
+	}
+	// /model on a Claude chat says the session takes it; a Codex chat's
+	// next run does.
+	app.submit(ctx, "/model opus")
+	if !strings.Contains(app.notice, "model opus · a running session switches now") {
+		t.Fatal(app.notice)
+	}
+	app.ChatID = "c2"
+	app.submit(ctx, "/effort low")
+	if !strings.Contains(app.notice, "Claude chats") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/model gpt-5.5")
+	if !strings.Contains(app.notice, "next run uses codex · gpt-5.5") {
+		t.Fatal(app.notice)
+	}
+	if items := commandItems("thi", nil); len(items) != 1 || items[0].Name != "thinking" {
+		t.Fatalf("%+v", items)
+	}
+}
+
 func TestRewindCommandListsConfirmsAndRewinds(t *testing.T) {
 	f := newFakeServer(t, State{Chats: []*Chat{{ID: "chat1", Title: "Rewind", Provider: "claude", Status: "idle", Conversation: Conversation{Entries: []Entry{
 		{ID: "u1", Role: "user", Text: "Add a counter component"},
@@ -2216,6 +2404,334 @@ func TestCompactionDividerContextAndPassthrough(t *testing.T) {
 	app.submit(ctx, "/compact")
 	if !strings.Contains(app.notice, "unknown command /compact") {
 		t.Fatalf("codex notice: %q", app.notice)
+	}
+}
+
+// The queue: markers under queued messages, /queue, /withdraw N, ↑ on an
+// empty draft editing the last queued message (its files back on the
+// list), a held queue after Esc and /queue send.
+func TestQueueMarkersWithdrawAndEditLastQueued(t *testing.T) {
+	f := newFakeServer(t, State{Chats: []*Chat{{ID: "chat1", Title: "Queue", Provider: "claude", Status: "running", Conversation: Conversation{Entries: []Entry{
+		{ID: "u1", Role: "user", Text: "first", Delivery: "sent"},
+		{ID: "q1", Role: "user", Text: "second, while it runs", Delivery: "queued"},
+		{ID: "q2", Role: "user", Text: "third\nwith a file", Delivery: "queued", Attachments: []Attachment{{ID: "att1", Name: "notes.txt", Kind: "file", Size: 5}}},
+	}}}}})
+	ctx := context.Background()
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	app.refreshState(ctx)
+	joined := plain(strings.Join(RenderTranscript(app.chat(), 100, false), "\n"))
+	if strings.Count(joined, "(queued · sends when the agent finishes)") != 2 {
+		t.Fatalf("markers: %s", joined)
+	}
+	// Queued messages render last, after what the running turn appends.
+	f.mu.Lock()
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "a1", Role: "assistant", Text: "still working"})
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	joined = plain(strings.Join(RenderTranscript(app.chat(), 100, false), "\n"))
+	if strings.Index(joined, "still working") > strings.Index(joined, "second, while it runs") {
+		t.Fatalf("queued messages not last: %s", joined)
+	}
+	app.submit(ctx, "/queue")
+	notice := plain(app.notice)
+	if !strings.Contains(notice, " 1  second, while it runs") || !strings.Contains(notice, " 2  third with a file") || !strings.Contains(notice, "sent in order after this turn") {
+		t.Fatalf("/queue: %q", notice)
+	}
+	app.submit(ctx, "/withdraw 3")
+	if !strings.HasPrefix(app.notice, "/withdraw N") {
+		t.Fatalf("bad index: %q", app.notice)
+	}
+	app.submit(ctx, "/withdraw 1")
+	if app.notice != "withdrawn: second, while it runs" || len(queuedMessages(app.chat())) != 1 {
+		t.Fatalf("/withdraw 1: %q, %d queued", app.notice, len(queuedMessages(app.chat())))
+	}
+	// ↑ on an empty draft takes the last queued message into the editor.
+	app.handleKey(ctx, Key{Kind: KeyUp})
+	if app.editor.Text() != "third\nwith a file" || len(queuedMessages(app.chat())) != 0 || len(app.attachments["chat1"]) != 1 || app.attachments["chat1"][0].ID != "att1" {
+		t.Fatalf("↑: draft %q, %d queued, files %+v", app.editor.Text(), len(queuedMessages(app.chat())), app.attachments["chat1"])
+	}
+	if !strings.HasPrefix(app.notice, "editing the queued message") {
+		t.Fatalf("notice: %q", app.notice)
+	}
+	// Sent again (Enter), it carries the files.
+	app.send(ctx)
+	f.mu.Lock()
+	entries := f.state.Chats[0].Conversation.Entries
+	f.mu.Unlock()
+	last := entries[len(entries)-1]
+	if last.Text != "third\nwith a file" || len(last.Attachments) != 1 || last.Attachments[0].ID != "att1" || app.attachments["chat1"] != nil {
+		t.Fatalf("resent: %+v, waiting %+v", last, app.attachments["chat1"])
+	}
+	// With nothing queued, ↑ recalls the history as before.
+	app.editor.SetHistory([]string{"older prompt"})
+	app.handleKey(ctx, Key{Kind: KeyUp})
+	if app.editor.Text() != "older prompt" {
+		t.Fatalf("↑ without a queue: %q", app.editor.Text())
+	}
+	app.editor.Clear()
+	// A held queue: Esc interrupted the turn, the queued message stays.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "interrupted"
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "q3", Role: "user", Text: "held one", Delivery: "queued"})
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	joined = plain(strings.Join(RenderTranscript(app.chat(), 100, false), "\n"))
+	if !strings.Contains(joined, "(queued · held: /queue send lets it go, or the next message)") {
+		t.Fatalf("held marker: %s", joined)
+	}
+	app.submit(ctx, "/queue")
+	if !strings.Contains(plain(app.notice), "held since the agent was stopped") {
+		t.Fatalf("/queue held: %q", app.notice)
+	}
+	app.submit(ctx, "/queue send")
+	if app.notice != "sending the queued messages" || app.chat().Status != "queued" {
+		t.Fatalf("/queue send: %q %s", app.notice, app.chat().Status)
+	}
+	f.mu.Lock()
+	calls := strings.Join(f.calls, "\n")
+	f.mu.Unlock()
+	if !strings.Contains(calls, "POST chats/chat1/withdraw") || !strings.Contains(calls, "POST chats/chat1/send-queued") {
+		t.Fatalf("calls:\n%s", calls)
+	}
+	app.submit(ctx, "/queue nonsense")
+	if !strings.HasPrefix(app.notice, "/queue lists") {
+		t.Fatalf("/queue nonsense: %q", app.notice)
+	}
+	// Esc while running says the queue is held.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if !strings.Contains(app.notice, "queued messages are held") {
+		t.Fatalf("Esc notice: %q", app.notice)
+	}
+}
+
+// /edit N on a message the agent got confirms, rewinds the conversation
+// to before it (the code too with "both") and puts it in the editor;
+// Esc-Esc on an empty draft is /edit on the last message; a queued
+// message just leaves the queue.
+func TestEditCommandRewindsAndPrefills(t *testing.T) {
+	f := newFakeServer(t, State{Chats: []*Chat{{ID: "chat1", Title: "Edit", Provider: "claude", Status: "idle", Conversation: Conversation{Entries: []Entry{
+		{ID: "u1", Role: "user", Text: "Add a counter component", Delivery: "sent", Attachments: []Attachment{{ID: "att1", Name: "spec.md", Kind: "file", Size: 9}}},
+		{ID: "a1", Role: "assistant", Text: "Done."},
+		{ID: "u2", Role: "user", Text: "Now make it blue", Delivery: "sent"},
+		{ID: "a2", Role: "assistant", Text: "Blue now."},
+	}}}}})
+	ctx := context.Background()
+	now := time.Unix(0, 0)
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return now }}
+	app.refreshState(ctx)
+	for _, bad := range []string{"/edit 3", "/edit x", "/edit 2 sideways", "/edit 2 both extra"} {
+		app.submit(ctx, bad)
+		if app.confirm != nil || !strings.HasPrefix(app.notice, "/edit [N]") {
+			t.Fatalf("%s: confirm %v notice %q", bad, app.confirm != nil, app.notice)
+		}
+	}
+	app.submit(ctx, "/edit 2")
+	if app.confirm == nil || !strings.Contains(app.confirm.prompt, `Edit message 2 "Now make it blue"? The conversation goes back to before it`) {
+		t.Fatalf("confirm: %+v", app.confirm)
+	}
+	app.submit(ctx, "n")
+	if app.confirm != nil || app.notice != "cancelled" || app.editor.Text() != "" {
+		t.Fatalf("cancel: %+v %q %q", app.confirm, app.notice, app.editor.Text())
+	}
+	app.submit(ctx, "/edit 2")
+	app.submit(ctx, "y")
+	if app.confirm != nil || app.editor.Text() != "Now make it blue" || !strings.HasPrefix(app.notice, "rewound to before message 2 (conversation)") || !strings.HasSuffix(app.notice, "edit the message and Enter sends it") {
+		t.Fatalf("edit: %+v %q %q", app.confirm, app.editor.Text(), app.notice)
+	}
+	f.mu.Lock()
+	calls := strings.Join(f.calls, "\n")
+	entries := f.state.Chats[0].Conversation.Entries
+	f.mu.Unlock()
+	if !strings.Contains(calls, "POST chats/chat1/rewind") || len(entries) != 3 || entries[2].Role != "rewind" {
+		t.Fatalf("rewind route: %d entries, calls:\n%s", len(entries), calls)
+	}
+	app.editor.Clear()
+	// Esc-Esc on an empty draft: /edit on the last message left, with
+	// its file back on the list once confirmed; "both" rewinds the code.
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if app.confirm != nil {
+		t.Fatal("one Esc asked to edit")
+	}
+	now = now.Add(200 * time.Millisecond)
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if app.confirm == nil || !strings.Contains(app.confirm.prompt, `Edit message 1 "Add a counter component"?`) {
+		t.Fatalf("Esc-Esc: %+v", app.confirm)
+	}
+	app.submit(ctx, "n")
+	app.submit(ctx, "/edit 1 both")
+	if app.confirm == nil || !strings.Contains(app.confirm.prompt, "Code and conversation goes back") {
+		t.Fatalf("/edit 1 both: %+v", app.confirm)
+	}
+	app.submit(ctx, "y")
+	if app.editor.Text() != "Add a counter component" || len(app.attachments["chat1"]) != 1 || app.attachments["chat1"][0].Name != "spec.md" || !strings.HasPrefix(app.notice, "rewound to before message 1 (code and conversation)") {
+		t.Fatalf("/edit 1 both: %q files %+v notice %q", app.editor.Text(), app.attachments["chat1"], app.notice)
+	}
+	// Two Escapes far apart do not edit; a running chat is refused.
+	app.editor.Clear()
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	now = now.Add(2 * time.Second)
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if app.confirm != nil {
+		t.Fatal("slow Esc Esc asked to edit")
+	}
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "u3", Role: "user", Text: "sent one", Delivery: "sent"}, Entry{ID: "q1", Role: "user", Text: "queued one", Delivery: "queued"})
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.submit(ctx, "/edit 1")
+	if app.confirm != nil || app.notice != "stop the agent first (Esc)" {
+		t.Fatalf("running: %+v %q", app.confirm, app.notice)
+	}
+	// A queued message: no rewind, it just leaves the queue.
+	n := len(rewindTargets(app.chat()))
+	app.submit(ctx, "/edit "+strconv.Itoa(n))
+	if app.confirm != nil || app.editor.Text() != "queued one" || len(queuedMessages(app.chat())) != 0 {
+		t.Fatalf("/edit of a queued message: %+v %q", app.confirm, app.editor.Text())
+	}
+}
+
+// /instructions shows and edits the person's standing instructions in the
+// composer (Enter saves as typed, Esc cancels, a failed save keeps the
+// draft); /memory lists the workspace's files, shows one by number or
+// label, and edits one in the composer, a new workspace file included.
+func TestInstructionsAndMemoryCommands(t *testing.T) {
+	c := sampleChat()
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	f.memory = MemoryView{Root: "/home/agent/workspace", AutoDir: "/home/agent/.claude/projects/-home-agent-workspace/memory", Exists: true, Files: []MemoryFile{
+		{Scope: "workspace", Path: "CLAUDE.md", Size: 12, Text: "# Project\n\n- use tabs\n"},
+		{Scope: "workspace", Path: ".claude/rules/style.md", Size: 5, Text: "style"},
+		{Scope: "auto", Path: "MEMORY.md", Size: 5, Text: "index"},
+	}, Hint: "Claude reads these only once the workspace's settings are loaded, which the current launch does not do yet."}
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard}
+	ctx := context.Background()
+	s, _ := app.Client.State(ctx)
+	app.state = s
+
+	app.submit(ctx, "/instructions")
+	if !strings.Contains(app.notice, "no standing instructions") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	app.submit(ctx, "/instructions edit")
+	if app.editing == nil || app.editing.label != "your instructions" || app.editor.Text() != "" {
+		t.Fatalf("editing %+v text %q", app.editing, app.editor.Text())
+	}
+	typeText(app, ctx, "Answer in haiku form.")
+	app.handleKey(ctx, Key{Kind: KeyNewline})
+	typeText(app, ctx, "Be brief.")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.editing != nil || app.editor.Text() != "" || app.notice != "saved your instructions" {
+		t.Fatalf("after save: editing %v text %q notice %q", app.editing != nil, app.editor.Text(), app.notice)
+	}
+	f.mu.Lock()
+	saved := f.instructions
+	f.mu.Unlock()
+	if saved != "Answer in haiku form.\nBe brief." {
+		t.Fatalf("saved %q", saved)
+	}
+	if h := app.editor.History(); len(h) != 0 {
+		t.Fatalf("a file edit went into the prompt history: %v", h)
+	}
+	app.submit(ctx, "/instructions")
+	if !strings.Contains(app.notice, "Answer in haiku form.") {
+		t.Fatalf("notice %q", app.notice)
+	}
+	// Editing loads the current text; Esc cancels without saving.
+	app.submit(ctx, "/instructions edit")
+	if app.editor.Text() != "Answer in haiku form.\nBe brief." {
+		t.Fatalf("loaded %q", app.editor.Text())
+	}
+	typeText(app, ctx, " NOT")
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if app.editing != nil || app.editor.Text() != "" || !strings.Contains(app.notice, "cancelled") {
+		t.Fatalf("after Esc: %v %q %q", app.editing != nil, app.editor.Text(), app.notice)
+	}
+	f.mu.Lock()
+	saved = f.instructions
+	f.mu.Unlock()
+	if saved != "Answer in haiku form.\nBe brief." {
+		t.Fatalf("Esc saved: %q", saved)
+	}
+	frame := app.frame(80, 24)
+	if strings.Contains(strings.Join(frame.Extra, "\n"), "editing") {
+		t.Fatalf("banner after cancel: %v", frame.Extra)
+	}
+	app.submit(ctx, "/instructions clear")
+	f.mu.Lock()
+	saved = f.instructions
+	f.mu.Unlock()
+	if saved != "" || app.notice != "instructions cleared" {
+		t.Fatalf("clear: %q %q", saved, app.notice)
+	}
+
+	// /memory lists; N or a label shows; edit loads.
+	app.submit(ctx, "/memory")
+	for _, want := range []string{" 1  CLAUDE.md", " 2  .claude/rules/style.md", " 3  auto:MEMORY.md", "auto-memory: /home/agent/.claude/projects/-home-agent-workspace/memory", "Claude reads these only"} {
+		if !strings.Contains(app.notice, want) {
+			t.Fatalf("listing lacks %q:\n%s", want, app.notice)
+		}
+	}
+	app.submit(ctx, "/memory 1")
+	if !strings.Contains(app.notice, "CLAUDE.md (12 B):\n# Project\n\n- use tabs") {
+		t.Fatalf("show: %q", app.notice)
+	}
+	app.submit(ctx, "/memory auto:MEMORY.md")
+	if !strings.HasPrefix(app.notice, "auto:MEMORY.md (5 B):\nindex") {
+		t.Fatalf("show by label: %q", app.notice)
+	}
+	app.submit(ctx, "/memory 9")
+	if !strings.Contains(app.notice, "no such memory file") {
+		t.Fatalf("%q", app.notice)
+	}
+	app.submit(ctx, "/memory edit 2")
+	if app.editing == nil || app.editing.label != ".claude/rules/style.md" || app.editor.Text() != "style" {
+		t.Fatalf("edit: %+v %q", app.editing, app.editor.Text())
+	}
+	frame = app.frame(80, 24)
+	if !strings.Contains(plain(strings.Join(frame.Extra, "\n")), "editing .claude/rules/style.md · Enter saves") {
+		t.Fatalf("banner: %v", frame.Extra)
+	}
+	typeText(app, ctx, " guide")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.editing != nil || app.notice != "saved .claude/rules/style.md" {
+		t.Fatalf("after save: %v %q", app.editing != nil, app.notice)
+	}
+	// An auto-memory file edits under its scope; a new workspace path is
+	// created; a path the service refuses keeps the draft.
+	app.submit(ctx, "/memory edit auto:MEMORY.md")
+	typeText(app, ctx, "!")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	app.submit(ctx, "/memory edit .claude/rules/new.md")
+	if app.editing == nil || app.editor.Text() != "" {
+		t.Fatalf("new file: %+v %q", app.editing, app.editor.Text())
+	}
+	typeText(app, ctx, "fresh")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	app.submit(ctx, "/memory edit README.md")
+	typeText(app, ctx, "nope")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	if app.editing == nil || app.editor.Text() != "nope" || !strings.Contains(app.notice, "a workspace memory file is") {
+		t.Fatalf("refused save: %v %q %q", app.editing != nil, app.editor.Text(), app.notice)
+	}
+	app.handleKey(ctx, Key{Kind: KeyCtrlC})
+	if app.editing != nil || app.editor.Text() != "" {
+		t.Fatal("Ctrl+C did not cancel the edit")
+	}
+	f.mu.Lock()
+	writes := strings.Join(f.writes, "|")
+	f.mu.Unlock()
+	if writes != "workspace:.claude/rules/style.md=style guide|auto:MEMORY.md=index!|workspace:.claude/rules/new.md=fresh" {
+		t.Fatalf("writes %q", writes)
+	}
+	// The commands are in the menu.
+	app.editor.Set("/mem")
+	app.refreshMenu(ctx)
+	if app.menu == nil || len(app.menu.Items) != 1 || !strings.HasPrefix(app.menu.Items[0].Label, "/memory ") {
+		t.Fatalf("menu %+v", app.menu)
 	}
 }
 

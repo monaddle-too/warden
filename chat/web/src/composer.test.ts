@@ -7,12 +7,15 @@ import {
   commandItems,
   exactCommand,
   mentionFor,
+  parseThinking,
   prefixed,
   quoteCommand,
   replaceTrigger,
+  thinkingLabel,
   triggerAt,
   withoutCommand,
 } from "./composer";
+import { modelOptions } from "./components/ModelSelect";
 
 const models = [
   { value: "", label: "Provider default" },
@@ -45,6 +48,70 @@ describe("permission mode command", () => {
       kind: "command",
       command: COMMANDS.find((c) => c.name === "mode"),
     });
+  });
+});
+
+describe("thinking and effort commands", () => {
+  it("lists the presets after /thinking, takes any budget, and runs an exact one", () => {
+    const values = (q: string) =>
+      commandItems(q, models).map((i) =>
+        i.kind === "thinking" ? i.thinking.value : i.kind,
+      );
+    expect(values("thinking ")).toEqual(["", "off", "4000", "16000", "32000"]);
+    expect(values("thinking o")).toEqual(["", "off"]);
+    expect(values("thinking 8k")).toEqual(["8000"]);
+    expect(values("thinking 4k")).toEqual(["4000"]);
+    expect(values("thinking lots")).toEqual([]);
+    const hit = exactCommand("/thinking 8k", models);
+    expect(hit?.kind === "thinking" && hit.thinking.value).toBe("8000");
+    const off = exactCommand("/thinking off", models);
+    expect(off?.kind === "thinking" && off.thinking.value).toBe("off");
+    const on = exactCommand("/thinking on", models);
+    expect(on?.kind === "thinking" && on.thinking.value).toBe("");
+    expect(exactCommand("/thinking lots", models)).toBeUndefined();
+    expect(parseThinking("16K")).toBe("16000");
+    expect(parseThinking("0")).toBe("off");
+    expect(parseThinking("-3")).toBeUndefined();
+    expect(parseThinking("999999")).toBeUndefined();
+    expect(thinkingLabel("8000")).toBe("8k");
+    expect(thinkingLabel("1500")).toBe("1500");
+    expect(thinkingLabel(undefined)).toBe("default");
+  });
+  it("lists the effort levels after /effort and runs an exact one", () => {
+    const values = (q: string) =>
+      commandItems(q, models).map((i) =>
+        i.kind === "effort" ? i.effort.value || "default" : i.kind,
+      );
+    expect(values("effort ")).toEqual([
+      "default",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    expect(values("effort m")).toEqual(["medium", "max"]);
+    const hit = exactCommand("/effort xhigh", models);
+    expect(hit?.kind === "effort" && hit.effort.value).toBe("xhigh");
+    const def = exactCommand("/effort default", models);
+    expect(def?.kind === "effort" && def.effort.value).toBe("");
+    expect(exactCommand("/effort ultra", models)).toBeUndefined();
+  });
+  it("offers the 1M-context models only when the service allows them", () => {
+    expect(modelOptions("claude").map((m) => m.value)).toEqual([
+      "",
+      "sonnet",
+      "opus",
+      "haiku",
+    ]);
+    expect(
+      modelOptions("claude", { fastMode: false, longContext: true }).map(
+        (m) => m.value,
+      ),
+    ).toEqual(["", "sonnet", "opus", "haiku", "sonnet[1m]", "opus[1m]"]);
+    expect(
+      modelOptions("codex", { fastMode: true, longContext: true }),
+    ).toHaveLength(6);
   });
 });
 
@@ -191,6 +258,8 @@ describe("agent commands in the composer", () => {
       "stop",
       "model",
       "mode",
+      "thinking",
+      "effort",
       "export",
       "rewind",
       "diff",

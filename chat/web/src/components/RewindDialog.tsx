@@ -12,7 +12,7 @@ import {
   type RewindTarget,
   type RewindWhat,
 } from "../rewind";
-import type { Chat } from "../types";
+import type { Chat, Entry } from "../types";
 
 /* The rewind chooser (Claude Code's Esc-Esc): pick one of the chat's user
    messages and what to take back to before it — the workspace (from the
@@ -28,7 +28,10 @@ export function RewindDialog({
   chat: Chat;
   /* The message to start on; the last user message when unset. */
   initial?: string;
-  onClose: (result?: RewindResult) => void;
+  /* Closed after a rewind, `result` says what it did and `target` is the
+     message it went back to before (as it was: the transcript is cut), so
+     the composer can offer it for editing (Claude Code's prefill). */
+  onClose: (result?: RewindResult, target?: Entry) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [checkpoints, setCheckpoints] = useState<Set<string>>();
@@ -36,9 +39,9 @@ export function RewindDialog({
   const [what, setWhat] = useState<RewindWhat>("both");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // The outcome, with the message's text as it was: the transcript is cut
-  // by the rewind, so the target cannot be looked up afterwards.
-  const [result, setResult] = useState<{ done: RewindResult; text: string }>();
+  // The outcome, with the message as it was: the transcript is cut by
+  // the rewind, so the target cannot be looked up afterwards.
+  const [result, setResult] = useState<{ done: RewindResult; entry: Entry }>();
   useEffect(() => {
     dialog.current?.showModal();
     // The chosen message in view: the list is scrolled to it once.
@@ -73,9 +76,9 @@ export function RewindDialog({
     setBusy(true);
     setError("");
     try {
-      const text = target.entry.text;
-      const done = await rewindChat(chat.id, target.entry.id, what);
-      setResult({ done, text });
+      const entry = target.entry;
+      const done = await rewindChat(chat.id, entry.id, what);
+      setResult({ done, entry });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -88,7 +91,7 @@ export function RewindDialog({
       ref={dialog}
       className="modal rewind-dialog"
       aria-labelledby="rewind-title"
-      onClose={() => onClose(result?.done)}
+      onClose={() => onClose(result?.done, result?.entry)}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.stopPropagation();
@@ -100,11 +103,16 @@ export function RewindDialog({
         <div>
           <h2 id="rewind-title">Rewound</h2>
           <p>
-            Back to before “{excerpt(result.text)}” (
+            Back to before “{excerpt(result.entry.text)}” (
             {WHAT_LABELS[result.done.what].label.toLowerCase()}).
           </p>
           {rewindOutcome(result.done) && (
             <p className="muted">{rewindOutcome(result.done)}</p>
+          )}
+          {result.done.what !== "code" && (
+            <p className="muted">
+              The message is put in the composer, to edit and send again.
+            </p>
           )}
           <div className="button-row">
             <button type="button" className="primary" onClick={close}>

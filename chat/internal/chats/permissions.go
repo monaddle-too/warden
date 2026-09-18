@@ -204,14 +204,7 @@ func (e *Engine) SetMode(ctx context.Context, id, mode string) error {
 	if err != nil {
 		return err
 	}
-	e.mu.Lock()
-	a := e.active[id]
-	var client *agent.Client
-	if a != nil && a.id == id {
-		client = a.client
-	}
-	e.mu.Unlock()
-	if client != nil {
+	if client := e.liveClient(id); client != nil {
 		e.pushMode(ctx, client, mode)
 	}
 	return nil
@@ -270,16 +263,4 @@ func permissionEntry(params map[string]any) *cv.Entry {
 	e.IsStreaming = false
 	e.TurnID = nil
 	return &e
-}
-
-// applyMode gives a Claude session the chat's permission mode before a
-// turn: a new session starts in the CLI's default mode whatever the chat
-// says, and a mode set while no session was up has not been pushed.
-func (e *Engine) applyMode(ctx context.Context, id string, c *Chat, client *agent.Client) {
-	if c.Provider != "claude" {
-		return
-	}
-	if chat := e.Store.Snapshot().chat(id); chat != nil {
-		e.pushMode(ctx, client, chat.mode())
-	}
 }

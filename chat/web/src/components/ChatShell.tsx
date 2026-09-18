@@ -20,6 +20,7 @@ import {
   GitPullRequest,
   History,
   MoreHorizontal,
+  NotebookPen,
   PanelRight,
   Pencil,
   Plus,
@@ -30,7 +31,7 @@ import {
   TextSearch,
   Timer,
 } from "lucide-react";
-import type { Chat, Environment, Resources, State } from "../types";
+import type { Chat, Entry, Environment, Resources, State } from "../types";
 import { api, setOutputStyle, signedIn, subscribe } from "../api";
 import { ForkDialog } from "./ForkDialog";
 import { useNotifications } from "./Notifications";
@@ -64,6 +65,7 @@ import { WorkspacePanel } from "./WorkspacePanel";
 import { ExportDialog } from "./ExportDialog";
 import { RewindDialog } from "./RewindDialog";
 import { SessionDiff } from "./SessionDiff";
+import { InstructionsDialog } from "./InstructionsDialog";
 import { SearchPalette } from "./SearchPalette";
 import { modifierKey, type FindRequest } from "./FindBar";
 
@@ -104,9 +106,13 @@ export function ChatShell({
   // The rewind chooser (the message it opens on, "" for the last) and the
   // session diff (rewind.ts).
   const [rewinding, setRewinding] = useState<string | null>(null);
+  // The message the last conversation rewind went back to before, for
+  // the composer to offer for editing (Conversation's `prefill`).
+  const [prefill, setPrefill] = useState<{ key: number; entry: Entry }>();
   const [changesOpen, setChangesOpen] = useState(false);
   // The fork dialog (the message it cuts before, "" for the whole chat).
   const [forking, setForking] = useState<string | null>(null);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [searching, setSearching] = useState(false);
   // The find bar's latest request; a new object each time so the same
   // query can be asked for again.
@@ -575,6 +581,13 @@ export function ChatShell({
               <span>Admin console</span>
             </button>
           )}
+          <button
+            title="Your standing instructions: the agent gets them in every chat you take part in"
+            onClick={() => setInstructionsOpen(true)}
+          >
+            <NotebookPen size={16} />
+            <span>Instructions</span>
+          </button>
           <button onClick={() => setArchived(!archived)}>
             <Archive size={16} />
             <span>{archived ? "Active chats" : "Archived chats"}</span>
@@ -586,6 +599,9 @@ export function ChatShell({
           {account}
         </div>
       </aside>
+      {instructionsOpen && (
+        <InstructionsDialog onClose={() => setInstructionsOpen(false)} />
+      )}
       <main className="chat-main">
         {adminOpen && admin ? (
           <AdminConsole signIn={signIn} />
@@ -791,7 +807,11 @@ export function ChatShell({
                 key={chat.id + "rewind"}
                 chat={chat}
                 initial={rewinding || undefined}
-                onClose={() => setRewinding(null)}
+                onClose={(result, target) => {
+                  setRewinding(null);
+                  if (result && result.what !== "code" && target)
+                    setPrefill({ key: Date.now(), entry: target });
+                }}
               />
             )}
             {changesOpen && (
@@ -828,6 +848,7 @@ export function ChatShell({
                 onChanges={() => setChangesOpen(true)}
                 onFork={(entryID) => setForking(entryID || "")}
                 onStyle={(style) => setOutputStyle(chat.id, style)}
+                prefill={prefill}
                 onModel={(next) =>
                   api(`chats/${chat.id}/agent`, {
                     provider: chat.provider || "codex",
@@ -835,6 +856,10 @@ export function ChatShell({
                   })
                 }
                 onMode={(mode) => api(`chats/${chat.id}/mode`, { mode })}
+                onSettings={(change) =>
+                  api(`chats/${chat.id}/settings`, change)
+                }
+                agentOptions={state.agentOptions}
               />
               <Previews
                 key={chat.id + "preview"}

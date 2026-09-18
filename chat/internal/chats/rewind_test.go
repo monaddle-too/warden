@@ -306,7 +306,9 @@ func TestRewindConversationPendingFallsBackWhenResumeCannotRewind(t *testing.T) 
 	}
 }
 
-func TestRewindKeepsAMessageQueuedMeanwhile(t *testing.T) {
+// truncate cuts the transcript from the target on, the queue included
+// (a conversation rewind withdraws it: queue.go, item 10).
+func TestTruncateCutsFromTheTargetQueueIncluded(t *testing.T) {
 	c := &Chat{Conversation: cv.Conversation{Entries: []cv.Entry{
 		{ID: "a", Role: "user", Delivery: "sent", TurnID: cv.Ptr("t1")},
 		{ID: "b", Role: "assistant", TurnID: cv.Ptr("t1")},
@@ -319,7 +321,7 @@ func TestRewindKeepsAMessageQueuedMeanwhile(t *testing.T) {
 	for _, v := range c.Conversation.Entries {
 		ids = append(ids, v.ID)
 	}
-	if strings.Join(ids, ",") != "a,b,e" || len(c.Conversation.Turns) != 1 || c.Approvals[0].State != "expired" {
+	if strings.Join(ids, ",") != "a,b" || len(c.Conversation.Turns) != 1 || c.Approvals[0].State != "expired" {
 		t.Fatalf("truncate: %v turns %v approvals %v", ids, c.Conversation.Turns, c.Approvals)
 	}
 }

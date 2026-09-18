@@ -170,6 +170,12 @@ export type Chat = {
      tool's name) and, for Bash, the command prefix. */
   mode?: string;
   allowed?: { tool: string; command?: string }[];
+  /* A Claude chat's session settings (chats/settings.go): the thinking
+     budget ("" the agent's default, "off", or tokens), the effort level
+     ("" the model's default) and fast mode. */
+  thinking?: string;
+  effort?: string;
+  fast?: boolean;
   id: string;
   title: string;
   sandboxID: string;
@@ -190,8 +196,20 @@ export type Chat = {
      the workspace's own commands and skills); "/name …" is sent as text
      and the agent expands it. Absent for Codex. */
   commands?: AgentCommand[];
-  /* What the agent reported when its session started. */
-  session?: { model?: string; permissionMode?: string; outputStyle?: string };
+  /* What the agent reported when its session started: the model it
+     resolved (the truth after a live model change), its permission mode,
+     output style, whether fast mode serves ("on", "off", "cooldown") and
+     the auto-memory directory its CLI keeps for the workspace. */
+  session?: {
+    model?: string;
+    permissionMode?: string;
+    outputStyle?: string;
+    fastMode?: string;
+    autoMemory?: string;
+  };
+  /* Who created the chat (their instructions reach the agent with the
+     senders'). */
+  creator?: { principalID: string; email?: string; name?: string };
   /* A Claude chat's output style for its next launch ("" or absent: the
      CLI's default); `session.outputStyle` is what the running one has. */
   outputStyle?: string;
@@ -206,10 +224,21 @@ export type AgentCommand = { name: string; description?: string };
    stage (stages.ts names them), the runtime's detail for it, and when the
    stage began (unix seconds). Absent once the turn is running. */
 export type Startup = { stage: string; detail?: string; since: number };
+/* A change to a Claude chat's session settings: each field applies when
+   present (chats/{id}/settings). */
+export type SessionSettings = {
+  thinking?: string;
+  effort?: string;
+  fast?: boolean;
+};
+/* The costlier Claude features this Warden allows (config
+   providers.claude.allowFastMode, allowLongContext). */
+export type AgentOptions = { fastMode: boolean; longContext: boolean };
 export type State = {
   version: number;
   chats: Chat[];
   sandboxes?: ResourceLimits;
+  agentOptions?: AgentOptions;
 };
 export type EnvironmentChat = {
   id: string;
@@ -349,4 +378,30 @@ export type Environment = {
   ports: { id: string; port: number; title: string; url: string }[];
   deleted: boolean;
   archived: boolean;
+};
+
+/* A person's standing instructions for the agent (me/instructions). */
+export type Instructions = {
+  text: string;
+  updatedAt?: number;
+  name?: string;
+};
+/* One of the workspace's instruction or memory files (chats/{id}/memory):
+   scope "workspace" is a path under the workspace root (CLAUDE.md, rules),
+   "auto" a path under the CLI's auto-memory directory. */
+export type MemoryFile = {
+  scope: "workspace" | "auto";
+  path: string;
+  size: number;
+  text: string;
+  truncated?: boolean;
+};
+export type MemoryView = {
+  root: string;
+  autoDir: string;
+  autoDirExists: boolean;
+  files: MemoryFile[];
+  /* Whether the agent's launch reads these files, and the sentence about it. */
+  read: boolean;
+  hint?: string;
 };

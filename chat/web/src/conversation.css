@@ -244,6 +244,24 @@
 .message-actions.shown {
   opacity: 1;
 }
+/* A queued message (queue.ts): held by Warden until the agent's turn ends,
+   its bubble outlined rather than filled, with its actions always shown. */
+.message-queued .message-body {
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+}
+.message-queued .queued-label {
+  color: var(--accent-text);
+}
+.queued-actions {
+  align-items: center;
+}
+.queued-actions .queued-send {
+  height: 28px;
+  padding: 0 10px;
+  gap: 5px;
+  color: var(--accent-text);
+}
 @media (hover: none) {
   .message-actions {
     opacity: 1;
@@ -712,7 +730,17 @@
   font-size: 13px;
   color: var(--text-2);
 }
-/* The model picker sits in the composer, as in the desktop agent apps. */
+/* The model picker sits in the composer, as in the desktop agent apps;
+   on Claude chats the thinking, effort and fast-mode controls follow it
+   and wrap to a second line where the footer is narrow. */
+.composer-footer > span > span.composer-model {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  overflow: visible;
+  white-space: normal;
+}
 .composer-model select {
   width: auto;
   height: 30px;
@@ -733,6 +761,31 @@
 .composer-model select:disabled {
   opacity: 0.6;
   cursor: default;
+}
+/* Fast mode, a checkbox after the Claude settings when the service
+   offers it. */
+.composer-model .composer-fast {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  margin: 0;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.composer-model .composer-fast:hover {
+  background-color: var(--surface-3);
+  color: var(--text);
+}
+.composer-model .composer-fast input {
+  flex: none;
+  width: 14px;
+  height: 14px;
 }
 /* The permission mode picker sits beside the model on Claude chats. */
 .composer-mode select {
@@ -912,6 +965,40 @@ button.attachment-chip {
 }
 /* Long pastes: chips above the composer's text for the placeholders in
    it (paste.ts); the chip opens the text in a dialog. */
+/* Editing a message the agent got (queue.ts): the bar over the textarea
+   saying that sending rewinds the conversation to before it. */
+.composer-editing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 10px 12px 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+.composer-editing-what {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+}
+.composer-editing-code {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-weight: 400;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.composer-editing button {
+  height: 26px;
+  padding: 0 8px;
+}
 .composer-pastes {
   display: flex;
   flex-wrap: wrap;
@@ -1304,6 +1391,7 @@ button.attachment-chip {
 }
 .todo-active {
   font-size: 12px;
+}
 /* The context meter in the composer footer: a small bar and "42k / 200k",
    amber from 80 % of the window, red from 95 %. */
 .context-meter {

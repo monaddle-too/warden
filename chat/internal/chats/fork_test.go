@@ -11,15 +11,6 @@ import (
 	"warden/chat/internal/sandbox"
 )
 
-// claudeResidentSetup is claudeSetup with resident sessions, so a chat's
-// session stays up and idle between turns (side questions need it).
-func claudeResidentSetup(t *testing.T) (*Engine, *claudeWorker, string) {
-	t.Helper()
-	e, w, id := claudeSetup(t)
-	e.ResidentProviders = []string{"claude"}
-	return e, w, id
-}
-
 // oneTurn sends text and waits for its turn to end.
 func oneTurn(t *testing.T, e *Engine, id, text string) string {
 	t.Helper()

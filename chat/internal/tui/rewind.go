@@ -120,6 +120,9 @@ func rewindNotice(r RewindResult, n int, label string) string {
 	case "fresh":
 		parts = append(parts, "the agent's session could not rewind; the next message starts a new one with the conversation so far as context")
 	}
+	if r.Withdrawn > 0 {
+		parts = append(parts, fmt.Sprintf("%d queued message(s) withdrawn", r.Withdrawn))
+	}
 	return strings.Join(parts, "; ")
 }
 

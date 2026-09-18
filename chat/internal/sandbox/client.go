@@ -96,6 +96,15 @@ type Request struct {
 	Bytes []byte `json:"bytes,omitempty"`
 	// Command is the shell command line an exec runs in the workspace.
 	Command string `json:"command,omitempty"`
+	// Instructions is the participants' standing instructions a stream
+	// appends to the agent's system prompt (memory.go: one block per
+	// person, assembled by the chat service); "" appends nothing.
+	Instructions string `json:"instructions,omitempty"`
+	// Scope says which memory location a memory-write's Directory names:
+	// "workspace" (CLAUDE.md, AGENTS.md, .claude/rules) or "auto" (the
+	// CLI's auto-memory directory); memory-list takes the auto-memory
+	// directory the CLI reported in Path, when the chat knows it.
+	Scope string `json:"scope,omitempty"`
 }
 type Response struct {
 	// Checkpoint is a checkpoint just taken; Checkpoints the sandbox's
@@ -142,6 +151,9 @@ type Response struct {
 	// Aside is what an "aside" (a side question to a forked copy of the
 	// chat's session) came to.
 	Aside *AsideResult `json:"aside,omitempty"`
+	// Memory is a "memory-list": the workspace's instruction and memory
+	// files with their contents.
+	Memory *MemoryListing `json:"memory,omitempty"`
 }
 type SandboxInfo struct {
 	ID          string `json:"id"`

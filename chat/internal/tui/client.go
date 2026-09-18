@@ -200,8 +200,17 @@ type Chat struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	// Mode is a Claude chat's permission mode: auto (also when empty),
-	// ask or plan (chats/permissions.go).
-	Mode         string       `json:"mode"`
+	// ask or plan (chats/permissions.go). Thinking, Effort and Fast are
+	// its session settings (chats/settings.go): "" is the default
+	// thinking or effort, "off" or a token budget the thinking.
+	Mode     string `json:"mode"`
+	Thinking string `json:"thinking"`
+	Effort   string `json:"effort"`
+	Fast     bool   `json:"fast"`
+	// Session is what the agent reported when its session started; its
+	// Model is the one it resolved, the truth after a live model change;
+	// OutputStyle is the style the running session has.
+	Session      *SessionInfo `json:"session"`
 	SandboxID    string       `json:"sandboxID"`
 	Repository   string       `json:"repository,omitempty"`
 	Status       string       `json:"status"`
@@ -215,17 +224,21 @@ type Chat struct {
 	// OutputStyle is a Claude chat's output style for its next launch ("":
 	// the default); Session.OutputStyle is what the running one has.
 	OutputStyle string `json:"outputStyle"`
-	Session     *struct {
-		Model          string `json:"model"`
-		PermissionMode string `json:"permissionMode"`
-		OutputStyle    string `json:"outputStyle"`
-	} `json:"session"`
 	// Startup is where the chat's start is while its message waits for the
 	// agent: the stage and the runtime's detail.
 	Startup *struct {
 		Stage  string `json:"stage"`
 		Detail string `json:"detail"`
 	} `json:"startup"`
+}
+
+// SessionInfo mirrors chats.Session: the agent's own report of its
+// session settings.
+type SessionInfo struct {
+	Model          string `json:"model"`
+	FastMode       string `json:"fastMode"`
+	PermissionMode string `json:"permissionMode"`
+	OutputStyle    string `json:"outputStyle"`
 }
 
 // Permission is a tool ask of a Claude chat in ask or plan mode (method
@@ -521,8 +534,76 @@ func (c *Client) Answer(ctx context.Context, chatID, approvalID string, allow, a
 }
 
 // Mode sets a Claude chat's permission mode (auto, ask or plan).
+// Instructions is a person's standing instructions for the agent, as
+// me/instructions answers.
+type Instructions struct {
+	Text      string  `json:"text"`
+	UpdatedAt float64 `json:"updatedAt,omitempty"`
+	Name      string  `json:"name,omitempty"`
+}
+
+func (c *Client) Instructions(ctx context.Context) (Instructions, error) {
+	var v Instructions
+	err := c.do(ctx, "GET", "me/instructions", nil, &v)
+	return v, err
+}
+
+// SetInstructions replaces the person's text; blank removes it.
+func (c *Client) SetInstructions(ctx context.Context, text string) error {
+	return c.do(ctx, "POST", "me/instructions", map[string]any{"text": text}, nil)
+}
+
+// MemoryFile is one of the workspace's instruction or memory files, as
+// chats/{id}/memory lists them: Scope "workspace" (under the workspace
+// root) or "auto" (under the CLI's auto-memory directory).
+type MemoryFile struct {
+	Scope     string `json:"scope"`
+	Path      string `json:"path"`
+	Size      int64  `json:"size"`
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// Label is how the file is named in the listing and addressed by /memory:
+// the path, prefixed "auto:" for an auto-memory file.
+func (f MemoryFile) Label() string {
+	if f.Scope == "auto" {
+		return "auto:" + f.Path
+	}
+	return f.Path
+}
+
+// MemoryView is chats/{id}/memory: the files, where they are, and whether
+// the agent's launch reads them (Hint says).
+type MemoryView struct {
+	Root    string       `json:"root"`
+	AutoDir string       `json:"autoDir"`
+	Exists  bool         `json:"autoDirExists"`
+	Files   []MemoryFile `json:"files"`
+	Read    bool         `json:"read"`
+	Hint    string       `json:"hint,omitempty"`
+}
+
+// MemoryFiles lists the workspace's memory files with their contents.
+func (c *Client) MemoryFiles(ctx context.Context, chatID string) (MemoryView, error) {
+	var v MemoryView
+	err := c.do(ctx, "GET", "chats/"+chatID+"/memory", nil, &v)
+	return v, err
+}
+
+// WriteMemory replaces one memory file's contents.
+func (c *Client) WriteMemory(ctx context.Context, chatID, scope, path, text string) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/memory/write", map[string]any{"scope": scope, "path": path, "text": text}, nil)
+}
+
 func (c *Client) Mode(ctx context.Context, chatID, mode string) error {
 	return c.do(ctx, "POST", "chats/"+chatID+"/mode", map[string]any{"mode": mode}, nil)
+}
+
+// Settings changes a Claude chat's session settings: the keys given
+// (thinking, effort, fast) apply, the rest stay.
+func (c *Client) Settings(ctx context.Context, chatID string, change map[string]any) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/settings", change, nil)
 }
 
 func (c *Client) RevokePort(ctx context.Context, id string) error {
@@ -625,6 +706,22 @@ type RewindResult struct {
 	Restored     []string `json:"restored"`
 	Removed      []string `json:"removed"`
 	Conversation string   `json:"conversation"`
+	// Withdrawn counts the queued messages a conversation rewind took
+	// out of the queue (queue.go).
+	Withdrawn int `json:"withdrawn"`
+}
+
+// Withdraw takes a queued message out of the chat before the agent gets
+// it; the entry comes back for the editor (queue.go).
+func (c *Client) Withdraw(ctx context.Context, chatID, messageID string) (Entry, error) {
+	var out Entry
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/withdraw", map[string]string{"id": messageID}, &out)
+	return out, err
+}
+
+// SendQueued lets a held queue go: the queued messages send in order.
+func (c *Client) SendQueued(ctx context.Context, chatID string) error {
+	return c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/send-queued", map[string]any{}, nil)
 }
 
 func (c *Client) Checkpoints(ctx context.Context, chatID string) ([]Checkpoint, error) {

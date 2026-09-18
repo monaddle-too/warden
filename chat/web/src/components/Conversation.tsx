@@ -15,6 +15,7 @@ import {
   ArrowDown,
   ArrowUp,
   Bot,
+  Brain,
   Cpu,
   Download,
   Eraser,
@@ -23,7 +24,9 @@ import {
   Receipt,
   File as FileIcon,
   Folder,
+  Gauge,
   Paperclip,
+  Pencil,
   ShieldCheck,
   Slash,
   SlidersHorizontal,
@@ -43,7 +46,10 @@ import {
   me,
   newID,
   downloadFile,
+  rewindChat,
+  sendQueued,
   uploadAttachment,
+  withdrawMessage,
 } from "../api";
 import {
   agentCommandNamed,
@@ -91,9 +97,20 @@ import {
   unreadEntry,
   unreadIndex,
 } from "../transcript";
-import { canRewind, doubleEscape } from "../rewind";
+import {
+  canEditAndResend,
+  canWithdraw,
+  editingScope,
+  lastQueued,
+  queueHeld,
+  queueHint,
+  queueLabel,
+  queuedLast,
+  type Editing,
+} from "../queue";
+import { canRewind, doubleEscape, excerpt } from "../rewind";
 import { sameFooter, turnFooters, type TurnFooter } from "../turns";
-import type { Chat, Entry } from "../types";
+import type { AgentOptions, Chat, Entry, SessionSettings } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
 import { ContextMeter } from "./ContextMeter";
 import { chatStatusLabel, startupLine } from "../stages";
@@ -167,6 +184,10 @@ const commandIcon = (name: string) =>
     <Cpu size={15} />
   ) : name === "mode" ? (
     <ShieldCheck size={15} />
+  ) : name === "thinking" ? (
+    <Brain size={15} />
+  ) : name === "effort" ? (
+    <Gauge size={15} />
   ) : name === "export" ? (
     <Download size={15} />
   ) : name === "fork" ? (
@@ -187,11 +208,14 @@ export function Conversation({
   find,
   onModel,
   onMode,
+  onSettings,
+  agentOptions,
   onExport,
   onRewind,
   onChanges,
   onFork,
   onStyle,
+  prefill,
 }: {
   chat: Chat;
   live: boolean;
@@ -203,6 +227,11 @@ export function Conversation({
   onModel: (model: string) => Promise<unknown>;
   /* The permission mode selector and /mode (Claude chats). */
   onMode?: (mode: string) => Promise<unknown>;
+  /* The thinking, effort and fast-mode controls beside the model and
+     /thinking, /effort (Claude chats); agentOptions says which of the
+     costlier choices this Warden offers. */
+  onSettings?: (change: SessionSettings) => Promise<unknown>;
+  agentOptions?: AgentOptions;
   /* The /export command; the chat menu's dialog lives in the shell. */
   onExport?: () => void;
   /* The rewind chooser (a message's hover action, Esc-Esc, /rewind) and
@@ -214,6 +243,10 @@ export function Conversation({
   onFork?: (entryID?: string) => void;
   /* The output style selector and /style (Claude chats). */
   onStyle?: (style: string) => Promise<unknown>;
+  /* A message to put into an empty composer: the one a rewind from the
+     chooser went back to before (Claude Code's prefill), so it can be
+     edited and sent again. `key` changes with every rewind. */
+  prefill?: { key: number; entry: Entry };
 }) {
   const key = "warden-draft:" + location.origin + ":" + chat.id;
   const [text, setText] = useState(() => draft(key));
@@ -317,7 +350,11 @@ export function Conversation({
   // (`nested`) and render inside it, so counts, groups, the unread mark and
   // the turns' lines see only the flow the reader scrolls.
   const all = chat.conversation.entries;
-  const { top: entries, nested } = useMemo(() => nestEntries(all), [all]);
+  // Queued messages read last, wherever they sit (queue.ts).
+  const { top: entries, nested } = useMemo(() => {
+    const { top, nested } = nestEntries(all);
+    return { top: queuedLast(top), nested };
+  }, [all]);
   // Following: the transcript keeps its end in view as it grows. Once the
   // reader scrolls up, `away` holds the ID of the last entry they had in
   // view, so the jump button can say how many messages arrived since; the
@@ -477,17 +514,17 @@ export function Conversation({
     },
     [chat.id, setFollow],
   );
-  // Edit puts the entry's text and uploads into the composer, asking first
-  // when that would replace something already there.
-  const edit = useCallback(
-    (entry: Entry) => {
+  // Load puts an entry's text and uploads into the composer, asking first
+  // when that would replace something already there; false when declined.
+  const load = useCallback(
+    (entry: Entry): boolean => {
       const { text, pending } = current.current;
       const draft = text.trim();
       const replacing =
         (draft !== "" && draft !== entry.text.trim()) ||
         pending.some((p) => !p.reused);
       if (replacing && !window.confirm("Replace your draft with this message?"))
-        return;
+        return false;
       for (const item of pending) forget(item);
       setPending(
         (entry.attachments || []).map((attachment) => ({
@@ -498,6 +535,8 @@ export function Conversation({
         })),
       );
       setText(entry.text);
+      setPastes([]);
+      setRecall(NOT_BROWSING);
       setError("");
       requestAnimationFrame(() => {
         const el = input.current;
@@ -505,9 +544,76 @@ export function Conversation({
         el.focus();
         el.setSelectionRange(el.value.length, el.value.length);
       });
+      return true;
     },
     [forget],
   );
+  // Edit-and-resend on a message the agent got (queue.ts): the composer
+  // holds the message, and sending it rewinds the conversation to before
+  // it first. Cancel gives the earlier draft back.
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const edit = useCallback(
+    (entry: Entry) => {
+      const draft = current.current.text;
+      if (!load(entry)) return;
+      setEditing({ entry, draft, code: false });
+    },
+    [load],
+  );
+  function cancelEditing() {
+    if (!editing) return;
+    setEditing(null);
+    setText(editing.draft);
+    setPending([]);
+    input.current?.focus();
+  }
+  // A queued message edited: it leaves the queue for the composer (nothing
+  // is sent while it is being edited) and goes at the end when sent again.
+  const editQueued = useCallback(
+    async (entry: Entry) => {
+      setError("");
+      try {
+        const withdrawn = await withdrawMessage(chat.id, entry.id);
+        if (!load(withdrawn)) {
+          // The draft stays: the withdrawn text is lost unless kept here.
+          setText(
+            (text) => (text.trim() ? text + "\n" : "") + withdrawn.text,
+          );
+        }
+        setEditing(null);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [chat.id, load],
+  );
+  const withdraw = useCallback(
+    async (entry: Entry) => {
+      setError("");
+      try {
+        await withdrawMessage(chat.id, entry.id);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [chat.id],
+  );
+  const sendQueuedNow = useCallback(async () => {
+    setError("");
+    try {
+      await sendQueued(chat.id);
+      setFollow(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [chat.id, setFollow]);
+  // The message a rewind went back to before, into an empty composer.
+  useEffect(() => {
+    if (!prefill || current.current.text.trim() !== "") return;
+    load(prefill.entry);
+    setEditing(null);
+  }, [prefill, load]);
+  const held = queueHeld(chat);
   const attempted = useRef<Attempt | undefined>(
     readLocalAttempt(key + ":attempt"),
   );
@@ -532,12 +638,16 @@ export function Conversation({
   const open =
     !!trigger && focused && !chat.archived && dismissed !== triggerKey;
   const models = useMemo(
-    () => modelOptions(chat.provider || "codex"),
-    [chat.provider],
+    () => modelOptions(chat.provider || "codex", agentOptions),
+    [chat.provider, agentOptions],
   );
   // Permission modes are a Claude chat's (the service refuses them for
   // Codex); the mode can change at any time, a running turn included.
   const modes = chat.provider === "claude" && !!onMode;
+  // So are the session settings (thinking, effort, fast mode). A Claude
+  // chat's model changes on its live session too; Codex's at the next run.
+  const settings = chat.provider === "claude" && !!onSettings;
+  const modelLocked = running && chat.provider !== "claude";
   // Side questions and output styles are a Claude chat's too.
   const asides = chat.provider === "claude";
   const styles = chat.provider === "claude" && !!onStyle;
@@ -577,16 +687,19 @@ export function Conversation({
                   item.command.name === "stop"
                     ? !running || chat.status === "stopping"
                     : item.command.name === "model"
-                      ? running
+                      ? modelLocked
                       : item.command.name === "mode"
                         ? !modes
-                        : item.command.name === "btw"
-                          ? !asides || running
-                          : item.command.name === "style"
-                            ? !styles
-                            : item.command.name === "fork"
-                              ? !onFork || running
-                              : false,
+                        : item.command.name === "thinking" ||
+                            item.command.name === "effort"
+                          ? !settings
+                          : item.command.name === "btw"
+                            ? !asides || running
+                            : item.command.name === "style"
+                              ? !styles
+                              : item.command.name === "fork"
+                                ? !onFork || running
+                                : false,
               }
             : item.kind === "mode"
               ? {
@@ -604,21 +717,37 @@ export function Conversation({
                   icon: <SlidersHorizontal size={15} />,
                   disabled: !styles || chat.archived,
                 }
-              : item.kind === "model"
+              : item.kind === "thinking"
                 ? {
-                    id: "model:" + item.model.value,
-                    label: item.model.label,
-                    hint: item.model.value,
-                    icon: <Cpu size={15} />,
-                    disabled: running,
+                    id: "thinking:" + item.thinking.value,
+                    label: item.thinking.label,
+                    hint: item.thinking.hint,
+                    icon: <Brain size={15} />,
+                    disabled: !settings || chat.archived,
                   }
-                : {
-                    id: "agent:" + item.command.name,
-                    label: "/" + item.command.name,
-                    hint: agentHint(item.command),
-                    icon: <Slash size={15} />,
-                    group: agentGroup,
-                  },
+                : item.kind === "effort"
+                  ? {
+                      id: "effort:" + item.effort.value,
+                      label: item.effort.label,
+                      hint: item.effort.hint,
+                      icon: <Gauge size={15} />,
+                      disabled: !settings || chat.archived,
+                    }
+                  : item.kind === "model"
+                    ? {
+                        id: "model:" + item.model.value,
+                        label: item.model.label,
+                        hint: item.model.value,
+                        icon: <Cpu size={15} />,
+                        disabled: modelLocked,
+                      }
+                    : {
+                        id: "agent:" + item.command.name,
+                        label: "/" + item.command.name,
+                        hint: agentHint(item.command),
+                        icon: <Slash size={15} />,
+                        group: agentGroup,
+                      },
       );
       if (items.length) return { items };
       if (/^btw(\s|$)/i.test(trigger.query.trimStart()))
@@ -813,6 +942,16 @@ export function Conversation({
       place({ text: rest, caret: 0 });
       return;
     }
+    if (item.kind === "thinking" || item.kind === "effort") {
+      setError(settings ? "" : "thinking and effort apply to Claude chats");
+      const change: SessionSettings =
+        item.kind === "thinking"
+          ? { thinking: item.thinking.value }
+          : { effort: item.effort.value };
+      if (settings) void onSettings(change).catch((e) => setError(String(e)));
+      place({ text: rest, caret: 0 });
+      return;
+    }
     if (item.kind === "agent") {
       // Filled in, not sent: the person adds an argument or sends it as
       // it is, and the agent expands it.
@@ -828,10 +967,12 @@ export function Conversation({
       return;
     }
     if (item.kind === "model") {
-      // The list disables models while the agent runs; "/model x" typed in
-      // full and sent gets the same answer the service would give.
-      setError(running ? "wait until the conversation is idle" : "");
-      if (!running)
+      // The list disables a Codex chat's models while the agent runs;
+      // "/model x" typed in full and sent gets the same answer the
+      // service would give. A Claude chat's live session takes the model
+      // at any time.
+      setError(modelLocked ? "wait until the conversation is idle" : "");
+      if (!modelLocked)
         void onModel(item.model.value).catch((e) => setError(String(e)));
       place({ text: rest, caret: 0 });
       return;
@@ -847,6 +988,12 @@ export function Conversation({
         break;
       case "mode":
         place({ text: "/mode " + rest, caret: 6 });
+        break;
+      case "thinking":
+        place({ text: "/thinking " + rest, caret: 10 });
+        break;
+      case "effort":
+        place({ text: "/effort " + rest, caret: 8 });
         break;
       case "export":
         onExport?.();
@@ -879,6 +1026,7 @@ export function Conversation({
       case "clear":
         for (const item of pending) forget(item);
         setPending([]);
+        setEditing(null);
         setError("");
         place({ text: "", caret: 0 });
         break;
@@ -896,11 +1044,15 @@ export function Conversation({
           ? "command:" + c.command.name
           : c.kind === "mode"
             ? "mode:" + c.mode.value
-            : c.kind === "model"
-              ? "model:" + c.model.value
-              : c.kind === "style"
-                ? "style:" + (c.style.value || "default")
-                : "agent:" + c.command.name) === item.id,
+            : c.kind === "thinking"
+              ? "thinking:" + c.thinking.value
+              : c.kind === "effort"
+                ? "effort:" + c.effort.value
+                : c.kind === "model"
+                  ? "model:" + c.model.value
+                  : c.kind === "style"
+                    ? "style:" + (c.style.value || "default")
+                    : "agent:" + c.command.name) === item.id,
     );
     if (chosen) runCommand(chosen, withoutCommand(text, trigger));
   }
@@ -989,6 +1141,12 @@ export function Conversation({
     // while following.
     setFollow(true);
     try {
+      if (editing) {
+        // The conversation goes back to before the message being edited
+        // (the code too when asked), then the edit goes as a new message.
+        await rewindChat(chat.id, editing.entry.id, editingScope(editing));
+        setEditing(null);
+      }
       await api(`chats/${chat.id}/message`, message);
       lastTyping.current = 0;
       setText("");
@@ -1102,7 +1260,22 @@ export function Conversation({
                       }
                       onFork={onFork ? (entry) => onFork(entry.id) : undefined}
                       onQuote={quote}
+                      onEditQueued={editQueued}
+                      onWithdraw={withdraw}
+                      onSendQueued={sendQueuedNow}
+                      queue={
+                        item.entry.delivery === "queued"
+                          ? {
+                              label: queueLabel(chat),
+                              held,
+                              mine: canWithdraw(item.entry, me),
+                            }
+                          : undefined
+                      }
                       actions={!busy && canResend(item.entry, chat, live)}
+                      editable={
+                        !busy && canEditAndResend(item.entry, chat, live)
+                      }
                       rewindable={canRewind(chat)}
                       stats={inline ? footer : undefined}
                     />
@@ -1238,6 +1411,28 @@ export function Conversation({
               input.current?.focus();
             }}
           />
+          {editing && (
+            <div className="composer-editing" role="status">
+              <span className="composer-editing-what">
+                <Pencil size={13} aria-hidden="true" /> Editing “
+                {excerpt(editing.entry.text, 40)}” — sending rewinds the
+                conversation to before it
+              </span>
+              <label className="composer-editing-code">
+                <input
+                  type="checkbox"
+                  checked={editing.code}
+                  onChange={(e) =>
+                    setEditing({ ...editing, code: e.target.checked })
+                  }
+                />
+                also rewind the code
+              </label>
+              <button type="button" className="ghost" onClick={cancelEditing}>
+                Cancel
+              </button>
+            </div>
+          )}
           <textarea
             ref={input}
             aria-label="Message agent"
@@ -1318,6 +1513,12 @@ export function Conversation({
                   pick(items[selected]);
                   return;
                 }
+              } else if (e.key === "Escape" && editing) {
+                // Editing a message: Esc leaves it, the draft comes back.
+                e.preventDefault();
+                lastEscape.current = 0;
+                cancelEditing();
+                return;
               } else if (e.key === "Escape") {
                 // Esc-Esc, Claude Code's rewind key: the chooser opens on
                 // the last message. One Esc is the interrupt (the Stop
@@ -1341,6 +1542,23 @@ export function Conversation({
                 e.preventDefault();
                 setSearching(true);
                 return;
+              }
+              // Up in an empty composer with a message of this person's
+              // queued edits it (Claude Code's ↑), before the history.
+              if (
+                e.key === "ArrowUp" &&
+                !e.altKey &&
+                !e.shiftKey &&
+                !e.metaKey &&
+                text === "" &&
+                !editing
+              ) {
+                const last = lastQueued(all, me);
+                if (last) {
+                  e.preventDefault();
+                  void editQueued(last);
+                  return;
+                }
               }
               // Up at the draft's first line recalls the previous prompt,
               // Down at its last line the next (then the draft again);
@@ -1380,12 +1598,33 @@ export function Conversation({
                 <ModelSelect
                   provider={chat.provider || "codex"}
                   value={chat.model || ""}
-                  disabled={running || chat.archived}
+                  disabled={modelLocked || chat.archived}
                   onChange={(model) => {
                     setError("");
                     void onModel(model).catch((e) => setError(String(e)));
                   }}
                   label="Model for the next turn"
+                  session={chat.session}
+                  settings={
+                    settings
+                      ? {
+                          thinking: chat.thinking,
+                          effort: chat.effort,
+                          fast: chat.fast,
+                        }
+                      : undefined
+                  }
+                  options={agentOptions}
+                  onSettings={
+                    settings
+                      ? (change) => {
+                          setError("");
+                          void onSettings(change).catch((e) =>
+                            setError(String(e)),
+                          );
+                        }
+                      : undefined
+                  }
                 />
               </span>
               {modes && (
@@ -1515,11 +1754,14 @@ export function Conversation({
                   ? asides
                     ? "Asks a copy of the agent's session, from this chat's context — the agent never sees the question or the answer"
                     : "Side questions are a Claude chat's"
-                  : chat.status === "running"
-                    ? chat.provider === "claude"
-                      ? "Queued for the next turn"
-                      : "Send to steer the current run"
-                    : "⌘ / Ctrl + Enter to send · / commands · @ file · ! shell · # note · /btw aside · ↑ history · Ctrl+R search"}
+                  : editing
+                    ? "Sending rewinds the conversation to before the message and sends this in its place · Esc cancels"
+                    : queueHint(chat, me) ||
+                      (chat.status === "running"
+                        ? chat.provider === "claude"
+                          ? "Queued for the next turn — edit or withdraw it from the transcript until then"
+                          : "Send to steer the current run"
+                        : "⌘ / Ctrl + Enter to send · / commands · @ file · ! shell · # note · /btw aside · ↑ history · Ctrl+R search")}
         </div>
       </form>
     </div>

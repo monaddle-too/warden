@@ -37,6 +37,16 @@ export const COMMANDS: Command[] = [
     label: "Permission mode",
     hint: "auto, ask before commands and edits, or plan first",
   },
+  {
+    name: "thinking",
+    label: "Thinking",
+    hint: "on (the model decides), off, or a budget in tokens (8k)",
+  },
+  {
+    name: "effort",
+    label: "Effort",
+    hint: "low, medium, high, xhigh or max; default is the model's",
+  },
   { name: "export", label: "Export…", hint: "Download this chat as a file" },
   {
     name: "rewind",
@@ -113,10 +123,57 @@ export const MODES: ModeOption[] = [
   },
 ];
 
+/* The thinking settings of a Claude chat (chats/settings.go): "" is the
+   agent's default (the model decides), "off" no thinking, else a budget
+   in tokens. The selector offers these; /thinking also takes any budget. */
+export type ThinkingOption = { value: string; label: string; hint: string };
+export const THINKING: ThinkingOption[] = [
+  { value: "", label: "Thinking: default", hint: "The model decides" },
+  { value: "off", label: "Thinking off", hint: "No extended thinking" },
+  { value: "4000", label: "Thinking 4k", hint: "A budget of 4,000 tokens" },
+  { value: "16000", label: "Thinking 16k", hint: "A budget of 16,000 tokens" },
+  { value: "32000", label: "Thinking 32k", hint: "A budget of 32,000 tokens" },
+];
+
+/* The effort levels of a Claude chat, lowest first; "" is the model's own
+   default. */
+export type EffortOption = { value: string; label: string; hint: string };
+export const EFFORTS: EffortOption[] = [
+  { value: "", label: "Effort: default", hint: "The model's default level" },
+  { value: "low", label: "Effort low", hint: "Quick, shallow answers" },
+  { value: "medium", label: "Effort medium", hint: "Between low and high" },
+  { value: "high", label: "Effort high", hint: "The usual level" },
+  { value: "xhigh", label: "Effort xhigh", hint: "More reasoning than high" },
+  { value: "max", label: "Effort max", hint: "As much reasoning as it takes" },
+];
+
+/* A /thinking argument as the setting: on/default for the default, off,
+   or a budget as digits with an optional k (8k). Undefined when it is
+   none of these. */
+export function parseThinking(arg: string): string | undefined {
+  const a = arg.trim().toLowerCase();
+  if (["on", "default", "adaptive", "auto"].includes(a)) return "";
+  if (["off", "none", "0"].includes(a)) return "off";
+  const m = /^(\d+)(k?)$/.exec(a);
+  if (!m) return undefined;
+  const n = Number(m[1]) * (m[2] ? 1000 : 1);
+  return n > 0 && n <= 128000 ? String(n) : undefined;
+}
+
+/* The label a thinking setting shows: "8k" for 8000. */
+export function thinkingLabel(setting: string | undefined) {
+  if (!setting) return "default";
+  if (setting === "off") return "off";
+  const n = Number(setting);
+  return n >= 1000 && n % 1000 === 0 ? `${n / 1000}k` : String(n);
+}
+
 export type CommandItem =
   | { kind: "command"; command: Command }
   | { kind: "model"; model: ModelOption }
   | { kind: "mode"; mode: ModeOption }
+  | { kind: "thinking"; thinking: ThinkingOption }
+  | { kind: "effort"; effort: EffortOption }
   | { kind: "style"; style: StyleOption }
   | { kind: "agent"; command: AgentCommand };
 
@@ -199,6 +256,11 @@ export function commandItems(
       kind: "mode",
       mode,
     }));
+  if (name === "thinking") return thinkingItems(arg);
+  if (name === "effort")
+    return EFFORTS.filter((e) => (e.value || "default").startsWith(arg)).map(
+      (effort) => ({ kind: "effort", effort }),
+    );
   if (name === "style")
     return STYLES.filter((s) =>
       (s.value || "default").toLowerCase().startsWith(arg),
@@ -211,6 +273,38 @@ export function commandItems(
         m.label.toLowerCase().includes(arg),
     )
     .map((model) => ({ kind: "model", model }));
+}
+
+/* The rows for a /thinking argument: the presets the argument begins
+   ("o" lists on and off), or the budget typed as its own row ("8k"). */
+function thinkingItems(arg: string): CommandItem[] {
+  const rows: CommandItem[] = THINKING.filter((t) =>
+    (t.value === "" ? "on" : thinkingLabel(t.value)).startsWith(arg),
+  ).map((thinking) => ({ kind: "thinking", thinking }));
+  const typed = parseThinking(arg);
+  if (
+    typed !== undefined &&
+    !rows.some((r) => r.kind === "thinking" && r.thinking.value === typed)
+  )
+    rows.push({
+      kind: "thinking",
+      thinking: {
+        value: typed,
+        label:
+          typed === ""
+            ? "Thinking: default"
+            : typed === "off"
+              ? "Thinking off"
+              : `Thinking ${thinkingLabel(typed)}`,
+        hint:
+          typed === ""
+            ? "The model decides"
+            : typed === "off"
+              ? "No extended thinking"
+              : `A budget of ${Number(typed).toLocaleString()} tokens`,
+      },
+    });
+  return rows;
 }
 
 /* The agent command a query names, with or without an argument: "/compact
@@ -248,7 +342,11 @@ export function exactCommand(
         (item.model.value.toLowerCase() === arg ||
           item.model.label.toLowerCase() === arg)) ||
       (item.kind === "mode" && item.mode.value === arg) ||
-      (item.kind === "style" && (item.style.value || "default").toLowerCase() === arg),
+      (item.kind === "thinking" &&
+        item.thinking.value === parseThinking(arg)) ||
+      (item.kind === "effort" && (item.effort.value || "default") === arg) ||
+      (item.kind === "style" &&
+        (item.style.value || "default").toLowerCase() === arg),
   );
   return hit;
 }

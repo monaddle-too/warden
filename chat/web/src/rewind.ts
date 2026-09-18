@@ -24,6 +24,8 @@ export type RewindResult = {
   restored?: string[];
   removed?: string[];
   conversation?: "rewound" | "pending" | "fresh" | "";
+  /* How many queued messages a conversation rewind withdrew (queue.ts). */
+  withdrawn?: number;
 };
 
 export type ChangedFile = {
@@ -159,6 +161,8 @@ export function rewindOutcome(result: RewindResult): string {
     parts.push(
       "the agent's session could not rewind; the next message starts a new one with the conversation so far as context",
     );
+  if (result.withdrawn)
+    parts.push(`${plural(result.withdrawn, "queued message")} withdrawn`);
   return parts.join("; ");
 }
 

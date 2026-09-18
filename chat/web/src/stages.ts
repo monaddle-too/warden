@@ -42,23 +42,31 @@ export function chatStatusLabel(
 ): string {
   if (c.startup && (c.status === "running" || c.status === "queued"))
     return stageLabel(c.startup.stage);
+  const entries = c.conversation?.entries ?? [];
+  // Messages queued behind the turn, or held once it was stopped (queue.ts).
+  const queued = entries.filter(
+    (e) => e.role === "user" && !e.parentID && e.delivery === "queued",
+  ).length;
+  const held = queued
+    ? ` · ${queued} message${queued === 1 ? "" : "s"} held`
+    : "";
   switch (c.status) {
     case "running": {
-      const entries = c.conversation?.entries ?? [];
       const last = entries[entries.length - 1];
+      const tail = queued ? ` · ${queued} queued` : "";
       if (last?.role === "thinking" && last.isStreaming)
-        return "Agent is thinking";
+        return "Agent is thinking" + tail;
       if (last?.role === "compaction" && last.isStreaming)
-        return "Compacting context";
-      return "Agent is running";
+        return "Compacting context" + tail;
+      return "Agent is running" + tail;
     }
     case "queued":
       return "Waiting to start";
     case "stopping":
       return "Stopping…";
     case "idle":
-      return "Agent is idle";
+      return "Agent is idle" + held;
     default:
-      return c.status;
+      return c.status + held;
   }
 }

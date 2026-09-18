@@ -142,7 +142,7 @@ func lastLines(text string, n int) []string {
 func RenderTranscript(c *Chat, width int, expanded bool) []string {
 	top, children := nestEntries(c.Conversation.Entries)
 	var out []string
-	for _, e := range top {
+	for _, e := range queuedLast(top) {
 		out = append(out, renderEntry(c, e, width, expanded, children, "")...)
 		out = append(out, "")
 	}
@@ -180,7 +180,11 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 		case "user":
 			label := senderLabel(e)
 			out = append(out, wrap(text, width, bold+cyan+label+" › "+reset, strings.Repeat(" ", len(label)+3))...)
-			if e.Delivery != "" && e.Delivery != "delivered" && e.Delivery != "confirmed" {
+			switch {
+			case e.Delivery == "queued":
+				// Held by Warden until the agent's turn ends (queue.go).
+				out = append(out, yellow+"      ("+queueMarker(c)+")"+reset)
+			case e.Delivery != "" && e.Delivery != "delivered" && e.Delivery != "confirmed":
 				out = append(out, dim+"      ("+sanitize(e.Delivery)+")"+reset)
 			}
 		case "assistant":

@@ -668,6 +668,10 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	case "aside":
 		// A side question to a copy of the running agent session.
 		return w.aside(ctx, r)
+	case "memory-list":
+		return w.listMemory(ctx, r)
+	case "memory-write":
+		return w.writeMemory(ctx, r)
 	}
 	if r.Operation == "status" {
 		// The read the workspace panel polls: never behind a creation.
@@ -919,7 +923,7 @@ func (w *Worker) streamManaged(parent context.Context, conn net.Conn, reader *bu
 		case !ValidOutputStyle(broker.OutputStyle):
 			err = errors.New("invalid output style")
 		default:
-			stream, err = w.launchLocked(ctx, s, broker)
+			stream, err = w.launchLocked(ctx, s, broker, r.Instructions)
 		}
 	}
 	if err != nil {
@@ -1346,7 +1350,7 @@ func (w *Worker) execOK(ctx context.Context, name, dir string, args ...string) (
 // driver installs it once per guest, and again only after a rotation or a
 // loss. The fingerprint is recorded once the launch succeeded, since the
 // driver delivers trust as part of it.
-func (w *Worker) launchLocked(ctx context.Context, s *managedSandbox, broker BrokerConfig) (io.ReadWriteCloser, error) {
+func (w *Worker) launchLocked(ctx context.Context, s *managedSandbox, broker BrokerConfig, instructions ...string) (io.ReadWriteCloser, error) {
 	fingerprint := ""
 	trusted := true
 	if broker.CACertificate != "" {
@@ -1356,7 +1360,7 @@ func (w *Worker) launchLocked(ctx context.Context, s *managedSandbox, broker Bro
 			s.ProxyCA = ""
 		}
 	}
-	stream, err := w.Runtime.Stream(ctx, s.RuntimeName, RunSpec{Directory: s.Directory, Broker: broker, Paths: s.paths.orDefaults(), TrustsCA: trusted})
+	stream, err := w.Runtime.Stream(ctx, s.RuntimeName, RunSpec{Directory: s.Directory, Broker: broker, Paths: s.paths.orDefaults(), TrustsCA: trusted, Instructions: strings.Join(instructions, "\n\n")})
 	if err != nil {
 		return nil, err
 	}

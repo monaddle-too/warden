@@ -51,6 +51,29 @@ describe("stages", () => {
       }),
     ).toBe("Agent is idle");
   });
+  it("counts the messages queued behind the turn, or held after a stop", () => {
+    const queued = (status: string, n: number) => ({
+      status,
+      conversation: {
+        entries: Array.from({ length: n }, (_, i) => ({
+          id: "q" + i,
+          role: "user",
+          text: "later",
+          detail: "",
+          createdAt: 0,
+          isStreaming: false,
+          delivery: "queued",
+        })),
+      },
+    });
+    expect(chatStatusLabel(queued("running", 2))).toBe(
+      "Agent is running · 2 queued",
+    );
+    expect(chatStatusLabel(queued("interrupted", 1))).toBe(
+      "interrupted · 1 message held",
+    );
+    expect(chatStatusLabel(queued("idle", 0))).toBe("Agent is idle");
+  });
 });
 
 import { shortenTimestamp } from "./units";
