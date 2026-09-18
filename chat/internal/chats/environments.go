@@ -157,10 +157,12 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 					env.Pod = res.Pod
 				}
 			}
-			if e.PolicyAddress != "" {
-				if result, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": ran.ID, "sandboxID": c.SandboxID}); err == nil {
-					env.Repositories = agent.Array(result["repositories"])
-				}
+		}
+		// Shared repositories belong to the workspace, not to a run: a
+		// chat that has not sent its first message lists them too.
+		if e.PolicyAddress != "" && !env.Deleted {
+			if result, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": chats[0].ID, "sandboxID": c.SandboxID}); err == nil {
+				env.Repositories = agent.Array(result["repositories"])
 			}
 		}
 		out = append(out, env)
