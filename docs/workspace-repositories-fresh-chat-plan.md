@@ -49,3 +49,4 @@ some other action changes the chat); the share itself succeeded.
   `chats/grants_test.go` (fails on main: the fresh chat's listing has no
   repositories). `go test ./internal/chats/` and `tsc --noEmit` pass. Not
   live-tested in a browser; not deployed.
+- 2026-09-18: merged to main as 4ef7108 (fast-forward; full Go/web verification green). Remaining: deploy to `~/.warden/release`, remove the worktree.
