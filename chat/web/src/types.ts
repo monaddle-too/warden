@@ -18,6 +18,10 @@ export type Entry = {
      search's hits, a unified diff per changed file). Absent on entries
      from before it was recorded, whose detail starts with a status line. */
   tool?: Tool;
+  /* The subagent this entry belongs to: the ID of the task entry (the
+     Agent tool call) whose subagent produced it, so the transcript nests
+     it under that card. Absent on the conversation's own entries. */
+  parentID?: string;
   /* What a compaction entry records: the agent compacted its context
      here; `detail` is the summary it continues from, when given. */
   compaction?: Compaction;
@@ -44,7 +48,9 @@ export type Context = { used: number; window: number; model?: string };
    (or an agent's own word, such as Codex's declined), `description` what
    the agent said the call is for, `paths` the workspace files it names,
    `query` a search's pattern or a fetch's URL, `input` the call's input
-   where the card shows it as given. */
+   where the card shows it as given (a todo list's items), `background`
+   a command or subagent the agent runs in the background, whose card
+   stays running until the task reports back. */
 export type Tool = {
   kind: ToolKind;
   name?: string;
@@ -54,6 +60,7 @@ export type Tool = {
   paths?: string[];
   query?: string;
   input?: Record<string, unknown>;
+  background?: boolean;
 };
 export type ToolKind =
   | "command"
@@ -64,6 +71,7 @@ export type ToolKind =
   | "webSearch"
   | "mcp"
   | "task"
+  | "todo"
   | "other";
 /* The token usage of one turn as the service records it: `input` counts
    every input token (`cached` and `cacheWrite` are parts of it),
@@ -103,6 +111,17 @@ export type Question = {
   question: string;
   options?: { label: string; description?: string }[];
 };
+/* A tool permission ask (method item/tool/requestPermission): the tool,
+   its input, the call as a transcript entry (a command, a diff), what
+   "Allow always" would remember, and, for ExitPlanMode, the plan. */
+export type PermissionParams = {
+  tool: string;
+  input?: Record<string, unknown>;
+  entry?: Entry;
+  always?: string;
+  description?: string;
+  plan?: string;
+};
 export type Approval = {
   id: string;
   method: string;
@@ -123,6 +142,11 @@ export type ResourceLimits = {
 export type Chat = {
   provider?: string;
   model?: string;
+  /* A Claude chat's permission mode (auto when absent) and its
+     allow-always rules: the tool (Bash, edit for any file tool, or a
+     tool's name) and, for Bash, the command prefix. */
+  mode?: string;
+  allowed?: { tool: string; command?: string }[];
   id: string;
   title: string;
   sandboxID: string;
@@ -139,9 +163,16 @@ export type Chat = {
     context?: Context;
   };
   approvals: Approval[];
+  /* Slash commands the agent's session offers (Claude Code's built-ins and
+     the workspace's own commands and skills); "/name …" is sent as text
+     and the agent expands it. Absent for Codex. */
+  commands?: AgentCommand[];
+  /* What the agent reported when its session started. */
+  session?: { model?: string; permissionMode?: string; outputStyle?: string };
   typing?: { principalID: string; name: string; until: number }[];
   startup?: Startup;
 };
+export type AgentCommand = { name: string; description?: string };
 /* Where a chat's start is while its message waits for the agent: the
    stage (stages.ts names them), the runtime's detail for it, and when the
    stage began (unix seconds). Absent once the turn is running. */

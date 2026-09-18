@@ -34,6 +34,9 @@ type Entry struct {
 	IsStreaming bool    `json:"isStreaming"`
 	Delivery    string  `json:"delivery"`
 	Tool        *Tool   `json:"tool"` // the tool call an activity entry records (render.go)
+	// ParentID names the subagent's card (an Agent call) this entry
+	// belongs to; "" for the conversation's own entries.
+	ParentID string `json:"parentID,omitempty"`
 	// Compaction is what a compaction entry records (conversation.Compaction):
 	// the agent compacted its context here; Detail is the summary.
 	Compaction *Compaction `json:"compaction,omitempty"`
@@ -160,10 +163,13 @@ func (a Approval) Questions() []Question {
 }
 
 type Chat struct {
-	ID           string       `json:"id"`
-	Title        string       `json:"title"`
-	Provider     string       `json:"provider"`
-	Model        string       `json:"model"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	// Mode is a Claude chat's permission mode: auto (also when empty),
+	// ask or plan (chats/permissions.go).
+	Mode         string       `json:"mode"`
 	SandboxID    string       `json:"sandboxID"`
 	Repository   string       `json:"repository,omitempty"`
 	Status       string       `json:"status"`
@@ -178,6 +184,37 @@ type Chat struct {
 		Detail string `json:"detail"`
 	} `json:"startup"`
 }
+
+// Permission is a tool ask of a Claude chat in ask or plan mode (method
+// item/tool/requestPermission): the tool, the CLI's description, the
+// call as a transcript entry (a command, a diff), what "allow always"
+// remembers, and the plan when the tool is ExitPlanMode.
+type Permission struct {
+	Tool        string `json:"tool"`
+	Description string `json:"description"`
+	Always      string `json:"always"`
+	Plan        string `json:"plan"`
+	Entry       *Entry `json:"entry"`
+}
+
+// Permission decodes the ask when the approval is one, else nil.
+func (a Approval) Permission() *Permission {
+	if a.Method != "item/tool/requestPermission" {
+		return nil
+	}
+	b, err := json.Marshal(a.Params)
+	if err != nil {
+		return nil
+	}
+	var p Permission
+	if json.Unmarshal(b, &p) != nil || p.Tool == "" {
+		return nil
+	}
+	return &p
+}
+
+// IsPlan reports whether the ask is the model's plan.
+func (p *Permission) IsPlan() bool { return p != nil && p.Tool == "ExitPlanMode" }
 
 // Pending returns the approvals still waiting for the owner.
 func (c *Chat) Pending() []Approval {
@@ -407,6 +444,19 @@ func (c *Client) Resolve(ctx context.Context, chatID, approvalID string, allow b
 		answers = map[string][]string{}
 	}
 	return c.do(ctx, "POST", "chats/"+chatID+"/approvals/"+approvalID, map[string]any{"allow": allow, "answers": answers}, nil)
+}
+
+// Answer resolves a tool permission ask: allow, allow always (the call's
+// rule is remembered for the chat), or deny with a message the model
+// reads; for a plan, allow with the mode the chat moves to (auto or ask)
+// or deny with feedback.
+func (c *Client) Answer(ctx context.Context, chatID, approvalID string, allow, always bool, message, mode string) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/approvals/"+approvalID, map[string]any{"allow": allow, "always": always, "message": message, "mode": mode, "answers": map[string][]string{}}, nil)
+}
+
+// Mode sets a Claude chat's permission mode (auto, ask or plan).
+func (c *Client) Mode(ctx context.Context, chatID, mode string) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/mode", map[string]any{"mode": mode}, nil)
 }
 
 func (c *Client) RevokePort(ctx context.Context, id string) error {

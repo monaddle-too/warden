@@ -177,7 +177,13 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Archived   bool                `json:"archived"`
 		Allow      bool                `json:"allow"`
 		Answers    map[string][]string `json:"answers"`
-		Resources  *sandbox.Resources  `json:"resources"`
+		// A tool permission's other answers (Engine.Answer): allow and
+		// remember, deny with a message the model reads, the mode a plan
+		// is approved into; Mode is also the body of chats/{id}/mode.
+		Always    bool               `json:"always"`
+		Message   string             `json:"message"`
+		Mode      string             `json:"mode"`
+		Resources *sandbox.Resources `json:"resources"`
 		// Attachments are upload IDs a message sends along.
 		Attachments []string `json:"attachments"`
 	}
@@ -214,6 +220,8 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch parts[2] {
 		case "agent":
 			err = h.Engine.ConfigureAgentAndRelease(r.Context(), parts[1], body.Provider, body.Model)
+		case "mode":
+			err = h.Engine.SetMode(r.Context(), parts[1], body.Mode)
 		case "message":
 			err = h.Engine.MessageFrom(parts[1], body.Text, body.ID, requester(r), body.Attachments...)
 		case "typing":
@@ -230,7 +238,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "approvals":
-		err = h.Engine.ResolveAs(parts[1], parts[3], body.Allow, body.Answers, requester(r))
+		err = h.Engine.Answer(parts[1], parts[3], Answer{Allow: body.Allow, Answers: body.Answers, Always: body.Always, Message: body.Message, Mode: body.Mode}, requester(r))
 	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "attachments" && parts[4] == "remove":
 		err = h.Engine.removeAttachment(parts[1], parts[3])
 	default:

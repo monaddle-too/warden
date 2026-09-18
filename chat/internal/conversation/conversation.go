@@ -19,6 +19,8 @@ func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) 
 	e.ID = id
 	e.TurnID = Ptr(turn)
 	e.IsStreaming = !completed
+	// An item a subagent produced names the Agent call it belongs to.
+	e.ParentID = agent.String(item["parentId"])
 	switch kind {
 	case "userMessage":
 		if client := agent.String(item["clientId"]); client != "" {
@@ -37,7 +39,7 @@ func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) 
 	case "commandExecution":
 		e.Text = agent.String(item["command"])
 		e.Detail = tail(agent.String(item["aggregatedOutput"]), 30000)
-		e.Tool = &Tool{Kind: "command", Name: agent.String(item["tool"]), Status: toolStatus(item), Description: agent.String(item["description"])}
+		e.Tool = &Tool{Kind: "command", Name: agent.String(item["tool"]), Status: toolStatus(item), Description: agent.String(item["description"]), Background: item["background"] == true}
 	case "fileChange":
 		changes := agent.Array(item["changes"])
 		paths := []string{}
@@ -69,13 +71,21 @@ func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) 
 		for _, p := range agent.Array(item["paths"]) {
 			paths = append(paths, agent.String(p))
 		}
-		e.Tool = &Tool{Kind: agent.String(item["kind"]), Name: agent.String(item["tool"]), Status: toolStatus(item), Paths: paths, Query: agent.String(item["query"]), Input: agent.Map(item["input"])}
+		e.Tool = &Tool{Kind: agent.String(item["kind"]), Name: agent.String(item["tool"]), Status: toolStatus(item), Paths: paths, Query: agent.String(item["query"]), Input: agent.Map(item["input"]), Background: item["background"] == true}
 		if e.Tool.Kind == "" {
 			e.Tool.Kind = "other"
 		}
 		if e.Text == "" {
 			e.Text = e.Tool.Name
 		}
+	case "todoList":
+		// The agent's todo list as it stands after a write: one entry per
+		// list, replaced in place by every write, never a card per write.
+		todos := agent.Array(item["todos"])
+		e.Text = todoTitle(todos)
+		e.Detail = todoText(todos)
+		e.Tool = &Tool{Kind: "todo", Name: agent.String(item["tool"]), Status: "completed", Input: map[string]any{"todos": todos}}
+		e.IsStreaming = false
 	case "compaction":
 		// The agent compacted its context (Claude's /compact, or its own
 		// auto-compaction near the window): a divider in the transcript
@@ -106,6 +116,10 @@ func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) 
 	default:
 		return
 	}
+	if completed && e.Tool != nil && e.Tool.Kind == "task" {
+		// The subagent finished: the card says how long it took.
+		e.EndedAt = now()
+	}
 	for i, old := range c.Entries {
 		if old.ID == e.ID {
 			e.CreatedAt = old.CreatedAt
@@ -119,8 +133,8 @@ func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) 
 			if e.Text == "" && (!completed || e.Role == "thinking") {
 				e.Text = old.Text
 			}
-			if e.Role == "thinking" && old.EndedAt != 0 {
-				e.EndedAt = old.EndedAt
+			if old.EndedAt != 0 {
+				e.EndedAt = old.EndedAt // an end, once seen, stays
 			}
 			c.Entries[i] = e
 			return
@@ -186,6 +200,49 @@ func mcpResultText(item map[string]any) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// todoTitle names the todo list by its progress: "Todo list · 2 of 5
+// done", or the item in progress when there is one.
+func todoTitle(todos []any) string {
+	done, active := 0, ""
+	for _, v := range todos {
+		m := agent.Map(v)
+		switch agent.String(m["status"]) {
+		case "completed":
+			done++
+		case "in_progress":
+			if active == "" {
+				active = agent.String(m["activeForm"])
+				if active == "" {
+					active = agent.String(m["content"])
+				}
+			}
+		}
+	}
+	title := fmt.Sprintf("Todo list · %d of %d done", done, len(todos))
+	if active != "" {
+		title += " · " + active
+	}
+	return title
+}
+
+// todoText is the todo list as lines a plain surface can show: `[x]`
+// done, `[>]` in progress, `[ ]` pending.
+func todoText(todos []any) string {
+	var b strings.Builder
+	for _, v := range todos {
+		m := agent.Map(v)
+		mark := "[ ]"
+		switch agent.String(m["status"]) {
+		case "completed":
+			mark = "[x]"
+		case "in_progress":
+			mark = "[>]"
+		}
+		b.WriteString(mark + " " + agent.String(m["content"]) + "\n")
+	}
+	return b.String()
 }
 
 // Delta appends streamed text to entry `id`, adding the entry when the
@@ -339,6 +396,9 @@ func (c *Conversation) Hydrate(thread map[string]any) {
 				}
 				e.ID = old.ID
 				e.CreatedAt = old.CreatedAt
+				if old.EndedAt != 0 {
+					e.EndedAt = old.EndedAt
+				}
 				if e.Role == "user" {
 					e.Sender = old.Sender
 					e.Detail = old.Detail

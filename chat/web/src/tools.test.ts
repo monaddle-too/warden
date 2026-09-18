@@ -5,10 +5,16 @@ import {
   editSegments,
   fetchHost,
   foldText,
+  formatElapsed,
   hitCount,
   inputText,
   lineCount,
   shortPath,
+  subagentInput,
+  subagentProgress,
+  taskElapsed,
+  todoItems,
+  todoProgress,
   toolFailed,
   toolKind,
   toolRunning,
@@ -155,5 +161,65 @@ describe("tool cards", () => {
     expect(inputText({ z: 1, a: "x" })).toBe('{\n  "a": "x",\n  "z": 1\n}');
     expect(inputText({})).toBe("");
     expect(inputText(undefined)).toBe("");
+  });
+});
+
+describe("subagent and todo cards", () => {
+  it("counts a subagent's tool calls and whether one still runs", () => {
+    const children = [
+      entry({ kind: "command", status: "completed" }, { id: "c1" }),
+      entry({ kind: "read", status: "running" }, { id: "c2" }),
+      entry(undefined, { id: "m", role: "assistant" }),
+    ];
+    expect(subagentProgress(children)).toEqual({ steps: 2, running: true });
+    expect(subagentProgress([children[0]])).toEqual({
+      steps: 1,
+      running: false,
+    });
+  });
+  it("measures a subagent's time to its end, or to now while it runs", () => {
+    const done = entry(
+      { kind: "task", status: "completed" },
+      { createdAt: 100, endedAt: 163 },
+    );
+    expect(taskElapsed(done, 999)).toBe(63);
+    const running = entry({ kind: "task", status: "running" }, { createdAt: 100 });
+    expect(taskElapsed(running, 130)).toBe(30);
+    expect(taskElapsed(entry({ kind: "task", status: "completed" }), 5)).toBe(0);
+    expect(formatElapsed(4.4)).toBe("4s");
+    expect(formatElapsed(72)).toBe("1m 12s");
+    expect(formatElapsed(7500)).toBe("2h 5m");
+  });
+  it("reads the subagent's type and prompt from the call's input", () => {
+    expect(
+      subagentInput({
+        kind: "task",
+        status: "running",
+        input: { subagent_type: "Explore", prompt: "Find the tests." },
+      }),
+    ).toEqual({ type: "Explore", prompt: "Find the tests." });
+    expect(subagentInput(undefined)).toEqual({ type: "", prompt: "" });
+  });
+  it("reads a todo list and its progress, tolerating bad items", () => {
+    const items = todoItems({
+      kind: "todo",
+      status: "completed",
+      input: {
+        todos: [
+          { content: "Parse", status: "completed" },
+          { content: "Test", status: "in_progress", activeForm: "Testing" },
+          { content: "Ship", status: "weird" },
+          { status: "pending" },
+          null,
+        ],
+      },
+    });
+    expect(items).toEqual([
+      { content: "Parse", status: "completed", activeForm: "" },
+      { content: "Test", status: "in_progress", activeForm: "Testing" },
+      { content: "Ship", status: "pending", activeForm: "" },
+    ]);
+    expect(todoProgress(items)).toBe("1 of 3 done");
+    expect(todoItems({ kind: "todo", status: "completed" })).toEqual([]);
   });
 });

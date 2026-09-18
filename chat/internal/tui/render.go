@@ -136,10 +136,44 @@ func lastLines(text string, n int) []string {
 
 // RenderTranscript lays out a chat's entries as terminal lines of at most
 // width columns (styling excluded from the width). expanded shows tool
-// output and diffs in full instead of their last lines.
+// output and diffs in full instead of their last lines, and a subagent's
+// own transcript under its card.
 func RenderTranscript(c *Chat, width int, expanded bool) []string {
+	top, children := nestEntries(c.Conversation.Entries)
 	var out []string
-	for _, e := range c.Conversation.Entries {
+	for _, e := range top {
+		out = append(out, renderEntry(c, e, width, expanded, children, "")...)
+		out = append(out, "")
+	}
+	return out
+}
+
+// nestEntries splits the entries into the conversation's own and, by the
+// ID of each subagent's card, the entries that subagent produced. An
+// entry whose card is unknown stays at the top rather than vanishing.
+func nestEntries(entries []Entry) (top []Entry, children map[string][]Entry) {
+	ids := map[string]bool{}
+	for _, e := range entries {
+		ids[e.ID] = true
+	}
+	children = map[string][]Entry{}
+	for _, e := range entries {
+		if e.ParentID != "" && ids[e.ParentID] {
+			children[e.ParentID] = append(children[e.ParentID], e)
+		} else {
+			top = append(top, e)
+		}
+	}
+	return top, children
+}
+
+// renderEntry lays out one entry: a message, a tool card (with a
+// subagent's entries nested under its card), thinking, a notice. label
+// names the agent whose message it is when not the chat's provider (a
+// subagent's type inside its card).
+func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string][]Entry, label string) []string {
+	var out []string
+	{
 		text := sanitize(e.Text)
 		switch e.Role {
 		case "user":
@@ -159,7 +193,10 @@ func RenderTranscript(c *Chat, width int, expanded bool) []string {
 				out = append(out, dim+"      ("+sanitize(e.Delivery)+")"+reset)
 			}
 		case "assistant":
-			name := c.Provider
+			name := label
+			if name == "" {
+				name = c.Provider
+			}
 			if name == "" {
 				name = "agent"
 			}
@@ -170,8 +207,10 @@ func RenderTranscript(c *Chat, width int, expanded bool) []string {
 		case "activity":
 			if e.Tool != nil {
 				out = append(out, renderTool(e, width, expanded)...)
-				out = append(out, "")
-				continue
+				if e.Tool.Kind == "task" {
+					out = append(out, renderSubagent(c, e, width, expanded, children)...)
+				}
+				return out
 			}
 			marker := dim + "  · "
 			if e.IsStreaming {
@@ -197,6 +236,8 @@ func RenderTranscript(c *Chat, width int, expanded bool) []string {
 			}
 		case "system":
 			out = append(out, wrap(text, width, red+"  ! "+reset, "    ")...)
+		case "notice":
+			out = append(out, wrap(dim+text+reset, width, dim+"  · ", "    ")...)
 		case "compaction":
 			// The agent compacted its context here: a divider with the
 			// trigger and the token counts, the summary it continues from
@@ -205,7 +246,47 @@ func RenderTranscript(c *Chat, width int, expanded bool) []string {
 		default:
 			out = append(out, wrap(text, width, dim+"  "+e.Role+": "+reset, "    ")...)
 		}
-		out = append(out, "")
+	}
+	return out
+}
+
+// renderSubagent lays out what a subagent did under its card: one line
+// with the count until expanded, then its entries indented, each
+// rendered as the transcript renders the conversation's own (a nested
+// subagent's card recurses), and the card's result — the subagent's
+// final text — last.
+func renderSubagent(c *Chat, e Entry, width int, expanded bool, children map[string][]Entry) []string {
+	kids := children[e.ID]
+	var out []string
+	if len(kids) > 0 && !expanded {
+		steps, messages := 0, 0
+		for _, k := range kids {
+			if k.Tool != nil {
+				steps++
+			} else if k.Role == "assistant" {
+				messages++
+			}
+		}
+		out = append(out, dim+fmt.Sprintf("    │ … %d tool calls, %d messages (Tab to expand)", steps, messages)+reset)
+	} else if len(kids) > 0 {
+		label := "subagent"
+		if t := e.Tool; t != nil && t.Input != nil {
+			if s, ok := t.Input["subagent_type"].(string); ok && s != "" {
+				label = sanitize(s)
+			}
+		}
+		inner := width - 4
+		if inner < 20 {
+			inner = 20
+		}
+		for _, k := range kids {
+			for _, l := range renderEntry(c, k, inner, expanded, children, label) {
+				out = append(out, "    "+l)
+			}
+		}
+	}
+	if detail := sanitize(strings.TrimRight(e.Detail, "\n")); strings.TrimSpace(detail) != "" {
+		out = append(out, renderBody(strings.Split(detail, "\n"), width, expanded, false)...)
 	}
 	return out
 }
@@ -221,6 +302,7 @@ type Tool struct {
 	Paths       []string       `json:"paths"`
 	Query       string         `json:"query"`
 	Input       map[string]any `json:"input"`
+	Background  bool           `json:"background"`
 }
 
 // foldedLines is how many lines of a tool's output or diff show before
@@ -267,25 +349,96 @@ func renderTool(e Entry, width int, expanded bool) []string {
 		if !expanded && !failed {
 			body = nil // one line is the reading; Tab shows the content
 		}
+	case "task":
+		// A subagent: how long it took (or has been at it) and its prompt
+		// under the head; renderSubagent puts its own entries and then its
+		// final text below.
+		if secs := taskSeconds(e); secs > 0 {
+			head += fmt.Sprintf("  %s%s%s", dim, formatSeconds(secs), reset)
+		}
+		if t.Input != nil {
+			if p, ok := t.Input["prompt"].(string); ok && strings.TrimSpace(p) != "" && t.Description == "" {
+				t = &Tool{Kind: t.Kind, Name: t.Name, Status: t.Status, Description: p, Input: t.Input, Background: t.Background}
+			}
+		}
+	case "todo":
+		body = renderTodo(strings.Split(detail, "\n"))
 	default:
 		body = strings.Split(detail, "\n")
 		if t.Kind == "mcp" && expanded {
 			body = append(inputLines(t.Input), body...)
 		}
 	}
+	if t.Background {
+		head += " " + dim + "[background]" + reset
+	}
 	if failed {
-		head += " " + red + "failed" + reset
+		head += " " + red + t.Status + reset
 	}
 	out := wrap(head, width, marker+reset, "    ")
 	if t.Description != "" {
-		out = append(out, wrap(sanitize(t.Description), width, dim+"    ", "    ")...)
+		desc := sanitize(t.Description)
+		if t.Kind == "task" && !expanded {
+			desc = strings.SplitN(desc, "\n", 2)[0]
+		}
+		out = append(out, wrap(desc, width, dim+"    ", "    ")...)
 		out[len(out)-1] += reset
 	}
 	if len(body) == 1 && strings.TrimSpace(body[0]) == "" {
 		body = nil
 	}
+	if t.Kind == "todo" {
+		return append(out, body...)
+	}
 	if len(body) > 0 {
 		out = append(out, renderBody(body, width, expanded, fromEnd)...)
+	}
+	return out
+}
+
+// taskSeconds is how long a subagent took: to its end, or so far while
+// it runs.
+func taskSeconds(e Entry) float64 {
+	end := e.EndedAt
+	if end == 0 && (e.IsStreaming || e.Tool.Status == "running") {
+		end = float64(time.Now().UnixMilli()) / 1000
+	}
+	if end <= e.CreatedAt {
+		return 0
+	}
+	return end - e.CreatedAt
+}
+
+// formatSeconds reads "4s", "1m 12s", "2h 5m".
+func formatSeconds(secs float64) string {
+	s := int(secs + 0.5)
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	m := s / 60
+	if m < 60 {
+		return fmt.Sprintf("%dm %ds", m, s%60)
+	}
+	return fmt.Sprintf("%dh %dm", m/60, m%60)
+}
+
+// renderTodo colours a todo list's lines: done dim, in progress bold,
+// pending plain.
+func renderTodo(lines []string) []string {
+	var out []string
+	for _, l := range lines {
+		l = sanitize(l)
+		switch {
+		case strings.HasPrefix(l, "[x] "):
+			out = append(out, dim+"    ✓ "+l[4:]+reset)
+		case strings.HasPrefix(l, "[>] "):
+			out = append(out, bold+yellow+"    ▸ "+l[4:]+reset)
+		case strings.HasPrefix(l, "[ ] "):
+			out = append(out, "    ○ "+l[4:])
+		case strings.TrimSpace(l) == "":
+		default:
+			out = append(out, "    "+l)
+		}
 	}
 	return out
 }
@@ -433,6 +586,10 @@ func RenderApprovals(c *Chat, width int) []string {
 	}
 	var out []string
 	for i, a := range pending {
+		if p := a.Permission(); p != nil {
+			out = append(out, renderPermission(a, p, width, i > 0)...)
+			continue
+		}
 		head := "approval"
 		body := ""
 		switch {
@@ -480,6 +637,73 @@ func RenderApprovals(c *Chat, width int) []string {
 			if l != "" {
 				out = append(out, wrap(l, width, "  ", "  ")...)
 			}
+		}
+	}
+	return out
+}
+
+// renderPermission lays out a tool ask: the call as the transcript shows
+// it (a command, a diff's lines, a read's path) or the plan, and the keys
+// that answer it.
+func renderPermission(a Approval, p *Permission, width int, later bool) []string {
+	head, hint := "", ""
+	var body []string
+	e := p.Entry
+	switch {
+	case p.IsPlan():
+		head = "Claude has a plan"
+		hint = "y = approve (auto) · a = approve, ask before edits · n [feedback] = keep planning"
+		body = renderMarkdown(p.Plan, width-4, "", "")
+	case e != nil && e.Tool != nil && e.Tool.Kind == "command":
+		head = "run a command"
+		if p.Description != "" {
+			head += ": " + p.Description
+		}
+		for _, l := range strings.Split(strings.TrimRight(e.Text, "\n"), "\n") {
+			body = append(body, "$ "+l)
+		}
+	case e != nil && e.Tool != nil && e.Tool.Kind == "edit":
+		head = e.Text
+		lines, adds, dels := diffLines(e.Detail)
+		if len(lines) > 0 {
+			body = append(body, fmt.Sprintf("+%d −%d", adds, dels))
+			body = append(body, lines...)
+		}
+	case e != nil:
+		head = e.Text
+		if e.Tool != nil && len(e.Tool.Input) > 0 {
+			body = inputLines(e.Tool.Input)
+		}
+	default:
+		head = "use " + p.Tool
+	}
+	if hint == "" {
+		hint = "y = allow · a = allow always"
+		if p.Always != "" {
+			hint += " (" + p.Always + ")"
+		}
+		hint += " · n [message] = deny"
+	}
+	if later {
+		hint = "answered after the one above"
+	}
+	out := []string{bold + yellow + "⚠ " + sanitize(head) + reset + dim + "   " + hint + reset}
+	for _, l := range body {
+		l = sanitize(l)
+		if l == "" {
+			continue
+		}
+		color := ""
+		switch {
+		case strings.HasPrefix(l, "+"):
+			color = green
+		case strings.HasPrefix(l, "-"):
+			color = red
+		case strings.HasPrefix(l, "@@"):
+			color = cyan
+		}
+		for _, w := range wrap(l, width, color+"    │ ", color+"    │ ") {
+			out = append(out, w+reset)
 		}
 	}
 	return out

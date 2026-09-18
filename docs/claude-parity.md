@@ -132,10 +132,10 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Typed tool cards (Bash, Read, Grep, Glob, Edit, Write, WebFetch…) | ✅ | ✅ | item 1: `agent/claude_tools.go`, `Entry.Tool`, `ToolCard.tsx`, `tui/render.go` |
 | Edit/Write/MultiEdit as diffs | ✅ | ✅ | item 1: the CLI's `structuredPatch` hunks with line numbers |
 | Output folding ("+N lines, expand") | ✅ | ✅ | item 1: 12 lines on the web, 8 in the TUI (Tab) |
-| Subagent nesting, child transcript | ✗ | ✗ | `parent_tool_use_id` |
-| Background task cards, task notifications | ✗ | ✗ | |
-| Todo panel (TodoWrite) | ✗ | ✗ | |
-| Compaction boundary marker | ✗ | ✗ | `system/compact_boundary` |
+| Subagent nesting, child transcript | ✅ | ✅ | item 2: `Entry.ParentID`, collapsed under the Agent card |
+| Background task cards, task notifications | ✅ | ✅ | item 2: `Tool.Background`, `TaskOutput` lands the output |
+| Todo panel (TodoWrite) | ◐ | ◐ | item 2: one card updated in place; the pinned CLI offers no todo tool |
+| Compaction boundary marker | ◐ | ◐ | `system/compact_boundary` → a system entry with the token counts (item 5); a real marker is item 8 |
 | Context-left indicator, auto-compact warning | ✗ | ✗ | `result` usage |
 | Per-turn tokens, cost, duration | ✅ | ◐ | `TurnStats.tsx`; TUI elapsed only |
 | Session cost total | ◐ | ✗ | |
@@ -158,7 +158,7 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Long paste collapsed | ✗ | ✗ | |
 | Image paste, drop, picker | ✅ | ✗ | |
 | File attachments into the workspace | ✅ | ✗ | |
-| Queue a message during a turn | ◐ | ◐ | verify Claude sessions; Codex steers |
+| Queue a message during a turn | ◐ | ◐ | the CLI queues it (item 7); Warden's engine serialises turns itself; Codex steers |
 | Edit a queued message | ✗ | ✗ | |
 | Esc to interrupt | ✅ | ✅ | `turn/interrupt` |
 | Esc-Esc / edit-and-resend | ◐ | ✗ | resident-session semantics to check |
@@ -171,11 +171,11 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
-| Tool permission prompt | ✅ | ✅ | `can_use_tool` → approvals |
-| Deny with a message | ✗ | ✗ | |
-| Allow always (session / workspace rule) | ✗ | ✗ | `updatedPermissions` |
-| Permission modes | ✗ | ✗ | `set_permission_mode`; policy per role |
-| Plan mode, ExitPlanMode approval | ✗ | ✗ | |
+| Tool permission prompt | ✅ | ✅ | `can_use_tool` → approvals; items 3–4: the call as its card (command, diff) in `ask` mode |
+| Deny with a message | ✅ | ✅ | items 3–4: in the CLI's own rejection wording |
+| Allow always (session / workspace rule) | ✅ | ✅ | items 3–4: Warden's rule per chat (`Chat.Allowed`); workspace-wide rules ✗ |
+| Permission modes | ✅ | ✅ | items 3–4: auto / ask / plan per chat, selector and `/mode`, Shift-Tab; bypass never offered; policy per role open |
+| Plan mode, ExitPlanMode approval | ✅ | ✅ | items 3–4: plan card, feedback, approve into auto or ask |
 | AskUserQuestion | ✅ | ✅ | |
 | Permission rules editor | ✗ | ✗ | Warden-owned rules at launch |
 | Additional directories | — | — | sandbox is the boundary |
@@ -220,15 +220,15 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Read renders images, PDFs, notebooks | ✅ | — | |
 | Commit attribution | ✅ | ✅ | the CLI's |
 | PR creation | ✅ | ✅ | reviewed-push proposals |
-| `/review`, `/pr-comments`, `/security-review`, `/init` | ✗ | ✗ | via pass-through |
+| `/security-review`, `/init`, `/code-review` (skill) | ✅ | ✗ | pass-through (item 5); `/review` and `/pr-comments` are not in CLI 2.1.272 |
 
 ### Slash commands, skills, agents, plugins
 
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
-| Built-in commands passed through | ✗ | ✗ | `system/init` lists them |
-| Project commands and skills | ◐ | ◐ | verify under `--setting-sources=`; not listed |
-| Custom subagents | ◐ | ◐ | verify; `/agents` ✗ |
+| Built-in commands passed through | ✅ | ✗ | `system/init` lists them; `chat.commands` (item 5) |
+| Project commands and skills | ◐ | ◐ | listed and expanded only once the launch loads `project` sources (item 7); `/name` reaches the CLI unchanged |
+| Custom subagents | ✗ | ✗ | `.claude/agents` not loaded under `--setting-sources=` (item 7); `/agents` ✗ |
 | Plugins | ✗ | ✗ | policy |
 | MCP prompts as commands | ✗ | ✗ | |
 | Output styles, status line, keybindings | ✗ | ✗ | |
@@ -237,7 +237,7 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
-| Project `CLAUDE.md`, imports, rules | ✅ | ✅ | |
+| Project `CLAUDE.md`, imports, rules | ✗ | ✗ | not loaded under `--setting-sources=` (item 7); needs `project` |
 | User-level `CLAUDE.md` | ✗ | ✗ | policy: per principal |
 | Auto-memory | ◐ | ◐ | per sandbox home, not per principal |
 | `/memory` editor | ✗ | ✗ | |
@@ -257,23 +257,100 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 ## Decisions needed
 
-- Hooks from the workspace's `.claude/settings*.json`: allow (sandboxed) or
-  keep `--setting-sources=`?
-- Project MCP servers: stdio in-sandbox allowed; network servers subject to
-  the gateway's destination policy; plugins fetched through the gateway?
-- Permission modes offered per role (owner vs collaborator); is bypass ever
-  offered?
-- `!` shell commands from the composer: allowed, and attributed how?
-- Per-principal instructions and memory: where do they live?
+Recommendations from the item 7 probe (evidence under "Item 7" below);
+the launch flags in `sandbox/runtime.go` `AgentCommand` are unchanged
+until the owner confirms.
+
+- **Hooks from the workspace's `.claude/settings*.json`.** Recommend
+  `--setting-sources=project` plus `--settings '{"disableAllHooks":true}'`
+  as the first step: it loads `CLAUDE.md`, its imports, `.claude/rules`,
+  commands, skills and agents — none of which load today — and runs no
+  hook. Enabling hooks is then one setting, on the owner's say-so: they
+  run as the sandbox user, so the guest boundary holds, but they can
+  spend tokens (`UserPromptSubmit` prompts) and act on every turn without
+  a card in the transcript; with `includeHookEvents`-style frames
+  (`hook_started`/`hook_progress`/`hook_response` exist in this CLI) they
+  could be shown. `settings.local.json` needs `local`, which should stay
+  off (it is the developer's own file, not the repository's).
+- **Project MCP servers.** Keep `--strict-mcp-config` for now: `.mcp.json`
+  never appears under any `--setting-sources` value, so the flag alone
+  decides. When Warden wants them: stdio servers in-sandbox are safe by
+  the same argument as hooks; HTTP/SSE servers go through the gateway's
+  destination policy like any other egress (the CLI's proxy env is
+  honoured); plugins are a later item (14) and would be fetched through
+  the gateway as well. The CLI can also be told the servers at runtime
+  (`mcp_set_servers`, `mcp_toggle` control requests) if Warden prefers to
+  own the list.
+- **Permission modes per role.** Not probed here (item 3). `permissionMode`
+  is in `system/init` and `set_permission_mode` is a control request in
+  this CLI, so a selector needs no relaunch.
+- **`!` shell commands.** Not probed; item 12.
+- **Per-principal instructions and memory.** The CLI reports
+  `memory_paths.auto` = `~/.claude/projects/<cwd>/memory/` in the sandbox
+  home, so auto-memory is per sandbox; a per-principal layout needs
+  Warden to set `HOME`/`CLAUDE_CONFIG_DIR` or to inject the user's
+  `CLAUDE.md` — item 13.
 
 ## To verify on the pinned CLI
 
-- What `--setting-sources=` still loads from the workspace (commands,
-  skills, agents, rules).
-- `rewind_files` / file checkpointing availability in stream-json mode.
-- Whether a user message during a running turn is queued or rejected.
-- `system/init` contents (`slash_commands`, `mcp_servers`, `agents`).
-- What `/compact` returns in stream-json mode.
+Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
+
+- **What `--setting-sources=` still loads from the workspace:** nothing.
+  With Warden's flags the workspace's `.claude/commands`, `.claude/skills`,
+  `.claude/agents`, `.claude/rules`, `CLAUDE.md` and its `@imports`, and
+  both `settings*.json` files are all ignored; `system/init` lists only the
+  CLI's bundled skills and built-in commands, and the model answers that it
+  has no project instructions. `--setting-sources=project` loads all of
+  them (and runs `settings.json` hooks); `local` adds `settings.local.json`.
+- **`rewind_files` / file checkpointing:** present but gated. The binary
+  implements the `rewind_files` control request (`user_message_id`,
+  `dry_run` → `canRewind`, `filesChanged`, …); in `-p` mode checkpoints are
+  recorded only with `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` set in the
+  environment (the SDK's `enableFileCheckpointing` option sets it) and
+  `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING` unset. Warden's launch sets
+  neither, so nothing is recorded today. Not exercised live (item 11 will
+  set the variable and try it); `rewind_conversation`, `fork_conversation`
+  and `get_workspace_diff` requests also exist.
+- **A user message during a running turn:** queued. Sent while the first
+  turn's API request was in flight, the second message ran as its own turn
+  after the first completed (two `result` frames, `result_index` 0 and 1,
+  the first answer intact). Messages that arrive before the first API
+  request goes out are merged into one turn (the model saw both and
+  answered the last). `system/init` is emitted again for every turn.
+  `capabilities` lists `interrupt_cancel_queued_v1`, so an interrupt also
+  drops what is queued. Warden's engine serialises turns itself, so this
+  only matters for item 10's queue-and-edit.
+- **`system/init` contents:** `slash_commands` (bundled skills + built-ins:
+  `agents auto-mode-setup autocompact clear color compact config
+  output-style context effort fast heapdump init mcp model
+  __remote-workflow workflow-launch-exec reload-plugins reload-skills
+  rename security-review usage insights recap goal list-agents
+  team-onboarding`; no `review` or `pr-comments` in this version),
+  `terminal_slash_commands` (`doctor color reload-plugins`: terminal-only,
+  to hide), `skills`, `agents` (`claude Explore general-purpose Plan
+  statusline-setup` built in), `mcp_servers` (`warden` with its status),
+  `tools` (24: `Task AskUserQuestion Bash CronCreate CronDelete CronList
+  Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree ListAgents
+  NotebookEdit Read ReportFindings ScheduleWakeup SendMessage Skill
+  TaskOutput TaskStop WebFetch WebSearch Workflow Write` — no Grep, Glob,
+  MultiEdit or TodoWrite in this version, relevant to item 1),
+  `model`, `permissionMode`, `output_style`, `plugins`, `memory_paths`,
+  `capabilities` (`interrupt_receipt_v1 interrupt_cancel_queued_v1
+  msg_lifecycle_v1`), `fast_mode_state`, `apiKeySource`,
+  `claude_code_version`, `cwd`, `session_id`.
+- **What `/compact` returns in stream-json mode:** `system/status`
+  `compacting`, then a fresh `system/init` (same `session_id`), a
+  `system/compact_boundary` frame with `compact_metadata` (`trigger:
+  manual`, `pre_tokens`, `post_tokens`, `cumulative_dropped_tokens`,
+  `duration_ms`), two `user` frames with string content (the summary,
+  marked `isReplay`/`isSynthetic`, and `<local-command-stdout>Compacted
+  </local-command-stdout>`), and a `result` with an empty `result`,
+  `num_turns: 0` and the compaction's cost in `total_cost_usd`. About 28 s
+  for a two-turn conversation. Also observed: any first word of the form
+  `/name` is taken as a command; an unknown one yields a synthetic
+  `assistant` message `Unknown command: /name` (`model: <synthetic>`) and a
+  success `result` without a model call, while `/etc/hosts …` or a lone
+  `/` reach the model as text.
 
 ## Working method
 
@@ -293,12 +370,12 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 - [x] Design discussion, inventory and priority order (this document).
 - [x] 1 Typed tool cards and diffs — merged to main 5715a02 (2026-09-17); verified as the Item 1 section says.
-- [ ] 2 Subagents and background tasks.
-- [ ] 3 Permission model.
-- [ ] 4 Plan mode.
-- [ ] 5 Slash-command pass-through.
+- [x] 2 Subagents and background tasks — merged to main 38daa78 (2026-09-17); verified as the Item 2 section says.
+- [x] 3 Permission model — merged to main 5f38f23 (2026-09-17); verified as the Items 3 and 4 section says.
+- [x] 4 Plan mode — merged to main 5f38f23 (2026-09-17); verified as the Items 3 and 4 section says.
+- [x] 5 Slash-command pass-through — merged to main 32138ea (2026-09-17); verified as the Item 5 section says; TUI `/` menu from `chat.commands` left for a follow-up.
 - [x] 6 TUI catch-up — merged to main c60d938 (2026-09-17); verified as the Item 6 section says.
-- [ ] 7 Workspace `.claude/` loading and policy.
+- [x] 7 Workspace `.claude/` loading — verified on CLI 2.1.272, merged to main 32138ea (2026-09-17); the launch-flag change (`--setting-sources=project` + `disableAllHooks`) is recommended under "Decisions needed", not made.
 - [ ] 8 Compaction and context.
 - [ ] 9 Mid-session model, effort, thinking.
 - [ ] 10 Queueing and rewind.
@@ -462,6 +539,137 @@ inspected through `GET state`, the web UI (diffs with line numbers,
 same model (its file edit could not run: the account's Codex usage limit
 was exhausted; the `fileChange` mapping is unit-tested).
 
+### Item 2: subagents, background tasks, todo list
+
+Branch `feat/parity-2-subagents`, worktree `.local/warden-parity-2-subagents`,
+from main 8f0b720 (2026-09-17).
+
+What the CLI gives (probed on 2.1.275 in Warden's exact launch mode,
+`-p --input-format stream-json --include-partial-messages`; the guest's
+2.1.272 to be confirmed live):
+
+- **Subagents.** The tool is `Agent` (`system/init` lists it as `Task`).
+  A subagent's frames are complete `assistant` and `user` messages with
+  `parent_tool_use_id` set to the Agent call's id; no `stream_event`
+  carries a parent, so a subagent's text never streams. Two shapes:
+  - *Foreground* (`run_in_background: false`, `task_started` with
+    `is_backgrounded: false`): a `user` text frame with the prompt, the
+    child's tool calls and results, then the parent's `tool_result` whose
+    content is the child's final text and whose `tool_use_result` carries
+    `totalDurationMs`, `totalTokens`, `totalToolUseCount`, `usage`,
+    `agentType`. The child's own final text and thinking are not emitted.
+  - *Async* (the default on 2.1.275 when `run_in_background` is unset:
+    `subagent_stats.requested.unset`, `started_in_background: 1`): the
+    parent's `tool_result` comes back at once ("Async agent launched",
+    `tool_use_result.isAsync: true`, `status: "async_launched"`,
+    `agentId`), the parent goes on and its turn ends (`result`) while the
+    child keeps sending frames; the child's final text arrives as a child
+    `assistant` text frame; then `system/task_notification` (`tool_use_id`,
+    `status`, `summary` = the child's final text, `usage`) and the CLI
+    resumes the model by itself: a new `system/init`, a turn with no user
+    message, a second `result` with `origin: {kind: "task-notification"}`.
+- **Background commands.** Bash with `run_in_background: true`:
+  `system/task_started` (`task_id`, `tool_use_id`, `description`,
+  `task_type: local_bash`), the `tool_result` says "Command running in
+  background with ID …" with `tool_use_result.backgroundTaskId`; on exit,
+  `system/task_updated` (`patch.status`, `end_time`) and
+  `system/task_notification` (`status: completed|failed`, `summary`
+  "Background command … completed (exit code 0)" / "failed with exit code
+  3", `output_file` inside the sandbox). The output itself only reaches the
+  transcript when the model reads it: `TaskOutput {task_id, block,
+  timeout}` returns `tool_use_result.task {task_id, task_type, status,
+  description, output, exitCode}`. A notification after the turn ended
+  makes the CLI resume the model as above. Also seen: `task_progress` for
+  agents (`usage.total_tokens`, `tool_uses`, `duration_ms`,
+  `last_tool_name`), `background_tasks_changed`, `task_summary`,
+  `post_turn_summary`, `status`, `thinking_tokens` — all ignored.
+- **Todo list.** 2.1.275 has no `TodoWrite`; the list is `TaskCreate
+  {subject, description, activeForm}` → `{task: {id, subject}}`,
+  `TaskUpdate {taskId, status: pending|in_progress|completed|deleted, …}` →
+  `{statusChange: {from, to}}`, `TaskList {}` → `{tasks: [{id, subject,
+  status, blockedBy}]}`, `TaskGet {taskId}`. `TodoWrite`'s documented
+  shape (`{todos: [{content, status, activeForm}]}`) is mapped for a CLI
+  that has it.
+
+Decisions:
+
+1. Nesting is one additive field, `Entry.ParentID`: the Agent call's
+   entry id (its tool_use id) on every entry the subagent produced; ""
+   at the top level. Nested subagents chain by the same rule. The adapter
+   sets `parentId` on the items; `Upsert` copies it; `Hydrate` and
+   `Finish` need nothing more. A child entry carries the turn its Agent
+   call was made in, even when it arrives after that turn ended.
+2. A subagent's final text is the Agent card's result (`Detail`): the
+   parent's `tool_result` content in the foreground case, the
+   notification's `summary` in the async case. `Entry.EndedAt` is set on
+   the card when the subagent finished, so both surfaces show the elapsed
+   time; the tool-call count is the children's.
+3. `Tool.Background` marks a command or an agent the CLI runs in the
+   background (from `run_in_background`, `backgroundTaskId`, or an async
+   launch); such a card stays running past its `tool_result` (whose
+   boilerplate is dropped) until the task's notification, which sets the
+   status (completed, or failed by status or a non-zero exit code in the
+   summary) and, for a command, the summary line as a placeholder output;
+   a `TaskOutput` result replaces it with the real output and exit code.
+   `TaskOutput`, `TaskStop` and `Monitor` are generic cards titled with
+   the task's description.
+4. A turn the CLI starts by itself (after a task notification) is a turn
+   to Warden too: the adapter opens one (`turn/started`) at the first
+   top-level frame after a `result`, and the engine's idle wait
+   (`awaitMessage`) hands such a turn to the session loop, which drives
+   it like any other (running status, Stop, turn record, usage) without
+   sending a message.
+5. The todo list is one entry per adapter process (`todoList` item,
+   `Tool.Kind: "todo"`, the list as `Tool.Input.todos` in TodoWrite's
+   shape and as text lines in `Detail`), updated in place by every
+   `TodoWrite`/`TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` result; the
+   calls themselves get no card.
+6. Web: child entries are dropped from the top-level list and rendered
+   inside the Agent card (`nestEntries` in `transcript.ts`), collapsed
+   behind "n steps · elapsed"; the card shows the prompt, the child
+   transcript and the result. Turn footers, unread and jump counts skip
+   children. TUI: children indent under the card, Tab expands them.
+7. A `result` whose `origin.kind` is `task-notification` arriving while
+   the turn Warden asked for still runs (seen by item 6: a foreground
+   Bash still streaming) does not end that turn: the answer is a message
+   in it and the turn ends with its own result. Only a turn the CLI
+   started ends on such a result.
+
+On the guest's 2.1.272 (live): the model sees `Agent`, `TaskOutput` and
+`TaskStop` but no `Monitor`, `TodoWrite` or `TaskCreate/TaskUpdate/
+TaskList/TaskGet`, so the todo card is unit-tested only there; the
+subagent runs in the foreground unless asked for `run_in_background`; an
+async subagent's notification after the turn made the CLI start a turn
+of its own, exactly as on 2.1.275; `TaskOutput`'s structured result is the
+same shape.
+
+Verified: `go vet`, `gofmt -l`, `go test ./...`, `pnpm build`, `pnpm test`
+(128 tests; `transcript.test.ts` and `tools.test.ts` extended, the CSS
+brace test now covers `conversation.css`); live on a cloned home
+(`~/.warden-p4`, build 97e22d6) with a Claude chat that ran a background
+Bash (`run_in_background`), a foreground Explore subagent and
+`TaskOutput` in one turn, then an async Explore subagent whose result
+arrived after the turn: through `GET state` (child entries with
+`parentID` and the parent's turn, the Agent card completed at the
+notification with `endedAt` and the child's text, the background card
+with `background: true` and the real output, the CLI-started turn with
+its own record and usage, chat idle after), the web UI (the group's
+cards with the `background` badge and "1 tool call · 4s", the Agent card
+expanded to its prompt, the nested "Explore: 1 tool call, 1 message"
+transcript with the child's command card and message, and the result;
+the CLI-started turn's message with its stats line) and the TUI in a pty
+(collapsed count line, Tab expanding the indented child command and the
+`Explore ›` message before the result, `[background]` mark).
+
+Left: a subagent's entries are not found by the transcript search or
+counted in the export as nested; `task_progress` (the subagent's current
+step) is not shown while it runs beyond the child cards themselves; the
+todo card has no live test until the pinned CLI offers a todo tool.
+
+Progress: started 2026-09-17; implemented and live-verified 2026-09-17
+(97e22d6); merged to main 38daa78 (2026-09-17) after merging item 6's
+TUI catch-up in (the plan document was the only conflict).
+
 ### Item 6: TUI catch-up
 
 Branch `feat/parity-6-tui`, worktree `.local/warden-parity-6-tui`, from
@@ -531,3 +739,206 @@ for a few seconds; `/attach` accepts one file per command; vim mode.
 Progress: started 2026-09-17; implemented and live-verified 2026-09-17
 (66c3e37); merged to main c60d938 (2026-09-17) after merging item 1's
 typed tool cards in (tui_test.go's append-append conflict kept both).
+
+### Item 7: workspace `.claude/` loading, verified
+
+Branch `feat/parity-5-slash-commands` (with item 5), 2026-09-17.
+
+How it was probed, so it can be repeated on the next pinned CLI: a cloned
+Warden home (`.local/clone-warden-home.sh p3 18830`), one Claude chat and
+one message so a sandbox holds a resident CLI; `warden-sbx exec <wc-…>`
+into that sandbox; the resident process's environment read from
+`/proc/<pid>/environ` (proxy, `ANTHROPIC_BASE_URL` through the gateway,
+the placeholder OAuth token, `HOME`) and exported for a second CLI run
+with Warden's exact `AgentCommand` flags, one `user` frame on stdin and
+every frame saved. Layouts: a workspace with `.claude/commands/x.md`,
+`.claude/skills/y/SKILL.md`, `.claude/agents/z.md`, `.claude/rules/*.md`,
+`CLAUDE.md` with an `@import`, `settings.json` and `settings.local.json`
+each with a `UserPromptSubmit` hook that touches a file, and a `.mcp.json`
+stdio server; the question "what secret words do you know" tells which
+instruction files reached the model. Runs under `--setting-sources=`,
+`project`, `user,project,local`, and `project` with
+`--settings '{"disableAllHooks":true}'`; then `/x args`, `/y`,
+`/no-such`, `/etc/hosts …`, `/`; `/compact` as a second message; two
+messages 1 s and 12 s apart; `grep -a` over the binary for `rewind_files`
+and the control subtypes. Two traps: the gateway only injects the provider
+credential while the chat's resident session is alive (10 min idle), after
+which the probe's calls fail with 503 `provider credential unavailable`;
+and the SDK-MCP `initialize` handshake, when not answered, delays the first
+API call by several seconds, which merges messages meant to be queued.
+
+Findings are in "Decisions needed" and "To verify on the pinned CLI"
+above. The launch flags were not changed here; the recommended change is
+`--setting-sources=project` + `--settings '{"disableAllHooks":true}'`
+(hooks off until the owner says otherwise), which also makes the
+workspace's commands and skills appear in item 5's menu.
+
+### Items 3 and 4: permission modes and plan mode
+
+Branch `feat/parity-3-permission-modes`, worktree
+`.local/warden-parity-3-permission-modes`, from main 8f0b720 (2026-09-17).
+
+What the pinned CLI (2.1.272) does, probed inside a sandbox with a second
+CLI driven over stream-json (the resident one's env and argv):
+
+- `set_permission_mode` is a control request `{"subtype":
+  "set_permission_mode","mode":…}` answered with `{"subtype":"success",
+  "response":{"mode":…}}`; accepted between turns and mid-turn (even with a
+  `can_use_tool` pending), followed by a `system`/`status` frame carrying
+  `permissionMode`. Modes: `default`, `acceptEdits`, `plan`, `dontAsk`,
+  `auto`, `bypassPermissions` — the last refused ("not launched with
+  --dangerously-skip-permissions"), an unknown mode refused with the list.
+- In `default` mode the CLI asks (`can_use_tool`) for Write/Edit, for
+  Bash commands that write (`touch`, with `blocked_path`) or are not in
+  its read-only set (`python3 -c`, `curl`), and not for `echo`, `ls`,
+  `git status`. The request carries `tool_name`, `input`, `description`
+  (Bash's own, or the file name), `permission_suggestions` (the CLI's own
+  rule ideas: `addRules` with the *exact* command, `addDirectories`,
+  `setMode acceptEdits`), sometimes `decision_reason`.
+- A `{"behavior":"deny","message":…}` answer becomes the tool's error
+  result (`is_error`, the message verbatim); the model reads it and reacts
+  (it asked a follow-up question in the probe).
+- `updatedPermissions` on an allow answer is honoured: `addRules … destination
+  session` stopped later asks for that rule; `setMode` switches the CLI's
+  mode (status frame follows).
+- Plan mode: the CLI writes the plan file itself (`~/.claude/plans/*.md`, no
+  ask), then `ExitPlanMode` arrives as `can_use_tool` with `input.plan`
+  (markdown) and `input.planFilePath`, `requires_user_interaction`. A deny
+  with a message makes the model revise and call it again; an allow with
+  `updatedPermissions: [{type: setMode, mode: acceptEdits}]` switches the
+  CLI and the tool result tells the model the plan is approved.
+- `EnterPlanMode` is a tool the CLI allows itself (no `can_use_tool`); the
+  only sign is the `system`/`status` frame with `permissionMode: plan`.
+
+Design (as implemented):
+
+1. Warden's modes are per chat, on the chat record (`Chat.Mode`: `auto`
+   the default, `ask`, `plan`), owner-settable at any time through
+   `chats/{id}/mode`, the web selector beside the model, `/mode` on both
+   surfaces, Shift-Tab in the TUI. Claude chats only; Codex keeps its
+   approval policy (`on-request` with the sandbox as the boundary) and the
+   selector is hidden — mapping onto Codex's approval policy was not
+   trivial enough to do blind with the account's Codex usage exhausted.
+2. The adapter forwards every `can_use_tool` except AskUserQuestion to the
+   engine as `item/tool/requestPermission` (the tool, its input, the item-1
+   typed item, the CLI's description, the plan for ExitPlanMode); the
+   engine decides under the chat record: `auto` accepts at once, a
+   matching allow-always rule accepts, otherwise an approval card. The
+   engine's reply `{decision, message, mode}` becomes the CLI's
+   `behavior`/`message`, with `updatedPermissions: [setMode]` when the
+   answer moves the mode (plan approval). Rules stay Warden's (persisted,
+   survive a session restart); the CLI's session rules are not used.
+3. CLI mode = `plan` for Warden's `plan`, `default` otherwise (`auto` is
+   Warden allowing everything; nothing changes on the CLI side). The
+   adapter sends `set_permission_mode` on the engine's `permissions/set`
+   only when the CLI mode differs from the last it set or saw; the engine
+   pushes the mode after `thread/start` and before every `turn/start` (so a
+   new session takes the chat's mode) and live from `SetMode` when a
+   session is up; a refused live push leaves the stored mode, re-applied at
+   the next turn.
+4. `system`/`status` frames with `permissionMode` reach the engine as
+   `permissions/modeChanged`: the CLI entering plan mode by itself
+   (EnterPlanMode) flips the chat to `plan` with a transcript marker;
+   leaving it without Warden's approval falls back to `ask`.
+5. Allow-always rules (`Chat.Allowed`): `{tool, command}` — a Bash rule is
+   the command's program (its first two words for `git`, `npm`, `go`,
+   `docker`, `kubectl`, `gh`, `cargo`, `pip`, `make`…; the exact command
+   when it chains with `&&`, `|`, `;` or substitutes), any of the file tools
+   is one rule `edit`, every other tool its name. The card says what
+   "Allow always" would remember.
+6. Transcript markers are `notice` entries (a new role rendered like a
+   system line, dim on the TUI, quoted in an export).
+7. Plan card answers: approve with `auto`, approve with `ask`, or keep
+   planning with feedback (a deny whose message is the feedback).
+
+8. A denial's message reaches the model inside the CLI's own rejection
+   wording ("The user doesn't want to proceed with this tool use… To
+   tell you how to proceed, the user said: …"), with a plan-mode variant:
+   live, a bare message came back to the model as the tool's output and
+   it took it for a prompt injection and retried the call; in the CLI's
+   wording it followed the instruction.
+
+Decision left to the owner: which modes a collaborator (non-owner) may
+set. Today `chats/{id}/mode` and the approval answers are admitted like
+every chat route (the edge's role check decides who reaches them);
+nothing distinguishes owner from collaborator per mode. Options: (a)
+everyone with chat access sets any mode; (b) collaborators may only
+tighten (auto → ask → plan) and answer asks, the owner alone loosens
+and answers "allow always"; (c) modes and permission answers are
+owner-only, collaborators only send messages.
+
+Progress: implemented and live-verified 2026-09-17 (b928bad); merged to
+main 5f38f23 (2026-09-17) after merging items 2, 5, 6 and 7 in. Left:
+the collaborator policy above; workspace-wide (cross-chat) allow-always
+rules; a rules editor.
+
+Verified (2026-09-17): `gofmt -l`, `go vet ./...`, `go test ./...`
+(`agent/claude_test.go`: ask forwarded and typed, deny wording, plan
+approval with `setMode`, `permissions/set` deduped and refused, status
+reported; `chats/permissions_test.go` through a scripted stream-json
+CLI: rules, the route, asks per mode with allow-always and a denial,
+plan feedback and approval into ask, the CLI's own plan-mode status and
+a live push; `tui/tui_test.go`: Shift-Tab decoding and cycling, `/mode`,
+the cards and typed answers); `pnpm build`, `pnpm test` (123 tests;
+`composer.test.ts` `/mode`, `permissions.test.ts`). Live on a cloned
+home (`~/.warden-p5`, pinned CLI 2.1.272): an ask-mode chat — `touch`
+asked (allowed once), `python3 -c` asked (allowed always: the rule
+answered the next `python3` without asking, also after a Warden
+restart), Write asked with its diff (denied with a message: the model
+renamed the file as told), edits allowed always; a plan-mode chat — the
+plan card, feedback sent it back revised, approval into auto ran the
+edits and a command without asks; a mid-turn switch auto → plan during
+a `sleep` — the CLI accepted `set_permission_mode` inside the turn and
+the model planned instead of writing, approval into ask made the Write
+ask; the web UI (selector, `/mode plan` from the composer, the command
+card, the diff card, the plan card rendered as markdown, the markers);
+the TUI in a pty (Shift-Tab auto → ask → plan, `/mode`, the status
+line, the command and diff cards, `a`, `n <message>`, `y`).
+
+### Item 5: slash-command pass-through
+
+Design (see the feature map for paths):
+
+- Adapter: `system/init` → `thread/started` now carries `commands`
+  (`[{name, description?}]`, built from `slash_commands` minus
+  `terminal_slash_commands`), `model`, `permissionMode` and
+  `outputStyle`; `system/compact_boundary` → a system entry naming the
+  token counts so a `/compact` turn is not empty (item 8 replaces it with
+  a proper marker). Codex is untouched (it never sends `thread/started`
+  with these fields).
+- Engine/store: `Chat.Commands` kept on the chat, in `GET state` /
+  `events` as `chat.commands`; cleared when the provider changes.
+- Web composer: the `/` menu lists the local commands first (`stop`,
+  `model`, `export`, `clear`) then the chat's commands under a "Claude"
+  group; picking one puts `/name ` in the composer, sending it sends the
+  text unchanged; an unknown `/x …` is still sent as text (the CLI answers
+  `Unknown command: /x`).
+- TUI: its `/` menu should read `chat.commands` too — follow-up under item
+  6, not done here.
+
+Verified 2026-09-17 (branch 22951f7 on a cloned home `~/.warden-p3`,
+CLI 2.1.272): `GET state` carries `chat.session` (`claude-sonnet-5`,
+`default`, `default`) and 39 `chat.commands` (the terminal-only
+`doctor`/`color`/`reload-plugins` and `__remote-workflow` filtered);
+`/context` sent through `warden chat send` renders the CLI's context table
+as the reply; `/compact` completes the turn with the system line "Context
+compacted: 46k → 1.1k tokens."; a workspace command the agent wrote
+(`.claude/commands/hello.md`) is answered `Unknown command: /hello` under
+the current `--setting-sources=` (the pass-through is intact, the CLI
+does not load it), and with a throwaway build using the recommended
+`--setting-sources=project --settings '{"disableAllHooks":true}'` it is
+listed and `/hello world` expands to `HELLO-FROM-WORKSPACE world` (run as
+a skill). In the browser, `/` opens the menu with the Chat group first and
+the Claude group after, `/comp` + Enter fills in `/compact ` with the hint
+as the note while the argument is typed, and Cmd-Enter sends it (48k →
+1.1k). Unit tests: `TestClaudeInitCommandsAndCompaction`,
+`TestSessionCommandsInStateAndCompactionNote`, `composer.test.ts` "agent
+commands in the composer".
+
+Progress: started 2026-09-17 on `feat/parity-5-slash-commands` from main
+5ff4767; implemented and live-verified 2026-09-17 (22951f7); merged to
+main 32138ea (2026-09-17) after merging items 1, 2 and 6 in (claude.go's
+`system` case now one switch with item 2's task frames). Left: the TUI's
+`/` menu does not yet list `chat.commands` (it sends "/name …" as text
+all the same); descriptions for the built-ins are a static table until
+the CLI sends them.

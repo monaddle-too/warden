@@ -163,7 +163,12 @@ func StatusLine(c *Chat, ports []Port, live bool, now time.Time) string {
 	if model == "" {
 		model = "default"
 	}
-	parts := []string{fmt.Sprintf("%s %s%s%s", link, bold, sanitize(c.Title), reset), c.Provider + " · " + model, status}
+	agent := c.Provider + " · " + model
+	if c.Provider == "claude" {
+		// The permission mode (Shift+Tab cycles it) beside the model.
+		agent += " · " + orMode(c.Mode)
+	}
+	parts := []string{fmt.Sprintf("%s %s%s%s", link, bold, sanitize(c.Title), reset), agent, status}
 	if n := len(c.Pending()); n > 0 {
 		word := "approvals"
 		if n == 1 {

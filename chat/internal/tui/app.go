@@ -118,7 +118,7 @@ func (a *App) page() int {
 const helpText = `commands   type / for the menu (Tab or Enter completes); /help lists them
            /new [title] /chats /switch N · /rename TITLE /archive /restore /delete
            /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
-           /stop /model M /provider P · /open /previews /preview N /unpublish N
+           /stop /model M /provider P /mode M · /open /previews /preview N /unpublish N
            /find TEXT /copy /expand /verbose /clear /quit
            /compact [what to keep] asks Claude to replace the history with a summary
 composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
@@ -126,6 +126,9 @@ composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste ke
            Up/Down recall prompts (or move between lines) · Ctrl+R searches them
            Ctrl+A/E line start/end · Ctrl+U/K delete to line start/end · Ctrl+W a word
 keys       y / n answer the first pending approval; typed text answers a question
+           tool asks: y allow · a allow always · n [message] deny
+           plans: y approve (auto) · a approve, ask before edits · n [feedback] keep planning
+           Shift+Tab cycles a Claude chat's permission mode (auto → ask → plan)
            Esc interrupts the agent · Ctrl+C clears the draft (twice quits) · Ctrl+D quits
            Ctrl+O shows or hides tool steps and thinking · Tab (empty draft) expands output
            Ctrl+L redraws · scroll: mouse wheel, PgUp/PgDn, Home/End with an empty draft`
@@ -427,6 +430,8 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 			return
 		}
 		a.editor.Handle(k)
+	case KeyShiftTab:
+		a.cycleMode(ctx)
 	case KeyTab:
 		if a.editor.Text() == "" {
 			a.expanded = !a.expanded
@@ -442,8 +447,6 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 		if a.menu != nil && len(a.menu.Items) == 1 {
 			a.acceptMenu(ctx, false)
 		}
-	case KeyShiftTab:
-		// Permission modes (parity item 3) will take this key.
 	case KeyEnter:
 		a.send(ctx)
 	default:
@@ -671,6 +674,11 @@ func (a *App) submit(ctx context.Context, text string) {
 	pending := c.Pending()
 	if len(pending) > 0 {
 		first := pending[0]
+		if p := first.Permission(); p != nil {
+			if a.answerPermission(ctx, c.ID, first, p, text) {
+				return
+			}
+		}
 		switch strings.ToLower(text) {
 		case "y", "yes", "allow":
 			a.resolve(ctx, c.ID, first, true, nil)
@@ -704,6 +712,99 @@ func (a *App) sendMessage(ctx context.Context, c *Chat, text string) {
 		return
 	}
 	delete(a.attachments, c.ID)
+}
+
+// answerPermission reads a typed answer to a tool ask: y allows, a allows
+// always, n denies with the rest of the line as the message to the model;
+// for a plan, y approves into auto, a approves into ask, n keeps planning
+// with the rest of the line as feedback. Other text is not an answer.
+func (a *App) answerPermission(ctx context.Context, chatID string, ap Approval, p *Permission, text string) bool {
+	word, rest, _ := strings.Cut(strings.TrimSpace(text), " ")
+	rest = strings.TrimSpace(rest)
+	var allow, always bool
+	message, mode, said := "", "", ""
+	switch strings.ToLower(word) {
+	case "y", "yes", "allow", "approve":
+		allow = true
+		if p.IsPlan() {
+			mode, said = "auto", "plan approved; mode auto"
+		} else {
+			said = "allowed"
+		}
+	case "a", "always":
+		allow = true
+		if p.IsPlan() {
+			mode, said = "ask", "plan approved; mode ask"
+		} else {
+			always, said = true, "allowed always: "+p.Always
+		}
+	case "n", "no", "deny", "decline":
+		message = rest
+		if p.IsPlan() {
+			said = "kept planning"
+		} else {
+			said = "denied"
+		}
+		if message != "" {
+			said += " with a message"
+		}
+	default:
+		return false
+	}
+	if err := a.Client.Answer(ctx, chatID, ap.ID, allow, always, message, mode); err != nil {
+		a.setNotice(err.Error())
+	} else {
+		a.setNotice(said)
+	}
+	return true
+}
+
+// modes are the permission modes in the order Shift+Tab cycles them.
+var modes = []string{"auto", "ask", "plan"}
+
+// cycleMode moves a Claude chat to the next permission mode.
+func (a *App) cycleMode(ctx context.Context) {
+	c := a.chat()
+	if c == nil {
+		a.setNotice("no chat selected")
+		return
+	}
+	if c.Provider != "claude" {
+		a.setNotice("permission modes apply to Claude chats")
+		return
+	}
+	next := modes[0]
+	for i, m := range modes {
+		if m == orMode(c.Mode) {
+			next = modes[(i+1)%len(modes)]
+		}
+	}
+	a.setMode(ctx, c, next)
+}
+
+func (a *App) setMode(ctx context.Context, c *Chat, mode string) {
+	if err := a.Client.Mode(ctx, c.ID, mode); err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	a.setNotice("permission mode " + mode + ": " + modeHint(mode))
+}
+
+func orMode(mode string) string {
+	if mode == "" {
+		return "auto"
+	}
+	return mode
+}
+
+func modeHint(mode string) string {
+	switch mode {
+	case "ask":
+		return "Claude asks before commands that write and before file edits"
+	case "plan":
+		return "Claude explores and proposes a plan; edits wait for its approval"
+	}
+	return "every tool call is allowed"
 }
 
 func (a *App) resolve(ctx context.Context, chatID string, ap Approval, allow bool, answers map[string][]string) {
@@ -906,6 +1007,19 @@ func (a *App) command(ctx context.Context, line string) {
 			a.setNotice(err.Error())
 		} else {
 			a.setNotice(fmt.Sprintf("next run uses %s · %s", provider, orDefault(model)))
+		}
+	case "mode":
+		if c == nil {
+			a.setNotice("no chat selected")
+			return
+		}
+		switch arg {
+		case "":
+			a.setNotice("permission mode " + orMode(c.Mode) + ": " + modeHint(orMode(c.Mode)) + " · /mode auto|ask|plan, Shift+Tab cycles")
+		case "auto", "ask", "plan":
+			a.setMode(ctx, c, arg)
+		default:
+			a.setNotice("/mode auto|ask|plan")
 		}
 	case "attach":
 		a.attach(ctx, c, arg)
@@ -1211,7 +1325,7 @@ func (a *App) visible(c *Chat) *Chat {
 	v := *c
 	v.Conversation.Entries = nil
 	for _, e := range c.Conversation.Entries {
-		if e.Role != "activity" && e.Role != "thinking" {
+		if e.Role != "activity" && e.Role != "thinking" && e.ParentID == "" {
 			v.Conversation.Entries = append(v.Conversation.Entries, e)
 		}
 	}

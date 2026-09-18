@@ -1001,6 +1001,7 @@ func (e *Engine) run(parent context.Context, id string) {
 	if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 		return
 	}
+	e.applyMode(ctx, id, &current, client)
 	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 	if err != nil {
 		return
@@ -1027,7 +1028,19 @@ func (e *Engine) run(parent context.Context, id string) {
 		// The turn finished but the session stays open: settle the transcript,
 		// report idle, and wait for the chat's next message.
 		e.settleTurn(parent, id, a)
-		message = e.awaitMessage(ctx, id, &current, a, client, frames)
+		var agentTurn string
+		message, agentTurn = e.awaitMessage(ctx, id, &current, a, client, frames)
+		if agentTurn != "" {
+			// The agent began a turn of its own (Claude Code resumes the
+			// model when a background task it started reports back): drive
+			// it like one asked for, with nothing to send.
+			turnID = agentTurn
+			turn = map[string]any{"id": turnID, "status": "inProgress"}
+			e.mu.Lock()
+			a.turnID = turnID
+			e.mu.Unlock()
+			continue
+		}
 		if message == nil {
 			return // released, timed out, stopped or ended by the worker: a clean end
 		}
@@ -1035,6 +1048,7 @@ func (e *Engine) run(parent context.Context, id string) {
 		if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 			return
 		}
+		e.applyMode(ctx, id, &current, client)
 		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 		if err != nil {
 			return
@@ -1175,10 +1189,13 @@ func (e *Engine) settleTurn(parent context.Context, id string, a *activeRun) {
 }
 
 // awaitMessage keeps a resident session open until the chat's next message
-// arrives, returning it with the chat marked running. It returns nil when the
-// session should end: released for another chat, idle too long, the run
-// cancelled, the chat stopped, or the agent stream closed by the worker.
-func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *activeRun, client *agent.Client, frames chan agent.Frame) *cv.Entry {
+// arrives, returning it with the chat marked running, or until the agent
+// starts a turn by itself (`turn/started` with no turn asked for), returning
+// that turn's id with the chat marked running and the turn begun. It
+// returns neither when the session should end: released for another chat,
+// idle too long, the run cancelled, the chat stopped, or the agent stream
+// closed by the worker.
+func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *activeRun, client *agent.Client, frames chan agent.Frame) (*cv.Entry, string) {
 	idleCtx, release := context.WithTimeout(ctx, e.residentIdle())
 	defer release()
 	e.mu.Lock()
@@ -1199,25 +1216,49 @@ func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *
 	for {
 		select {
 		case <-idleCtx.Done():
-			return nil
+			return nil, ""
 		case <-client.Done():
-			return nil
+			return nil, ""
 		case f := <-frames:
 			if len(f.ID) > 0 {
 				_ = e.request(ctx, current, client, f)
-			} else {
-				_ = e.notification(id, f)
+				continue
+			}
+			_ = e.notification(id, f)
+			if f.Method == "turn/started" {
+				if turn := agent.String(agent.Map(f.Params["turn"])["id"]); turn != "" {
+					if err := e.beginAgentTurn(id, turn); err != nil {
+						return nil, ""
+					}
+					return nil, turn
+				}
 			}
 		case <-tick.C:
 			message, err := e.resume(id)
 			if err != nil {
-				return nil
+				return nil, ""
 			}
 			if message != nil {
-				return message
+				return message, ""
 			}
 		}
 	}
+}
+
+// beginAgentTurn marks the chat running for a turn the agent started by
+// itself and records the turn's start. It fails when the chat is being
+// stopped or archived, which ends the session.
+func (e *Engine) beginAgentTurn(id, turn string) error {
+	return e.Store.update(func(st *State) error {
+		c := st.chat(id)
+		if c == nil || c.Archived || c.Status == "stopping" {
+			return errors.New("session ended")
+		}
+		c.Status = "running"
+		c.Error = ""
+		c.Conversation.Begin(turn, e.at())
+		return nil
+	})
 }
 
 // resume moves a queued chat with a live resident session back to running and
@@ -1323,7 +1364,12 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 		usageTurn, usage = e.turnUsage(id, f.Params)
 	}
 	return e.Store.update(func(st *State) error {
-		c := &st.chat(id).Conversation
+		chat := st.chat(id)
+		if f.Method == "permissions/modeChanged" {
+			chat.applyMode(agent.String(f.Params["mode"]))
+			return nil
+		}
+		c := &chat.Conversation
 		p := f.Params
 		turn := agent.String(p["turnId"])
 		if turn == "" {
@@ -1331,7 +1377,9 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 		}
 		switch f.Method {
 		case "thread/started":
-			c.ThreadID = cv.Ptr(agent.String(agent.Map(p["thread"])["id"]))
+			thread := agent.Map(p["thread"])
+			c.ThreadID = cv.Ptr(agent.String(thread["id"]))
+			chat.sessionStarted(thread)
 		case "turn/started":
 			c.ActiveTurnID = cv.Ptr(turn)
 		case "item/started", "item/completed":
@@ -1378,6 +1426,36 @@ func (e *Engine) request(ctx context.Context, c *Chat, client *agent.Client, f a
 			chat.Approvals = append(chat.Approvals, Approval{ID: cv.ID(), RunID: c.RunID, RPCID: append(json.RawMessage(nil), f.ID...), Method: f.Method, Params: f.Params, State: "pending"})
 			return nil
 		})
+	case methodPermission:
+		// A Claude tool ask: the chat's mode and rules answer it, or the
+		// owner does from a card that shows the call as its transcript
+		// card and, for a plan, the plan (permissions.go).
+		tool, input := agent.String(f.Params["tool"]), agent.Map(f.Params["input"])
+		decision := ""
+		err := e.Store.update(func(st *State) error {
+			chat := st.chat(c.ID)
+			if decision = chat.decide(tool, input); decision != "" {
+				return nil
+			}
+			params := map[string]any{"tool": tool, "input": input}
+			if tool != "ExitPlanMode" {
+				params["always"] = RuleFor(tool, input).Label() // a plan is never remembered
+			}
+			if entry := permissionEntry(f.Params); entry != nil {
+				params["entry"] = entry
+			}
+			for _, k := range []string{"description", "plan"} {
+				if v := agent.String(f.Params[k]); v != "" {
+					params[k] = v
+				}
+			}
+			chat.Approvals = append(chat.Approvals, Approval{ID: cv.ID(), RunID: c.RunID, RPCID: append(json.RawMessage(nil), f.ID...), Method: f.Method, Params: params, State: "pending"})
+			return nil
+		})
+		if err != nil || decision == "" {
+			return err
+		}
+		return client.Reply(f.ID, map[string]any{"decision": decision})
 	default:
 		return client.Send(agent.Frame{ID: f.ID, Error: &agent.RPCError{Code: -32601, Message: "Unsupported Warden agent request"}})
 	}
@@ -1389,6 +1467,25 @@ func (e *Engine) Resolve(chatID, approvalID string, allow bool, answers map[stri
 // ResolveAs answers an approval on behalf of actor, the person the edge
 // identified (grants record who approved them).
 func (e *Engine) ResolveAs(chatID, approvalID string, allow bool, answers map[string][]string, actor cv.Actor) error {
+	return e.Answer(chatID, approvalID, Answer{Allow: allow, Answers: answers}, actor)
+}
+
+// Answer is what the person says to an approval. Allow and Answers (a
+// question's) serve every kind; a tool permission ask also takes Always
+// (allow, and remember the call's rule for the chat), Message (why it is
+// denied, read by the model) and, for a plan, Mode (the permission mode
+// the chat moves to on approval: auto or ask).
+type Answer struct {
+	Allow   bool
+	Answers map[string][]string
+	Always  bool
+	Message string
+	Mode    string
+}
+
+// Answer resolves an approval with the given answer on behalf of actor.
+func (e *Engine) Answer(chatID, approvalID string, answer Answer, actor cv.Actor) error {
+	allow, answers := answer.Allow || answer.Always, answer.Answers
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	a := e.active[chatID]
@@ -1435,6 +1532,47 @@ func (e *Engine) ResolveAs(chatID, approvalID string, allow bool, answers map[st
 			out[qid] = map[string]any{"answers": answers[qid]}
 		}
 		result = map[string]any{"answers": out}
+	case methodPermission:
+		decision := map[string]any{"decision": "decline"}
+		if allow {
+			decision["decision"] = "accept"
+		} else if answer.Message != "" {
+			decision["message"] = answer.Message
+		}
+		tool, input := agent.String(approval.Params["tool"]), agent.Map(approval.Params["input"])
+		plan := tool == "ExitPlanMode"
+		if plan && allow {
+			// An approved plan moves the chat out of plan mode, into auto
+			// unless the answer asks to keep asking; the CLI's mode moves
+			// with the answer (adapter: updatedPermissions setMode).
+			mode := ModeAuto
+			if answer.Mode == ModeAsk {
+				mode = ModeAsk
+			}
+			decision["mode"] = mode
+		}
+		err = e.Store.update(func(st *State) error {
+			c := st.chat(chatID)
+			switch {
+			case plan && allow:
+				mode := agent.String(decision["mode"])
+				c.Mode = mode
+				c.Conversation.Entries = append(c.Conversation.Entries, cv.NewEntry("notice", "Plan approved — "+strings.TrimPrefix(modeNotice(mode), "Permission mode: ")))
+			case answer.Always && !plan:
+				rule := RuleFor(tool, input)
+				for _, r := range c.Allowed {
+					if r == rule {
+						return nil
+					}
+				}
+				c.Allowed = append(c.Allowed, rule)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		result = decision
 	default:
 		decision := "decline"
 		if allow {
@@ -1484,6 +1622,9 @@ func (e *Engine) ConfigureAgent(id, provider, model string) error {
 		}
 		if provider != old && len(c.Conversation.Entries) > 0 {
 			return errors.New("start a new conversation to change providers")
+		}
+		if provider != old {
+			c.Commands, c.Session = nil, nil
 		}
 		c.Provider = provider
 		c.Model = model
