@@ -226,6 +226,11 @@ type fakeServer struct {
 	instructions string
 	memory       MemoryView
 	writes       []string
+	// rules is what environments|chats/{id}/rules answer (the workspace's
+	// then the chats'); adds and removes edit it; events is the chat's
+	// permission history.
+	rules  RulesView
+	events []PermissionEvent
 }
 
 func newFakeServer(t *testing.T, initial State) *fakeServer {
@@ -303,6 +308,27 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		id := fmt.Sprintf("%032d", len(f.uploads))
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(Attachment{ID: id, Name: header.Filename, Kind: kind, Size: int64(len(data)), Path: ".warden/attachments/" + id + ".bin"})
+	case strings.Contains(path, "/rules/") && strings.HasSuffix(path, "/remove"):
+		parts := strings.Split(path, "/")
+		f.mu.Lock()
+		drop := func(rules []Rule) []Rule {
+			var out []Rule
+			for _, r := range rules {
+				if r.ID != parts[3] {
+					out = append(out, r)
+				}
+			}
+			return out
+		}
+		if parts[0] == "environments" {
+			f.rules.Rules = drop(f.rules.Rules)
+		} else {
+			for i := range f.rules.Chats {
+				f.rules.Chats[i].Rules = drop(f.rules.Chats[i].Rules)
+			}
+		}
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/remove"):
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/edit"):
@@ -357,6 +383,38 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			f.mu.Unlock()
 		}()
 		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/rules") && r.Method == "GET":
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		json.NewEncoder(w).Encode(f.rules)
+	case strings.HasSuffix(path, "/rules") && r.Method == "POST":
+		var body struct {
+			Kind, Pattern string
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if !strings.Contains(body.Pattern, "(") && body.Pattern != "Read" {
+			w.WriteHeader(409)
+			w.Write([]byte(`{"error":"rule pattern: missing the tool name"}`))
+			return
+		}
+		parts := strings.Split(path, "/")
+		f.mu.Lock()
+		rule := Rule{ID: fmt.Sprintf("r%d", len(f.rules.Rules)+1), Kind: body.Kind, Pattern: body.Pattern, Origin: "editor", By: &Actor{PrincipalID: "owner"}}
+		if parts[0] == "environments" {
+			f.rules.Rules = append(f.rules.Rules, rule)
+		} else {
+			for i := range f.rules.Chats {
+				if f.rules.Chats[i].ID == parts[1] {
+					f.rules.Chats[i].Rules = append(f.rules.Chats[i].Rules, rule)
+				}
+			}
+		}
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(rule)
+	case strings.HasSuffix(path, "/permissions") && r.Method == "GET":
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"events": f.events})
 	case strings.Contains(path, "/approvals/"):
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -371,7 +429,7 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 					c.Approvals[i].State = "declined"
 				}
 				c.Approvals[i].Params["answers"] = body["answers"]
-				for _, k := range []string{"always", "message", "mode"} {
+				for _, k := range []string{"always", "scope", "message", "mode"} {
 					if v, ok := body[k]; ok {
 						c.Approvals[i].Params[k] = v
 					}
@@ -1836,7 +1894,7 @@ func TestPermissionCardsAndAnswers(t *testing.T) {
 		permissionAsk("p3", "ExitPlanMode", nil, map[string]any{"plan": "# Plan\n\n1. Write notes.md"}),
 	}
 	joined := plain(strings.Join(RenderApprovals(c, 80), "\n"))
-	for _, want := range []string{"run a command: Create x", "y = allow · a = allow always (`touch` commands) · n [message] = deny", "$ touch x", "Write notes.md", "+1 −0", "+hello", "Claude has a plan", "1. Write notes.md"} {
+	for _, want := range []string{"run a command: Create x", "y = allow · a = allow always (`touch` commands) · A = for the workspace · n [message] = deny", "$ touch x", "Write notes.md", "+1 −0", "+hello", "Claude has a plan", "1. Write notes.md"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in:\n%s", want, joined)
 		}
@@ -1859,7 +1917,7 @@ func TestPermissionCardsAndAnswers(t *testing.T) {
 	app.submit(ctx, "a")
 	refresh()
 	s := app.state
-	if got := s.Chats[0].Approvals[0]; got.State != "allowed" || got.Params["always"] != true || !strings.Contains(app.notice, "allowed always: `touch` commands") {
+	if got := s.Chats[0].Approvals[0]; got.State != "allowed" || got.Params["always"] != true || got.Params["scope"] != "chat" || !strings.Contains(app.notice, "allowed always for this chat: `touch` commands") {
 		t.Fatalf("allow always: %+v %q", got, app.notice)
 	}
 	app.submit(ctx, "n keep the notes in docs/")
@@ -2971,4 +3029,106 @@ func TestTitleAndBellEvents(t *testing.T) {
 	if strings.Contains(out.String(), "\a") {
 		t.Fatal("the bell rang while off")
 	}
+}
+
+// `A` (or /allow) on a tool ask allows it always for the whole workspace
+// where `a` does for the chat; /rules lists, adds and removes the
+// workspace's rules and the chats' by number; /permissions lists how the
+// chat's asks were decided.
+func TestWorkspaceAllowRulesAndPermissions(t *testing.T) {
+	c := &Chat{ID: "chat1", Title: "Claude", Provider: "claude", Status: "running", Mode: "ask", SandboxID: "sbx1"}
+	command := &Entry{ID: "toolu_1", Role: "activity", Text: "touch x", Tool: &Tool{Kind: "command", Name: "Bash", Status: "running"}}
+	c.Approvals = []Approval{
+		permissionAsk("p1", "Bash", command, map[string]any{"always": "`touch` commands", "rule": "Bash(touch *)"}),
+		permissionAsk("p2", "Bash", command, map[string]any{"always": "`touch` commands", "rule": "Bash(touch *)"}),
+		permissionAsk("p3", "ExitPlanMode", nil, map[string]any{"plan": "# Plan"}),
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	f.rules = RulesView{Workspace: "sbx1", Rules: []Rule{{ID: "w1", Kind: "deny", Pattern: "Bash(rm *)", Origin: "editor", By: &Actor{PrincipalID: "owner"}}}, Chats: []ChatRules{{ID: "chat1", Title: "Claude", Rules: []Rule{{ID: "c1", Kind: "allow", Pattern: "Bash(touch *)", Origin: "always", By: &Actor{Name: "Dan"}}}}}}
+	f.events = []PermissionEvent{
+		{At: 1_000_000, Tool: "Bash", Summary: "rm -rf build", Decision: "deny", How: "rule", Scope: "workspace", Rule: &Rule{Kind: "deny", Pattern: "Bash(rm *)"}},
+		{At: 1_000_060, Tool: "Write", Summary: "notes.md", Decision: "allow", How: "card", By: &Actor{Name: "Dan"}, Rule: &Rule{Pattern: "Edit"}, Scope: "workspace"},
+		{At: 1_000_120, Tool: "Bash", Summary: "touch y", Decision: "allow", How: "auto"},
+		{At: 1_000_180, Tool: "Bash", Summary: "curl x", Decision: "deny", How: "card", By: &Actor{PrincipalID: "owner"}, Message: "use the proxy"},
+	}
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard}
+	ctx := context.Background()
+	refresh := func() { s, _ := app.Client.State(ctx); app.state = s }
+	refresh()
+	app.submit(ctx, "A")
+	refresh()
+	if got := app.state.Chats[0].Approvals[0]; got.State != "allowed" || got.Params["always"] != true || got.Params["scope"] != "workspace" || app.notice != "allowed always for this workspace: `touch` commands" {
+		t.Fatalf("A: %+v %q", got, app.notice)
+	}
+	app.submit(ctx, "/allow")
+	refresh()
+	if got := app.state.Chats[0].Approvals[1]; got.State != "allowed" || got.Params["scope"] != "workspace" {
+		t.Fatalf("/allow: %+v %q", got, app.notice)
+	}
+	// A plan is never remembered: A is not an answer to it, /allow finds
+	// no tool ask.
+	app.submit(ctx, "/allow")
+	if app.notice != "no tool ask pending" {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/rules")
+	listing := plain(app.notice)
+	for _, want := range []string{"workspace rules", " 1  deny  Bash(rm *)", "from the editor by the owner", "chat Claude (this chat)", " 2  allow Bash(touch *)", "allow always by Dan", "/rules add allow|deny|ask PATTERN"} {
+		if !strings.Contains(listing, want) {
+			t.Fatalf("missing %q in:\n%s", want, listing)
+		}
+	}
+	app.submit(ctx, `/rules add ask "Edit(src/**)"`)
+	if app.notice != "workspace rule added: ask Edit(src/**)" || len(f.rules.Rules) != 2 || f.rules.Rules[1].Pattern != "Edit(src/**)" {
+		t.Fatalf("%q %+v", app.notice, f.rules.Rules)
+	}
+	app.submit(ctx, "/rules add deny nonsense")
+	if !strings.Contains(app.notice, "missing the tool name") {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/rules add")
+	if !strings.HasPrefix(app.notice, "/rules add allow|deny|ask PATTERN") {
+		t.Fatal(app.notice)
+	}
+	// rm by the listing's numbers: 3 is the chat's rule (after the two
+	// workspace rules), and the listing is fetched when stale.
+	app.submit(ctx, "/rules rm 3")
+	if app.notice != "rule 3 removed" || len(f.rules.Chats[0].Rules) != 0 || len(f.rules.Rules) != 2 {
+		t.Fatalf("%q %+v", app.notice, f.rules)
+	}
+	app.submit(ctx, "/rules rm 9")
+	if app.notice != "/rules rm N with N from /rules" {
+		t.Fatal(app.notice)
+	}
+	app.submit(ctx, "/rules rm 1")
+	if app.notice != "rule 1 removed" || len(f.rules.Rules) != 1 || f.rules.Rules[0].Pattern != "Edit(src/**)" {
+		t.Fatalf("%q %+v", app.notice, f.rules.Rules)
+	}
+	app.submit(ctx, "/permissions")
+	lines := strings.Split(plain(app.notice), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("%q", app.notice)
+	}
+	for i, want := range []string{"deny  Bash         rm -rf build  — workspace rule deny Bash(rm *)", "allow Write        notes.md  — Dan, always for the workspace (Edit)", "allow Bash         touch y  — auto mode", "deny  Bash         curl x  — the owner: use the proxy"} {
+		if !strings.HasSuffix(lines[i], want) {
+			t.Errorf("line %d: %q, want suffix %q", i, lines[i], want)
+		}
+	}
+	f.events = nil
+	app.submit(ctx, "/permissions")
+	if app.notice != "no tool asks decided in this chat yet" {
+		t.Fatal(app.notice)
+	}
+	// The / menu offers the commands.
+	if !strings.Contains(strings.Join(commandNames(), " "), "rules permissions allow") {
+		t.Fatal(commandNames())
+	}
+}
+
+func commandNames() []string {
+	var out []string
+	for _, c := range Commands {
+		out = append(out, c.Name)
+	}
+	return out
 }

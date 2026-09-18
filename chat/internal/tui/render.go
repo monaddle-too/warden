@@ -712,7 +712,7 @@ func renderPermission(a Approval, p *Permission, width int, later bool) []string
 		if p.Always != "" {
 			hint += " (" + p.Always + ")"
 		}
-		hint += " · n [message] = deny"
+		hint += " · A = for the workspace · n [message] = deny"
 	}
 	if later {
 		hint = "answered after the one above"
