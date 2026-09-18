@@ -919,6 +919,12 @@ rules:
   - apiGroups: [metrics.k8s.io]
     resources: [pods]
     verbs: [get, list]
+  # The sandbox pods' events (docs/startup-detail-events-plan.md): the
+  # autoscaler's and the kubelet's word on a start, for the startup detail,
+  # the workspace panel and the Cluster section.
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [get, list]
 
 ---
 # Source: warden/templates/rbac.yaml
@@ -1008,6 +1014,9 @@ rules:
     verbs: [get]
   - apiGroups: [metrics.k8s.io]
     resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [events]
     verbs: [get, list]
 
 ---

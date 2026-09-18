@@ -306,7 +306,47 @@ func (d *Driver) ensurePod(ctx context.Context, spec sandbox.RuntimeSpec, worksp
 // volume wait lasts until ctx ends and reports the last condition seen.
 func (d *Driver) awaitRunning(ctx context.Context, name, uid string) (*kube.Pod, error) {
 	last := ""
+	// The pod object stands still while it waits for a node or an image;
+	// its events do not. A ticker re-reports the detail with the latest
+	// event's word (a node being added, none available, the pull) until
+	// the pod runs.
+	ctx, stopEvents := context.WithCancel(ctx)
+	defer stopEvents()
+	var waiting struct {
+		sync.Mutex
+		pod    *kube.Pod
+		events []sandbox.Event
+	}
+	go func() {
+		ticker := time.NewTicker(eventPoll)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			waiting.Lock()
+			pod := waiting.pod
+			waiting.Unlock()
+			if pod == nil || pod.Metadata.UID == "" {
+				continue
+			}
+			events, err := d.podEvents(ctx, d.opts.Namespace, pod.Metadata.UID)
+			if err != nil || ctx.Err() != nil {
+				continue
+			}
+			waiting.Lock()
+			waiting.events = events
+			waiting.Unlock()
+			sandbox.Report(ctx, startupDetailWithEvents(pod, events))
+		}
+	}()
 	pod, err := d.awaitPod(ctx, name, func(pod *kube.Pod, event kube.EventType) (bool, error) {
+		waiting.Lock()
+		waiting.pod = pod
+		events := waiting.events
+		waiting.Unlock()
 		if event == kube.Deleted || pod == nil {
 			return true, fmt.Errorf("sandbox %s: pod disappeared before it ran", name)
 		}
@@ -342,7 +382,7 @@ func (d *Driver) awaitRunning(ctx context.Context, name, uid string) (*kube.Pod,
 				last = c.Reason + ": " + c.Message
 			}
 		}
-		sandbox.Report(ctx, StartupDetail(pod))
+		sandbox.Report(ctx, startupDetailWithEvents(pod, events))
 		return false, nil
 	})
 	if err != nil && errors.Is(err, ctx.Err()) && last != "" {
@@ -501,8 +541,35 @@ func (d *Driver) watchPod(ctx context.Context, name string, done func(*kube.Pod,
 	}
 }
 
-// watchRetry is the pause before a broken pod watch is reopened.
-const watchRetry = time.Second
+// watchRetry is the pause before a broken pod watch is reopened;
+// eventPoll is how often a waiting pod's events are read for the detail.
+const (
+	watchRetry = time.Second
+	eventPoll  = 10 * time.Second
+)
+
+// startupDetailWithEvents is StartupDetail with the newest event's word
+// appended when it says more: "waiting for a node: 0/2 nodes are
+// available … · a node is being added". Events older than the pod are
+// its predecessor's and ignored; a hint that repeats the detail is not
+// added twice.
+func startupDetailWithEvents(pod *kube.Pod, events []sandbox.Event) string {
+	detail := StartupDetail(pod)
+	for _, e := range events {
+		if pod.Metadata.CreationTimestamp != nil && e.At.Before(*pod.Metadata.CreationTimestamp) {
+			continue
+		}
+		add := eventDetail(e)
+		if add == "" || add == detail || strings.Contains(detail, add) {
+			continue
+		}
+		if detail == "" {
+			return add
+		}
+		return detail + " · " + add
+	}
+	return detail
+}
 
 // awaitGone waits for a pod or claim to be deleted.
 func (d *Driver) awaitGone(ctx context.Context, r kube.Resource, name string) error {

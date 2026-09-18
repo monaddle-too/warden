@@ -704,11 +704,26 @@ func selectorsMatch(obj map[string]any, labels, fields string) bool {
 			continue
 		}
 		k, v, _ := strings.Cut(term, "=")
-		if k != "metadata.name" || metaString(obj, "name") != v {
+		if fieldString(obj, k) != v {
 			return false
 		}
 	}
 	return true
+}
+
+// fieldString reads a dotted path of string values (metadata.name,
+// involvedObject.uid), as a field selector names them.
+func fieldString(obj map[string]any, path string) string {
+	var cur any = obj
+	for _, part := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return ""
+		}
+		cur = m[part]
+	}
+	s, _ := cur.(string)
+	return s
 }
 
 func metaString(obj map[string]any, key string) string {

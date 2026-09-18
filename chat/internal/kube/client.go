@@ -44,6 +44,9 @@ var (
 	ValidatingAdmissionPolicies       = Resource{Group: "admissionregistration.k8s.io", Version: "v1", Resource: "validatingadmissionpolicies", Kind: "ValidatingAdmissionPolicy"}
 	ValidatingAdmissionPolicyBindings = Resource{Group: "admissionregistration.k8s.io", Version: "v1", Resource: "validatingadmissionpolicybindings", Kind: "ValidatingAdmissionPolicyBinding"}
 	Nodes                             = Resource{Group: "", Version: "v1", Resource: "nodes", Kind: "Node"}
+	// Events are the core API's events (what kubectl describe lists):
+	// the scheduler's, the autoscaler's and the kubelet's word on a pod.
+	Events = Resource{Group: "", Version: "v1", Resource: "events", Kind: "Event"} // decoded as CoreEvent
 	// PodsResize is the pods/resize subresource (Kubernetes 1.33+): a
 	// patch to it changes a running container's requests and limits in
 	// place, which the kubelet then applies without a restart.
