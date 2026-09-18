@@ -170,6 +170,44 @@ type service struct {
 	stopped bool // shutdown has dealt with it
 }
 
+// launcherLockWait is how long a replacement instance waits for the
+// previous one to release the launcher lock.
+var launcherLockWait = 30 * time.Second
+
+// launcherLock takes the state directory's launcher lock, which one running
+// stack holds until its services have stopped. A detached or service
+// instance replacing a previous one waits for it: launchd's `kickstart -k`
+// (a restart, a redeploy) starts the replacement while the old stack is
+// still shutting down, and exiting here would cost a throttled respawn,
+// during which `warden start` reports a start that failed. A foreground
+// start reports what holds the lock instead.
+func (l *launcher) launcherLock(state string) (*os.File, error) {
+	lock, err := os.OpenFile(filepath.Join(state, "launcher.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+		return lock, nil
+	}
+	if !l.detached {
+		lock.Close()
+		if svc := l.c.registeredService(l.cfg); svc != nil && svc.status().Running {
+			return nil, fmt.Errorf("Warden is already running as a %s (%s); `warden stop` it before a foreground start.", svc.kind(), svc.status())
+		}
+		return nil, errors.New("Warden is already running or shutting down in this state directory.")
+	}
+	fmt.Fprintln(l.c.stdout, "warden: waiting for the previous instance to exit")
+	deadline := time.Now().Add(launcherLockWait)
+	for time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+		if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+			return lock, nil
+		}
+	}
+	lock.Close()
+	return nil, fmt.Errorf("Warden is already running in this state directory; the previous instance did not exit within %s.", launcherLockWait)
+}
+
 func (l *launcher) run() error {
 	cfg := l.cfg
 	state := cfg.Paths.State
@@ -178,17 +216,11 @@ func (l *launcher) run() error {
 			return err
 		}
 	}
-	lock, err := os.OpenFile(filepath.Join(state, "launcher.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	lock, err := l.launcherLock(state)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if svc := l.c.registeredService(cfg); svc != nil && svc.status().Running {
-			return fmt.Errorf("Warden is already running as a %s (%s); `warden stop` it before a foreground start.", svc.kind(), svc.status())
-		}
-		return errors.New("Warden is already running or shutting down in this state directory.")
-	}
 	fmt.Fprintf(l.c.stdout, "warden: %s\n", handshake.Self("warden"))
 	wrapper := wrapperPath(state)
 	if err = executableFile(wrapper); err != nil {

@@ -111,8 +111,13 @@ var findSBX = hostinfo.FindSBX
 // (SBX takes no fraction, so a fractional setting rounds up), and a resize
 // that restarts the sandbox.
 func resourceLimits(s config.Sandboxes, defaultMemoryMB, hostMemoryMB, cores int) sandbox.ResourceLimits {
+	// An unset value stays 0 so the fallbacks below apply: CPUsFromSpec
+	// would turn it into one CPU and pin the ceiling there.
 	wholeCPUs := func(cpus float64) int {
 		milli := sandbox.CPUMilli(cpus)
+		if milli == 0 {
+			return 0
+		}
 		return sandbox.CPUsFromSpec(milli) * 1000
 	}
 	l := sandbox.ResourceLimits{CPUStepMilli: 1000, Restart: true}

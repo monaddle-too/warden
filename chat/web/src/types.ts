@@ -256,6 +256,26 @@ export type ResourceLimits = {
   cpuStepMilli: number;
   restart: boolean;
 };
+// What the execution host (or the cluster's ready nodes) has and what the
+// runner's sandboxes already hold of it; GET capacity. Availability
+// fields are absent when the platform cannot report them; error explains
+// a whole that could not be read while the reservations still count.
+export type Capacity = {
+  at: string;
+  kind: "host" | "cluster";
+  cpuMilli: number;
+  memoryMB: number;
+  cpuPercent?: number;
+  load?: number[];
+  memoryAvailableMB?: number;
+  diskMB?: number;
+  diskAvailableMB?: number;
+  reserved: Resources;
+  running: number;
+  spares: number;
+  limits: ResourceLimits;
+  error?: string;
+};
 export type Chat = {
   provider?: string;
   model?: string;

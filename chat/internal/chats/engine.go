@@ -115,6 +115,11 @@ type Engine struct {
 	limitsMu sync.Mutex
 	limits   *sandbox.ResourceLimits
 	limitsAt time.Time
+	// capacity is the runner's last capacity answer (capacity.go), kept
+	// for capacityTTL so an open size picker's polling shares one read.
+	capacityMu sync.Mutex
+	capacity   *sandbox.Capacity
+	capacityAt time.Time
 	// resizing: workspace id -> the resize in flight or its outcome
 	// (resources.go).
 	resizingMu sync.Mutex
@@ -892,7 +897,13 @@ func (e *Engine) run(parent context.Context, id string) {
 		if err != nil && a.ending.Load() {
 			err = nil // Stop ended a run that had no turn in flight
 		}
-		if err != nil {
+		if err != nil && parent.Err() == nil {
+			// A run that failed is tombstoned so the runner stops its
+			// sandbox. A run cut short by the service's own shutdown is
+			// not: the disconnect is a normal end to the runner, the
+			// sandbox stays resident, and on Kubernetes the pod outlives
+			// the restart (docs/workspace-keepalive-plan.md) for the run
+			// that resumes the chat.
 			cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
 			_, _ = e.Worker.Call(cleanup, request(&current, "cancel"))
 			done()
