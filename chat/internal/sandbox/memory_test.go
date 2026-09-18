@@ -331,14 +331,22 @@ func TestMemoryOpsRunThroughTheRuntime(t *testing.T) {
 func TestClaudeSystemPromptCarriesInstructions(t *testing.T) {
 	run := RunSpec{Broker: BrokerConfig{Provider: "claude"}}
 	args := AgentCommand(run, LaunchOptions{})
-	prompt := ""
+	prompt, snapshot := "", ""
 	for i, a := range args {
 		if a == "--append-system-prompt" {
 			prompt = args[i+1]
 		}
+		if a == "--system-prompt-snapshot" {
+			snapshot = args[i+1]
+		}
 	}
 	if prompt != WardenSystemPrompt {
 		t.Fatalf("plain launch prompt: %q", prompt)
+	}
+	// A resumed conversation would otherwise keep the prompt recorded at
+	// its first request, whatever a later launch appends.
+	if snapshot != "off" {
+		t.Fatalf("system-prompt-snapshot %q", snapshot)
 	}
 	run.Instructions = "From Ada:\nAnswer in haiku form."
 	if got := claudeSystemPrompt(run); got != WardenSystemPrompt+"\n\nFrom Ada:\nAnswer in haiku form." {
