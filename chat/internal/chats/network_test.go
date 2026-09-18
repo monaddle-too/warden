@@ -19,9 +19,8 @@ import (
 // choose it, a shared workspace already has its access, and only
 // restricted, open or empty are accepted.
 func TestWorkspaceNetworkAccessIsTheOwnersChoice(t *testing.T) {
-	e, _, _ := setup(t)
 	sharing, socket := newFakeSharing(t)
-	e.PolicyAddress = "unix://" + socket
+	e, _, _ := setup(t, func(e *Engine) { e.PolicyAddress = "unix://" + socket })
 	h := &HTTP{Engine: e, Token: "private", Host: "127.0.0.1:18780", Origin: "http://127.0.0.1:18780", WebDir: t.TempDir()}
 	call := func(method, path, body string, identity map[string]string) (int, map[string]any) {
 		t.Helper()
@@ -120,9 +119,8 @@ func TestWorkspaceNetworkAccessIsTheOwnersChoice(t *testing.T) {
 // same workspace shares it with nothing to declare; a workspace that
 // follows the install declares nothing either.
 func TestForkCopyKeepsTheWorkspaceNetworkAccess(t *testing.T) {
-	e, w, id := claudeSetup(t)
 	sharing, socket := newFakeSharing(t)
-	e.PolicyAddress = "unix://" + socket
+	e, w, id := claudeSetup(t, func(e *Engine) { e.PolicyAddress = "unix://" + socket })
 	oneTurn(t, e, id, "make a file")
 	_ = e.Store.update(func(st *State) error { st.chat(id).Network = "open"; return nil })
 	shared, err := e.Fork(context.Background(), id, "", false, cv.Actor{PrincipalID: "owner"})
