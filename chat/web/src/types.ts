@@ -18,6 +18,10 @@ export type Entry = {
      search's hits, a unified diff per changed file). Absent on entries
      from before it was recorded, whose detail starts with a status line. */
   tool?: Tool;
+  /* The subagent this entry belongs to: the ID of the task entry (the
+     Agent tool call) whose subagent produced it, so the transcript nests
+     it under that card. Absent on the conversation's own entries. */
+  parentID?: string;
 };
 /* One agent tool call as the service records it (conversation.Tool):
    `kind` is what the card renders by, `name` the tool as the agent names
@@ -25,7 +29,9 @@ export type Entry = {
    (or an agent's own word, such as Codex's declined), `description` what
    the agent said the call is for, `paths` the workspace files it names,
    `query` a search's pattern or a fetch's URL, `input` the call's input
-   where the card shows it as given. */
+   where the card shows it as given (a todo list's items), `background`
+   a command or subagent the agent runs in the background, whose card
+   stays running until the task reports back. */
 export type Tool = {
   kind: ToolKind;
   name?: string;
@@ -35,6 +41,7 @@ export type Tool = {
   paths?: string[];
   query?: string;
   input?: Record<string, unknown>;
+  background?: boolean;
 };
 export type ToolKind =
   | "command"
@@ -45,6 +52,7 @@ export type ToolKind =
   | "webSearch"
   | "mcp"
   | "task"
+  | "todo"
   | "other";
 /* The token usage of one turn as the service records it: `input` counts
    every input token (`cached` and `cacheWrite` are parts of it),
@@ -135,9 +143,16 @@ export type Chat = {
     turns?: Turn[];
   };
   approvals: Approval[];
+  /* Slash commands the agent's session offers (Claude Code's built-ins and
+     the workspace's own commands and skills); "/name …" is sent as text
+     and the agent expands it. Absent for Codex. */
+  commands?: AgentCommand[];
+  /* What the agent reported when its session started. */
+  session?: { model?: string; permissionMode?: string; outputStyle?: string };
   typing?: { principalID: string; name: string; until: number }[];
   startup?: Startup;
 };
+export type AgentCommand = { name: string; description?: string };
 /* Where a chat's start is while its message waits for the agent: the
    stage (stages.ts names them), the runtime's detail for it, and when the
    stage began (unix seconds). Absent once the turn is running. */

@@ -168,6 +168,87 @@ export function toolTitle(entry: Entry): string {
   return entry.text || entry.tool?.name || "Agent activity";
 }
 
+/* What a subagent's card says about its work: how many tool calls its
+   entries record and whether any still runs. */
+export function subagentProgress(children: Entry[]): {
+  steps: number;
+  running: boolean;
+} {
+  let steps = 0;
+  let running = false;
+  for (const e of children) {
+    if (e.tool) steps++;
+    if (e.isStreaming || e.tool?.status === "running") running = true;
+  }
+  return { steps, running };
+}
+
+/* How long a subagent (a task entry) has been at work, in seconds: from
+   its start to its end, or to `now` while it runs. */
+export function taskElapsed(entry: Entry, now: number): number {
+  const end = entry.endedAt || (toolRunning(entry) ? now : 0);
+  return end > entry.createdAt ? end - entry.createdAt : 0;
+}
+
+/* Seconds as the card shows them: "4s", "1m 12s", "2h 5m". */
+export function formatElapsed(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+/* The subagent's type and prompt, from the Agent call's input. */
+export function subagentInput(tool: Tool | undefined): {
+  type: string;
+  prompt: string;
+} {
+  const input = tool?.input ?? {};
+  const type =
+    typeof input.subagent_type === "string" ? input.subagent_type : "";
+  const prompt = typeof input.prompt === "string" ? input.prompt : "";
+  return { type, prompt };
+}
+
+export type TodoStatus = "pending" | "in_progress" | "completed";
+export type TodoItem = {
+  content: string;
+  status: TodoStatus;
+  /* What the agent shows while the item is in progress ("Writing tests"). */
+  activeForm: string;
+};
+
+/* The items of a todo card, from the list the service recorded in the
+   card's input (TodoWrite's shape). Anything malformed reads as pending. */
+export function todoItems(tool: Tool | undefined): TodoItem[] {
+  const raw = tool?.input?.todos;
+  if (!Array.isArray(raw)) return [];
+  const items: TodoItem[] = [];
+  for (const v of raw) {
+    if (!v || typeof v !== "object") continue;
+    const o = v as Record<string, unknown>;
+    const content = typeof o.content === "string" ? o.content : "";
+    if (!content) continue;
+    const status =
+      o.status === "completed" || o.status === "in_progress"
+        ? o.status
+        : "pending";
+    items.push({
+      content,
+      status,
+      activeForm: typeof o.activeForm === "string" ? o.activeForm : "",
+    });
+  }
+  return items;
+}
+
+/* The todo card's progress, for its summary: "2 of 5 done". */
+export function todoProgress(items: TodoItem[]): string {
+  const done = items.filter((i) => i.status === "completed").length;
+  return `${done} of ${items.length} done`;
+}
+
 /* The host of a fetched URL, for the summary of a fetch card; the URL
    itself when it does not parse. */
 export function fetchHost(url: string): string {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1028,7 +1029,19 @@ func (e *Engine) run(parent context.Context, id string) {
 		// The turn finished but the session stays open: settle the transcript,
 		// report idle, and wait for the chat's next message.
 		e.settleTurn(parent, id, a)
-		message = e.awaitMessage(ctx, id, &current, a, client, frames)
+		var agentTurn string
+		message, agentTurn = e.awaitMessage(ctx, id, &current, a, client, frames)
+		if agentTurn != "" {
+			// The agent began a turn of its own (Claude Code resumes the
+			// model when a background task it started reports back): drive
+			// it like one asked for, with nothing to send.
+			turnID = agentTurn
+			turn = map[string]any{"id": turnID, "status": "inProgress"}
+			e.mu.Lock()
+			a.turnID = turnID
+			e.mu.Unlock()
+			continue
+		}
 		if message == nil {
 			return // released, timed out, stopped or ended by the worker: a clean end
 		}
@@ -1177,10 +1190,13 @@ func (e *Engine) settleTurn(parent context.Context, id string, a *activeRun) {
 }
 
 // awaitMessage keeps a resident session open until the chat's next message
-// arrives, returning it with the chat marked running. It returns nil when the
-// session should end: released for another chat, idle too long, the run
-// cancelled, the chat stopped, or the agent stream closed by the worker.
-func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *activeRun, client *agent.Client, frames chan agent.Frame) *cv.Entry {
+// arrives, returning it with the chat marked running, or until the agent
+// starts a turn by itself (`turn/started` with no turn asked for), returning
+// that turn's id with the chat marked running and the turn begun. It
+// returns neither when the session should end: released for another chat,
+// idle too long, the run cancelled, the chat stopped, or the agent stream
+// closed by the worker.
+func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *activeRun, client *agent.Client, frames chan agent.Frame) (*cv.Entry, string) {
 	idleCtx, release := context.WithTimeout(ctx, e.residentIdle())
 	defer release()
 	e.mu.Lock()
@@ -1201,25 +1217,49 @@ func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *
 	for {
 		select {
 		case <-idleCtx.Done():
-			return nil
+			return nil, ""
 		case <-client.Done():
-			return nil
+			return nil, ""
 		case f := <-frames:
 			if len(f.ID) > 0 {
 				_ = e.request(ctx, current, client, f)
-			} else {
-				_ = e.notification(id, f)
+				continue
+			}
+			_ = e.notification(id, f)
+			if f.Method == "turn/started" {
+				if turn := agent.String(agent.Map(f.Params["turn"])["id"]); turn != "" {
+					if err := e.beginAgentTurn(id, turn); err != nil {
+						return nil, ""
+					}
+					return nil, turn
+				}
 			}
 		case <-tick.C:
 			message, err := e.resume(id)
 			if err != nil {
-				return nil
+				return nil, ""
 			}
 			if message != nil {
-				return message
+				return message, ""
 			}
 		}
 	}
+}
+
+// beginAgentTurn marks the chat running for a turn the agent started by
+// itself and records the turn's start. It fails when the chat is being
+// stopped or archived, which ends the session.
+func (e *Engine) beginAgentTurn(id, turn string) error {
+	return e.Store.update(func(st *State) error {
+		c := st.chat(id)
+		if c == nil || c.Archived || c.Status == "stopping" {
+			return errors.New("session ended")
+		}
+		c.Status = "running"
+		c.Error = ""
+		c.Conversation.Begin(turn, e.at())
+		return nil
+	})
 }
 
 // resume moves a queued chat with a live resident session back to running and
@@ -1325,11 +1365,12 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 		usageTurn, usage = e.turnUsage(id, f.Params)
 	}
 	return e.Store.update(func(st *State) error {
+		chat := st.chat(id)
 		if f.Method == "permissions/modeChanged" {
-			st.chat(id).applyMode(agent.String(f.Params["mode"]))
+			chat.applyMode(agent.String(f.Params["mode"]))
 			return nil
 		}
-		c := &st.chat(id).Conversation
+		c := &chat.Conversation
 		p := f.Params
 		turn := agent.String(p["turnId"])
 		if turn == "" {
@@ -1337,7 +1378,14 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 		}
 		switch f.Method {
 		case "thread/started":
-			c.ThreadID = cv.Ptr(agent.String(agent.Map(p["thread"])["id"]))
+			thread := agent.Map(p["thread"])
+			c.ThreadID = cv.Ptr(agent.String(thread["id"]))
+			chat.sessionStarted(thread)
+		case "thread/compacted":
+			// The agent compacted its context (Claude's /compact or its
+			// auto-compaction): say so where it happened, with what it
+			// kept, until the transcript has a marker of its own.
+			c.Entries = append(c.Entries, cv.NewEntry("system", compactionNote(p)))
 		case "turn/started":
 			c.ActiveTurnID = cv.Ptr(turn)
 		case "item/started", "item/completed":
@@ -1575,10 +1623,41 @@ func (e *Engine) ConfigureAgent(id, provider, model string) error {
 		if provider != old && len(c.Conversation.Entries) > 0 {
 			return errors.New("start a new conversation to change providers")
 		}
+		if provider != old {
+			c.Commands, c.Session = nil, nil
+		}
 		c.Provider = provider
 		c.Model = model
 		return nil
 	})
+}
+
+// compactionNote is the system line for a `thread/compacted` notification:
+// how the context was compacted and what it came down to.
+func compactionNote(p map[string]any) string {
+	note := "Context compacted"
+	if agent.String(p["trigger"]) == "auto" {
+		note = "Context compacted automatically"
+	}
+	before, _ := p["preTokens"].(float64)
+	after, _ := p["postTokens"].(float64)
+	if before > 0 && after > 0 {
+		note += fmt.Sprintf(": %s → %s tokens", formatTokens(before), formatTokens(after))
+	}
+	return note + "."
+}
+
+// formatTokens writes a token count the way the usage line does (1.2k, 27k).
+func formatTokens(n float64) string {
+	switch {
+	case n >= 1e6:
+		return strconv.FormatFloat(n/1e6, 'f', 1, 64) + "M"
+	case n >= 1e4:
+		return strconv.FormatFloat(n/1e3, 'f', 0, 64) + "k"
+	case n >= 1e3:
+		return strconv.FormatFloat(n/1e3, 'f', 1, 64) + "k"
+	}
+	return strconv.FormatFloat(n, 'f', 0, 64)
 }
 
 // ConfigureAgentAndRelease applies ConfigureAgent and ends the chat's resident

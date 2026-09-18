@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { hasDiff, parseDiff } from "../diff";
 import { senderLabel } from "../export";
+import { subagentInput, subagentProgress } from "../tools";
+import { groupEntries } from "../transcript";
 import type { TurnFooter } from "../turns";
 import type { Entry } from "../types";
 import { EntryAttachments } from "./Attachments";
@@ -42,8 +44,8 @@ function ActivityDetail({ text }: { text: string }) {
 }
 /* One step's summary row: the typed card's (ToolCard.tsx) when the
    service recorded the tool call, else the step's text. */
-function StepSummary({ entry }: { entry: Entry }) {
-  if (entry.tool) return <ToolSummary entry={entry} />;
+function StepSummary({ entry, steps }: { entry: Entry; steps?: Entry[] }) {
+  if (entry.tool) return <ToolSummary entry={entry} steps={steps} />;
   return (
     <>
       <FileText size={13} />
@@ -52,25 +54,102 @@ function StepSummary({ entry }: { entry: Entry }) {
     </>
   );
 }
-function StepBody({
-  entry,
-  onFile,
-}: {
-  entry: Entry;
+/* What a card's body needs beyond its entry: the file opener, and for a
+   subagent's card the transcript nested under it. */
+type StepContext = {
   onFile?: (href: string) => void;
-}) {
-  if (entry.tool) return <ToolBody entry={entry} onFile={onFile} />;
-  return <ActivityDetail text={entry.detail} />;
+  nested?: Map<string, Entry[]>;
+  chatID?: string;
+  provider?: string;
+};
+function StepBody({ entry, ctx }: { entry: Entry; ctx: StepContext }) {
+  if (!entry.tool) return <ActivityDetail text={entry.detail} />;
+  const children = ctx.nested?.get(entry.id);
+  return (
+    <ToolBody
+      entry={entry}
+      onFile={ctx.onFile}
+      nested={
+        entry.tool.kind === "task" && children?.length ? (
+          <SubagentTranscript parent={entry} entries={children} ctx={ctx} />
+        ) : undefined
+      }
+    />
+  );
 }
-/* A run of consecutive tool steps collapses into one row. */
+/* A subagent's own work, inside its card: its messages and tool cards as
+   the transcript shows the conversation's, collapsed behind a count until
+   opened. A subagent's subagent nests the same way. */
+function SubagentTranscript({
+  parent,
+  entries,
+  ctx,
+}: {
+  parent: Entry;
+  entries: Entry[];
+  ctx: StepContext;
+}) {
+  const { steps, running } = subagentProgress(entries);
+  const label = subagentInput(parent.tool).type || "Subagent";
+  const messages = entries.length - steps;
+  const parts = [];
+  if (steps) parts.push(`${steps} tool call${steps === 1 ? "" : "s"}`);
+  if (messages) parts.push(`${messages} message${messages === 1 ? "" : "s"}`);
+  return (
+    <details className="subagent">
+      <summary>
+        <ChevronRight size={14} className="chevron" />
+        <span>
+          {label}: {parts.join(", ") || "no activity yet"}
+        </span>
+        {running && <LoaderCircle size={12} className="spin" />}
+      </summary>
+      <div className="subagent-transcript">
+        {groupEntries(entries).map((item) =>
+          "group" in item ? (
+            <ActivityGroup
+              key={item.group[0].id}
+              entries={item.group}
+              nested={ctx.nested}
+              chatID={ctx.chatID}
+              provider={ctx.provider}
+              onFile={ctx.onFile}
+            />
+          ) : (
+            <EntryView
+              key={item.entry.id}
+              entry={item.entry}
+              chatID={ctx.chatID ?? ""}
+              provider={ctx.provider}
+              label={label}
+              nested={ctx.nested}
+              onFile={ctx.onFile ?? (() => {})}
+            />
+          ),
+        )}
+      </div>
+    </details>
+  );
+}
+/* A run of consecutive tool steps collapses into one row; a todo list
+   stands open on its own. */
 export const ActivityGroup = memo(function ActivityGroup({
   entries,
   onFile,
+  nested,
+  chatID,
+  provider,
 }: {
   entries: Entry[];
   /* Opens a workspace file a step names (a read's path). */
   onFile?: (href: string) => void;
+  /* Subagents' entries by the ID of their card (transcript.ts
+     `nestEntries`), for the cards of Agent calls. */
+  nested?: Map<string, Entry[]>;
+  chatID?: string;
+  provider?: string;
 }) {
+  const ctx: StepContext = { onFile, nested, chatID, provider };
   const streaming = entries.some((e) => e.isStreaming);
   const latest = entries[entries.length - 1];
   // `data-entry` is how the find bar lands on an entry from the palette.
@@ -79,11 +158,12 @@ export const ActivityGroup = memo(function ActivityGroup({
       <details
         className={`activity-group${latest.tool ? ` tool-card tool-kind-${latest.tool.kind}` : ""}`}
         data-entry={latest.id}
+        open={latest.tool?.kind === "todo" || undefined}
       >
         <summary>
           <ChevronRight size={14} className="chevron" />
           {latest.tool ? (
-            <ToolSummary entry={latest} />
+            <ToolSummary entry={latest} steps={nested?.get(latest.id)} />
           ) : (
             <>
               <span>{latest.text || "Agent activity"}</span>
@@ -91,7 +171,7 @@ export const ActivityGroup = memo(function ActivityGroup({
             </>
           )}
         </summary>
-        <StepBody entry={latest} onFile={onFile} />
+        <StepBody entry={latest} ctx={ctx} />
       </details>
     );
   return (
@@ -108,11 +188,12 @@ export const ActivityGroup = memo(function ActivityGroup({
             className={`activity-entry${entry.tool ? ` tool-card tool-kind-${entry.tool.kind}` : ""}`}
             key={entry.id}
             data-entry={entry.id}
+            open={entry.tool?.kind === "todo" || undefined}
           >
             <summary>
-              <StepSummary entry={entry} />
+              <StepSummary entry={entry} steps={nested?.get(entry.id)} />
             </summary>
-            <StepBody entry={entry} onFile={onFile} />
+            <StepBody entry={entry} ctx={ctx} />
           </details>
         ))}
       </div>
@@ -194,6 +275,8 @@ export const EntryView = memo(function EntryView({
   onRetry,
   actions = false,
   stats,
+  nested,
+  label,
 }: {
   entry: Entry;
   chatID: string;
@@ -205,6 +288,11 @@ export const EntryView = memo(function EntryView({
   actions?: boolean;
   /* The turn's timing and usage, under the turn's last message. */
   stats?: TurnFooter;
+  /* Subagents' entries by the ID of their card, for a task entry. */
+  nested?: Map<string, Entry[]>;
+  /* The name over an agent message, instead of the provider's: the
+     subagent's type inside its card. */
+  label?: string;
 }) {
   if (entry.role === "image")
     return (
@@ -216,7 +304,15 @@ export const EntryView = memo(function EntryView({
       />
     );
   if (entry.role === "activity")
-    return <ActivityGroup entries={[entry]} onFile={onFile} />;
+    return (
+      <ActivityGroup
+        entries={[entry]}
+        nested={nested}
+        chatID={chatID}
+        provider={provider}
+        onFile={onFile}
+      />
+    );
   if (entry.role === "thinking")
     return (
       <ThinkingBlock
@@ -238,9 +334,7 @@ export const EntryView = memo(function EntryView({
       <strong>
         {user
           ? senderLabel(entry.sender)
-          : provider === "claude"
-            ? "Claude"
-            : "Codex"}
+          : label || (provider === "claude" ? "Claude" : "Codex")}
       </strong>
       <time>{time(entry.createdAt)}</time>
       {entry.isStreaming && (

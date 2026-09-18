@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { workspacePaths } from "../api";
 
 /* One row of the composer's suggestion list. */
@@ -10,6 +16,9 @@ export type Suggestion = {
   disabled?: boolean;
   /* Paths are shown in the monospace face. */
   mono?: boolean;
+  /* Rows with a group are listed under its heading, when the list has
+     more than one group (the chat's commands, then the agent's). */
+  group?: string;
 };
 
 /* A list floating over the composer: the textarea keeps the focus and the
@@ -37,30 +46,37 @@ export function Suggest({
       ?.querySelector('[aria-selected="true"]')
       ?.scrollIntoView({ block: "nearest" });
   }, [active]);
+  const grouped = new Set(items.map((item) => item.group)).size > 1;
   return (
     <div className="suggest" onMouseDown={(event) => event.preventDefault()}>
       {items.length > 0 && (
         <ul id={id} role="listbox" ref={list}>
           {items.map((item, i) => (
-            <li
-              key={item.id}
-              id={`${id}-${i}`}
-              role="option"
-              aria-selected={i === active}
-              aria-disabled={item.disabled || undefined}
-              onMouseMove={() => {
-                if (i !== active && !item.disabled) onHover(i);
-              }}
-              onClick={() => {
-                if (!item.disabled) onPick(item);
-              }}
-            >
-              {item.icon}
-              <span className={item.mono ? "suggest-path" : "suggest-label"}>
-                {item.label}
-              </span>
-              {item.hint && <small>{item.hint}</small>}
-            </li>
+            <Fragment key={item.id}>
+              {grouped && item.group && item.group !== items[i - 1]?.group && (
+                <li role="presentation" className="suggest-group">
+                  {item.group}
+                </li>
+              )}
+              <li
+                id={`${id}-${i}`}
+                role="option"
+                aria-selected={i === active}
+                aria-disabled={item.disabled || undefined}
+                onMouseMove={() => {
+                  if (i !== active && !item.disabled) onHover(i);
+                }}
+                onClick={() => {
+                  if (!item.disabled) onPick(item);
+                }}
+              >
+                {item.icon}
+                <span className={item.mono ? "suggest-path" : "suggest-label"}>
+                  {item.label}
+                </span>
+                {item.hint && <small>{item.hint}</small>}
+              </li>
+            </Fragment>
           ))}
         </ul>
       )}

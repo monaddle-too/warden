@@ -8,7 +8,30 @@ type Item = {
   createdAt: number;
   turnID?: string;
   sender?: { principalID: string };
+  parentID?: string;
 };
+
+/* The transcript's own entries and, by the ID of each subagent's card,
+   the entries that subagent produced: a subagent's entries name their
+   Agent call in `parentID` and render inside its card, not in the
+   transcript's flow. A nested subagent's entries key on its own card. An
+   entry whose parent is unknown (a card the service no longer has) stays
+   at the top rather than vanishing. */
+export function nestEntries<T extends Item>(
+  entries: T[],
+): { top: T[]; nested: Map<string, T[]> } {
+  const ids = new Set(entries.map((e) => e.id));
+  const top: T[] = [];
+  const nested = new Map<string, T[]>();
+  for (const e of entries) {
+    if (e.parentID && ids.has(e.parentID)) {
+      const list = nested.get(e.parentID);
+      if (list) list.push(e);
+      else nested.set(e.parentID, [e]);
+    } else top.push(e);
+  }
+  return { top, nested };
+}
 
 /* The last entry the reader saw: its ID, and its time for when the ID is
    gone (a chat whose entries the service replaced). */

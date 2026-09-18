@@ -134,3 +134,72 @@ func TestToolItemsRecordTheirTool(t *testing.T) {
 		t.Fatal("finish left a tool streaming")
 	}
 }
+
+// A subagent's items name their Agent call: the entry keeps the parent's
+// ID, the Agent card gets its end when the subagent finishes (and keeps
+// it), a background call says so, and the todo list is one entry replaced
+// in place. Hydration keeps all of it.
+func TestSubagentEntriesNestUnderTheirCall(t *testing.T) {
+	clock := 50.0
+	now = func() float64 { return clock }
+	var c Conversation
+	c.Upsert(map[string]any{"id": "agent_1", "type": "toolCall", "tool": "Agent", "kind": "task", "title": "Agent: list files (Explore)", "status": "running", "input": map[string]any{"prompt": "List the files."}}, "t1", false)
+	c.Upsert(map[string]any{"id": "bash_1", "type": "commandExecution", "tool": "Bash", "command": "ls", "status": "running", "parentId": "agent_1"}, "t1", false)
+	c.Upsert(map[string]any{"id": "bash_1", "type": "commandExecution", "tool": "Bash", "command": "ls", "status": "completed", "aggregatedOutput": "a\nb", "parentId": "agent_1"}, "t1", true)
+	c.Upsert(map[string]any{"id": "msg_1", "type": "agentMessage", "text": "a and b", "parentId": "agent_1"}, "t1", true)
+	if len(c.Entries) != 3 || c.Entries[0].ParentID != "" || c.Entries[1].ParentID != "agent_1" || c.Entries[2].ParentID != "agent_1" || c.Entries[2].Role != "assistant" || c.Entries[2].IsStreaming {
+		t.Fatalf("nesting: %+v", c.Entries)
+	}
+	if c.Entries[0].EndedAt != 0 || !c.Entries[0].IsStreaming {
+		t.Fatalf("running agent card: %+v", c.Entries[0])
+	}
+	// An async launch: the card is re-announced as background, still running.
+	c.Upsert(map[string]any{"id": "agent_1", "type": "toolCall", "tool": "Agent", "kind": "task", "title": "Agent: list files (Explore)", "status": "running", "background": true}, "t1", false)
+	if e := c.Entries[0]; !e.Tool.Background || e.Tool.Status != "running" || e.EndedAt != 0 {
+		t.Fatalf("background card: %+v", e)
+	}
+	clock = 63
+	c.Upsert(map[string]any{"id": "agent_1", "type": "toolCall", "tool": "Agent", "kind": "task", "title": "Agent: list files (Explore)", "status": "completed", "output": "a and b", "background": true}, "t1", true)
+	if e := c.Entries[0]; e.EndedAt != 63 || e.Detail != "a and b" || e.Tool.Status != "completed" || e.IsStreaming {
+		t.Fatalf("completed card: %+v", e)
+	}
+	clock = 70
+	c.Upsert(map[string]any{"id": "agent_1", "type": "toolCall", "tool": "Agent", "kind": "task", "title": "Agent: list files (Explore)", "status": "completed", "output": "a and b", "background": true}, "t1", true)
+	if c.Entries[0].EndedAt != 63 {
+		t.Fatalf("an end, once seen, stays: %+v", c.Entries[0])
+	}
+	// A background command: its card, and a todo list.
+	c.Upsert(map[string]any{"id": "bash_2", "type": "commandExecution", "tool": "Bash", "command": "sleep 9", "status": "running", "background": true, "description": "Wait"}, "t1", false)
+	if e := c.Entries[3]; !e.Tool.Background || e.Tool.Description != "Wait" {
+		t.Fatalf("background command: %+v", e)
+	}
+	todos := []any{map[string]any{"content": "Parse", "status": "completed"}, map[string]any{"content": "Test", "status": "in_progress", "activeForm": "Testing"}, map[string]any{"content": "Ship", "status": "pending"}}
+	c.Upsert(map[string]any{"id": "todos-1", "type": "todoList", "tool": "TaskUpdate", "todos": todos}, "t1", true)
+	e := c.Entries[4]
+	if e.Role != "activity" || e.Tool.Kind != "todo" || e.Text != "Todo list · 1 of 3 done · Testing" || e.Detail != "[x] Parse\n[>] Test\n[ ] Ship\n" || len(e.Tool.Input["todos"].([]any)) != 3 || e.IsStreaming {
+		t.Fatalf("todo entry: %+v", e)
+	}
+	c.Upsert(map[string]any{"id": "todos-1", "type": "todoList", "tool": "TaskUpdate", "todos": todos[:1]}, "t1", true)
+	if len(c.Entries) != 5 || c.Entries[4].Text != "Todo list · 1 of 1 done" {
+		t.Fatalf("todo list replaced in place: %+v", c.Entries[4])
+	}
+	// Hydration from the agent's own record keeps the nesting and the end.
+	items := []any{
+		map[string]any{"id": "agent_1", "type": "toolCall", "tool": "Agent", "kind": "task", "title": "Agent: list files (Explore)", "status": "completed", "output": "a and b", "background": true},
+		map[string]any{"id": "bash_1", "type": "commandExecution", "tool": "Bash", "command": "ls", "status": "completed", "aggregatedOutput": "a\nb", "parentId": "agent_1"},
+		map[string]any{"id": "msg_1", "type": "agentMessage", "text": "a and b", "parentId": "agent_1"},
+	}
+	clock = 99
+	c.Hydrate(map[string]any{"id": "thread", "turns": []any{map[string]any{"id": "t1", "status": "completed", "items": items}}})
+	if len(c.Entries) != 5 || c.Entries[0].EndedAt != 63 || c.Entries[1].ParentID != "agent_1" || c.Entries[2].ParentID != "agent_1" || c.Entries[2].Text != "a and b" {
+		t.Fatalf("hydrated: %+v", c.Entries)
+	}
+	// Finish ends the turn's streaming entries whether nested or not.
+	c.Upsert(map[string]any{"id": "bash_3", "type": "commandExecution", "command": "ls", "status": "running", "parentId": "agent_1"}, "t1", false)
+	c.Finish("t1", 120)
+	for _, e := range c.Entries {
+		if e.IsStreaming {
+			t.Fatalf("still streaming after Finish: %+v", e)
+		}
+	}
+}

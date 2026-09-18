@@ -8,10 +8,257 @@ import (
 
 // claudeTool is a Claude Code tool call in flight: what its tool_use block
 // said, kept until the tool_result completes the item, since the result
-// names only the call's id.
+// names only the call's id. parent is the Agent call whose subagent made
+// this call ("" for the conversation's own), turn the turn the item
+// belongs to (a subagent's items keep their Agent call's turn, which may
+// have ended). background marks a call the CLI runs as a background task
+// (a command with run_in_background, an async subagent): task is its task
+// id and the call's item stays running until the task reports back.
+// taskTitle names the task a TaskOutput, TaskStop or Monitor call waits
+// on, for its card.
 type claudeTool struct {
-	name  string
-	input map[string]any
+	name       string
+	input      map[string]any
+	parent     string
+	turn       string
+	background bool
+	task       string
+	taskTitle  string
+}
+
+// claudeTodoTool says whether the tool writes the agent's todo list, whose
+// current state is the card rather than each write.
+func claudeTodoTool(name string) bool {
+	switch name {
+	case "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet":
+		return true
+	}
+	return false
+}
+
+// claudeBackgroundTask is the task id when the call's result says the
+// CLI took it to the background: a command's `backgroundTaskId`, an
+// async subagent's `agentId`; from the result text (or the task the CLI
+// announced with task_started) when the structured result did not come
+// (several results in one frame).
+func claudeBackgroundTask(t claudeTool, result map[string]any, structured any) string {
+	s := Map(structured)
+	switch t.name {
+	case "Bash":
+		if id := String(s["backgroundTaskId"]); id != "" {
+			return id
+		}
+		if s == nil && strings.HasPrefix(claudeResultText(result["content"]), "Command running in background") {
+			return claudeOr(t.task, "background")
+		}
+	case "Agent", "Task":
+		if s["isAsync"] == true || String(s["status"]) == "async_launched" {
+			return claudeOr(String(s["agentId"]), claudeOr(t.task, "background"))
+		}
+		if s == nil && strings.HasPrefix(claudeResultText(result["content"]), "Async agent launched") {
+			return claudeOr(t.task, "background")
+		}
+	}
+	return ""
+}
+
+// claudeTaskStatus reads a task notification's outcome: failed when the
+// CLI says so or the summary names a non-zero exit code, else completed.
+func claudeTaskStatus(status, summary string) string {
+	switch status {
+	case "", "completed", "success":
+	default:
+		return "failed"
+	}
+	if i := strings.LastIndex(summary, "exit code "); i >= 0 {
+		code := strings.TrimRight(strings.Fields(summary[i+len("exit code "):] + " ")[0], ").,")
+		if code != "" && code != "0" {
+			return "failed"
+		}
+	}
+	return "completed"
+}
+
+// claudeTaskOutput reads what a TaskOutput call retrieved: the task's id,
+// its output and whether it failed, from the structured result (the text
+// form wraps the same in tags the model reads).
+func claudeTaskOutput(result map[string]any, structured any) (task, output, status string) {
+	s := Map(structured)
+	if s != nil {
+		if String(s["retrieval_status"]) != "" && String(s["retrieval_status"]) != "success" {
+			return "", "", ""
+		}
+		task := Map(s["task"])
+		if task == nil {
+			return "", "", ""
+		}
+		status = "completed"
+		if st := String(task["status"]); st != "" && st != "completed" || claudeInt(task["exitCode"]) != 0 {
+			status = "failed"
+		}
+		return String(task["task_id"]), strings.TrimSpace(String(task["output"])), status
+	}
+	text := claudeResultText(result["content"])
+	tag := func(name string) string {
+		open, close := "<"+name+">", "</"+name+">"
+		i := strings.Index(text, open)
+		if i < 0 {
+			return ""
+		}
+		rest := text[i+len(open):]
+		if j := strings.Index(rest, close); j >= 0 {
+			rest = rest[:j]
+		}
+		return strings.TrimSpace(rest)
+	}
+	if tag("retrieval_status") != "success" {
+		return "", "", ""
+	}
+	status = "completed"
+	if st := tag("status"); st != "" && st != "completed" || tag("exit_code") != "" && tag("exit_code") != "0" {
+		status = "failed"
+	}
+	return tag("task_id"), tag("output"), status
+}
+
+// claudeTodo is one item of the agent's todo list, in TodoWrite's terms:
+// what to do, its status (pending, in_progress, completed) and the
+// present-tense form shown while it is in progress. id is the task tools'
+// id, "" for a TodoWrite item.
+type claudeTodo struct {
+	id, content, activeForm, status string
+}
+
+// claudeTodoList is the agent's todo list as its writes left it: TodoWrite
+// replaces the whole list; TaskCreate, TaskUpdate, TaskList and TaskGet
+// (the newer task tools) add, patch and refresh items by id.
+type claudeTodoList struct {
+	items []claudeTodo
+}
+
+// apply folds one successful write into the list; false when the call
+// changed nothing the surfaces show.
+func (l *claudeTodoList) apply(tool string, input map[string]any, result map[string]any, structured any) bool {
+	s := Map(structured)
+	switch tool {
+	case "TodoWrite":
+		l.items = l.items[:0]
+		for _, v := range Array(input["todos"]) {
+			m := Map(v)
+			l.items = append(l.items, claudeTodo{content: String(m["content"]), activeForm: String(m["activeForm"]), status: claudeTodoStatus(String(m["status"]))})
+		}
+		return true
+	case "TaskCreate":
+		id := String(Map(s["task"])["id"])
+		if id == "" {
+			// "Task #3 created successfully: subject"
+			if text := claudeResultText(result["content"]); strings.HasPrefix(text, "Task #") {
+				id = strings.TrimRight(strings.Fields(text)[1], ":")[1:]
+			}
+		}
+		l.items = append(l.items, claudeTodo{id: id, content: String(input["subject"]), activeForm: String(input["activeForm"]), status: "pending"})
+		return true
+	case "TaskUpdate":
+		i := l.index(String(input["taskId"]))
+		if i < 0 {
+			return false
+		}
+		if status := String(input["status"]); status == "deleted" {
+			l.items = append(l.items[:i], l.items[i+1:]...)
+			return true
+		} else if status != "" {
+			l.items[i].status = claudeTodoStatus(status)
+		}
+		if subject := String(input["subject"]); subject != "" {
+			l.items[i].content = subject
+		}
+		if form := String(input["activeForm"]); form != "" {
+			l.items[i].activeForm = form
+		}
+		return true
+	case "TaskList":
+		var listed []claudeTodo
+		if tasks := Array(s["tasks"]); s != nil {
+			for _, v := range tasks {
+				m := Map(v)
+				listed = append(listed, claudeTodo{id: String(m["id"]), content: String(m["subject"]), activeForm: String(m["activeForm"]), status: claudeTodoStatus(String(m["status"]))})
+			}
+		} else {
+			// "#1 [in_progress] Write the parser"
+			for _, line := range strings.Split(claudeResultText(result["content"]), "\n") {
+				f := strings.SplitN(line, " ", 3)
+				if len(f) == 3 && strings.HasPrefix(f[0], "#") && strings.HasPrefix(f[1], "[") && strings.HasSuffix(f[1], "]") {
+					listed = append(listed, claudeTodo{id: f[0][1:], content: f[2], status: claudeTodoStatus(strings.Trim(f[1], "[]"))})
+				}
+			}
+		}
+		if listed == nil && s == nil {
+			return false
+		}
+		for i := range listed {
+			if j := l.index(listed[i].id); j >= 0 && listed[i].activeForm == "" {
+				listed[i].activeForm = l.items[j].activeForm
+			}
+		}
+		l.items = listed
+		return true
+	case "TaskGet":
+		m := Map(s["task"])
+		i := l.index(String(m["id"]))
+		if i < 0 {
+			return false
+		}
+		if subject := String(m["subject"]); subject != "" {
+			l.items[i].content = subject
+		}
+		if status := String(m["status"]); status != "" {
+			l.items[i].status = claudeTodoStatus(status)
+		}
+		if form := String(m["activeForm"]); form != "" {
+			l.items[i].activeForm = form
+		}
+		return true
+	}
+	return false
+}
+
+func (l *claudeTodoList) index(id string) int {
+	if id == "" {
+		return -1
+	}
+	for i, t := range l.items {
+		if t.id == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// list is the items as the todoList item carries them (TodoWrite's shape).
+func (l *claudeTodoList) list() []any {
+	out := make([]any, 0, len(l.items))
+	for _, t := range l.items {
+		m := map[string]any{"content": t.content, "status": t.status}
+		if t.activeForm != "" {
+			m["activeForm"] = t.activeForm
+		}
+		if t.id != "" {
+			m["id"] = t.id
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// claudeTodoStatus is a todo status in TodoWrite's words.
+func claudeTodoStatus(s string) string {
+	switch s {
+	case "completed", "done":
+		return "completed"
+	case "in_progress", "active":
+		return "in_progress"
+	}
+	return "pending"
 }
 
 const (
@@ -37,29 +284,45 @@ func claudeToolItem(id string, t claudeTool, result map[string]any, structured a
 			status = "failed"
 		}
 		output = claudeResultText(result["content"])
+		if t.name == "TaskOutput" {
+			// The task's output alone, not the tags the model reads it in.
+			if _, out, status := claudeTaskOutput(result, structured); status != "" {
+				output = out
+			}
+		}
 	}
 	in := t.input
+	// A subagent's item names its Agent call; a background task's says so.
+	mark := func(item map[string]any) map[string]any {
+		if t.parent != "" {
+			item["parentId"] = t.parent
+		}
+		if t.background {
+			item["background"] = true
+		}
+		return item
+	}
 	switch {
 	case t.name == "Bash":
 		item := map[string]any{"id": id, "type": "commandExecution", "tool": "Bash", "command": String(in["command"]), "status": status, "aggregatedOutput": output}
 		if d := String(in["description"]); d != "" {
 			item["description"] = d
 		}
-		return item
+		return mark(item)
 	case t.name == "Edit" || t.name == "MultiEdit" || t.name == "Write" || t.name == "NotebookEdit":
-		return map[string]any{"id": id, "type": "fileChange", "tool": t.name, "status": status, "changes": []any{claudeFileChange(t, structured)}, "output": output}
+		return mark(map[string]any{"id": id, "type": "fileChange", "tool": t.name, "status": status, "changes": []any{claudeFileChange(t, structured)}, "output": output})
 	case strings.HasPrefix(t.name, "mcp__"):
 		server, tool := claudeMCPName(t.name)
 		item := map[string]any{"id": id, "type": "mcpToolCall", "server": server, "tool": tool, "arguments": in, "status": status}
 		if result != nil {
 			item["result"] = map[string]any{"content": []any{map[string]any{"type": "text", "text": output}}, "isError": status == "failed"}
 		}
-		return item
+		return mark(item)
 	case t.name == "WebSearch":
-		return map[string]any{"id": id, "type": "webSearch", "tool": t.name, "query": String(in["query"]), "status": status, "output": output}
+		return mark(map[string]any{"id": id, "type": "webSearch", "tool": t.name, "query": String(in["query"]), "status": status, "output": output})
 	}
 	kind, title, paths, query := claudeToolTitle(t)
-	item := map[string]any{"id": id, "type": "toolCall", "tool": t.name, "kind": kind, "title": title, "status": status, "output": output, "input": claudeToolInput(in)}
+	item := mark(map[string]any{"id": id, "type": "toolCall", "tool": t.name, "kind": kind, "title": title, "status": status, "output": output, "input": claudeToolInput(in)})
 	if len(paths) > 0 {
 		list := make([]any, 0, len(paths))
 		for _, p := range paths {
@@ -134,6 +397,15 @@ func claudeToolTitle(t claudeTool) (kind, title string, paths []string, query st
 	case "ToolSearch":
 		query = String(in["query"])
 		return "other", "ToolSearch " + claudeQuote(query), nil, query
+	case "TaskOutput", "TaskStop", "Monitor":
+		// Waiting on, reading or stopping a background task: named by the
+		// task's description when the CLI announced it, else by its id.
+		task := claudeOr(t.taskTitle, String(in["task_id"]))
+		verb := map[string]string{"TaskOutput": "Task output", "TaskStop": "Stop task", "Monitor": "Monitor"}[name]
+		if name == "Monitor" && task == "" {
+			task = claudeBrief(in)
+		}
+		return "other", strings.TrimSpace(verb + ": " + task), nil, ""
 	case "TodoWrite":
 		return "other", fmt.Sprintf("Update todos (%d)", len(Array(in["todos"]))), nil, ""
 	case "AskUserQuestion":

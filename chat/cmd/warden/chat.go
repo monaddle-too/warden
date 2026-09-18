@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -202,7 +203,7 @@ func (c *cli) chat(args []string) error {
 		return nil
 	}
 	// Interactive.
-	app := &tui.App{Client: client, Provider: *provider, OpenURL: openBrowser, Clipboard: copyToClipboard}
+	app := &tui.App{Client: client, Provider: *provider, OpenURL: openBrowser, Clipboard: copyToClipboard, HistoryDir: filepath.Join(cfg.Paths.State, "tui", "history")}
 	if url, err := launchURL(cfg.OwnerTokenFile(), time.Now()); err == nil {
 		if cfg.Auth.Mode == "owner" && cfg.Auth.PublicURL != "" {
 			url, _ = throughEdge(url, cfg.Auth.PublicURL)
