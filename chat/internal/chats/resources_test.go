@@ -26,8 +26,9 @@ type sizeWorker struct {
 	ops     []string
 	resized []sandbox.Resources
 	// inPlaceRefused answers the first resize as a live runner whose
-	// cluster could not apply it under the run (GKE Sandbox's gVisor); a
-	// resize after a stop succeeds, as the runner's fallback does.
+	// cluster could not apply it under the run (GKE Sandbox's gVisor); the
+	// resize retried once the run is gone succeeds, as the runner's
+	// fallback (its own stop and a new generation) does.
 	inPlaceRefused bool
 }
 
@@ -39,7 +40,7 @@ func (w *sizeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 	case "health":
 		return sandbox.Response{Limits: w.limits}, nil
 	case "resize":
-		if w.inPlaceRefused && !slices.Contains(w.ops, "stop") {
+		if w.inPlaceRefused && !slices.Contains(w.ops[:len(w.ops)-1], "resize") {
 			return sandbox.Response{}, fmt.Errorf("%w: not implemented", sandbox.ErrResizeRestart)
 		}
 		w.resized = append(w.resized, *r.Resources)
@@ -260,7 +261,8 @@ func TestResourceGrantLiveAndRestarting(t *testing.T) {
 
 	// A live platform whose cluster refuses the in-place resize under the
 	// run (the runner answers ErrResizeRestart): the grant takes the
-	// restarting path, stop then resize then Warden's note.
+	// restarting path, the chat's turn stopped, the resize retried (the
+	// runner restarts the sandbox itself), then Warden's note.
 	e3, w3 := sizeEngine(t, live)
 	w3.inPlaceRefused = true
 	id3, _ := e3.Create("Agent", "", "", nil)
@@ -287,8 +289,7 @@ func TestResourceGrantLiveAndRestarting(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	ops, resized = w3.snapshot()
-	joined = strings.Join(ops, " ")
-	if len(resized) != 1 || resized[0].MemoryMB != 4096 || strings.Index(joined, "stop") > strings.LastIndex(joined, "resize") {
+	if len(resized) != 1 || resized[0].MemoryMB != 4096 || slices.Contains(ops, "stop") || slices.Contains(ops, "cancel") {
 		t.Fatalf("runner ops %v resized %v", ops, resized)
 	}
 }

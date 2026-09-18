@@ -149,6 +149,17 @@ func TestGrantRequestsBecomeApprovalsAndResolve(t *testing.T) {
 	if len(e.Store.Snapshot().chat(c.ID).Approvals) != before {
 		t.Fatal("invalid request became an approval")
 	}
+	// GitHub is brokered, not firewalled: a network grant for it is refused
+	// with the right tool named, before the owner sees anything.
+	for _, host := range []string{"github.com", "API.github.com", "codeload.github.com"} {
+		err := e.requestGrant(c, nil, agent.Frame{ID: json.RawMessage(`1`), Params: map[string]any{"tool": "request_network_access", "arguments": map[string]any{"host": host, "reason": "git clone"}}})
+		if err == nil || !strings.Contains(err.Error(), "request_repository_access") {
+			t.Fatalf("%s: %v", host, err)
+		}
+	}
+	if len(e.Store.Snapshot().chat(c.ID).Approvals) != before {
+		t.Fatal("GitHub network request became an approval")
+	}
 	// Host directories: refused unless local mode; then a worker operation.
 	_ = e.requestGrant(c, nil, agent.Frame{ID: json.RawMessage(`1`), Params: map[string]any{"tool": "request_host_directory", "arguments": map[string]any{"path": "/tmp/x", "reason": "r"}}})
 	if len(e.Store.Snapshot().chat(c.ID).Approvals) != before {

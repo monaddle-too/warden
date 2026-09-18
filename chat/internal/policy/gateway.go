@@ -807,6 +807,12 @@ func (f *flow) guardRequest() bool {
 		}
 		var git *GitInspection
 		if host == "github.com" && GitRouteFor(f.method, f.path) != nil {
+			// git gzips larger RPC bodies; inspection and the upstream
+			// request both see the inflated form.
+			filtered, f.body, err = GitDecodeBody(filtered, f.body, requestInspectionLimit)
+			if err != nil {
+				return fail(valueErr(err.Error()))
+			}
 			git, err = GitInspect(f.method, f.path, filtered, f.body)
 			if err != nil {
 				return fail(valueErr(err.Error()))

@@ -31,10 +31,15 @@ type Enforcement interface {
 }
 
 type BrokerConfig struct {
-	CACertificate     string `json:"caCertificate,omitempty"`
-	Provider          string `json:"provider,omitempty"`
-	Model             string `json:"-"`
-	ThreadID          string `json:"-"`
+	CACertificate string `json:"caCertificate,omitempty"`
+	Provider      string `json:"provider,omitempty"`
+	Model         string `json:"-"`
+	ThreadID      string `json:"-"`
+	// ForkSession resumes ThreadID as a copy (a forked chat's first run);
+	// OutputStyle is the Claude output style to launch with (both from
+	// the stream request, never from the policy service).
+	ForkSession       bool   `json:"-"`
+	OutputStyle       string `json:"-"`
 	DocumentBaseURL   string `json:"documentBaseURL,omitempty"`
 	APIKeyPlaceholder string `json:"apiKeyPlaceholder"`
 	ProviderBaseURL   string `json:"providerBaseURL"`

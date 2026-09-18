@@ -174,8 +174,7 @@ func (e *Engine) StopEnvironment(ctx context.Context, id string) error {
 		return nil
 	}
 	e.releaseSandbox(ctx, id, "")
-	_, err := e.Worker.Call(ctx, request(ran, "stop"))
-	return err
+	return e.stopSandbox(ctx, ran)
 }
 
 // StartEnvironment brings a stopped workspace's sandbox back without a
@@ -198,18 +197,22 @@ func (e *Engine) StartEnvironment(ctx context.Context, id string) error {
 	return err
 }
 
-// stopChats ends every running chat on the workspace (the agent's session
-// and any run in flight) and waits for them to settle: the owner asked
-// for the workspace to stop or change, and a chat that is merely resident
-// between turns is not worth a refusal. A chat stopping already is waited
-// for. Stop on the chat refuses while a sibling runs, so the chats are
-// stopped one at a time.
+// stopChats ends every running chat on the workspace (the agent's turn,
+// then its session) and waits for them to settle: the owner asked for the
+// workspace to stop or change, and a chat that is merely resident between
+// turns is not worth a refusal. A chat stopping already is waited for.
+// Stop on the chat refuses while a sibling runs, so the chats are stopped
+// one at a time. Stop alone leaves the session resident for the next
+// message; here the sandbox is about to go, so the sessions end too.
 func (e *Engine) stopChats(ctx context.Context, id string) error {
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		chats := e.Store.Snapshot().environmentChats(id)
 		c := busy(chats)
 		if c == nil {
+			for _, c := range chats {
+				e.endSession(ctx, c.ID)
+			}
 			return nil
 		}
 		if c.Status != "stopping" {

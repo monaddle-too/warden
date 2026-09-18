@@ -54,14 +54,25 @@ type Request struct {
 	Port         int    `json:"port,omitempty"`
 	// Namespace, Pod, Container, Tail and Previous select pod logs
 	// (cluster.logs).
-	Namespace       string   `json:"namespace,omitempty"`
-	Pod             string   `json:"pod,omitempty"`
-	Container       string   `json:"container,omitempty"`
-	Tail            int      `json:"tail,omitempty"`
-	Previous        bool     `json:"previous,omitempty"`
-	Path            string   `json:"path,omitempty"`
-	Title           string   `json:"title,omitempty"`
-	NewSession      bool     `json:"newSession,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Pod       string `json:"pod,omitempty"`
+	Container string `json:"container,omitempty"`
+	Tail      int    `json:"tail,omitempty"`
+	Previous  bool   `json:"previous,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Title     string `json:"title,omitempty"`
+	// NewSession on a prepare drops the chat's recorded agent thread, so
+	// the next stream starts a session instead of resuming one.
+	NewSession bool `json:"newSession,omitempty"`
+	// ForkSession, with ThreadID, makes a stream resume that thread as a
+	// copy (Claude Code's --fork-session): the agent reports a new session
+	// of its own, which the chat then records. On a prepare it drops the
+	// binding's thread instead of recording ThreadID, which belongs to the
+	// chat forked from (chats/fork.go).
+	ForkSession bool `json:"forkSession,omitempty"`
+	// OutputStyle is the Claude output style the stream launches with
+	// (chats/style.go); "" is the CLI's default.
+	OutputStyle     string   `json:"outputStyle,omitempty"`
 	BundleSize      int64    `json:"bundleSize,omitempty"`
 	RemoteHead      string   `json:"remoteHead,omitempty"`
 	PublicationHead string   `json:"publicationHead,omitempty"`
@@ -80,10 +91,29 @@ type Request struct {
 	// Resources is the size a fresh workspace is created with (bind-chat,
 	// prepare) or resized to (resize); nil leaves the sandbox's own.
 	Resources *Resources `json:"resources,omitempty"`
-	// Bytes is the content an attachment-write puts into the sandbox.
+	// Bytes is the content an attachment-write puts into the sandbox, or
+	// the note a memory-append adds to CLAUDE.md.
 	Bytes []byte `json:"bytes,omitempty"`
+	// Command is the shell command line an exec runs in the workspace.
+	Command string `json:"command,omitempty"`
+	// Instructions is the participants' standing instructions a stream
+	// appends to the agent's system prompt (memory.go: one block per
+	// person, assembled by the chat service); "" appends nothing.
+	Instructions string `json:"instructions,omitempty"`
+	// Scope says which memory location a memory-write's Directory names:
+	// "workspace" (CLAUDE.md, AGENTS.md, .claude/rules) or "auto" (the
+	// CLI's auto-memory directory); memory-list takes the auto-memory
+	// directory the CLI reported in Path, when the chat knows it.
+	Scope string `json:"scope,omitempty"`
 }
 type Response struct {
+	// Checkpoint is a checkpoint just taken; Checkpoints the sandbox's
+	// records; Restore what a restore changed; Changes a workspace diff
+	// (checkpoint.go).
+	Checkpoint        *Checkpoint            `json:"checkpoint,omitempty"`
+	Checkpoints       []Checkpoint           `json:"checkpoints,omitempty"`
+	Restore           *WorkspaceRestore      `json:"restore,omitempty"`
+	Changes           *WorkspaceChanges      `json:"changes,omitempty"`
 	PublishPlan       *RepositoryPublishPlan `json:"publishPlan,omitempty"`
 	Review            *RepositoryReview      `json:"review,omitempty"`
 	Available         bool                   `json:"available,omitempty"`
@@ -116,6 +146,14 @@ type Response struct {
 	Bytes             []byte                 `json:"bytes,omitempty"`
 	// Paths is a "paths" completion: workspace paths matching the query.
 	Paths []string `json:"paths,omitempty"`
+	// Exec is what an "exec" came to: output, exit code, timeout.
+	Exec *ExecResult `json:"exec,omitempty"`
+	// Aside is what an "aside" (a side question to a forked copy of the
+	// chat's session) came to.
+	Aside *AsideResult `json:"aside,omitempty"`
+	// Memory is a "memory-list": the workspace's instruction and memory
+	// files with their contents.
+	Memory *MemoryListing `json:"memory,omitempty"`
 }
 type SandboxInfo struct {
 	ID          string `json:"id"`

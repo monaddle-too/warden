@@ -23,6 +23,7 @@ import type { PullRequestProposal } from "./PullRequestReview";
 import { resourcesLabel } from "./Approvals";
 import { SizeSelect, sameSize } from "./SizeSelect";
 import type { DocumentProposal } from "./DocumentReview";
+import { MemorySection } from "./MemorySection";
 
 const remaining = (value: number | null) => {
   if (!value) return "";
@@ -193,6 +194,7 @@ export function WorkspacePanel({
   onOpenPullRequest,
   onOpenDocumentReview,
   onChanged,
+  onChanges,
   limits,
 }: {
   chat: Chat;
@@ -208,6 +210,9 @@ export function WorkspacePanel({
   onOpenPullRequest: (id: string) => void;
   onOpenDocumentReview?: (id: string) => void;
   onChanged: () => void;
+  /* Opens the session diff: the workspace's changes since the chat began
+     (rewind.ts). */
+  onChanges?: () => void;
 }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -503,6 +508,24 @@ export function WorkspacePanel({
           ))}
         </ul>
       </section>
+      {onChanges && !ws?.deleted && (
+        <section className="workspace-section">
+          <h2>
+            Changes
+            <button
+              className="ghost"
+              title="What changed in the workspace since this chat began"
+              onClick={onChanges}
+            >
+              View…
+            </button>
+          </h2>
+          <p className="muted">
+            The workspace against the checkpoint taken before this chat's first
+            message, or its last code rewind.
+          </p>
+        </section>
+      )}
       <section className="workspace-section">
         <h2>
           Documents
@@ -562,6 +585,7 @@ export function WorkspacePanel({
           ))}
         </ul>
       </section>
+      <MemorySection chat={chat} disabled={!!ws?.deleted} />
       {ws && (
         <section className="workspace-section">
           <details

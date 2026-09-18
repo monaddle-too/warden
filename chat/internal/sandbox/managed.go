@@ -44,11 +44,14 @@ type managedSandbox struct {
 	// paths is the guest layout the last guest report described (the
 	// manifest's paths object, or the SBX template's defaults); it is
 	// taken again at every prepare, so it is not persisted.
-	paths          GuestPaths
-	LastActivity   time.Time
-	Grant          GrantContext
-	Active         *managedRun
-	Reviewing      bool `json:"-"`
+	paths        GuestPaths
+	LastActivity time.Time
+	Grant        GrantContext
+	Active       *managedRun
+	// Checkpoints are the workspace snapshots taken before user turns,
+	// oldest first (checkpoint.go).
+	Checkpoints    []Checkpoint `json:",omitempty"`
+	Reviewing      bool         `json:"-"`
 	residency      io.Closer
 	previewAuditAt time.Time
 }
@@ -58,6 +61,10 @@ type managedRun struct {
 	Expires   time.Time
 	Streaming bool
 	cancel    context.CancelFunc
+	// broker is the streaming run's brokered session, for a side question
+	// asked of a copy of the agent's session while the run is up
+	// (aside.go); never persisted.
+	broker BrokerConfig
 }
 type chatBinding struct{ ID, ProjectID, SandboxID, RolloutPath, ThreadID string }
 type managedState struct {
@@ -589,7 +596,15 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 	}
 	s.Active.Expires = w.now().Add(60 * time.Second)
 
-	if r.ThreadID != "" {
+	if r.NewSession || r.ForkSession {
+		// The chat dropped its thread (a conversation rewind the agent
+		// could not apply): the next stream starts fresh. A forked chat's
+		// ThreadID is the source chat's session, which its stream resumes
+		// as a copy; the session this chat gets is the one the agent then
+		// reports, recorded at the next prepare.
+		c.ThreadID, c.RolloutPath = "", ""
+	}
+	if r.ThreadID != "" && !r.ForkSession {
 		if !validIdentity(r.ThreadID) {
 			return fail(errors.New("invalid provider thread ID"))
 		}
@@ -643,6 +658,20 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	if r.Operation == "pod" {
 		// The pod read is a cluster call; it never holds the registry.
 		return w.snapshotOp(ctx, r)
+	}
+	switch r.Operation {
+	case "exec":
+		// A person's own command: resolved under the lock, run without it.
+		return w.execCommand(ctx, r)
+	case "memory-append":
+		return w.appendMemory(ctx, r)
+	case "aside":
+		// A side question to a copy of the running agent session.
+		return w.aside(ctx, r)
+	case "memory-list":
+		return w.listMemory(ctx, r)
+	case "memory-write":
+		return w.writeMemory(ctx, r)
 	}
 	if r.Operation == "status" {
 		// The read the workspace panel polls: never behind a creation.
@@ -733,6 +762,8 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 			return Response{}, err
 		}
 		return w.writeAttachmentLocked(ctx, s, r)
+	case "checkpoint", "checkpoints", "restore", "diff":
+		return w.checkpointOp(ctx, s, r)
 	case "host.import", "host.export":
 		// Owner-approved copy of a host directory into the sandbox, or of
 		// the sandbox's copy back over it (local installs only; the chat
@@ -785,6 +816,11 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	slots := w.ordinarySlots
 	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" {
 		slots = w.controlSlots
+	}
+	if r.Operation == "exec" {
+		// A person's command may run for a minute; it never takes a slot
+		// from the sandbox operations.
+		slots = w.execSlots
 	}
 	select {
 	case slots <- struct{}{}:
@@ -873,10 +909,21 @@ func (w *Worker) streamManaged(parent context.Context, conn net.Conn, reader *bu
 		broker.Provider = s.Grant.Provider
 		broker.Model = r.Model
 		broker.ThreadID = w.managed.Chats[r.ChatID].ThreadID
-		if r.Provider != s.Grant.Provider || ValidateAgent(r.Provider, r.Model) != nil {
+		broker.OutputStyle = r.OutputStyle
+		if r.ForkSession && r.ThreadID != "" {
+			// A forked chat's first run: the source chat's session,
+			// resumed as a copy (its own binding holds no thread yet).
+			broker.ThreadID, broker.ForkSession = r.ThreadID, true
+		}
+		switch {
+		case r.Provider != s.Grant.Provider || ValidateAgent(r.Provider, r.Model) != nil:
 			err = errors.New("agent selection mismatch")
-		} else {
-			stream, err = w.launchLocked(ctx, s, broker)
+		case broker.ForkSession && !validIdentity(broker.ThreadID):
+			err = errors.New("invalid provider thread ID")
+		case !ValidOutputStyle(broker.OutputStyle):
+			err = errors.New("invalid output style")
+		default:
+			stream, err = w.launchLocked(ctx, s, broker, r.Instructions)
 		}
 	}
 	if err != nil {
@@ -902,6 +949,7 @@ func (w *Worker) streamManaged(parent context.Context, conn net.Conn, reader *bu
 	var enforcementFailed atomic.Bool
 	s.Active.Streaming = true
 	s.Active.cancel = cancel
+	s.Active.broker = broker
 	s.Active.Expires = w.now().Add(60 * time.Second)
 	res := w.statusLocked(r)
 	res.APIKeyPlaceholder = broker.APIKeyPlaceholder
@@ -1302,7 +1350,7 @@ func (w *Worker) execOK(ctx context.Context, name, dir string, args ...string) (
 // driver installs it once per guest, and again only after a rotation or a
 // loss. The fingerprint is recorded once the launch succeeded, since the
 // driver delivers trust as part of it.
-func (w *Worker) launchLocked(ctx context.Context, s *managedSandbox, broker BrokerConfig) (io.ReadWriteCloser, error) {
+func (w *Worker) launchLocked(ctx context.Context, s *managedSandbox, broker BrokerConfig, instructions ...string) (io.ReadWriteCloser, error) {
 	fingerprint := ""
 	trusted := true
 	if broker.CACertificate != "" {
@@ -1312,7 +1360,7 @@ func (w *Worker) launchLocked(ctx context.Context, s *managedSandbox, broker Bro
 			s.ProxyCA = ""
 		}
 	}
-	stream, err := w.Runtime.Stream(ctx, s.RuntimeName, RunSpec{Directory: s.Directory, Broker: broker, Paths: s.paths.orDefaults(), TrustsCA: trusted})
+	stream, err := w.Runtime.Stream(ctx, s.RuntimeName, RunSpec{Directory: s.Directory, Broker: broker, Paths: s.paths.orDefaults(), TrustsCA: trusted, Instructions: strings.Join(instructions, "\n\n")})
 	if err != nil {
 		return nil, err
 	}

@@ -1,5 +1,11 @@
 import { saveFile } from "./export";
-import type { Attachment, State } from "./types";
+import type {
+  Checkpoint,
+  RewindResult,
+  RewindWhat,
+  SessionChanges,
+} from "./rewind";
+import type { Attachment, Entry, State } from "./types";
 const key = "warden-chat-session";
 let token = "";
 try {
@@ -200,4 +206,74 @@ export async function workspacePaths(
   return Array.isArray(result.paths)
     ? result.paths.filter((p): p is string => typeof p === "string")
     : [];
+}
+
+// Checkpoints, rewind and the session diff (rewind.ts). A rewind names the
+// message by its ID (or its turn's) and what to take back: the workspace,
+// the conversation, or both.
+export async function chatCheckpoints(chatID: string): Promise<Checkpoint[]> {
+  const result = await api<{ checkpoints?: unknown }>(
+    `chats/${encodeURIComponent(chatID)}/checkpoints`,
+  );
+  return Array.isArray(result.checkpoints)
+    ? (result.checkpoints as Checkpoint[])
+    : [];
+}
+
+export function rewindChat(
+  chatID: string,
+  turnID: string,
+  what: RewindWhat,
+): Promise<RewindResult> {
+  return api<RewindResult>(`chats/${encodeURIComponent(chatID)}/rewind`, {
+    turnID,
+    what,
+  });
+}
+
+/* A queued message out of the queue (its sender or the owner may); the
+   entry comes back for the composer (queue.ts). */
+export function withdrawMessage(chatID: string, id: string): Promise<Entry> {
+  return api<Entry>(`chats/${encodeURIComponent(chatID)}/withdraw`, { id });
+}
+
+/* Lets a held queue go: the queued messages send in order. */
+export function sendQueued(chatID: string): Promise<unknown> {
+  return api(`chats/${encodeURIComponent(chatID)}/send-queued`, {});
+}
+
+/* A sibling chat copied from this one up to `turnID` (a user message, or
+   its turn); the whole transcript when unset. */
+export function forkChat(chatID: string, turnID?: string): Promise<ForkResult> {
+  return api<ForkResult>(`chats/${encodeURIComponent(chatID)}/fork`, {
+    turnID: turnID || "",
+  });
+}
+export type ForkResult = {
+  id: string;
+  title: string;
+  session: "forked" | "fresh" | "none";
+};
+
+/* A side question answered from a copy of the chat's session; the answer
+   lands as an aside entry over the event stream too. */
+export function askAside(chatID: string, text: string): Promise<AsideResult> {
+  return api<AsideResult>(`chats/${encodeURIComponent(chatID)}/aside`, {
+    text,
+  });
+}
+export type AsideResult = {
+  id: string;
+  text?: string;
+  error?: string;
+  costUSD?: number;
+};
+
+/* The output style a Claude chat launches with next ("" for the default). */
+export function setOutputStyle(chatID: string, style: string) {
+  return api(`chats/${encodeURIComponent(chatID)}/style`, { style });
+}
+
+export function sessionChanges(chatID: string): Promise<SessionChanges> {
+  return api<SessionChanges>(`chats/${encodeURIComponent(chatID)}/diff`);
 }

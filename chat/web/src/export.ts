@@ -2,6 +2,7 @@
    wrote, or as JSON for another tool. Everything here is string work on
    `chat.conversation`; nothing is fetched and nothing is rendered, so an
    agent's text goes into the file exactly as it was written. */
+import { compactionText } from "./context";
 import { formatSize } from "./attachments";
 import { footerText, turnFooters } from "./turns";
 import type { Chat, Entry } from "./types";
@@ -109,6 +110,29 @@ function entryMarkdown(
     case "image":
       lines.push(`_Image${entry.text ? `: ${entry.text}` : ""}_`, "");
       break;
+    case "compaction":
+      lines.push(
+        `### ${compactionText(entry.compaction ?? { status: "completed" })}`,
+        "",
+      );
+      if (entry.detail)
+        lines.push(`> ${entry.detail.split("\n").join("\n> ")}`, "");
+      break;
+    case "aside": {
+      // A side question and its answer, never part of the conversation.
+      lines.push(
+        `### Side question — ${senderLabel(entry.sender)}, ${time(entry.createdAt)}`,
+        "",
+        entry.text,
+        "",
+      );
+      const a = entry.aside;
+      if (a?.status === "failed")
+        lines.push(`_Could not answer${a.error ? `: ${a.error}` : ""}_`, "");
+      else if (entry.detail)
+        lines.push(`> ${entry.detail.split("\n").join("\n> ")}`, "");
+      break;
+    }
     default:
       lines.push(`> ${entry.text.split("\n").join("\n> ")}`, "");
   }

@@ -280,7 +280,7 @@ type GoogleSignIn struct {
 // Providers are the accounts Warden brokers for agents.
 type Providers struct {
 	Codex  *AuthFile `json:"codex,omitempty"`
-	Claude *AuthFile `json:"claude,omitempty"`
+	Claude *Claude   `json:"claude,omitempty"`
 	Google *Google   `json:"google,omitempty"`
 	GitHub *GitHub   `json:"github,omitempty"`
 }
@@ -290,6 +290,29 @@ type Providers struct {
 type AuthFile struct {
 	AuthFile string `json:"authFile,omitempty"`
 	Secret   string `json:"secret,omitempty"`
+}
+
+// Claude is the Claude login (as AuthFile) plus the session features the
+// operator may let chats use. Both cost more than the defaults, so both
+// are off unless set: fast mode (Claude Code's faster, pricier Opus
+// serving) and the 1M-context model variants (`sonnet[1m]`, `opus[1m]`).
+type Claude struct {
+	AuthFile         string `json:"authFile,omitempty"`
+	Secret           string `json:"secret,omitempty"`
+	AllowFastMode    bool   `json:"allowFastMode,omitempty"`
+	AllowLongContext bool   `json:"allowLongContext,omitempty"`
+}
+
+// logins are the two agent logins as one shape, for the validation that
+// applies to both.
+func (p Providers) logins() map[string]*AuthFile {
+	m := map[string]*AuthFile{"codex": p.Codex}
+	if p.Claude != nil {
+		m["claude"] = &AuthFile{AuthFile: p.Claude.AuthFile, Secret: p.Claude.Secret}
+	} else {
+		m["claude"] = nil
+	}
+	return m
 }
 
 // Google selects the Docs OAuth client: "builtin" or a path to an operator
@@ -326,7 +349,7 @@ func Defaults(state string) Config {
 	provider := filepath.Join(state, "provider")
 	c.Providers = Providers{
 		Codex:  &AuthFile{AuthFile: filepath.Join(provider, "auth.json")},
-		Claude: &AuthFile{AuthFile: filepath.Join(provider, "claude.json")},
+		Claude: &Claude{AuthFile: filepath.Join(provider, "claude.json")},
 		Google: &Google{DocsClient: BuiltinGoogleClient},
 		GitHub: &GitHub{AuthFile: filepath.Join(provider, "github.json")},
 	}
@@ -792,7 +815,7 @@ func (c Config) validateKind() error {
 		if c.Kubernetes != nil {
 			return errors.New("kubernetes.* is only used with runtime.kind \"kubernetes\"")
 		}
-		for name, p := range map[string]*AuthFile{"codex": c.Providers.Codex, "claude": c.Providers.Claude} {
+		for name, p := range c.Providers.logins() {
 			if p != nil && p.Secret != "" {
 				return fmt.Errorf("providers.%s.secret is only used with runtime.kind \"kubernetes\"; the sbx shapes use authFile", name)
 			}
@@ -840,7 +863,7 @@ func (c Config) validateKind() error {
 				return fmt.Errorf("kubernetes.tolerations[%d].effect must be NoSchedule, PreferNoSchedule or NoExecute", i)
 			}
 		}
-		for name, p := range map[string]*AuthFile{"codex": c.Providers.Codex, "claude": c.Providers.Claude} {
+		for name, p := range c.Providers.logins() {
 			if p == nil {
 				continue
 			}

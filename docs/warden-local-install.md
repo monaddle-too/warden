@@ -421,10 +421,15 @@ answer and who gave it land in the workspace's Access history.
 
 - **Network access** (`request_network_access`): one public host over
   HTTP/HTTPS for a bounded time, this sandbox only, no credential attached.
-  Useful in restricted mode when an install or download is refused.
+  Useful in restricted mode when an install or download is refused. Never
+  for `github.com`: that request is refused with a pointer to repository
+  access, because a refused clone means the repository is not shared, not
+  that the network is blocked.
 - **Repository access** (`request_repository_access`): share a repository
   with the workspace, or add read categories (code, issues, pull requests)
-  to one already shared.
+  to one already shared. This is how an agent clones a repository: it asks
+  for code access, you approve, and `git clone` over HTTPS then works
+  through the sandbox proxy with your credential attached by Warden.
 - **Small GitHub writes** (`github_write`): a comment on an issue or pull
   request, a new issue, or labels. The card shows the exact text; Warden
   posts it with your credential. Anything larger is a pull request

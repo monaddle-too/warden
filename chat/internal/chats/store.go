@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"warden/chat/internal/conversation"
 	"warden/chat/internal/sandbox"
@@ -32,19 +33,111 @@ type Chat struct {
 	// whoever started its first chat; nil is the runner's default. The
 	// runner's record is the current size (a grant or the owner may have
 	// changed it since), which Environment.Resources reports.
-	Resources    *sandbox.Resources        `json:"resources,omitempty"`
+	Resources *sandbox.Resources `json:"resources,omitempty"`
+	// Mode is the chat's permission mode (permissions.go): auto when
+	// empty. Allowed are its allow-always rules, in the order given.
+	Mode    string           `json:"mode,omitempty"`
+	Allowed []PermissionRule `json:"allowed,omitempty"`
+	// Thinking, Effort and Fast are the chat's session settings
+	// (settings.go): the thinking budget ("" the agent's default, "off",
+	// or a number of tokens), the effort level ("" the model's default)
+	// and fast mode. Applied to a live Claude session at once and to every
+	// session at its start.
+	Thinking     string                    `json:"thinking,omitempty"`
+	Effort       string                    `json:"effort,omitempty"`
+	Fast         bool                      `json:"fast,omitempty"`
 	Status       string                    `json:"status"`
 	RunID        string                    `json:"runID"`
 	Error        string                    `json:"error,omitempty"`
 	Archived     bool                      `json:"archived"`
 	Conversation conversation.Conversation `json:"conversation"`
 	Approvals    []Approval                `json:"approvals"`
+	// Commands is what the agent's session offers as slash commands (Claude
+	// Code's built-ins and the workspace's own commands and skills, from its
+	// `system/init`), for the composer's "/" menu. A message "/name …" is
+	// sent as text and the agent expands it. Empty for Codex.
+	Commands []Command `json:"commands,omitempty"`
+	// Session is what the agent reported when its session started: the
+	// model it resolved, its permission mode and output style. Nil for
+	// Codex.
+	Session *Session `json:"session,omitempty"`
+	// Creator is who created the chat (the requester the edge identified,
+	// or the owner); their standing instructions reach the agent with the
+	// senders' (instructions.go). Nil on a chat from before it was kept.
+	Creator *conversation.Actor `json:"creator,omitempty"`
 	// Typing is who is composing a message right now. It is filled in for
 	// clients by Engine.View and never stored.
 	Typing []Typist `json:"typing,omitempty"`
 	// Startup is where the chat's start is while its message waits for the
 	// agent (startup.go); filled in by Engine.View, never stored.
 	Startup *Startup `json:"startup,omitempty"`
+	// DiffBase is the checkpoint the session diff is taken against: the
+	// chat's first, or the one its last code rewind restored (rewind.go).
+	DiffBase string `json:"diffBase,omitempty"`
+	// Rewind is a conversation rewind the agent's session has yet to
+	// apply, Recap the kept transcript the next message carries to a
+	// fresh session, NewSession that the next run starts one instead of
+	// resuming the recorded thread (rewind.go).
+	Rewind     *PendingRewind `json:"rewind,omitempty"`
+	Recap      string         `json:"recap,omitempty"`
+	NewSession bool           `json:"newSession,omitempty"`
+	// ForkSession marks a chat forked from another whose session (the
+	// ThreadID it carries) its first run resumes as a copy; cleared once
+	// the agent reports the copy's own session (fork.go).
+	ForkSession bool `json:"forkSession,omitempty"`
+	// OutputStyle is the Claude output style the chat's process launches
+	// with; "" is the CLI's default (style.go).
+	OutputStyle string `json:"outputStyle,omitempty"`
+}
+
+// Command is one slash command the agent's session offers.
+type Command struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// Session is the agent's own report of its session settings: the model
+// it resolved (the truth after a live model change), its permission mode,
+// output style and whether fast mode is serving ("on", "off", "cooldown").
+// AutoMemory is the auto-memory directory the agent's CLI reported for
+// the workspace (`memory_paths.auto`), which the memory view lists; ""
+// when not reported.
+type Session struct {
+	Model          string `json:"model,omitempty"`
+	PermissionMode string `json:"permissionMode,omitempty"`
+	OutputStyle    string `json:"outputStyle,omitempty"`
+	FastMode       string `json:"fastMode,omitempty"`
+	AutoMemory     string `json:"autoMemory,omitempty"`
+}
+
+// sessionStarted records what the agent sent with `thread/started`: the
+// commands its session offers and its settings. Codex's carries neither
+// and leaves the chat's as they were; Claude's arrives with every turn
+// (its `system/init`), so the list follows the workspace.
+func (c *Chat) sessionStarted(thread map[string]any) {
+	if list, ok := thread["commands"].([]any); ok {
+		c.Commands = []Command{}
+		for _, v := range list {
+			m, _ := v.(map[string]any)
+			name, _ := m["name"].(string)
+			if name == "" {
+				continue
+			}
+			description, _ := m["description"].(string)
+			c.Commands = append(c.Commands, Command{Name: name, Description: description})
+		}
+	}
+	model, _ := thread["model"].(string)
+	mode, _ := thread["permissionMode"].(string)
+	style, _ := thread["outputStyle"].(string)
+	fast, _ := thread["fastMode"].(string)
+	auto, _ := thread["autoMemory"].(string)
+	if len(auto) > 1024 || strings.ContainsAny(auto, "\x00\n\r") {
+		auto = ""
+	}
+	if model != "" || mode != "" || style != "" || auto != "" {
+		c.Session = &Session{Model: model, PermissionMode: mode, OutputStyle: style, FastMode: fast, AutoMemory: auto}
+	}
 }
 
 // Typist is one person composing a message in a chat.
@@ -58,6 +151,10 @@ type State struct {
 	Chats            []*Chat       `json:"chats"`
 	Ports            []PortBinding `json:"ports"`
 	DeletedSandboxes []string      `json:"deletedSandboxes,omitempty"`
+	// Instructions are each person's standing instructions for the agent,
+	// by principal (instructions.go). Never sent to clients as part of the
+	// state: a person reads their own through me/instructions.
+	Instructions map[string]*Instructions `json:"instructions,omitempty"`
 }
 type Store struct {
 	mu     sync.Mutex

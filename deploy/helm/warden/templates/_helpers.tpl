@@ -215,7 +215,14 @@ Compose file uses.
 {{- $_ = set $providers "codex" nil -}}
 {{- end -}}
 {{- if .Values.providers.claude.enabled -}}
-{{- $_ = set $providers "claude" (dict "secret" .Values.secrets.claude) -}}
+{{- $claude := dict "secret" .Values.secrets.claude -}}
+{{- if .Values.providers.claude.allowFastMode -}}
+{{- $_ = set $claude "allowFastMode" true -}}
+{{- end -}}
+{{- if .Values.providers.claude.allowLongContext -}}
+{{- $_ = set $claude "allowLongContext" true -}}
+{{- end -}}
+{{- $_ = set $providers "claude" $claude -}}
 {{- else -}}
 {{- $_ = set $providers "claude" nil -}}
 {{- end -}}
