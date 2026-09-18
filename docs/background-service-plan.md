@@ -103,3 +103,32 @@ start`/`stop`/`restart`/`status` drive the manager instead of a pid file.
 ## Progress log
 
 - 2026-09-18: plan written; worktree opened.
+- 2026-09-18: steps 1–7 implemented (`cmd/warden/svc.go`, `service.go`,
+  `install.go` step 9, `doctor.go`, `uninstall.go`, `start.go`
+  `--service`/`--foreground`, docs, feature map, `deploy-local.sh`).
+  Unit tests: unit rendering, the launchctl and systemctl command
+  sequences against recording runners, the install step (register, idempotent
+  re-run, upgrade restart, `--service=false`, no manager), the four commands
+  and `warden service install|uninstall`, the doctor check, uninstall
+  unregistering, log rotation. `TestMain` replaces the default manager so
+  no test reaches launchctl.
+- 2026-09-18: step 8, live on a cloned home `~/.warden-svc` (label
+  `com.monaddle.warden.warden-svc`, build of this branch): `service
+  install` registered and started the agent (the sbx daemon started under
+  launchd, four services up, `warden chat list` answered); `stop` left it
+  loaded with exit 0 and launchd did not restart it; `start` 1.8 s;
+  `restart` 1.8 s on a settled run, 10 s right after a start (launchd's
+  ThrottleInterval); `kill -9` of the launcher: launchd restarted it
+  within the interval and killed the orphaned services with the process
+  group (one launcher, four children afterwards); `install --upgrade`
+  with an older record restarted the service on the new revision; `doctor`
+  PASS; `service uninstall` then `start --detach` as the fallback; `service
+  install` again and `warden uninstall --keep-state` unregistered it. Two
+  fixes from the run: `awaitReady` does not trust "not running" in its
+  first 3 s (launchd reports the unit before spawning it), and the upgrade
+  restart captures the endpoint stamp before restarting. The owner's
+  `~/.warden` untouched; clone removed. Linux unit unverified (no Linux
+  host here), as the rest of the Linux path.
+- Remaining: merge, deploy to `~/.warden` and register the real service
+  (`warden install --upgrade` from the deployed release, or `warden service
+  install`).

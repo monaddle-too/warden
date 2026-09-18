@@ -86,19 +86,25 @@ Each sign-in is one owner-only file under `~/.warden/provider/`; only the
 policy service reads it, and the agent sees a placeholder. Google Docs is
 connected from the browser (Admin console → Sign in with Google).
 
-### 4. Run it
+### 4. Open it
+
+Install registered Warden as a service (a launchd agent on macOS, a
+systemd user unit on Linux) and started it, so it is already running and
+comes back at every login and after a crash:
 
 ```bash
-warden start --detach      # the four services in the background
 warden open                # the chat in your browser
 ```
 
-`warden doctor` checks every host and runtime invariant and prints the
-fix for anything that fails; run it when a chat says "unsupported SBX
-version" or "agent worker disconnected". `warden status` says what is
-running, `warden stop` stops it, `warden uninstall` removes everything
-install created. Without `--detach`, `warden start` runs in the
-foreground and Ctrl+C stops it.
+`warden status` says what is running, `warden stop` / `warden start` /
+`warden restart` drive the service, and `warden doctor` checks every
+host, runtime and service invariant and prints the fix for anything that
+fails (run it when a chat says "unsupported SBX version" or "agent worker
+disconnected"). `warden uninstall` removes everything install created,
+the service included. Logs are in `~/.warden/warden.log` and
+`~/.warden/warden-<service>.log`, rotated at 10 MiB. `warden install
+--service=false` skips the service; `warden start` then runs the stack in
+your terminal and `warden start --detach` in the background.
 
 The first message of a new chat takes longer than later ones: the runner
 boots a sandbox and copies the agent runtime into it.
@@ -118,9 +124,10 @@ warden chat send --wait 1 "Run the suite and tell me what fails"   # 1 = a numbe
 
 Run the install line again: it unpacks the newer release beside the old
 one, moves the `~/.warden/release` link, and `warden install` reports
-"already" for what exists. Rolling back is `ln -sfn` to the previous
-directory under `~/.warden/releases/`. Restart Warden afterwards
-(`warden stop && warden start --detach`).
+"already" for what exists and restarts the service on the new release
+(the service runs the launcher through that link). Rolling back is
+`ln -sfn` to the previous directory under `~/.warden/releases/` followed
+by `warden restart`.
 
 ## What is in the box
 
