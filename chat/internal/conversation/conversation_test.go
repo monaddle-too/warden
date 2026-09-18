@@ -227,7 +227,7 @@ func TestCompactionItemsAreDividers(t *testing.T) {
 	if e = c.Entries[1]; e.Role != "compaction" || e.Text != "Compaction failed" || e.Compaction.Status != "failed" || e.Compaction.Error != "API Error: refused" {
 		t.Fatalf("failed compaction: %+v %+v", e, e.Compaction)
 	}
-	if ctx := ContextFrom(map[string]any{"used": 42787.0, "window": 200000.0, "model": "claude-sonnet-5"}); ctx == nil || ctx.Used != 42787 || ctx.Window != 200000 || ctx.Model != "claude-sonnet-5" {
+	if ctx := ContextFrom(map[string]any{"used": 42787.0, "window": 200000.0, "threshold": 167000.0, "model": "claude-sonnet-5"}); ctx == nil || ctx.Used != 42787 || ctx.Window != 200000 || ctx.Threshold != 167000 || ctx.Model != "claude-sonnet-5" {
 		t.Fatalf("context: %+v", ctx)
 	}
 	if ContextFrom(map[string]any{}) != nil {

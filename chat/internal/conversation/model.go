@@ -22,19 +22,21 @@ type Conversation struct {
 
 // Context is the agent's context length against its window, in tokens:
 // Used is the prompt of the latest model call (its input, cache-read and
-// cache-written tokens), or the provider's estimate right after a
-// compaction; Window is the model's context window; Model the model the
-// agent reported it for.
+// cache-written tokens), or the agent's own account of it; Window is the
+// model's context window; Threshold is where the agent compacts on its
+// own (Claude Code keeps a buffer free below the window), 0 when not
+// reported; Model the model the agent reported it for.
 type Context struct {
-	Used   int64  `json:"used"`
-	Window int64  `json:"window"`
-	Model  string `json:"model,omitempty"`
+	Used      int64  `json:"used"`
+	Window    int64  `json:"window"`
+	Threshold int64  `json:"threshold,omitempty"`
+	Model     string `json:"model,omitempty"`
 }
 
 // ContextFrom reads a `thread/context/updated` notification's context.
 func ContextFrom(m map[string]any) *Context {
 	n := func(k string) int64 { f, _ := m[k].(float64); return int64(f) }
-	c := Context{Used: n("used"), Window: n("window")}
+	c := Context{Used: n("used"), Window: n("window"), Threshold: n("threshold")}
 	c.Model, _ = m["model"].(string)
 	if c.Used == 0 && c.Window == 0 {
 		return nil

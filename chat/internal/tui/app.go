@@ -842,15 +842,17 @@ func (a *App) refreshState(ctx context.Context) {
 	}
 }
 
-// providerCommands are the agent's own slash commands the menu offers for
-// a chat's provider until the chat reports its list (ChatCommands): sent
-// as text, the agent expands them.
+// providerCommands are the agent's own slash commands the menu knows for
+// a chat's provider: their argument and hint (the chat's reported list
+// carries only a description for the workspace's own), and the menu until
+// the chat has reported its list. Sent as text, the agent expands them.
 var providerCommands = map[string][]Command{
 	"claude": {{"compact", "[INSTRUCTIONS]", "replace the history with a summary; say what to keep"}},
 }
 
-// chatCommands lists the commands the chat itself offers: what the chat
-// reports through ChatCommands, else the provider's known ones.
+// chatCommands lists the commands the chat itself offers: what ChatCommands
+// says when set, else the chat's reported list (with the provider's
+// argument and hint where known), else the provider's known ones.
 func (a *App) chatCommands(c *Chat) []Command {
 	if c == nil {
 		return nil
@@ -858,7 +860,24 @@ func (a *App) chatCommands(c *Chat) []Command {
 	if a.ChatCommands != nil {
 		return a.ChatCommands(c)
 	}
-	return providerCommands[c.Provider]
+	known := providerCommands[c.Provider]
+	if len(c.Commands) == 0 {
+		return known
+	}
+	var out []Command
+	for _, ac := range c.Commands {
+		cmd := Command{Name: ac.Name, Hint: ac.Description}
+		for _, k := range known {
+			if k.Name == ac.Name {
+				cmd.Arg = k.Arg
+				if cmd.Hint == "" {
+					cmd.Hint = k.Hint
+				}
+			}
+		}
+		out = append(out, cmd)
+	}
+	return out
 }
 
 func (a *App) command(ctx context.Context, line string) {

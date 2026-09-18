@@ -71,9 +71,17 @@ type Compaction struct {
 // Context mirrors conversation.Context: what the agent's latest model call
 // was given against the model's window, in tokens.
 type Context struct {
-	Used   int64  `json:"used"`
-	Window int64  `json:"window"`
-	Model  string `json:"model"`
+	Used      int64  `json:"used"`
+	Window    int64  `json:"window"`
+	Threshold int64  `json:"threshold"` // where the agent compacts on its own; 0 when unknown
+	Model     string `json:"model"`
+}
+
+// AgentCommand is one slash command the agent's session offers
+// (chats.Command): sent as text, the agent expands it.
+type AgentCommand struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // Turn and Usage mirror conversation.Turn: what one agent turn took.
@@ -177,6 +185,9 @@ type Chat struct {
 	Archived     bool         `json:"archived"`
 	Conversation Conversation `json:"conversation"`
 	Approvals    []Approval   `json:"approvals"`
+	// Commands are the slash commands the agent's session offers (Claude
+	// Code's built-ins and the workspace's own), for the / menu.
+	Commands []AgentCommand `json:"commands"`
 	// Startup is where the chat's start is while its message waits for the
 	// agent: the stage and the runtime's detail.
 	Startup *struct {

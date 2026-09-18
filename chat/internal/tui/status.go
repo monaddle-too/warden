@@ -110,9 +110,10 @@ func TurnStats(c *Chat) string {
 }
 
 // ContextIndicator is how full the agent's context is, "ctx 43k/200k
-// (21%)": plain under 80 % of the window, yellow from there, red from
-// 95 % (the agent compacts on its own a little under the window). Empty
-// when the agent has reported none.
+// (21%)": plain until 80 % of the way to where the agent compacts on its
+// own (its threshold when it reports one, else the window), yellow from
+// there, red from 95 % (a compaction is imminent). Empty when the agent
+// has reported none.
 func ContextIndicator(c *Chat) string {
 	ctx := c.Conversation.Context
 	if ctx == nil || ctx.Used == 0 {
@@ -121,8 +122,12 @@ func ContextIndicator(c *Chat) string {
 	if ctx.Window <= 0 {
 		return "ctx " + FormatTokens(ctx.Used)
 	}
-	fraction := float64(ctx.Used) / float64(ctx.Window)
-	text := fmt.Sprintf("ctx %s/%s (%d%%)", FormatTokens(ctx.Used), FormatTokens(ctx.Window), int(math.Round(math.Min(1, fraction)*100)))
+	limit := ctx.Window
+	if ctx.Threshold > 0 && ctx.Threshold < limit {
+		limit = ctx.Threshold
+	}
+	fraction := float64(ctx.Used) / float64(limit)
+	text := fmt.Sprintf("ctx %s/%s (%d%%)", FormatTokens(ctx.Used), FormatTokens(ctx.Window), int(math.Round(math.Min(1, float64(ctx.Used)/float64(ctx.Window))*100)))
 	switch {
 	case fraction >= 0.95:
 		return red + text + reset

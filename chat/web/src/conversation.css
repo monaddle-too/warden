@@ -1176,3 +1176,13 @@ button.attachment-chip {
   margin-top: -4px;
   align-self: center;
 }
+.context-bar {
+  position: relative;
+}
+.context-threshold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-strong);
+}

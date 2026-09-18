@@ -22,13 +22,37 @@ describe("context meter", () => {
     expect(s.title).toContain("/compact");
     expect(contextSummary({ used: 171238, window: 200000 }).level).toBe("warn");
     expect(contextSummary({ used: 171238, window: 200000 }).title).toContain(
-      "Nearing the window",
+      "Nearing the limit",
     );
     expect(contextSummary({ used: 191000, window: 200000 }).level).toBe("high");
     expect(contextSummary({ used: 250000, window: 200000 }).fraction).toBe(1);
     expect(contextLevel(0.799)).toBe("ok");
     expect(contextLevel(0.8)).toBe("warn");
     expect(contextLevel(0.95)).toBe("high");
+  });
+  it("measures the way to the agent's own threshold when it reports one", () => {
+    // 142k is 71 % of the window but 85 % of the way to a compaction at
+    // 167k (the window less Claude's 33k buffer).
+    const s = contextSummary({
+      used: 142000,
+      window: 200000,
+      threshold: 167000,
+    });
+    expect(s.percent).toBe(71);
+    expect(s.toCompaction).toBeCloseTo(0.85, 2);
+    expect(s.level).toBe("warn");
+    expect(s.title).toContain("at about 167,000 tokens");
+    expect(
+      contextSummary({ used: 160000, window: 200000, threshold: 167000 }).level,
+    ).toBe("high");
+    expect(
+      contextSummary({ used: 100000, window: 200000, threshold: 167000 }).level,
+    ).toBe("ok");
+    // A threshold at or above the window means the window.
+    expect(
+      contextSummary({ used: 100000, window: 200000, threshold: 200000 })
+        .toCompaction,
+    ).toBe(0.5);
   });
   it("shows the count alone when the window is unknown", () => {
     const s = contextSummary({ used: 42787, window: 0 });

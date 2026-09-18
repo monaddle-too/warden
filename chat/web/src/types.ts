@@ -39,9 +39,16 @@ export type Compaction = {
   error?: string;
 };
 /* How full the agent's context is (conversation.Context): `used` is what
-   its latest model call was given (or its estimate right after a
-   compaction), `window` the model's context window, in tokens. */
-export type Context = { used: number; window: number; model?: string };
+   its latest model call was given (or the agent's own account of it),
+   `window` the model's context window, `threshold` where the agent
+   compacts on its own (Claude Code keeps a buffer free below the window;
+   absent when not reported), in tokens. */
+export type Context = {
+  used: number;
+  window: number;
+  threshold?: number;
+  model?: string;
+};
 /* One agent tool call as the service records it (conversation.Tool):
    `kind` is what the card renders by, `name` the tool as the agent names
    it, `server` an MCP tool's server, `status` running, completed or failed

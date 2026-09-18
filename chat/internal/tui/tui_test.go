@@ -1813,6 +1813,17 @@ func TestCompactionDividerContextAndPassthrough(t *testing.T) {
 	if s := StatusLine(c, nil, true, now); !strings.Contains(s, red+"ctx 191k/200k (96%)"+reset) {
 		t.Fatalf("red indicator: %q", s)
 	}
+	// With the agent's own threshold (the window less its buffer), the
+	// colours follow the way to that: 142k is 71 % of the window but 85 %
+	// of the way to a compaction at 167k.
+	c.Conversation.Context = &Context{Used: 142000, Window: 200000, Threshold: 167000}
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, yellow+"ctx 142k/200k (71%)"+reset) {
+		t.Fatalf("threshold indicator: %q", s)
+	}
+	c.Conversation.Context.Used = 160000
+	if s := StatusLine(c, nil, true, now); !strings.Contains(s, red+"ctx 160k/200k (80%)"+reset) {
+		t.Fatalf("threshold red indicator: %q", s)
+	}
 	c.Conversation.Context = &Context{Used: 42787}
 	if s := plain(StatusLine(c, nil, true, now)); !strings.Contains(s, "ctx 43k") || strings.Contains(s, "/") {
 		t.Fatalf("windowless indicator: %q", s)
@@ -1852,6 +1863,34 @@ func TestCompactionDividerContextAndPassthrough(t *testing.T) {
 	entries = s.Chats[0].Conversation.Entries
 	if got := entries[len(entries)-1].Text; got != "echo: /compact keep the file list" {
 		t.Fatalf("/compact with instructions: %q", got)
+	}
+	// Once the chat reports its list, the menu is that list, with the
+	// known argument and hint for /compact and the reported description
+	// for the workspace's own.
+	c.Commands = []AgentCommand{{Name: "compact"}, {Name: "probe-cmd", Description: "From the workspace"}}
+	app.state, _ = app.Client.State(ctx)
+	f.mu.Lock()
+	f.state.Chats[0].Commands = c.Commands
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	app.editor.Clear()
+	app.menu = nil
+	typeText(app, ctx, "/")
+	labels := []string{}
+	for _, it := range app.menu.Items {
+		labels = append(labels, it.Label+"|"+it.Hint)
+	}
+	if got := strings.Join(labels, "\n"); !strings.Contains(got, "/compact [INSTRUCTIONS]|replace the history with a summary; say what to keep") || !strings.Contains(got, "/probe-cmd|From the workspace") {
+		t.Fatalf("reported list: %s", got)
+	}
+	app.editor.Clear()
+	app.menu = nil
+	app.submit(ctx, "/probe-cmd now")
+	time.Sleep(100 * time.Millisecond)
+	s, _ = app.Client.State(ctx)
+	entries = s.Chats[0].Conversation.Entries
+	if got := entries[len(entries)-1].Text; got != "echo: /probe-cmd now" {
+		t.Fatalf("a reported command is sent as text: %q", got)
 	}
 	// A Codex chat has no /compact: the menu leaves it out and typing it
 	// is an unknown command.
