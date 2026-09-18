@@ -208,9 +208,9 @@ Client track (`.local/warden-bugs-client`):
 4. [x] Triggers: installer, launcher (service exit + pending watcher),
    service panics; `/test bugreporting` route; tests with a fake state dir.
 5. [x] `/bug` route + composer + TUI; `warden bugs send/test`; tests.
-6. Merge to main; `deploy-local`; end to end against the cloud receiver
-   once the server track is live (`/test bugreporting` → page → Send →
-   the report in the cloud admin console).
+6. [x] Merge to main; `deploy-local`; [ ] end to end against the cloud
+   receiver (`/test bugreporting` → page → Send → the report in the cloud
+   admin console) — the owner's run.
 
 ## Key decisions
 
@@ -326,4 +326,18 @@ Client track (`.local/warden-bugs-client`):
   <secret>` (the owner capability). `warden bugs test` with Warden
   stopped → in-process; SIGTERM → "interrupted; the draft stays";
   `warden bugs pending` listed and re-offered it → sent. Home torn down.
-  Next: merge, deploy-local.
+- 2026-09-18 (client track landed): merged to main as **94490a8**
+  (fast-forward; two merges of main into the branch: the server track +
+  parity round 2 / item 16, then reviews-open-the-app; conflicts in
+  `config.go`/`config_test.go` (both sections), `chats/http.go` (both
+  cases), `edge.go` `ownerOnly`, the TUI command table and fake server,
+  the feature map's rows and the plan's log). Verified on the merged
+  tree: vet, `go test` every package (kube alone), `pnpm build` + 250
+  web tests, the three chart goldens. Deployed to `~/.warden/release`
+  as `v0.0.0-dev.94490a891274` and `warden bugs on` run there (the
+  owner's `warden.json` had no `reporting`; URL the cloud default);
+  smoke: a Claude chat ran `uname -a` in a sandbox. Client step 6 is
+  done but for the cloud end to end, which the owner runs: `warden bugs
+  test` (or `/test bugreporting` in the composer) → the review page →
+  Send report → the id, then the report under Bug reports in the cloud
+  admin console.
