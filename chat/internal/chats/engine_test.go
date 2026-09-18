@@ -1105,3 +1105,35 @@ func TestHandOverUnconfirmedWhenTheRunEnds(t *testing.T) {
 		t.Fatalf("unconfirmed: %+v", v)
 	}
 }
+
+// The service's own shutdown cuts a run short without tombstoning it on
+// the runner: a cancel would make the runner stop the sandbox, and a
+// redeploy would take every live workspace down with it. The runner sees
+// a plain disconnect and keeps the sandbox for the run that resumes.
+func TestShutdownEndsRunWithoutCancellingSandbox(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	w := &fakeWorker{}
+	w.prepareGate = make(chan struct{})
+	e := NewEngine(s, w)
+	e.ResidentProviders = []string{}
+	ctx, cancel := context.WithCancel(context.Background())
+	go e.Serve(ctx)
+	id, _ := e.Create("Shutdown", "", "", nil)
+	if err = e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return w.count("prepare") == 1 })
+	cancel()
+	select {
+	case <-e.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("engine did not stop")
+	}
+	if w.count("cancel") != 0 || w.count("stop") != 0 {
+		t.Fatalf("shutdown touched the sandbox: %d cancels, %d stops", w.count("cancel"), w.count("stop"))
+	}
+}

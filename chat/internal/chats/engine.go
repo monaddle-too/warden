@@ -893,7 +893,13 @@ func (e *Engine) run(parent context.Context, id string) {
 		if err != nil && a.ending.Load() {
 			err = nil // Stop ended a run that had no turn in flight
 		}
-		if err != nil {
+		if err != nil && parent.Err() == nil {
+			// A run that failed is tombstoned so the runner stops its
+			// sandbox. A run cut short by the service's own shutdown is
+			// not: the disconnect is a normal end to the runner, the
+			// sandbox stays resident, and on Kubernetes the pod outlives
+			// the restart (docs/workspace-keepalive-plan.md) for the run
+			// that resumes the chat.
 			cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
 			_, _ = e.Worker.Call(cleanup, request(&current, "cancel"))
 			done()
