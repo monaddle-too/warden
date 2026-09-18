@@ -35,9 +35,9 @@ type Environment struct {
 	Ports        []PortBinding    `json:"ports"`
 	// Rules are the workspace's permission rules (rules.go), applied to
 	// every chat of it.
-	Rules        []Rule           `json:"rules"`
-	Deleted      bool             `json:"deleted"`
-	Archived     bool             `json:"archived"`
+	Rules    []Rule `json:"rules"`
+	Deleted  bool   `json:"deleted"`
+	Archived bool   `json:"archived"`
 	// CopiedFrom is set on a workspace created as a copy of another (a
 	// fork with copyWorkspace, fork.go): which one and when.
 	CopiedFrom *WorkspaceOrigin `json:"copiedFrom,omitempty"`

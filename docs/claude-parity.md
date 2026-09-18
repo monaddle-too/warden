@@ -289,9 +289,9 @@ E–G after.
 - [x] R2.12 **Undo a conversation rewind**: the removed tail is kept and can be restored until the next turn (restore the entries; a session that cannot un-rewind starts fresh with the recap, as item 11's fallback does). Merged to main 917fb2a.
 
 ### E. Workspace fork, resource mentions, rich reads (`feat/parity-r2-e-fork-mentions`)
-- [x] R2.13 **Fork with a copy of the workspace**: "Fork…" gains "copy the workspace" — a new environment cloned from the sandbox (the runner's clone path on both drivers) plus the forked session; markers link both. Merged to main <MERGESHA> (2026-09-18); verified as the Round 2 E section says.
-- [x] R2.14 **Resource mentions**: the composer's `@` menu offers the chat's shared documents, repositories and previews (`@doc:`, `@repo:`, `@preview:`) and expands them to what the agent needs; TUI too. Merged to main <MERGESHA> (2026-09-18); verified as the Round 2 E section says.
-- [x] R2.15 **Rich Read results**: a Read of an image shows the image in the card (today "[image]"), PDFs and notebooks show a page/cell summary. Merged to main <MERGESHA> (2026-09-18); verified as the Round 2 E section says.
+- [x] R2.13 **Fork with a copy of the workspace**: "Fork…" gains "copy the workspace" — a new environment cloned from the sandbox (the runner's clone path on both drivers) plus the forked session; markers link both. Merged to main e465b66 (2026-09-18); verified as the Round 2 E section says.
+- [x] R2.14 **Resource mentions**: the composer's `@` menu offers the chat's shared documents, repositories and previews (`@doc:`, `@repo:`, `@preview:`) and expands them to what the agent needs; TUI too. Merged to main e465b66 (2026-09-18); verified as the Round 2 E section says.
+- [x] R2.15 **Rich Read results**: a Read of an image shows the image in the card (today "[image]"), PDFs and notebooks show a page/cell summary. Merged to main e465b66 (2026-09-18); verified as the Round 2 E section says.
 
 ### F. TUI: vim mode, attachments, unread (`feat/parity-r2-f-tui`)
 - [ ] R2.16 **Vim mode**: `/vim on|off` persisted; normal/insert, motions, operators, `u`, `:` commands.
@@ -450,7 +450,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 16 Scrollback rendering (Claude-style TUI) — merged to main 2445764 (2026-09-18); verified as the Item 16 section says. Not deployed to `~/.warden`.
 - [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
 - [x] Round 2 A (titles, spend, model catalog) — merged fe1deaa (2026-09-18).
-- [x] Round 2 E (workspace fork copy, resource mentions, rich reads) — merged to main <MERGESHA> (2026-09-18); verified as the Round 2 E section says.
+- [x] Round 2 E (workspace fork copy, resource mentions, rich reads) — merged to main e465b66 (2026-09-18); verified as the Round 2 E section says.
 
 ### Round 2 C: live activity, nesting-aware search and export, TUI search across chats
 
@@ -1101,7 +1101,7 @@ exercised: the cloned home's GitHub user token is expired at GitHub
 unit-tested and the resources route returns the policy service's rows.
 
 Progress: implemented and live-verified 2026-09-18; merged to main
-<MERGESHA> (2026-09-18) after merging origin/main in.
+e465b66 (2026-09-18) after merging origin/main in.
 
 Left: repository sharing not live-tested here (the home's GitHub token is
 stale); a PDF whose pages live in compressed object streams shows no page
