@@ -91,6 +91,32 @@ type Entry struct {
 	// is written into the sandbox workspace at Path when the message is
 	// delivered; the chat service keeps its own copy for the transcript.
 	Attachments []Attachment `json:"attachments,omitempty"`
+	// Tool is the agent tool call an activity entry records, for the
+	// surfaces to render by kind. With it set, Text is the call's title
+	// and Detail its output alone (a command's output, a search's hits, a
+	// unified diff per changed file). Nil on an activity entry recorded
+	// before it existed, whose Detail then starts with the status line.
+	Tool *Tool `json:"tool,omitempty"`
+}
+
+// Tool describes one agent tool call: Kind is what a surface renders by
+// (command, edit, read, search, fetch, webSearch, mcp, task or other),
+// Name the tool as the agent names it (Bash, Read, an MCP tool's name),
+// Server an MCP tool's server, Status running, completed or failed (an
+// agent's own word otherwise, such as Codex's declined). Description is
+// what the agent said the call is for, Paths the workspace files it names
+// (relative to the workspace when inside it), Query a search's pattern or
+// a fetch's URL, and Input the call's input where the surfaces show it as
+// given (a generic tool, an MCP call), with long strings cut.
+type Tool struct {
+	Kind        string         `json:"kind"`
+	Name        string         `json:"name,omitempty"`
+	Server      string         `json:"server,omitempty"`
+	Status      string         `json:"status"`
+	Description string         `json:"description,omitempty"`
+	Paths       []string       `json:"paths,omitempty"`
+	Query       string         `json:"query,omitempty"`
+	Input       map[string]any `json:"input,omitempty"`
 }
 
 // Attachment is one file sent with a user message. Kind is "image" for a

@@ -36,21 +36,46 @@ func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) 
 		e.Text = agent.String(item["text"])
 	case "commandExecution":
 		e.Text = agent.String(item["command"])
-		e.Detail = agent.String(item["status"]) + "\n" + tail(agent.String(item["aggregatedOutput"]), 30000)
+		e.Detail = tail(agent.String(item["aggregatedOutput"]), 30000)
+		e.Tool = &Tool{Kind: "command", Name: agent.String(item["tool"]), Status: toolStatus(item), Description: agent.String(item["description"])}
 	case "fileChange":
 		changes := agent.Array(item["changes"])
-		e.Text = fmt.Sprintf("Updated %d files", len(changes))
+		paths := []string{}
 		for _, ch := range changes {
 			m := agent.Map(ch)
+			paths = append(paths, agent.String(m["path"]))
 			e.Detail += agent.String(m["path"]) + "\n" + agent.String(m["diff"]) + "\n"
 		}
+		e.Text = fileChangeTitle(agent.String(item["tool"]), changes)
+		e.Tool = &Tool{Kind: "edit", Name: agent.String(item["tool"]), Status: toolStatus(item), Paths: paths}
 	case "dynamicToolCall":
+		// Codex calling a Warden tool: the counterpart of Claude's MCP call.
 		e.Text = agent.String(item["tool"])
-		e.Detail = agent.String(item["status"])
+		e.Tool = &Tool{Kind: "mcp", Name: agent.String(item["tool"]), Server: "warden", Status: toolStatus(item), Input: agent.Map(item["arguments"])}
 	case "mcpToolCall":
 		e.Text = agent.String(item["server"]) + " · " + agent.String(item["tool"])
+		e.Detail = tail(mcpResultText(item), 30000)
+		e.Tool = &Tool{Kind: "mcp", Name: agent.String(item["tool"]), Server: agent.String(item["server"]), Status: toolStatus(item), Input: agent.Map(item["arguments"])}
 	case "webSearch":
 		e.Text = "Search: " + agent.String(item["query"])
+		e.Detail = tail(agent.String(item["output"]), 30000)
+		e.Tool = &Tool{Kind: "webSearch", Name: agent.String(item["tool"]), Status: toolStatus(item), Query: agent.String(item["query"])}
+	case "toolCall":
+		// Any other tool the Claude adapter typed: a read, a search, a
+		// fetch, a subagent, or one it only names.
+		e.Text = agent.String(item["title"])
+		e.Detail = tail(agent.String(item["output"]), 30000)
+		paths := []string{}
+		for _, p := range agent.Array(item["paths"]) {
+			paths = append(paths, agent.String(p))
+		}
+		e.Tool = &Tool{Kind: agent.String(item["kind"]), Name: agent.String(item["tool"]), Status: toolStatus(item), Paths: paths, Query: agent.String(item["query"]), Input: agent.Map(item["input"])}
+		if e.Tool.Kind == "" {
+			e.Tool.Kind = "other"
+		}
+		if e.Text == "" {
+			e.Text = e.Tool.Name
+		}
 	case "reasoning":
 		// The model's thinking (the long silence before a first reply is
 		// usually this): its summary, or the text itself where the agent
@@ -94,6 +119,58 @@ func tail(s string, n int) string {
 	return s
 }
 
+// toolStatus is an item's status in the transcript's words: running,
+// completed or failed; Codex's inProgress is running, any other word of
+// an agent's (declined) stays as it is.
+func toolStatus(item map[string]any) string {
+	switch s := agent.String(item["status"]); s {
+	case "", "inProgress", "running":
+		return "running"
+	case "completed", "success":
+		return "completed"
+	case "failed", "error":
+		return "failed"
+	default:
+		return s
+	}
+}
+
+// fileChangeTitle names a file change by its tool and path: "Edit
+// chat/main.go", "Write notes.md", or a count when several files changed.
+// Codex names no tool, so its single change reads by its kind.
+func fileChangeTitle(tool string, changes []any) string {
+	if len(changes) != 1 {
+		return fmt.Sprintf("Updated %d files", len(changes))
+	}
+	m := agent.Map(changes[0])
+	if tool == "" {
+		switch agent.String(m["kind"]) {
+		case "add":
+			tool = "Add"
+		case "delete":
+			tool = "Delete"
+		default:
+			tool = "Update"
+		}
+	}
+	return tool + " " + agent.String(m["path"])
+}
+
+// mcpResultText is an MCP call's result as text: its text content joined,
+// or its error.
+func mcpResultText(item map[string]any) string {
+	if msg := agent.String(agent.Map(item["error"])["message"]); msg != "" {
+		return msg
+	}
+	var parts []string
+	for _, v := range agent.Array(agent.Map(item["result"])["content"]) {
+		if m := agent.Map(v); agent.String(m["type"]) == "text" {
+			parts = append(parts, agent.String(m["text"]))
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 // Delta appends streamed text to entry `id`, adding the entry when the
 // agent streams before announcing it: `role` is what it then is, an
 // assistant message, a thinking entry, or a command whose output the
@@ -119,6 +196,7 @@ func (c *Conversation) Delta(id, turn, delta, role string) {
 	if command {
 		e.Text = "Running command"
 		e.Detail = delta
+		e.Tool = &Tool{Kind: "command", Status: "running"}
 	}
 	c.Entries = append(c.Entries, e)
 }

@@ -67,7 +67,8 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		var initID json.RawMessage
 		tools := []any{}
 		pending := map[string]map[string]any{}
-		toolCommands := map[string]string{}
+		// Tool calls in flight, by tool_use id, until their result.
+		toolCalls := map[string]claudeTool{}
 		textID := ""
 		text := ""
 		streamed := false
@@ -308,27 +309,33 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						b := Map(x)
 						if b["type"] == "tool_use" {
 							flushText()
-							command := fmt.Sprintf("%s: %v", b["name"], b["input"])
-							toolCommands[String(b["id"])] = command
-							event("item/started", map[string]any{"turnId": turn, "item": map[string]any{"id": b["id"], "type": "commandExecution", "command": command, "status": "running"}})
+							// Each tool call is a typed item (claude_tools.go):
+							// started here with what the call asks, completed by
+							// its result below.
+							id := String(b["id"])
+							t := claudeTool{name: String(b["name"]), input: Map(b["input"])}
+							toolCalls[id] = t
+							event("item/started", map[string]any{"turnId": turn, "item": claudeToolItem(id, t, nil, nil)})
 						}
 					}
 				case "user":
+					results := []map[string]any{}
 					for _, x := range Array(Map(v["message"])["content"]) {
-						b := Map(x)
-						if b["type"] == "tool_result" {
-							id := String(b["tool_use_id"])
-							status := "completed"
-							if b["is_error"] == true {
-								status = "failed"
-							}
-							content := String(b["content"])
-							if content == "" {
-								data, _ := json.Marshal(b["content"])
-								content = string(data)
-							}
-							event("item/completed", map[string]any{"turnId": turn, "item": map[string]any{"id": id, "type": "commandExecution", "command": toolCommands[id], "status": status, "aggregatedOutput": content}})
+						if b := Map(x); b["type"] == "tool_result" {
+							results = append(results, b)
 						}
+					}
+					for _, b := range results {
+						id := String(b["tool_use_id"])
+						t := toolCalls[id]
+						delete(toolCalls, id)
+						// The CLI's structured result rides on the frame, so it
+						// belongs to a lone result only.
+						var structured any
+						if len(results) == 1 {
+							structured = v["tool_use_result"]
+						}
+						event("item/completed", map[string]any{"turnId": turn, "item": claudeToolItem(id, t, b, structured)})
 					}
 				case "result":
 					// Only a turn that streamed nothing falls back to the summary

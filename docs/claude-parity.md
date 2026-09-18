@@ -129,9 +129,9 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Streaming assistant text, markdown, highlighting | ✅ | ✅ | `stream_event` deltas |
 | Thinking: collapsed, expandable, duration | ✅ | ✅ | text withheld by the CLI in `-p` mode |
 | Spinner verbs and elapsed time | ◐ | ✅ | web has the status line |
-| Typed tool cards (Bash, Read, Grep, Glob, Edit, Write, WebFetch…) | ◐ | ◐ | one generic card today (`claude.go` `tool_use` handling) |
-| Edit/Write/MultiEdit as diffs | ✗ | ✗ | `DiffView.tsx` renders Codex `fileChange`; Claude adapter must emit it |
-| Output folding ("+N lines, expand") | ◐ | ✅ | web tails 30k chars; TUI `/expand` |
+| Typed tool cards (Bash, Read, Grep, Glob, Edit, Write, WebFetch…) | ✅ | ✅ | item 1: `agent/claude_tools.go`, `Entry.Tool`, `ToolCard.tsx`, `tui/render.go` |
+| Edit/Write/MultiEdit as diffs | ✅ | ✅ | item 1: the CLI's `structuredPatch` hunks with line numbers |
+| Output folding ("+N lines, expand") | ✅ | ✅ | item 1: 12 lines on the web, 8 in the TUI (Tab) |
 | Subagent nesting, child transcript | ✗ | ✗ | `parent_tool_use_id` |
 | Background task cards, task notifications | ✗ | ✗ | |
 | Todo panel (TodoWrite) | ✗ | ✗ | |
@@ -292,7 +292,7 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 ## Progress
 
 - [x] Design discussion, inventory and priority order (this document).
-- [ ] 1 Typed tool cards and diffs.
+- [x] 1 Typed tool cards and diffs — merged to main 5715a02 (2026-09-17); verified as the Item 1 section says.
 - [ ] 2 Subagents and background tasks.
 - [ ] 3 Permission model.
 - [ ] 4 Plan mode.
@@ -307,6 +307,64 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 - [ ] 13 Per-user instructions and memory.
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
+
+### Item 1: typed tool cards and diffs
+
+Branch `feat/parity-1-tool-cards`, worktree `.local/warden-parity-1-tool-cards`,
+from main 5ff4767 (2026-09-17).
+
+What the CLI gives: every `tool_result` frame carries, beside the text the
+model reads, a structured `tool_use_result` (probed on the pinned 2.1.27x
+with `claude -p --output-format stream-json`): Edit's `structuredPatch` is
+the CLI's own hunks with line numbers; Write says `create` or `update` and
+patches an existing file against its old content; Bash separates stdout
+and stderr; Read gives the file's line range; a tool's error is a string
+and the text form is wrapped in `<tool_use_error>`. The pinned CLI offers
+no Grep, Glob or TodoWrite tools (the model uses Bash); their mapping is
+in place and unit-tested for a CLI that has them.
+
+Decisions:
+
+1. The adapter emits Codex-shaped items where Codex has the kind
+   (`commandExecution`, `fileChange`, `mcpToolCall`, `webSearch`) and a new
+   generic `toolCall` (`tool`, `kind`, `title`, `input`, `output`, `paths`,
+   `query`, `status`) for the rest, so the conversation layer stays one
+   mapping for both providers.
+2. `Entry.Tool` is additive (`kind`, `name`, `server`, `status`,
+   `description`, `paths`, `query`, `input`). With it set, `Detail` is the
+   output or diff alone; entries recorded before it keep their status-line
+   `Detail` and the generic rendering, so `GET state` stays compatible and
+   old transcripts render as before.
+3. An Edit's diff is written twice: at the call's start from `old_string`
+   and `new_string` as a hunk without an `@@` header (the line is not
+   known, and a wrong number would be worse than none; the surfaces colour
+   such a hunk by prefix without numbers), then replaced by the CLI's
+   numbered hunks from `structuredPatch` at the result. A Write is its
+   content as an added file (`new file` once the CLI says `create`; the
+   CLI's patch when it replaced an existing file). MultiEdit and
+   NotebookEdit stay headerless.
+4. Paths inside `/home/agent/workspace` read relative to it on both
+   surfaces; the web's read card links the path to the file route, which
+   accepts either form.
+5. Folding: the web shows the first 12 lines with a "+N lines" control
+   (the last 12 while a command still streams); the TUI shows 8 (the last
+   ones of a command's output, the first of anything else) until Tab.
+   Reads and searches collapse to one line with their line or hit count.
+6. Kept out of item 1: a subagent's own tool calls (`parent_tool_use_id`)
+   render as sibling cards until item 2 nests them; TodoWrite is a generic
+   card until item 2's panel.
+
+Verified: `go vet`, `gofmt -l`, `go test ./...`, `pnpm build`, `pnpm test`
+(120 tests, `tools.test.ts` new); live on a cloned home (`~/.warden-p1`)
+with a Claude chat that ran Bash (with a description and a failing
+command), Read (and a failing read), grep, Edit (numbered hunk from
+`structuredPatch`), Write (`new file`), a Warden MCP tool, WebFetch
+(refused by policy: a failed fetch card) and an Explore subagent —
+inspected through `GET state`, the web UI (diffs with line numbers,
+`+N lines` fold, failed badges, read path link) and the TUI in a pty
+(collapsed and Tab-expanded); a Codex chat's command renders through the
+same model (its file edit could not run: the account's Codex usage limit
+was exhausted; the `fileChange` mapping is unit-tested).
 
 ### Item 6: TUI catch-up
 

@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -167,6 +168,11 @@ func RenderTranscript(c *Chat, width int, expanded bool) []string {
 				out[len(out)-1] += dim + " ▍" + reset
 			}
 		case "activity":
+			if e.Tool != nil {
+				out = append(out, renderTool(e, width, expanded)...)
+				out = append(out, "")
+				continue
+			}
 			marker := dim + "  · "
 			if e.IsStreaming {
 				marker = yellow + "  ⋯ "
@@ -195,6 +201,220 @@ func RenderTranscript(c *Chat, width int, expanded bool) []string {
 			out = append(out, wrap(text, width, dim+"  "+e.Role+": "+reset, "    ")...)
 		}
 		out = append(out, "")
+	}
+	return out
+}
+
+// Tool mirrors the chat service's record of the tool call an activity
+// entry is (conversation.Tool): what a surface renders by.
+type Tool struct {
+	Kind        string         `json:"kind"`
+	Name        string         `json:"name"`
+	Server      string         `json:"server"`
+	Status      string         `json:"status"`
+	Description string         `json:"description"`
+	Paths       []string       `json:"paths"`
+	Query       string         `json:"query"`
+	Input       map[string]any `json:"input"`
+}
+
+// foldedLines is how many lines of a tool's output or diff show before
+// "Tab to expand"; the last ones of a command's output (where the result
+// is), the first of anything else.
+const foldedLines = 8
+
+// renderTool lays out a typed tool entry: a head line in the tool's own
+// terms (the command, the file edited with its counts, the file read, the
+// search and its hits), then its body — output or diff — folded unless
+// expanded. A read or search collapses to its one line; a failure shows
+// its message.
+func renderTool(e Entry, width int, expanded bool) []string {
+	t := e.Tool
+	marker := dim + "  · "
+	if e.IsStreaming || t.Status == "running" {
+		marker = yellow + "  ⋯ "
+	}
+	failed := t.Status == "failed"
+	if failed {
+		marker = red + "  ✗ "
+	}
+	detail := sanitize(strings.TrimRight(e.Detail, "\n"))
+	head := sanitize(e.Text)
+	var body []string
+	fromEnd := false
+	switch t.Kind {
+	case "command":
+		head = "$ " + head
+		fromEnd = true
+		body = strings.Split(detail, "\n")
+	case "edit":
+		files, adds, dels := diffLines(detail)
+		head += fmt.Sprintf("  %s+%d%s %s−%d%s", green, adds, reset, red, dels, reset)
+		if !failed {
+			body = files
+		}
+	case "read", "search":
+		body = strings.Split(detail, "\n")
+		n, unit := resultCount(t.Kind, detail)
+		if !failed && t.Status == "completed" {
+			head += fmt.Sprintf("  %s%d %s%s", dim, n, unit, reset)
+		}
+		if !expanded && !failed {
+			body = nil // one line is the reading; Tab shows the content
+		}
+	default:
+		body = strings.Split(detail, "\n")
+		if t.Kind == "mcp" && expanded {
+			body = append(inputLines(t.Input), body...)
+		}
+	}
+	if failed {
+		head += " " + red + "failed" + reset
+	}
+	out := wrap(head, width, marker+reset, "    ")
+	if t.Description != "" {
+		out = append(out, wrap(sanitize(t.Description), width, dim+"    ", "    ")...)
+		out[len(out)-1] += reset
+	}
+	if len(body) == 1 && strings.TrimSpace(body[0]) == "" {
+		body = nil
+	}
+	if len(body) > 0 {
+		out = append(out, renderBody(body, width, expanded, fromEnd)...)
+	}
+	return out
+}
+
+// renderBody colours a tool body's lines by prefix (a diff's added and
+// removed lines, its hunk headers) and folds it to foldedLines unless
+// expanded; fromEnd keeps the last lines instead of the first.
+func renderBody(lines []string, width int, expanded, fromEnd bool) []string {
+	hidden := 0
+	if !expanded && len(lines) > foldedLines {
+		hidden = len(lines) - foldedLines
+		if fromEnd {
+			lines = lines[hidden:]
+		} else {
+			lines = lines[:foldedLines]
+		}
+	}
+	more := dim + "    │ … " + itoa(hidden) + " more lines (Tab to expand)" + reset
+	var out []string
+	if hidden > 0 && fromEnd {
+		out = append(out, more)
+	}
+	for _, l := range lines {
+		color := dim
+		switch {
+		case strings.HasPrefix(l, "+"):
+			color = green
+		case strings.HasPrefix(l, "-"):
+			color = red
+		case strings.HasPrefix(l, "@@"):
+			color = cyan
+		case strings.HasPrefix(l, "§ "):
+			color = bold
+			l = strings.TrimPrefix(l, "§ ")
+		}
+		for _, w := range wrap(l, width, color+"    │ ", color+"    │ ") {
+			out = append(out, w+reset)
+		}
+	}
+	if hidden > 0 && !fromEnd {
+		out = append(out, more)
+	}
+	return out
+}
+
+// diffLines keeps what a file change's diff says: its hunks' lines with
+// their +/- prefixes and hunk headers, the file's path as a `§` heading
+// when the change spans several files, and the counts of added and
+// removed lines. The git header lines (`diff --git`, `---`, `+++`, modes)
+// and the path line the service writes before each diff are left out.
+func diffLines(detail string) (lines []string, adds, dels int) {
+	var files [][]string
+	var current []string
+	path := ""
+	header := false // inside a file's git header, before its first hunk line
+	for _, l := range strings.Split(detail, "\n") {
+		switch {
+		case strings.HasPrefix(l, "diff --git "):
+			if current != nil {
+				files = append(files, current)
+			}
+			current = []string{"§ " + path}
+			header = true
+		case header && (strings.HasPrefix(l, "--- ") || strings.HasPrefix(l, "+++ ") || strings.HasPrefix(l, "index ") || strings.Contains(l, " file mode ")):
+		case strings.HasPrefix(l, "+"):
+			adds++
+			current = append(current, l)
+			header = false
+		case strings.HasPrefix(l, "-"):
+			dels++
+			current = append(current, l)
+			header = false
+		case strings.HasPrefix(l, "@@") || strings.HasPrefix(l, " ") || strings.HasPrefix(l, "\\"):
+			current = append(current, l)
+			header = false
+		default:
+			path = l // the service's path line before each diff
+		}
+	}
+	if current != nil {
+		files = append(files, current)
+	}
+	for _, f := range files {
+		if len(files) == 1 {
+			f = f[1:] // the head line names the file
+		}
+		lines = append(lines, f...)
+	}
+	return lines, adds, dels
+}
+
+// resultCount is what a read or search returned, for its head line: the
+// count a search tool reports ("Found 3 files"), else its lines.
+func resultCount(kind, detail string) (int, string) {
+	unit := "lines"
+	if kind == "search" {
+		unit = "results"
+	}
+	if detail == "" {
+		return 0, unit
+	}
+	first := strings.SplitN(detail, "\n", 2)[0]
+	if strings.HasPrefix(first, "No files found") || strings.HasPrefix(first, "No matches found") {
+		return 0, unit
+	}
+	if fields := strings.Fields(first); len(fields) >= 3 && fields[0] == "Found" {
+		if n, err := strconv.Atoi(fields[1]); err == nil {
+			return n, strings.TrimSuffix(fields[2], "s") + "s"
+		}
+	}
+	n := 0
+	for _, l := range strings.Split(detail, "\n") {
+		if strings.TrimSpace(l) != "" {
+			n++
+		}
+	}
+	return n, unit
+}
+
+// inputLines is a tool's input as `key: value` lines, keys in order.
+func inputLines(input map[string]any) []string {
+	keys := make([]string, 0, len(input))
+	for k := range input {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var out []string
+	for _, k := range keys {
+		v := input[k]
+		s, ok := v.(string)
+		if !ok {
+			s = fmt.Sprint(v)
+		}
+		out = append(out, k+": "+sanitize(strings.ReplaceAll(s, "\n", " ")))
 	}
 	return out
 }
