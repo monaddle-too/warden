@@ -52,6 +52,10 @@ type claudeWorker struct {
 	listed  int // list_models requests received
 	// oneshotGate, when set, holds a "oneshot" answer until it is closed.
 	oneshotGate chan struct{}
+	// prepareGate, when set, holds a "prepare" answer until it is closed;
+	// prepareErr, when set, is what "prepare" fails with (aside_test.go).
+	prepareGate chan struct{}
+	prepareErr  error
 }
 
 // initModel is the model the scripted CLI reports in its system/init: the
@@ -76,9 +80,22 @@ func (w *claudeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Res
 	w.mu.Lock()
 	w.requests = append(w.requests, r)
 	aside, oneshot, gate := w.aside, w.oneshot, w.oneshotGate
+	prepareGate, prepareErr := w.prepareGate, w.prepareErr
 	w.mu.Unlock()
 	if r.Operation == "oneshot" && gate != nil {
 		<-gate
+	}
+	if r.Operation == "prepare" {
+		if prepareGate != nil {
+			select {
+			case <-prepareGate:
+			case <-ctx.Done():
+				return sandbox.Response{}, ctx.Err()
+			}
+		}
+		if prepareErr != nil {
+			return sandbox.Response{}, prepareErr
+		}
 	}
 	if r.Operation == "aside" {
 		if aside == nil {

@@ -526,7 +526,7 @@ func (e *Engine) state() State {
 			c.UndoRewind = c.RewoundTail.MarkerID
 			c.RewoundTail = nil
 		}
-		spend := spendOf(c.Conversation.Turns)
+		spend := spendOf(c)
 		c.Spend = &spend
 	}
 	e.typingMu.Lock()
@@ -1084,45 +1084,57 @@ func (e *Engine) run(parent context.Context, id string) {
 	if err != nil {
 		return
 	}
-	if message == nil {
+	if message == nil && !a.resident {
 		err = errors.New("no pending message")
 		return
 	}
-	e.setStartup(id, stageSending, "handing your message to the agent")
 	var items []any
-	if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
-		return
-	}
-	items = e.beforeTurn(ctx, id, &current, message.ID, items)
-	e.applySession(ctx, id, &current, client)
-	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
-	if err != nil {
-		return
-	}
-	turn := agent.Map(response["turn"])
-	turnID := agent.String(turn["id"])
-	if turnID == "" {
-		err = errors.New("agent returned no turn ID")
-		return
-	}
-	e.mu.Lock()
-	a.turnID = turnID
-	e.mu.Unlock()
-	if err = e.confirm(id, message.ID, turnID); err != nil {
-		return
-	}
-	// The turn is accepted; the model has not said anything yet. The
-	// first item of the turn ends the start (turn below).
-	e.setStartup(id, stageFirstResponse, "waiting for the model's first reply")
-	for {
-		if err = e.turn(ctx, id, &current, a, client, frames, threadID, turnID, prep.Directory, turn); err != nil {
+	var turn map[string]any
+	turnID := ""
+	if message != nil {
+		e.setStartup(id, stageSending, "handing your message to the agent")
+		if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 			return
 		}
-		if !a.resident {
-			// The run ends with the turn; a chat still at the default
-			// title is named from the transcript alone (title.go).
-			e.autoTitle(parent, id, nil)
+		items = e.beforeTurn(ctx, id, &current, message.ID, items)
+		e.applySession(ctx, id, &current, client)
+		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
+		if err != nil {
 			return
+		}
+		turn = agent.Map(response["turn"])
+		turnID = agent.String(turn["id"])
+		if turnID == "" {
+			err = errors.New("agent returned no turn ID")
+			return
+		}
+		e.mu.Lock()
+		a.turnID = turnID
+		e.mu.Unlock()
+		if err = e.confirm(id, message.ID, turnID); err != nil {
+			return
+		}
+		// The turn is accepted; the model has not said anything yet. The
+		// first item of the turn ends the start (turn below).
+		e.setStartup(id, stageFirstResponse, "waiting for the model's first reply")
+	} else {
+		// Nothing to send: the run was started for a side question
+		// (aside.go), or its message was withdrawn meanwhile. The session
+		// is up; it waits for the chat's next message like one that just
+		// finished a turn.
+		e.clearStartup(id)
+	}
+	for {
+		if turnID != "" {
+			if err = e.turn(ctx, id, &current, a, client, frames, threadID, turnID, prep.Directory, turn); err != nil {
+				return
+			}
+			if !a.resident {
+				// The run ends with the turn; a chat still at the default
+				// title is named from the transcript alone (title.go).
+				e.autoTitle(parent, id, nil)
+				return
+			}
 		}
 		// The turn finished but the session stays open: settle the transcript,
 		// report idle, and wait for the chat's next message.

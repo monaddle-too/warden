@@ -11,19 +11,25 @@ import (
 // state (Chat.Spend, for the chat header and the workspace panel's sum),
 // and for the admin console the totals of today, the last seven days and
 // all time by provider, over every chat, archived ones included (GET
-// spend). Side questions and title one-shots are not turns and are not
-// counted. Codex reports tokens and no cost.
+// spend). Side questions (R2.19) count too — their one-shots are the
+// chat's spend as much as its turns — marked as asides (Asides,
+// AsideCostUSD) beside the turns; title one-shots (a fraction of a cent
+// each) are not counted. Codex reports tokens and no cost.
 
-// Spend is the sum of some turns: how many, their tokens (Input counts
-// the cached ones), and the provider's cost estimate where it gave one —
-// Priced says whether any turn did, so a zero cost reads right.
+// Spend is the sum of some turns and side questions: how many of each,
+// their tokens (Input counts the cached ones), and the provider's cost
+// estimate where it gave one — Priced says whether anything was priced,
+// so a zero cost reads right. AsideCostUSD is the side questions' share
+// of CostUSD.
 type Spend struct {
-	Turns   int     `json:"turns"`
-	Input   int64   `json:"input"`
-	Output  int64   `json:"output"`
-	Total   int64   `json:"total"`
-	CostUSD float64 `json:"costUSD"`
-	Priced  bool    `json:"priced"`
+	Turns        int     `json:"turns"`
+	Input        int64   `json:"input"`
+	Output       int64   `json:"output"`
+	Total        int64   `json:"total"`
+	CostUSD      float64 `json:"costUSD"`
+	Priced       bool    `json:"priced"`
+	Asides       int     `json:"asides,omitempty"`
+	AsideCostUSD float64 `json:"asideCostUSD,omitempty"`
 }
 
 // add sums one turn's usage in.
@@ -41,13 +47,37 @@ func (s *Spend) add(u *cv.Usage) {
 	}
 }
 
-// spendOf sums a chat's turn records.
-func spendOf(turns []cv.Turn) Spend {
+// addAside sums one answered side question in.
+func (s *Spend) addAside(a *cv.Aside) {
+	s.Asides++
+	s.Input += a.Input
+	s.Output += a.Output
+	s.Total += a.Input + a.Output
+	if a.CostUSD > 0 {
+		s.Priced = true
+		s.CostUSD += a.CostUSD
+		s.AsideCostUSD += a.CostUSD
+	}
+}
+
+// spendOf sums a chat's turn records and its answered side questions.
+func spendOf(c *Chat) Spend {
 	var s Spend
-	for i := range turns {
-		s.add(turns[i].Usage)
+	for i := range c.Conversation.Turns {
+		s.add(c.Conversation.Turns[i].Usage)
+	}
+	for _, v := range c.Conversation.Entries {
+		if asideCounts(v) {
+			s.addAside(v.Aside)
+		}
 	}
 	return s
+}
+
+// asideCounts reports whether entry v is a side question the model
+// answered (a failed or unanswered one cost nothing the CLI reported).
+func asideCounts(v cv.Entry) bool {
+	return v.Role == "aside" && v.Aside != nil && v.Aside.Status == "completed"
 }
 
 // SpendPeriod is the spend over a period: the sum, by provider, and the
@@ -106,6 +136,16 @@ func (e *Engine) Spend() SpendReport {
 				p.period.add(t.Usage)
 				by := p.period.Providers[provider]
 				by.add(t.Usage)
+				p.period.Providers[provider] = by
+				counted = true
+			}
+			for _, v := range c.Conversation.Entries {
+				if !asideCounts(v) || v.EndedAt < p.since {
+					continue
+				}
+				p.period.addAside(v.Aside)
+				by := p.period.Providers[provider]
+				by.addAside(v.Aside)
 				p.period.Providers[provider] = by
 				counted = true
 			}

@@ -173,9 +173,12 @@ type Fork struct {
 	MessageID string `json:"messageID,omitempty"`
 }
 
-// Aside is what a side question came to: Status running, completed or
+// Aside is what a side question came to: Status starting (the chat's
+// released session is being brought up for it), running, completed or
 // failed (Error says why), and the answer's cost and tokens as the
-// agent reported them (0 when it gave none).
+// agent reported them (0 when it gave none). Promoted is the ID of the
+// user message the question was later asked in chat as ("Ask in chat"),
+// "" until then.
 type Aside struct {
 	Status     string  `json:"status"`
 	Error      string  `json:"error,omitempty"`
@@ -183,6 +186,7 @@ type Aside struct {
 	Input      int64   `json:"input,omitempty"`
 	Output     int64   `json:"output,omitempty"`
 	DurationMS int64   `json:"durationMS,omitempty"`
+	Promoted   string  `json:"promoted,omitempty"`
 }
 
 // Compaction describes one compaction of the agent's context: Trigger is

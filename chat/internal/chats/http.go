@@ -340,6 +340,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = h.Engine.removeAttachment(parts[1], parts[3])
 	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "memory" && parts[3] == "write":
 		err = h.Engine.WriteMemory(r.Context(), parts[1], body.Scope, body.Path, body.Text, requester(r))
+	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "aside" && parts[4] == "promote":
+		// A side question asked in chat as a message of the requester's,
+		// its answer quoted (aside.go).
+		result, err = h.Engine.PromoteAside(parts[1], parts[3], requester(r))
 	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "queued" && parts[4] == "edit":
 		// A queued message's text and attachments replaced in place
 		// (queue.go); the edited entry comes back.
