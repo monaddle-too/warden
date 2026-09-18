@@ -177,9 +177,9 @@ func (a *App) scrollTo(body []string, i int) {
 }
 
 // viewSize is the width and the transcript rows the next frame will
-// have: the terminal's size less the status line, the composer and what
-// sits between them (the notice while scrolled; the menu is closed by
-// then), as frame computes them.
+// have: the terminal's size less the status bar's rows, the composer and
+// what sits between them (the notice while scrolled; the menu is closed
+// by then), as frame computes them.
 func (a *App) viewSize() (width, rows int) {
 	width, height := 100, 0
 	if a.Size != nil {
@@ -200,7 +200,8 @@ func (a *App) viewSize() (width, rows int) {
 		extra = extra[:height/2]
 	}
 	prompt, _, _ := a.promptLines(width, min(6, height/3))
-	return width, max(1, height-1-len(prompt)-len(extra))
+	status := a.statusRows(width, height)
+	return width, max(1, height-len(status)-len(prompt)-len(extra))
 }
 
 // entryOffset is the line at which entry id starts in the rendered
