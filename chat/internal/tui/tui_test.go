@@ -3408,3 +3408,73 @@ func TestTodoListIsALivePanel(t *testing.T) {
 		t.Fatal("todoDone")
 	}
 }
+
+// A burst of resize events (a window being dragged) reprints the
+// transcript once, after it settles, and only when the size changed.
+func TestResizeBurstReprintsOnce(t *testing.T) {
+	c := sampleChat()
+	c.Status = "idle"
+	c.Conversation.Entries[2].IsStreaming = false
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	var mu sync.Mutex
+	var out bytes.Buffer
+	w, h := 100, 30
+	size := func() (int, int) { mu.Lock(); defer mu.Unlock(); return w, h }
+	setSize := func(nw, nh int) { mu.Lock(); w, h = nw, nh; mu.Unlock() }
+	pr, pw := io.Pipe()
+	resize := make(chan struct{}, 1)
+	app := &App{Client: f.client(), ChatID: "chat1", Input: pr, Output: &syncWriter{w: &out, mu: &mu}, Size: size, Resize: resize, Now: time.Now}
+	old := resizeSettle
+	resizeSettle = 30 * time.Millisecond
+	defer func() { resizeSettle = old }()
+	done := make(chan error, 1)
+	go func() { done <- app.Run(context.Background()) }()
+	time.Sleep(150 * time.Millisecond)
+	count := func() int { mu.Lock(); defer mu.Unlock(); return strings.Count(out.String(), "\x1b[2J") }
+	if count() != 0 {
+		t.Fatal("the first paint cleared the screen")
+	}
+	setSize(80, 24)
+	for i := 0; i < 3; i++ {
+		resize <- struct{}{}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if n := count(); n != 1 {
+		t.Fatalf("a resize burst reprinted %d times", n)
+	}
+	resize <- struct{}{} // the same size again: nothing to reprint
+	time.Sleep(100 * time.Millisecond)
+	if n := count(); n != 1 {
+		t.Fatalf("an unchanged size reprinted: %d", n)
+	}
+	pw.Write([]byte{0x04}) // Ctrl+D quits
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	mu.Lock()
+	final := out.String()
+	mu.Unlock()
+	for _, mode := range []string{"\x1b[?1049", "\x1b[?1000", "\x1b[?1006", "\x1b[3J"} {
+		if strings.Contains(final, mode) {
+			t.Fatalf("Run wrote %q", mode)
+		}
+	}
+	if !strings.HasSuffix(final, "\x1b[?2004l\x1b[?25h\x1b[23;0t") || !strings.HasPrefix(final, "\x1b[?2004h\x1b[22;0t") {
+		t.Fatalf("Run's modes:\n%q", final)
+	}
+}
+
+// syncWriter serialises writes to a buffer read by the test.
+type syncWriter struct {
+	w  *bytes.Buffer
+	mu *sync.Mutex
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}

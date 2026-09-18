@@ -335,14 +335,41 @@ func (a *App) Run(ctx context.Context) error {
 			f(ctx)
 			a.draw()
 		case <-a.Resize:
-			// The terminal has reflowed what it shows; print it afresh.
-			a.redraw = true
+			// The terminal has reflowed what it shows; print it afresh —
+			// once the burst a window drag sends is over, and only when
+			// the size did change.
+			a.settleResize()
+			if w, h := a.size(); w != a.screen.width || h != a.screen.height {
+				a.redraw = true
+			}
 			a.draw()
 		case <-ticker.C:
 			a.draw() // clock, spinner, notices ageing
 		}
 	}
 	return nil
+}
+
+// resizeSettle is how long a resize waits for the next one before the
+// screen is reprinted: a window being dragged sends a signal per step.
+var resizeSettle = 150 * time.Millisecond
+
+// settleResize waits until resizeSettle has passed without another
+// resize event.
+func (a *App) settleResize() {
+	if resizeSettle <= 0 {
+		return
+	}
+	timer := time.NewTimer(resizeSettle)
+	defer timer.Stop()
+	for {
+		select {
+		case <-a.Resize:
+			timer.Reset(resizeSettle)
+		case <-timer.C:
+			return
+		}
+	}
 }
 
 // selectChat makes id the current chat: the screen is cleared and its
@@ -1778,11 +1805,12 @@ func (f Frame) tail() []string {
 // in the scrollback, the rows the live tail took at the last draw and the
 // cursor's row within it (draw moves up that far to rewrite the tail).
 type screen struct {
-	committed  []string
-	tail       int
-	cursorLine int
-	last       string // the tail's bytes as last written; an identical tail is not written again
-	painted    bool
+	committed     []string
+	tail          int
+	cursorLine    int
+	last          string // the tail's bytes as last written; an identical tail is not written again
+	painted       bool
+	width, height int // the size the last draw painted for
 }
 
 // visible is the chat as the transcript shows it: without tool steps and
@@ -2139,6 +2167,7 @@ func (a *App) draw() {
 	s.cursorLine = len(tail) - len(f.PromptLines) + f.CursorRow
 	s.last = t.String()
 	s.painted = true
+	s.width, s.height = width, height
 	a.prints = nil
 	a.redraw = false
 }
