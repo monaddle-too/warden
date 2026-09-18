@@ -38,8 +38,16 @@ const (
 	KeyWheelDown
 	KeyCtrlP
 	KeyCtrlN
+	KeyCtrlA
+	KeyCtrlE
+	KeyCtrlW // Ctrl+W or Alt+Backspace: delete the word before the cursor
+	KeyCtrlO
+	KeyCtrlR
+	KeyCtrlG
+	KeyShiftTab
 	KeyNewline // Alt+Enter or Ctrl+J: a line break inside the composer
 	KeyPaste   // bracketed paste; Text holds the pasted text
+	KeyEOF     // the input ended
 	KeyUnknown
 )
 
@@ -55,6 +63,11 @@ func DecodeKeys(buf []byte) (keys []Key, rest []byte) {
 			}
 			if buf[1] == '\r' || buf[1] == '\n' {
 				keys = append(keys, Key{Kind: KeyNewline}) // Alt+Enter
+				buf = buf[2:]
+				continue
+			}
+			if buf[1] == 0x7f || buf[1] == 0x08 {
+				keys = append(keys, Key{Kind: KeyCtrlW}) // Alt+Backspace
 				buf = buf[2:]
 				continue
 			}
@@ -123,6 +136,8 @@ func DecodeKeys(buf []byte) (keys []Key, rest []byte) {
 					keys = append(keys, Key{Kind: KeyPageUp})
 				case "6~":
 					keys = append(keys, Key{Kind: KeyPageDown})
+				case "Z":
+					keys = append(keys, Key{Kind: KeyShiftTab})
 				default:
 					keys = append(keys, Key{Kind: KeyUnknown})
 				}
@@ -161,6 +176,24 @@ func DecodeKeys(buf []byte) (keys []Key, rest []byte) {
 		case b == 0x0e:
 			keys = append(keys, Key{Kind: KeyCtrlN})
 			buf = buf[1:]
+		case b == 0x01:
+			keys = append(keys, Key{Kind: KeyCtrlA})
+			buf = buf[1:]
+		case b == 0x05:
+			keys = append(keys, Key{Kind: KeyCtrlE})
+			buf = buf[1:]
+		case b == 0x17:
+			keys = append(keys, Key{Kind: KeyCtrlW})
+			buf = buf[1:]
+		case b == 0x0f:
+			keys = append(keys, Key{Kind: KeyCtrlO})
+			buf = buf[1:]
+		case b == 0x12:
+			keys = append(keys, Key{Kind: KeyCtrlR})
+			buf = buf[1:]
+		case b == 0x07:
+			keys = append(keys, Key{Kind: KeyCtrlG})
+			buf = buf[1:]
 		case b == '\t':
 			keys = append(keys, Key{Kind: KeyTab})
 			buf = buf[1:]
@@ -183,7 +216,8 @@ func DecodeKeys(buf []byte) (keys []Key, rest []byte) {
 	return keys, nil
 }
 
-// Editor is a single-line composer with a cursor and history.
+// Editor is the composer: a buffer with a cursor (newlines allowed) and a
+// prompt history, browsed with Up/Down at the draft's edges or Ctrl+P/N.
 type Editor struct {
 	buf     []rune
 	cursor  int
@@ -201,15 +235,112 @@ func (e *Editor) Set(s string) {
 	e.hist = len(e.history)
 }
 
-// Submit returns the current text, records it in history and clears.
-func (e *Editor) Submit() string {
-	s := strings.TrimSpace(string(e.buf))
+// SetCursor moves the cursor to rune index n, clamped to the text.
+func (e *Editor) SetCursor(n int) {
+	e.cursor = max(0, min(n, len(e.buf)))
+}
+
+// History is the prompts recorded so far, oldest first.
+func (e *Editor) History() []string { return e.history }
+
+// SetHistory replaces the recorded prompts (loaded for a chat).
+func (e *Editor) SetHistory(h []string) {
+	e.history = append([]string(nil), h...)
+	e.hist = len(e.history)
+	e.draft = ""
+}
+
+// Remember records a prompt in history, skipping a repeat of the last one.
+func (e *Editor) Remember(s string) {
 	if s != "" && (len(e.history) == 0 || e.history[len(e.history)-1] != s) {
 		e.history = append(e.history, s)
 	}
+	e.hist = len(e.history)
+}
+
+// Submit returns the current text, records it in history and clears.
+func (e *Editor) Submit() string {
+	s := strings.TrimSpace(string(e.buf))
+	e.Remember(s)
+	e.buf, e.cursor, e.draft = nil, 0, ""
+	return s
+}
+
+// Clear drops the text without recording it.
+func (e *Editor) Clear() {
 	e.buf, e.cursor, e.draft = nil, 0, ""
 	e.hist = len(e.history)
-	return s
+}
+
+// lineBounds returns the rune range [start, end) of the line the cursor is on.
+func (e *Editor) lineBounds() (start, end int) {
+	start = e.cursor
+	for start > 0 && e.buf[start-1] != '\n' {
+		start--
+	}
+	end = e.cursor
+	for end < len(e.buf) && e.buf[end] != '\n' {
+		end++
+	}
+	return start, end
+}
+
+// historyPrev recalls the previous prompt; false when there is none.
+func (e *Editor) historyPrev() bool {
+	if len(e.history) == 0 || e.hist == 0 {
+		return false
+	}
+	if e.hist == len(e.history) {
+		e.draft = string(e.buf)
+	}
+	e.hist--
+	e.buf = []rune(e.history[e.hist])
+	e.cursor = len(e.buf)
+	return true
+}
+
+// historyNext moves toward the draft; false when not browsing.
+func (e *Editor) historyNext() bool {
+	if e.hist >= len(e.history) {
+		return false
+	}
+	e.hist++
+	if e.hist == len(e.history) {
+		e.buf = []rune(e.draft)
+	} else {
+		e.buf = []rune(e.history[e.hist])
+	}
+	e.cursor = len(e.buf)
+	return true
+}
+
+// moveLine moves the cursor a line up (-1) or down (+1), keeping the
+// column where it can; false when the cursor is already on the edge line.
+func (e *Editor) moveLine(delta int) bool {
+	start, end := e.lineBounds()
+	col := e.cursor - start
+	if delta < 0 {
+		if start == 0 {
+			return false
+		}
+		prevEnd := start - 1
+		prevStart := prevEnd
+		for prevStart > 0 && e.buf[prevStart-1] != '\n' {
+			prevStart--
+		}
+		e.cursor = prevStart + min(col, prevEnd-prevStart)
+		return true
+	}
+	if end >= len(e.buf) {
+		return false
+	}
+	nextStart := end + 1
+	nextEnd := nextStart
+	for nextEnd < len(e.buf) && e.buf[nextEnd] != '\n' {
+		nextEnd++
+	}
+	e.cursor = nextStart + min(col, nextEnd-nextStart)
+	return true
 }
 
 // Handle applies one key. It returns true when the key was consumed.
@@ -239,36 +370,43 @@ func (e *Editor) Handle(k Key) bool {
 		if e.cursor < len(e.buf) {
 			e.cursor++
 		}
-	case KeyHome:
-		e.cursor = 0
-	case KeyEnd:
-		e.cursor = len(e.buf)
+	case KeyHome, KeyCtrlA:
+		e.cursor, _ = e.lineBounds()
+	case KeyEnd, KeyCtrlE:
+		_, e.cursor = e.lineBounds()
 	case KeyCtrlU:
-		e.buf = e.buf[e.cursor:]
-		e.cursor = 0
+		// Delete from the line's start to the cursor (readline).
+		start, _ := e.lineBounds()
+		e.buf = append(e.buf[:start], e.buf[e.cursor:]...)
+		e.cursor = start
 	case KeyCtrlK:
-		e.buf = e.buf[:e.cursor]
-	case KeyUp, KeyCtrlP:
-		if len(e.history) == 0 || e.hist == 0 {
-			return true
+		_, end := e.lineBounds()
+		e.buf = append(e.buf[:e.cursor], e.buf[end:]...)
+	case KeyCtrlW:
+		// Delete the word before the cursor: trailing spaces, then the run
+		// of non-spaces, never past the line's start.
+		start, _ := e.lineBounds()
+		i := e.cursor
+		for i > start && e.buf[i-1] == ' ' {
+			i--
 		}
-		if e.hist == len(e.history) {
-			e.draft = string(e.buf)
+		for i > start && e.buf[i-1] != ' ' {
+			i--
 		}
-		e.hist--
-		e.buf = []rune(e.history[e.hist])
-		e.cursor = len(e.buf)
-	case KeyDown, KeyCtrlN:
-		if e.hist >= len(e.history) {
-			return true
+		e.buf = append(e.buf[:i], e.buf[e.cursor:]...)
+		e.cursor = i
+	case KeyUp:
+		if !e.moveLine(-1) {
+			e.historyPrev()
 		}
-		e.hist++
-		if e.hist == len(e.history) {
-			e.buf = []rune(e.draft)
-		} else {
-			e.buf = []rune(e.history[e.hist])
+	case KeyDown:
+		if !e.moveLine(1) {
+			e.historyNext()
 		}
-		e.cursor = len(e.buf)
+	case KeyCtrlP:
+		e.historyPrev()
+	case KeyCtrlN:
+		e.historyNext()
 	default:
 		return false
 	}

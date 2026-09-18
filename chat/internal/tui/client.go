@@ -12,7 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -26,15 +28,76 @@ type Entry struct {
 	Role        string  `json:"role"`
 	Text        string  `json:"text"`
 	Detail      string  `json:"detail"`
+	TurnID      *string `json:"turnID,omitempty"`
 	CreatedAt   float64 `json:"createdAt"`
-	EndedAt     float64 `json:"endedAt"`
+	EndedAt     float64 `json:"endedAt,omitempty"`
 	IsStreaming bool    `json:"isStreaming"`
 	Delivery    string  `json:"delivery"`
 	Sender      *struct {
 		PrincipalID string `json:"principalID"`
 		Email       string `json:"email"`
 		Name        string `json:"name"`
-	} `json:"sender"`
+	} `json:"sender,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment is one file sent with a user message (conversation.Attachment).
+type Attachment struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+	Size int64  `json:"size"`
+}
+
+// Turn and Usage mirror conversation.Turn: what one agent turn took.
+type Turn struct {
+	ID        string  `json:"id"`
+	StartedAt float64 `json:"startedAt,omitempty"`
+	EndedAt   float64 `json:"endedAt,omitempty"`
+	Usage     *Usage  `json:"usage,omitempty"`
+}
+
+type Usage struct {
+	Input      int64   `json:"input"`
+	Cached     int64   `json:"cached"`
+	CacheWrite int64   `json:"cacheWrite,omitempty"`
+	Output     int64   `json:"output"`
+	Reasoning  int64   `json:"reasoning,omitempty"`
+	Total      int64   `json:"total"`
+	CostUSD    float64 `json:"costUSD,omitempty"`
+}
+
+// Conversation is the chat's transcript. Raw keeps each entry's JSON as the
+// service sent it, so an export carries fields this client does not model.
+type Conversation struct {
+	ThreadID     *string           `json:"threadID,omitempty"`
+	ActiveTurnID *string           `json:"activeTurnID,omitempty"`
+	Entries      []Entry           `json:"entries"`
+	Turns        []Turn            `json:"turns,omitempty"`
+	Raw          []json.RawMessage `json:"-"`
+}
+
+func (c *Conversation) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		ThreadID     *string           `json:"threadID"`
+		ActiveTurnID *string           `json:"activeTurnID"`
+		Entries      []json.RawMessage `json:"entries"`
+		Turns        []Turn            `json:"turns"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	c.ThreadID, c.ActiveTurnID, c.Turns, c.Raw = raw.ThreadID, raw.ActiveTurnID, raw.Turns, raw.Entries
+	c.Entries = make([]Entry, 0, len(raw.Entries))
+	for _, r := range raw.Entries {
+		var e Entry
+		if err := json.Unmarshal(r, &e); err != nil {
+			return err
+		}
+		c.Entries = append(c.Entries, e)
+	}
+	return nil
 }
 
 type Question struct {
@@ -72,18 +135,17 @@ func (a Approval) Questions() []Question {
 }
 
 type Chat struct {
-	ID           string `json:"id"`
-	Title        string `json:"title"`
-	Provider     string `json:"provider"`
-	Model        string `json:"model"`
-	SandboxID    string `json:"sandboxID"`
-	Status       string `json:"status"`
-	Error        string `json:"error"`
-	Archived     bool   `json:"archived"`
-	Conversation struct {
-		Entries []Entry `json:"entries"`
-	} `json:"conversation"`
-	Approvals []Approval `json:"approvals"`
+	ID           string       `json:"id"`
+	Title        string       `json:"title"`
+	Provider     string       `json:"provider"`
+	Model        string       `json:"model"`
+	SandboxID    string       `json:"sandboxID"`
+	Repository   string       `json:"repository,omitempty"`
+	Status       string       `json:"status"`
+	Error        string       `json:"error,omitempty"`
+	Archived     bool         `json:"archived"`
+	Conversation Conversation `json:"conversation"`
+	Approvals    []Approval   `json:"approvals"`
 	// Startup is where the chat's start is while its message waits for the
 	// agent: the stage and the runtime's detail.
 	Startup *struct {
@@ -101,6 +163,21 @@ func (c *Chat) Pending() []Approval {
 		}
 	}
 	return out
+}
+
+// Running reports whether a turn is in progress (or about to be).
+func (c *Chat) Running() bool {
+	return c.Status == "running" || c.Status == "queued" || c.Status == "stopping"
+}
+
+// Turn finds a turn record by id.
+func (c *Chat) Turn(id string) *Turn {
+	for i := range c.Conversation.Turns {
+		if c.Conversation.Turns[i].ID == id {
+			return &c.Conversation.Turns[i]
+		}
+	}
+	return nil
 }
 
 type Port struct {
@@ -208,8 +285,84 @@ func (c *Client) Create(ctx context.Context, title, provider, model, sandboxID s
 	return res.ID, nil
 }
 
-func (c *Client) Message(ctx context.Context, chatID, text, messageID string) error {
-	return c.do(ctx, "POST", "chats/"+chatID+"/message", map[string]any{"text": text, "id": messageID}, nil)
+// Message sends text to the chat; attachments are the IDs of uploads
+// (Upload) the message carries.
+func (c *Client) Message(ctx context.Context, chatID, text, messageID string, attachments ...string) error {
+	body := map[string]any{"text": text, "id": messageID}
+	if len(attachments) > 0 {
+		body["attachments"] = attachments
+	}
+	return c.do(ctx, "POST", "chats/"+chatID+"/message", body, nil)
+}
+
+// Upload stores one file for the chat (multipart field "file", as the web
+// composer sends it) and returns its record; a message then names its ID.
+func (c *Client) Upload(ctx context.Context, chatID, name string, data []byte) (Attachment, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("file", name)
+	if err != nil {
+		return Attachment{}, err
+	}
+	part.Write(data)
+	mw.Close()
+	req, err := http.NewRequestWithContext(ctx, "POST", c.Base+"/api/chats/"+chatID+"/attachments", &buf)
+	if err != nil {
+		return Attachment{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	client := c.HTTP
+	if client == nil {
+		client = &http.Client{Timeout: 60 * time.Second}
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return Attachment{}, err
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return Attachment{}, err
+	}
+	if res.StatusCode >= 400 {
+		var e struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(raw, &e) == nil && e.Error != "" {
+			return Attachment{}, errors.New(e.Error)
+		}
+		return Attachment{}, fmt.Errorf("upload: %s: %s", res.Status, strings.TrimSpace(string(raw)))
+	}
+	var a Attachment
+	if err := json.Unmarshal(raw, &a); err != nil || a.ID == "" {
+		return Attachment{}, errors.New("upload: unexpected answer")
+	}
+	return a, nil
+}
+
+// RemoveAttachment forgets an upload no message has sent.
+func (c *Client) RemoveAttachment(ctx context.Context, chatID, id string) error {
+	return c.do(ctx, "POST", "chats/"+chatID+"/attachments/"+id+"/remove", map[string]any{}, nil)
+}
+
+// Paths completes a partial workspace path (the composer's @-mentions):
+// the guest's listing for query, at most 50 names, directories with a
+// trailing slash. It needs the sandbox running.
+func (c *Client) Paths(ctx context.Context, chatID, query string) ([]string, error) {
+	var res struct {
+		Paths []string `json:"paths"`
+	}
+	if err := c.do(ctx, "GET", "chats/"+chatID+"/paths?q="+url.QueryEscape(query), nil, &res); err != nil {
+		return nil, err
+	}
+	return res.Paths, nil
+}
+
+// DeleteEnvironment deletes a workspace: its sandbox and files go, its
+// chats are archived (what the web's Delete does).
+func (c *Client) DeleteEnvironment(ctx context.Context, sandboxID string) error {
+	return c.do(ctx, "POST", "environments/"+sandboxID+"/delete", map[string]any{}, nil)
 }
 
 func (c *Client) Stop(ctx context.Context, chatID string) error {
