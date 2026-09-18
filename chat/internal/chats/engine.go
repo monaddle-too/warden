@@ -1389,7 +1389,10 @@ func (e *Engine) request(ctx context.Context, c *Chat, client *agent.Client, f a
 			if decision = chat.decide(tool, input); decision != "" {
 				return nil
 			}
-			params := map[string]any{"tool": tool, "input": input, "always": RuleFor(tool, input).Label()}
+			params := map[string]any{"tool": tool, "input": input}
+			if tool != "ExitPlanMode" {
+				params["always"] = RuleFor(tool, input).Label() // a plan is never remembered
+			}
 			if entry := permissionEntry(f.Params); entry != nil {
 				params["entry"] = entry
 			}

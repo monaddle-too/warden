@@ -433,10 +433,44 @@ Design (as implemented):
 7. Plan card answers: approve with `auto`, approve with `ask`, or keep
    planning with feedback (a deny whose message is the feedback).
 
-Decision left to the owner: which modes a collaborator (non-owner) may
-set — see the report.
+8. A denial's message reaches the model inside the CLI's own rejection
+   wording ("The user doesn't want to proceed with this tool use… To
+   tell you how to proceed, the user said: …"), with a plan-mode variant:
+   live, a bare message came back to the model as the tool's output and
+   it took it for a prompt injection and retried the call; in the CLI's
+   wording it followed the instruction.
 
-Progress: implementation below; verification recorded when done.
+Decision left to the owner: which modes a collaborator (non-owner) may
+set. Today `chats/{id}/mode` and the approval answers are admitted like
+every chat route (the edge's role check decides who reaches them);
+nothing distinguishes owner from collaborator per mode. Options: (a)
+everyone with chat access sets any mode; (b) collaborators may only
+tighten (auto → ask → plan) and answer asks, the owner alone loosens
+and answers "allow always"; (c) modes and permission answers are
+owner-only, collaborators only send messages.
+
+Verified (2026-09-17): `gofmt -l`, `go vet ./...`, `go test ./...`
+(`agent/claude_test.go`: ask forwarded and typed, deny wording, plan
+approval with `setMode`, `permissions/set` deduped and refused, status
+reported; `chats/permissions_test.go` through a scripted stream-json
+CLI: rules, the route, asks per mode with allow-always and a denial,
+plan feedback and approval into ask, the CLI's own plan-mode status and
+a live push; `tui/tui_test.go`: Shift-Tab decoding and cycling, `/mode`,
+the cards and typed answers); `pnpm build`, `pnpm test` (123 tests;
+`composer.test.ts` `/mode`, `permissions.test.ts`). Live on a cloned
+home (`~/.warden-p5`, pinned CLI 2.1.272): an ask-mode chat — `touch`
+asked (allowed once), `python3 -c` asked (allowed always: the rule
+answered the next `python3` without asking, also after a Warden
+restart), Write asked with its diff (denied with a message: the model
+renamed the file as told), edits allowed always; a plan-mode chat — the
+plan card, feedback sent it back revised, approval into auto ran the
+edits and a command without asks; a mid-turn switch auto → plan during
+a `sleep` — the CLI accepted `set_permission_mode` inside the turn and
+the model planned instead of writing, approval into ask made the Write
+ask; the web UI (selector, `/mode plan` from the composer, the command
+card, the diff card, the plan card rendered as markdown, the markers);
+the TUI in a pty (Shift-Tab auto → ask → plan, `/mode`, the status
+line, the command and diff cards, `a`, `n <message>`, `y`).
 - [ ] 5 Slash-command pass-through.
 - [ ] 6 TUI catch-up.
 - [ ] 7 Workspace `.claude/` loading and policy.

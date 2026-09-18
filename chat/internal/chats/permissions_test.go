@@ -346,7 +346,7 @@ func TestPlanApproval(t *testing.T) {
 		t.Fatal(w.controlsSoFar())
 	}
 	ap := pendingApproval(t, e, id)
-	if ap.Params["tool"] != "ExitPlanMode" || ap.Params["plan"] != "# Plan\n\n1. Do it" {
+	if ap.Params["tool"] != "ExitPlanMode" || ap.Params["plan"] != "# Plan\n\n1. Do it" || ap.Params["always"] != nil {
 		t.Fatalf("%+v", ap.Params)
 	}
 	if err := e.Answer(id, ap.ID, Answer{Allow: false, Message: "add tests"}, cv.Actor{PrincipalID: "owner"}); err != nil {
