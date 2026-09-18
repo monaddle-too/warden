@@ -31,6 +31,7 @@ func chatFixture(t *testing.T) (configPath string, calls func() []string) {
 		Approvals []map[string]any `json:"approvals"`
 		Conv      struct {
 			Entries []map[string]any `json:"entries"`
+			Turns   []map[string]any `json:"turns,omitempty"`
 		} `json:"conversation"`
 	}
 	chats := []*chat{{ID: "abc123", Title: "First", Provider: "codex", Status: "idle", Approvals: []map[string]any{{"id": "ap1", "method": "warden/ports/bind", "state": "pending", "params": map[string]any{"port": 8000}}}}}
@@ -69,8 +70,12 @@ func chatFixture(t *testing.T) (configPath string, calls func() []string) {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
 			mu.Lock()
+			// The message keeps its ID and opens a turn the reply belongs
+			// to, as the service records it; the turn is over at once.
 			mid, _ := body["id"].(string)
-			chats[0].Conv.Entries = append(chats[0].Conv.Entries, map[string]any{"id": "u-" + mid, "role": "user", "text": body["text"]}, map[string]any{"id": "a-" + mid, "role": "assistant", "text": "reply to " + body["text"].(string)})
+			turn := "t-" + mid
+			chats[0].Conv.Entries = append(chats[0].Conv.Entries, map[string]any{"id": mid, "role": "user", "text": body["text"], "delivery": "sent", "turnID": turn}, map[string]any{"id": "a-" + mid, "role": "assistant", "text": "reply to " + body["text"].(string), "turnID": turn})
+			chats[0].Conv.Turns = append(chats[0].Conv.Turns, map[string]any{"id": turn, "startedAt": 1, "endedAt": 2})
 			mu.Unlock()
 			w.Write([]byte(`{"ok":true}`))
 		case strings.Contains(path, "/approvals/"):
@@ -106,9 +111,16 @@ func TestChatListNewSendApprove(t *testing.T) {
 		}
 	}
 	// Flags may follow the positional arguments, as people type them.
+	// --wait follows the message's own turn: the earlier "hello world"
+	// replies are not reprinted.
 	code, out = runCLI("", false, "chat", "send", "1", "with wait", "--wait", "--config", configPath)
-	if code != 0 || !strings.Contains(out, "codex: reply to with wait") || !strings.Contains(out, "approval pending (warden/ports/bind)") {
+	if code != 0 || !strings.Contains(out, "you: with wait") || !strings.Contains(out, "codex: reply to with wait") || strings.Contains(out, "reply to hello") || !strings.Contains(out, "approval pending (warden/ports/bind)") {
 		t.Fatalf("send --wait (%d):\n%s", code, out)
+	}
+	// --wait-all follows the chat until it is idle.
+	code, out = runCLI("", false, "chat", "send", "1", "wait for all", "--wait-all", "--config", configPath)
+	if code != 0 || !strings.Contains(out, "codex: reply to wait for all") {
+		t.Fatalf("send --wait-all (%d):\n%s", code, out)
 	}
 	code, out = runCLI("", false, "chat", "approve", "--config", configPath, "abc123")
 	if code != 0 || !strings.Contains(out, "allowed warden/ports/bind") {

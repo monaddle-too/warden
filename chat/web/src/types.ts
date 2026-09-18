@@ -36,6 +36,16 @@ export type Entry = {
      answered from a copy of the agent's session (`detail`), its cost,
      never sent to the session. */
   aside?: Aside;
+  /* What a rewind marker records: the message the chat went back to
+     before, the scope, how the session followed and the checkpoint of
+     the workspace as it was before a code rewind (`before`; rewind.ts). */
+  rewind?: RewindMark;
+};
+export type RewindMark = {
+  messageID: string;
+  what: "code" | "conversation" | "both";
+  conversation?: "rewound" | "pending" | "fresh" | "";
+  before?: string;
 };
 export type Fork = { chatID: string; title?: string; messageID?: string };
 export type Aside = {
@@ -77,7 +87,8 @@ export type Context = {
    `query` a search's pattern or a fetch's URL, `input` the call's input
    where the card shows it as given (a todo list's items), `background`
    a command or subagent the agent runs in the background, whose card
-   stays running until the task reports back. */
+   stays running until the task reports back, `progress` a running
+   subagent's own account of its work as the agent reports it. */
 export type Tool = {
   kind: ToolKind;
   name?: string;
@@ -88,6 +99,17 @@ export type Tool = {
   query?: string;
   input?: Record<string, unknown>;
   background?: boolean;
+  progress?: Progress;
+};
+/* What a running subagent has done so far (conversation.Progress): what
+   it is doing now in the agent's words, the tool calls it made, the tool
+   it used last, its time and tokens. */
+export type Progress = {
+  activity?: string;
+  toolCalls: number;
+  lastTool?: string;
+  durationMS?: number;
+  tokens?: number;
 };
 export type ToolKind =
   | "command"
@@ -262,6 +284,9 @@ export type Chat = {
   /* The chat was forked from another and its first run still has to copy
      the source's session. */
   forkSession?: boolean;
+  /* The rewind marker whose conversation rewind can still be undone (the
+     removed transcript is kept until the next turn; rewind.ts). */
+  undoRewind?: string;
   /* How the chat got its title: absent while it still has the default one
      and waits to be named from its first exchange, "auto" once it was,
      "manual" once a person named it (chats/title.go). */

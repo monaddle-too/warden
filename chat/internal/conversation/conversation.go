@@ -71,7 +71,7 @@ func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) 
 		for _, p := range agent.Array(item["paths"]) {
 			paths = append(paths, agent.String(p))
 		}
-		e.Tool = &Tool{Kind: agent.String(item["kind"]), Name: agent.String(item["tool"]), Status: toolStatus(item), Paths: paths, Query: agent.String(item["query"]), Input: agent.Map(item["input"]), Background: item["background"] == true}
+		e.Tool = &Tool{Kind: agent.String(item["kind"]), Name: agent.String(item["tool"]), Status: toolStatus(item), Paths: paths, Query: agent.String(item["query"]), Input: agent.Map(item["input"]), Background: item["background"] == true, Progress: ProgressFrom(agent.Map(item["progress"]))}
 		if e.Tool.Kind == "" {
 			e.Tool.Kind = "other"
 		}

@@ -1,13 +1,15 @@
 /* The message queue and edit-and-resend: the pure parts
-   (docs/claude-parity.md, item 10).
+   (docs/claude-parity.md, item 10 and round 2 D).
 
    A message sent while the agent's turn runs is held by Warden as a user
    entry whose delivery is "queued", in transcript order, and becomes its
-   own turn once the turn ends. Until then it can be withdrawn, or edited:
-   an edit withdraws it into the composer (Claude Code's ↑ pops the queued
-   message into the input), and sending it again puts it at the end of the
-   queue. Stop holds the queue: the interrupted chat keeps its queued
-   messages until Send on a card, or the next message, lets them go.
+   own turn once the turn ends. Until then it can be withdrawn, or edited
+   in place on its card (Claude Code's ↑ edits the last queued one): the
+   edit keeps the message's slot and ID, and a message the agent got
+   meanwhile refuses it. Stop holds the queue: the interrupted chat keeps
+   its queued messages until Send on a card, or the next message, lets
+   them go; a `!` command or a `#` note runs beside the held queue and
+   leaves it held, since neither is addressed to the agent.
 
    Editing a message the agent already got means going back: sending the
    edit rewinds the conversation to before the message (the code too, if
@@ -118,4 +120,17 @@ export function queueHint(
     return `${count} held — sent with your next message, or with Send on the card`;
   const editable = lastQueued(chat.conversation.entries, me);
   return `${count} queued · will send in order after this turn${editable ? " · ↑ edits the last one" : ""}`;
+}
+
+/* The composer's hint for a `!` command or `#` note while the queue is
+   held: it runs beside the queue and leaves it held. "" when the queue
+   is not held. */
+export function heldHint(
+  chat: Pick<Chat, "status"> & { conversation: { entries: Entry[] } },
+  kind: "shell" | "memory",
+): string {
+  if (!queueHeld(chat)) return "";
+  const n = queuedMessages(chat.conversation.entries).length;
+  const what = kind === "shell" ? "The command runs" : "The note is added";
+  return `${what} beside the held queue: ${n} message${n === 1 ? " stays" : "s stay"} held until Send on a card or your next message`;
 }

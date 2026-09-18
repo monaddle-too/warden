@@ -11,7 +11,9 @@ import (
 
 // Checkpoint is the runner's record of one workspace snapshot: the state
 // of a sandbox's workspace before the user turn ID names (the message's
-// ID, which is the checkpoint's). The snapshot is a git tree of the
+// ID, which is the checkpoint's), or as it was before a restore that was
+// asked to record it (Request.Before, the rewind marker's ID). The
+// snapshot is a git tree of the
 // workspace — tracked and untracked files, ignored ones and .warden/ left
 // out — held by a root commit under refs/warden/checkpoints/<ID> in the
 // workspace's own repository (Store "repository") or, for a workspace
@@ -41,11 +43,13 @@ type WorkspaceChanges struct {
 
 // WorkspaceRestore is what a restore changed in the workspace: the paths
 // written back from the checkpoint and the ones removed because the
-// checkpoint did not have them.
+// checkpoint did not have them. Before is the checkpoint the restore
+// recorded of the workspace as it was, when asked to (Request.Before).
 type WorkspaceRestore struct {
-	Checkpoint Checkpoint `json:"checkpoint"`
-	Restored   []string   `json:"restored"`
-	Removed    []string   `json:"removed"`
+	Checkpoint Checkpoint  `json:"checkpoint"`
+	Restored   []string    `json:"restored"`
+	Removed    []string    `json:"removed"`
+	Before     *Checkpoint `json:"before,omitempty"`
 }
 
 // maxCheckpoints bounds the records kept per sandbox; the oldest go first,
@@ -136,11 +140,20 @@ finally: shutil.rmtree(tmp,ignore_errors=True)
 // checkpoint's tree (through a second temporary index), the ones the
 // checkpoint lacks removed. Files git ignores, and .warden/, are outside
 // both trees and stay as they are; a nested repository (a gitlink) is
-// skipped. Directories emptied by a removal are removed too.
-const restoreScript = checkpointCommon + `cid,commit=sys.argv[2:4]
+// skipped. Directories emptied by a removal are removed too. With argv[4]
+// a checkpoint ID (not "-"), the snapshot of the workspace as it was is
+// recorded under it first (argv[5] and argv[6] the previous checkpoint's
+// tree and commit, reused when equal), so the restore can be undone.
+const restoreScript = checkpointCommon + `cid,commit,bid,prev_tree,prev_commit=sys.argv[2:7]
 try:
  assert git('rev-parse','--verify','--quiet','refs/warden/checkpoints/'+cid+'^{commit}').decode().strip()==commit,'checkpoint was altered in the workspace'
  now=snapshot()
+ before=None
+ if bid!='-':
+  changed=now!=prev_tree or prev_commit=='-'
+  bcommit=git('commit-tree',now,'-m','Warden checkpoint '+bid).decode().strip() if changed else prev_commit
+  git('update-ref','refs/warden/checkpoints/'+bid,bcommit)
+  before={'store':store,'commit':bcommit,'tree':now,'changed':changed}
  target=git('rev-parse',commit+'^{tree}').decode().strip()
  raw=git('diff-tree','-r','--no-renames','-z','--raw',now,target)
  fields=raw.split(b'\0')
@@ -170,7 +183,7 @@ try:
    full=os.path.join(root,path)
    if os.path.isdir(full) and not os.path.islink(full): shutil.rmtree(full)
   git('checkout-index','-f','-z','--stdin',input=b'\0'.join(p.encode('utf-8','surrogateescape') for p in restore)+b'\0')
- print(json.dumps({'restored':sorted(restore),'removed':sorted(remove)}))
+ print(json.dumps({'restored':sorted(restore),'removed':sorted(remove),'before':before}))
 finally: shutil.rmtree(tmp,ignore_errors=True)
 `
 
@@ -254,13 +267,37 @@ func (w *Worker) checkpointOp(ctx context.Context, s *managedSandbox, r Request)
 		if !ok {
 			return Response{}, errors.New("no checkpoint was recorded at this message")
 		}
-		result, err := exec(restoreScript, cp.ID, cp.Commit)
+		if r.Before != "" && !checkpointID.MatchString(r.Before) {
+			return Response{}, errors.New("a checkpoint ID is required")
+		}
+		previous := w.lastCheckpoint(s)
+		result, err := exec(restoreScript, cp.ID, cp.Commit, orDash(r.Before), orDash(previous.Tree), orDash(previous.Commit))
 		if err != nil {
 			return Response{}, errors.New("could not restore the checkpoint: " + checkpointReason(err))
 		}
 		restore := WorkspaceRestore{Checkpoint: cp, Restored: []string{}, Removed: []string{}}
 		if e1, e2 := json.Unmarshal(result["restored"], &restore.Restored), json.Unmarshal(result["removed"], &restore.Removed); e1 != nil || e2 != nil {
 			return Response{}, errors.New("invalid sandbox restore response")
+		}
+		if r.Before != "" {
+			// The workspace as it was, recorded like any checkpoint so a
+			// later restore of it verifies the ref the same way.
+			var before struct {
+				Store, Commit, Tree string
+				Changed             bool
+			}
+			if err := json.Unmarshal(result["before"], &before); err != nil || !commit.MatchString(before.Commit) || !commit.MatchString(before.Tree) || (before.Store != "repository" && before.Store != "private") {
+				return Response{}, errors.New("invalid sandbox restore response")
+			}
+			if s.Generation != generation {
+				return Response{}, errors.New("workspace changed while restoring; retry")
+			}
+			bcp := Checkpoint{ID: r.Before, ChatID: r.ChatID, Commit: before.Commit, Tree: before.Tree, Store: before.Store, Changed: before.Changed, At: w.now().UTC()}
+			w.recordCheckpoint(s, bcp)
+			if err := w.saveManagedLocked(); err != nil {
+				return Response{}, err
+			}
+			restore.Before = &bcp
 		}
 		s.LastActivity = w.now()
 		return Response{Restore: &restore}, nil
