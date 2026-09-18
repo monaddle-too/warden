@@ -436,6 +436,40 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [ ] 14 Project MCP, OAuth, plugins.
 - [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
 
+### Round 2 F: TUI vim mode, attachments and paste, unread
+
+Branch `feat/parity-r2-f-tui`, worktree `.local/warden-parity-r2-f-tui`,
+from main e5bf597 (2026-09-18). TUI only: R2.16 vim mode, R2.17
+attachments and paste, R2.18 unread markers and jump. No new
+dependencies (the module proxy is unreachable); vim is its own state
+machine over the composer's buffer.
+
+Steps:
+
+1. `tui/vim.go`: `/vim on|off` (kept in `<state>/tui/vim` beside the
+   bell), insert mode is today's editor, Esc enters normal mode; normal
+   mode motions `h j k l w b e 0 $ ^ gg G` with counts, operators `d c y`
+   over them and `dd cc yy x X p P`, `i a I A o O`, `u` / Ctrl-R over a
+   snapshot stack, `.` repeats the last change, `:` line (`:w` sends,
+   `:q` quits, `:wq`, `:set novim`), `/` searches the transcript
+   (item 6's `/find`), Enter sends; `-- INSERT --` / `-- NORMAL --` in
+   the status bar. `vim_test.go` table tests.
+2. `tui/attach.go`: `/attach a b c` (several paths, local globs, the
+   service's limits), a local `@./path` or `@~/path` mention in the
+   draft attached on send (workspace `@path` completion unchanged;
+   local prefixes complete from this machine), `/attachments` with
+   sizes, `/paste [N]` previewing a collapsed paste in a pager, Ctrl-P
+   on a placeholder cycling the preview, a chip listing the pastes.
+3. `tui/unread.go`: the last entry seen per chat in
+   `<state>/tui/seen.json`, `•` and a count in `/chats` and the
+   `/switch` menu, a `── new ──` divider before the first unseen entry
+   on switch (the view opens there when the stretch is longer than the
+   screen), `G` (vim) / End / `/bottom`, and `N unread` in the status
+   bar when the chat is idle.
+4. Tests, feature map, live check on a cloned home in a pty, merge.
+
+Progress: started 2026-09-18.
+
 ### Round 2 B: permission rules
 
 Branch `feat/parity-r2-b-rules`, worktree `.local/warden-parity-r2-b-rules`,
