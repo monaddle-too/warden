@@ -343,8 +343,8 @@ func TestWithdrawQueuedHelper(t *testing.T) {
 		{ID: "c", Role: "user", Delivery: "queued"},
 		{ID: "d", Role: "user", Delivery: "queued"},
 	}}}
-	if n := withdrawQueued(c); n != 2 || len(c.Conversation.Entries) != 2 || c.Conversation.Entries[1].ID != "b" {
-		t.Fatalf("withdrawQueued: %d %+v", n, c.Conversation.Entries)
+	if gone := withdrawQueued(c); len(gone) != 2 || gone[0].ID != "c" || gone[1].ID != "d" || len(c.Conversation.Entries) != 2 || c.Conversation.Entries[1].ID != "b" {
+		t.Fatalf("withdrawQueued: %+v %+v", gone, c.Conversation.Entries)
 	}
 	if queuedLeft(c) {
 		t.Fatal("queuedLeft after withdrawing all")

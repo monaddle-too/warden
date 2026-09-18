@@ -462,6 +462,8 @@ func TestMultiLineNoticesArePrintedOnce(t *testing.T) {
 // fakeServer is a minimal warden-chat: state, chats, messages, approvals,
 // and an event stream that emits the current state whenever it changes.
 type fakeServer struct {
+	// tail is what an undo-rewind puts back (the rewind tests set it).
+	tail    []Entry
 	mu      sync.Mutex
 	state   State
 	calls   []string
@@ -582,6 +584,30 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/remove"):
 		w.Write([]byte(`{"ok":true}`))
+	case strings.Contains(path, "/queued/") && strings.HasSuffix(path, "/edit"):
+		// A queued message's text replaced in place; a sent one refused.
+		var body struct{ Text string }
+		json.NewDecoder(r.Body).Decode(&body)
+		parts := strings.Split(path, "/")
+		f.mu.Lock()
+		c := f.state.Chat(parts[1])
+		for i := range c.Conversation.Entries {
+			e := &c.Conversation.Entries[i]
+			if e.ID != parts[3] {
+				continue
+			}
+			if e.Delivery != "queued" {
+				f.mu.Unlock()
+				http.Error(w, `{"error":"that message was already sent to the agent"}`, 409)
+				return
+			}
+			e.Text = body.Text
+			f.mu.Unlock()
+			json.NewEncoder(w).Encode(*e)
+			return
+		}
+		f.mu.Unlock()
+		http.Error(w, `{"error":"no such message in this chat"}`, 409)
 	case strings.HasSuffix(path, "/edit"):
 		var body struct {
 			Title    string `json:"title"`
@@ -906,6 +932,39 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mu.Unlock()
 		http.Error(w, `{"error":"no such message in this chat"}`, 409)
+	case strings.HasSuffix(path, "/undo-rewind"):
+		// The last rewind's removed entries back in place of the marker.
+		var body struct {
+			ID   string
+			Code bool
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/undo-rewind")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		if c.UndoRewind == "" || c.UndoRewind != body.ID {
+			f.mu.Unlock()
+			http.Error(w, `{"error":"this rewind can no longer be undone"}`, 409)
+			return
+		}
+		var kept []Entry
+		for _, e := range c.Conversation.Entries {
+			if e.ID == body.ID {
+				kept = append(kept, f.tail...)
+				continue
+			}
+			kept = append(kept, e)
+		}
+		c.Conversation.Entries = append(kept, Entry{ID: "undone", Role: "system", Text: "Rewind undone"})
+		c.UndoRewind = ""
+		n := len(f.tail)
+		f.tail = nil
+		f.mu.Unlock()
+		code := "kept"
+		if body.Code {
+			code = "restored"
+		}
+		json.NewEncoder(w).Encode(UndoResult{MessageID: "u2", What: "both", Entries: n, Session: "fresh", Code: code, Restored: []string{"a.txt"}})
 	case strings.HasSuffix(path, "/send-queued"):
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/send-queued")
 		f.mu.Lock()
@@ -938,12 +997,148 @@ func TestFollowPrintsRepliesUntilIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	status, err := Follow(ctx, client, "c1", &out, nil)
+	status, err := Follow(ctx, client, "c1", &out, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if status != "idle" || !strings.Contains(out.String(), "you: hello there") || !strings.Contains(out.String(), "codex: echo: hello there") {
 		t.Fatalf("status %q output:\n%s", status, out.String())
+	}
+}
+
+// Following one message (`warden chat send --wait`) prints that message's
+// own turn and returns when it ends, however many messages are queued
+// before or after it; the queue's other turns are not waited for.
+func TestFollowOneMessageWaitsForItsOwnTurnOnly(t *testing.T) {
+	t0, t1, t2 := "t0", "t1", "t2"
+	chat := &Chat{ID: "c1", Title: "one", Provider: "codex", Status: "running", Conversation: Conversation{
+		Entries: []Entry{
+			{ID: "u0", Role: "user", Text: "earlier", Delivery: "sent", TurnID: &t0},
+			{ID: "q1", Role: "user", Text: "mine", Delivery: "queued"},
+			{ID: "q2", Role: "user", Text: "later", Delivery: "queued"},
+		},
+		Turns: []Turn{{ID: t0, StartedAt: 1}},
+	}}
+	f := newFakeServer(t, State{Chats: []*Chat{chat}})
+	go func() {
+		step := func(d time.Duration, fn func(c *Chat)) {
+			time.Sleep(d)
+			f.mu.Lock()
+			fn(f.state.Chats[0])
+			f.mu.Unlock()
+		}
+		// The earlier turn answers and ends; "mine" opens its turn (the
+		// service moves it to the end), answers with a step and a reply,
+		// then "later" opens a turn that never ends.
+		step(60*time.Millisecond, func(c *Chat) {
+			c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "a0", Role: "assistant", Text: "reply to earlier", TurnID: &t0})
+			c.Conversation.Turns[0].EndedAt = 2
+		})
+		step(60*time.Millisecond, func(c *Chat) {
+			c.Conversation.Entries = []Entry{c.Conversation.Entries[0], c.Conversation.Entries[3], c.Conversation.Entries[2], {ID: "q1", Role: "user", Text: "mine", Delivery: "sent", TurnID: &t1}}
+			c.Conversation.Turns = append(c.Conversation.Turns, Turn{ID: t1, StartedAt: 3})
+		})
+		step(60*time.Millisecond, func(c *Chat) {
+			c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "s1", Role: "activity", Text: "ls", Detail: "a.txt", TurnID: &t1}, Entry{ID: "a1", Role: "assistant", Text: "reply to mine", TurnID: &t1, IsStreaming: true})
+		})
+		step(60*time.Millisecond, func(c *Chat) {
+			c.Conversation.Entries[len(c.Conversation.Entries)-1].IsStreaming = false
+			c.Conversation.Turns[1].EndedAt = 4
+			c.Conversation.Entries = []Entry{c.Conversation.Entries[0], c.Conversation.Entries[1], c.Conversation.Entries[3], c.Conversation.Entries[4], c.Conversation.Entries[5], {ID: "q2", Role: "user", Text: "later", Delivery: "sent", TurnID: &t2}}
+			c.Conversation.Turns = append(c.Conversation.Turns, Turn{ID: t2, StartedAt: 5})
+		})
+		step(60*time.Millisecond, func(c *Chat) {
+			c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "a2", Role: "assistant", Text: "reply to later", TurnID: &t2})
+		})
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	status, err := Follow(ctx, f.client(), "c1", &out, map[string]bool{"u0": true}, "q1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"you: mine\n", "(queued: sends when the agent finishes)", "· ls", "codex: reply to mine"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output lacks %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"earlier", "later"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("output carries another turn's entries (%q):\n%s", unwanted, got)
+		}
+	}
+	if status != "idle" {
+		t.Fatalf("status %q: the message's turn ended while the queue went on", status)
+	}
+	if s, _ := f.client().State(ctx); s.Chats[0].Status != "running" {
+		t.Fatal("the fake chat should still be running the later turn")
+	}
+}
+
+// A followed message held in a stopped chat's queue, or withdrawn, ends
+// the wait with an error saying so; one queued behind others says how
+// many are ahead.
+func TestFollowOneMessageHeldOrWithdrawn(t *testing.T) {
+	held := &Chat{ID: "c1", Provider: "codex", Status: "interrupted", Conversation: Conversation{Entries: []Entry{
+		{ID: "q0", Role: "user", Text: "first", Delivery: "queued"},
+		{ID: "q1", Role: "user", Text: "mine", Delivery: "queued"},
+	}}}
+	f := newFakeServer(t, State{Chats: []*Chat{held}})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	status, err := Follow(ctx, f.client(), "c1", &out, nil, "q1")
+	if err == nil || !strings.Contains(err.Error(), "held in the queue") || status != "interrupted" || !strings.Contains(out.String(), "(queued: 1 message(s) ahead)") {
+		t.Fatalf("held: %q %v\n%s", status, err, out.String())
+	}
+	// The hand-over marks the message "sending" until its turn confirms
+	// it: the wait goes on through it.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.state.Chats[0].Conversation.Entries = f.state.Chats[0].Conversation.Entries[1:]
+	f.state.Chats[0].Conversation.Entries[0].Delivery = "sending"
+	f.mu.Unlock()
+	tid := "t9"
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		f.mu.Lock()
+		c := f.state.Chats[0]
+		c.Conversation.Entries[0].Delivery, c.Conversation.Entries[0].TurnID = "sent", &tid
+		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "a9", Role: "assistant", Text: "confirmed reply", TurnID: &tid})
+		c.Conversation.Turns = []Turn{{ID: tid, StartedAt: 1, EndedAt: 2}}
+		c.Status = "idle"
+		f.mu.Unlock()
+	}()
+	out.Reset()
+	if status, err := Follow(ctx, f.client(), "c1", &out, nil, "q1"); err != nil || status != "idle" || !strings.Contains(out.String(), "confirmed reply") {
+		t.Fatalf("sending then confirmed: %q %v\n%s", status, err, out.String())
+	}
+	// A message that failed for good, with the run over, ends the wait.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "failed"
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "q3", Role: "user", Text: "mine", Delivery: "failed", Detail: "Not delivered"})
+	f.mu.Unlock()
+	if _, err := Follow(ctx, f.client(), "c1", &out, nil, "q3"); err == nil || !strings.Contains(err.Error(), "Not delivered") {
+		t.Fatalf("failed for good: %v", err)
+	}
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.state.Chats[0].Conversation.Entries = []Entry{{ID: "u0", Role: "user", Text: "earlier", Delivery: "sent"}, {ID: "q1", Role: "user", Text: "mine", Delivery: "queued"}}
+	f.mu.Unlock()
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		f.mu.Lock()
+		f.state.Chats[0].Conversation.Entries = f.state.Chats[0].Conversation.Entries[:1]
+		f.mu.Unlock()
+	}()
+	out.Reset()
+	if _, err := Follow(ctx, f.client(), "c1", &out, nil, "q1"); err == nil || !strings.Contains(err.Error(), "withdrawn") {
+		t.Fatalf("withdrawn: %v", err)
+	}
+	if _, err := Follow(ctx, f.client(), "c1", &out, nil, "nope"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("unknown message: %v", err)
 	}
 }
 
@@ -2752,23 +2947,57 @@ func TestQueueMarkersWithdrawAndEditLastQueued(t *testing.T) {
 	if app.notice != "withdrawn: second, while it runs" || len(queuedMessages(app.chat())) != 1 {
 		t.Fatalf("/withdraw 1: %q, %d queued", app.notice, len(queuedMessages(app.chat())))
 	}
-	// ↑ on an empty draft takes the last queued message into the editor.
+	// ↑ on an empty draft loads the last queued message into the editor
+	// in place: it stays queued (its file with it) while edited.
 	app.handleKey(ctx, Key{Kind: KeyUp})
-	if app.editor.Text() != "third\nwith a file" || len(queuedMessages(app.chat())) != 0 || len(app.attachments["chat1"]) != 1 || app.attachments["chat1"][0].ID != "att1" {
-		t.Fatalf("↑: draft %q, %d queued, files %+v", app.editor.Text(), len(queuedMessages(app.chat())), app.attachments["chat1"])
+	if app.editor.Text() != "third\nwith a file" || len(queuedMessages(app.chat())) != 1 || app.editing == nil || app.attachments["chat1"] != nil {
+		t.Fatalf("↑: draft %q, %d queued, editing %v, files %+v", app.editor.Text(), len(queuedMessages(app.chat())), app.editing != nil, app.attachments["chat1"])
 	}
-	if !strings.HasPrefix(app.notice, "editing the queued message") {
+	if !strings.HasPrefix(app.notice, "editing the queued message in place") {
 		t.Fatalf("notice: %q", app.notice)
 	}
-	// Sent again (Enter), it carries the files.
+	// Esc leaves it as it was.
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if app.editing != nil || app.editor.Text() != "" || !strings.Contains(app.notice, "cancelled") {
+		t.Fatalf("Esc: editing %v draft %q notice %q", app.editing != nil, app.editor.Text(), app.notice)
+	}
+	app.refreshState(ctx)
+	if q := queuedMessages(app.chat()); len(q) != 1 || q[0].Text != "third\nwith a file" {
+		t.Fatalf("after the cancelled edit: %+v", q)
+	}
+	// Enter saves the edit into the message's slot: same ID, same file.
+	app.handleKey(ctx, Key{Kind: KeyUp})
+	app.editor.Set("third, edited\nwith a file")
 	app.send(ctx)
+	if app.editing != nil || app.editor.Text() != "" || app.notice != "saved queued message" {
+		t.Fatalf("save: editing %v draft %q notice %q", app.editing != nil, app.editor.Text(), app.notice)
+	}
 	f.mu.Lock()
 	entries := f.state.Chats[0].Conversation.Entries
 	f.mu.Unlock()
-	last := entries[len(entries)-1]
-	if last.Text != "third\nwith a file" || len(last.Attachments) != 1 || last.Attachments[0].ID != "att1" || app.attachments["chat1"] != nil {
-		t.Fatalf("resent: %+v, waiting %+v", last, app.attachments["chat1"])
+	edited := entries[1] // its slot: after the first message, before the reply that came later
+	if edited.ID != "q2" || edited.Text != "third, edited\nwith a file" || edited.Delivery != "queued" || len(edited.Attachments) != 1 || edited.Attachments[0].ID != "att1" {
+		t.Fatalf("edited in place: %+v", edited)
 	}
+	// An empty edit is refused (withdraw is the way to drop it).
+	app.handleKey(ctx, Key{Kind: KeyUp})
+	app.editor.Set("  ")
+	app.send(ctx)
+	if app.editing == nil || !strings.Contains(app.notice, "would be empty") {
+		t.Fatalf("empty edit: editing %v notice %q", app.editing != nil, app.notice)
+	}
+	// The agent got the message meanwhile: the save is refused, the edit
+	// ends and the draft stays to send as a new message.
+	app.editor.Set("third, again")
+	f.mu.Lock()
+	f.state.Chats[0].Conversation.Entries[1].Delivery = "sent"
+	f.mu.Unlock()
+	app.send(ctx)
+	if app.editing != nil || app.editor.Text() != "third, again" || !strings.Contains(app.notice, "got the message before the edit was saved") {
+		t.Fatalf("conflict: editing %v draft %q notice %q", app.editing != nil, app.editor.Text(), app.notice)
+	}
+	app.editor.Clear()
+	app.refreshState(ctx)
 	// With nothing queued, ↑ recalls the history as before.
 	app.editor.SetHistory([]string{"older prompt"})
 	app.handleKey(ctx, Key{Kind: KeyUp})
@@ -2797,7 +3026,7 @@ func TestQueueMarkersWithdrawAndEditLastQueued(t *testing.T) {
 	f.mu.Lock()
 	calls := strings.Join(f.calls, "\n")
 	f.mu.Unlock()
-	if !strings.Contains(calls, "POST chats/chat1/withdraw") || !strings.Contains(calls, "POST chats/chat1/send-queued") {
+	if !strings.Contains(calls, "POST chats/chat1/withdraw") || !strings.Contains(calls, "POST chats/chat1/send-queued") || strings.Count(calls, "POST chats/chat1/queued/q2/edit") != 2 {
 		t.Fatalf("calls:\n%s", calls)
 	}
 	app.submit(ctx, "/queue nonsense")
@@ -2894,11 +3123,95 @@ func TestEditCommandRewindsAndPrefills(t *testing.T) {
 	if app.confirm != nil || app.notice != "stop the agent first (Esc)" {
 		t.Fatalf("running: %+v %q", app.confirm, app.notice)
 	}
-	// A queued message: no rewind, it just leaves the queue.
+	// A queued message: no rewind, it is edited in place and stays queued.
 	n := len(rewindTargets(app.chat()))
 	app.submit(ctx, "/edit "+strconv.Itoa(n))
-	if app.confirm != nil || app.editor.Text() != "queued one" || len(queuedMessages(app.chat())) != 0 {
-		t.Fatalf("/edit of a queued message: %+v %q", app.confirm, app.editor.Text())
+	if app.confirm != nil || app.editor.Text() != "queued one" || len(queuedMessages(app.chat())) != 1 || app.editing == nil {
+		t.Fatalf("/edit of a queued message: %+v %q editing %v", app.confirm, app.editor.Text(), app.editing != nil)
+	}
+	app.handleKey(ctx, Key{Kind: KeyCtrlC})
+	if app.editing != nil || !strings.Contains(app.notice, "cancelled") {
+		t.Fatalf("Ctrl+C: %q", app.notice)
+	}
+}
+
+// /undo-rewind puts back what the last rewind removed (the marker says
+// so while it can), after confirmation; `code` restores the workspace
+// too when the rewind recorded it; a `!` command while the queue is held
+// says the queue stays held.
+func TestUndoRewindCommandAndHeldNotes(t *testing.T) {
+	f := newFakeServer(t, State{Chats: []*Chat{{ID: "chat1", Title: "Undo", Provider: "claude", Status: "idle", UndoRewind: "marker", Conversation: Conversation{Entries: []Entry{
+		{ID: "u1", Role: "user", Text: "first", Delivery: "sent"},
+		{ID: "marker", Role: "rewind", Text: "Rewound to before “second” (code and conversation)", Detail: "1 file restored, 0 files removed", Rewind: &RewindMark{MessageID: "u2", What: "both", Conversation: "rewound", Before: "marker"}},
+	}}}}})
+	f.tail = []Entry{{ID: "u2", Role: "user", Text: "second", Delivery: "sent"}, {ID: "a2", Role: "assistant", Text: "done"}}
+	ctx := context.Background()
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	app.refreshState(ctx)
+	joined := plain(strings.Join(RenderTranscript(app.chat(), 120, false), "\n"))
+	if !strings.Contains(joined, "/undo-rewind puts the removed messages back") || !strings.Contains(joined, "/undo-rewind code restores the workspace") {
+		t.Fatalf("marker hint: %s", joined)
+	}
+	app.submit(ctx, "/undo-rewind nonsense")
+	if app.notice != "/undo-rewind [code]" {
+		t.Fatalf("bad argument: %q", app.notice)
+	}
+	app.submit(ctx, "/undo-rewind code")
+	if app.confirm == nil || !strings.Contains(app.confirm.prompt, "the conversation and the workspace") {
+		t.Fatalf("confirmation: %+v", app.confirm)
+	}
+	app.submit(ctx, "n")
+	if app.confirm != nil || app.notice != "cancelled" {
+		t.Fatalf("n: %+v %q", app.confirm, app.notice)
+	}
+	app.submit(ctx, "/undo-rewind code")
+	app.submit(ctx, "y")
+	if !strings.Contains(app.notice, "rewind undone: 2 entries restored") || !strings.Contains(app.notice, "cannot take the messages back") || !strings.Contains(app.notice, "back as it was before the rewind (1 file(s) restored") {
+		t.Fatalf("undo notice: %q", app.notice)
+	}
+	joined = plain(strings.Join(RenderTranscript(app.chat(), 120, false), "\n"))
+	if strings.Contains(joined, "Rewound to before") || !strings.Contains(joined, "second") || !strings.Contains(joined, "Rewind undone") {
+		t.Fatalf("transcript after the undo: %s", joined)
+	}
+	app.submit(ctx, "/undo-rewind")
+	if app.notice != "nothing to undo: no rewind since the last turn" {
+		t.Fatalf("nothing to undo: %q", app.notice)
+	}
+	// A conversation-only rewind offers no workspace restore.
+	f.mu.Lock()
+	f.state.Chats[0].UndoRewind = "m2"
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "m2", Role: "rewind", Text: "Rewound to before “x” (conversation)", Rewind: &RewindMark{MessageID: "x", What: "conversation", Conversation: "pending"}})
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	joined = plain(strings.Join(RenderTranscript(app.chat(), 120, false), "\n"))
+	if !strings.Contains(joined, "/undo-rewind puts the removed messages back (until the next turn)") || strings.Contains(joined, "restores the workspace") {
+		t.Fatalf("conversation marker hint: %s", joined)
+	}
+	app.submit(ctx, "/undo-rewind code")
+	if app.confirm != nil || !strings.Contains(app.notice, "no checkpoint of the workspace before the rewind") {
+		t.Fatalf("code on a conversation rewind: %+v %q", app.confirm, app.notice)
+	}
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.submit(ctx, "/undo-rewind")
+	if app.notice != "stop the agent first (Esc)" {
+		t.Fatalf("while running: %q", app.notice)
+	}
+	// A held queue: `!` and `#` say it stays held.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "interrupted"
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "q1", Role: "user", Text: "held", Delivery: "queued"})
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.submit(ctx, "#keep it small")
+	if !strings.Contains(app.notice, "added to CLAUDE.md · 1 queued message(s) still held (/queue send lets them go)") {
+		t.Fatalf("# while held: %q", app.notice)
+	}
+	app.submit(ctx, "!ls")
+	if !strings.Contains(app.notice, "running in the workspace: ls · 1 queued message(s) still held") {
+		t.Fatalf("! while held: %q", app.notice)
 	}
 }
 

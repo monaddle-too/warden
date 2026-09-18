@@ -36,6 +36,16 @@ export type Entry = {
      answered from a copy of the agent's session (`detail`), its cost,
      never sent to the session. */
   aside?: Aside;
+  /* What a rewind marker records: the message the chat went back to
+     before, the scope, how the session followed and the checkpoint of
+     the workspace as it was before a code rewind (`before`; rewind.ts). */
+  rewind?: RewindMark;
+};
+export type RewindMark = {
+  messageID: string;
+  what: "code" | "conversation" | "both";
+  conversation?: "rewound" | "pending" | "fresh" | "";
+  before?: string;
 };
 export type Fork = { chatID: string; title?: string; messageID?: string };
 export type Aside = {
@@ -262,6 +272,9 @@ export type Chat = {
   /* The chat was forked from another and its first run still has to copy
      the source's session. */
   forkSession?: boolean;
+  /* The rewind marker whose conversation rewind can still be undone (the
+     removed transcript is kept until the next turn; rewind.ts). */
+  undoRewind?: string;
   /* How the chat got its title: absent while it still has the default one
      and waits to be named from its first exchange, "auto" once it was,
      "manual" once a person named it (chats/title.go). */

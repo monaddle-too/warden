@@ -419,11 +419,16 @@ func (a *App) saveHistory() {
 func (a *App) send(ctx context.Context) {
 	var text string
 	if ed := a.editing; ed != nil {
-		// The composer holds a file: Enter saves it as typed (no trimming,
-		// no history), and the draft stays if the save fails.
+		// The composer holds a file or a queued message: Enter saves it as
+		// typed (no trimming, no history), and the draft stays if the save
+		// fails; a queued message the agent got meanwhile ends the edit
+		// with the draft kept, to send as a new message.
 		text = a.editor.Text()
 		a.menu = nil
 		if err := ed.save(ctx, text); err != nil {
+			if strings.Contains(err.Error(), "before the edit was saved") {
+				a.editing = nil
+			}
 			a.setNotice(err.Error())
 			return
 		}
@@ -815,7 +820,7 @@ func (a *App) submit(ctx context.Context, text string) {
 			a.editor.Set(text)
 			return
 		}
-		a.setNotice("added to CLAUDE.md")
+		a.setNotice("added to CLAUDE.md" + heldNote(c))
 		return
 	}
 	pending := c.Pending()
@@ -865,19 +870,20 @@ func (a *App) sendMessage(ctx context.Context, c *Chat, text string) {
 // reports how it ended when it does; the command card itself arrives with
 // the state stream (running, then with its output).
 func (a *App) shell(ctx context.Context, chatID, command string) {
-	a.setNotice("running in the workspace: " + truncate(command, 60))
+	a.setNotice("running in the workspace: " + truncate(command, 60) + heldNote(a.chat()))
 	go func() {
 		result, err := a.Client.Exec(ctx, chatID, command)
 		report := func(context.Context) {
+			held := heldNote(a.chat())
 			switch {
 			case err != nil:
 				a.setNotice(err.Error())
 			case result.TimedOut:
-				a.setNotice("command timed out after 60s")
+				a.setNotice("command timed out after 60s" + held)
 			case result.ExitCode != 0:
-				a.setNotice(fmt.Sprintf("command exited %d", result.ExitCode))
+				a.setNotice(fmt.Sprintf("command exited %d", result.ExitCode) + held)
 			default:
-				a.setNotice("command finished")
+				a.setNotice("command finished" + held)
 			}
 		}
 		select {
@@ -1393,6 +1399,8 @@ func (a *App) command(ctx context.Context, line string) {
 		a.withdraw(ctx, c, arg)
 	case "edit":
 		a.edit(ctx, c, arg)
+	case "undo-rewind", "undo":
+		a.undoRewind(ctx, c, arg)
 	case "diff":
 		a.showDiff(ctx, c, arg)
 	case "instructions":
