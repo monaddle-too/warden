@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -465,6 +466,45 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "marker", Role: "rewind", Text: "Rewound to before “" + body.TurnID + "” (" + body.What + ")", Detail: "1 file restored, 0 files removed"})
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(RewindResult{MessageID: body.TurnID, What: body.What, Restored: []string{"a.txt"}, Conversation: "rewound"})
+	case strings.HasSuffix(path, "/withdraw"):
+		// A queued message out of the queue, returned; a sent one refused.
+		var body struct{ ID string }
+		json.NewDecoder(r.Body).Decode(&body)
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/withdraw")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		for i, e := range c.Conversation.Entries {
+			if e.ID != body.ID {
+				continue
+			}
+			if e.Delivery != "queued" {
+				f.mu.Unlock()
+				http.Error(w, `{"error":"that message was already sent to the agent"}`, 409)
+				return
+			}
+			c.Conversation.Entries = append(c.Conversation.Entries[:i:i], c.Conversation.Entries[i+1:]...)
+			f.mu.Unlock()
+			json.NewEncoder(w).Encode(e)
+			return
+		}
+		f.mu.Unlock()
+		http.Error(w, `{"error":"no such message in this chat"}`, 409)
+	case strings.HasSuffix(path, "/send-queued"):
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/send-queued")
+		f.mu.Lock()
+		c := f.state.Chat(id)
+		queued := false
+		for _, e := range c.Conversation.Entries {
+			queued = queued || e.Delivery == "queued"
+		}
+		if !queued {
+			f.mu.Unlock()
+			http.Error(w, `{"error":"nothing is queued"}`, 409)
+			return
+		}
+		c.Status = "queued"
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/diff"):
 		json.NewEncoder(w).Encode(WorkspaceChanges{Base: "u2", Files: []ChangedFile{{Path: "src/app.go", Added: 2, Removed: 1}, {Path: "logo.png", Binary: true}}, Diff: "diff --git a/src/app.go b/src/app.go\n--- a/src/app.go\n+++ b/src/app.go\n@@ -1,2 +1,3 @@\n-old\n+new\n+more\n context\n"})
 	default:
@@ -901,8 +941,9 @@ func TestSlashMenuCompletesAndRuns(t *testing.T) {
 	if app.ChatID != "chat2" || app.editor.Text() != "" {
 		t.Fatalf("enter on a chat: %q draft %q", app.ChatID, app.editor.Text())
 	}
-	// Enter on a command without an argument runs it.
-	typeText(app, ctx, "/qu")
+	// Enter on a command without an argument runs it ("/qu" would also
+	// match /queue).
+	typeText(app, ctx, "/qui")
 	app.handleKey(ctx, Key{Kind: KeyEnter})
 	if !app.quit {
 		t.Fatal("enter on /quit did not quit")
@@ -2175,5 +2216,184 @@ func TestCompactionDividerContextAndPassthrough(t *testing.T) {
 	app.submit(ctx, "/compact")
 	if !strings.Contains(app.notice, "unknown command /compact") {
 		t.Fatalf("codex notice: %q", app.notice)
+	}
+}
+
+// The queue: markers under queued messages, /queue, /withdraw N, ↑ on an
+// empty draft editing the last queued message (its files back on the
+// list), a held queue after Esc and /queue send.
+func TestQueueMarkersWithdrawAndEditLastQueued(t *testing.T) {
+	f := newFakeServer(t, State{Chats: []*Chat{{ID: "chat1", Title: "Queue", Provider: "claude", Status: "running", Conversation: Conversation{Entries: []Entry{
+		{ID: "u1", Role: "user", Text: "first", Delivery: "sent"},
+		{ID: "q1", Role: "user", Text: "second, while it runs", Delivery: "queued"},
+		{ID: "q2", Role: "user", Text: "third\nwith a file", Delivery: "queued", Attachments: []Attachment{{ID: "att1", Name: "notes.txt", Kind: "file", Size: 5}}},
+	}}}}})
+	ctx := context.Background()
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	app.refreshState(ctx)
+	joined := plain(strings.Join(RenderTranscript(app.chat(), 100, false), "\n"))
+	if strings.Count(joined, "(queued · sends when the agent finishes)") != 2 {
+		t.Fatalf("markers: %s", joined)
+	}
+	app.submit(ctx, "/queue")
+	notice := plain(app.notice)
+	if !strings.Contains(notice, " 1  second, while it runs") || !strings.Contains(notice, " 2  third with a file") || !strings.Contains(notice, "sent in order after this turn") {
+		t.Fatalf("/queue: %q", notice)
+	}
+	app.submit(ctx, "/withdraw 3")
+	if !strings.HasPrefix(app.notice, "/withdraw N") {
+		t.Fatalf("bad index: %q", app.notice)
+	}
+	app.submit(ctx, "/withdraw 1")
+	if app.notice != "withdrawn: second, while it runs" || len(queuedMessages(app.chat())) != 1 {
+		t.Fatalf("/withdraw 1: %q, %d queued", app.notice, len(queuedMessages(app.chat())))
+	}
+	// ↑ on an empty draft takes the last queued message into the editor.
+	app.handleKey(ctx, Key{Kind: KeyUp})
+	if app.editor.Text() != "third\nwith a file" || len(queuedMessages(app.chat())) != 0 || len(app.attachments["chat1"]) != 1 || app.attachments["chat1"][0].ID != "att1" {
+		t.Fatalf("↑: draft %q, %d queued, files %+v", app.editor.Text(), len(queuedMessages(app.chat())), app.attachments["chat1"])
+	}
+	if !strings.HasPrefix(app.notice, "editing the queued message") {
+		t.Fatalf("notice: %q", app.notice)
+	}
+	// Sent again (Enter), it carries the files.
+	app.send(ctx)
+	f.mu.Lock()
+	entries := f.state.Chats[0].Conversation.Entries
+	f.mu.Unlock()
+	last := entries[len(entries)-1]
+	if last.Text != "third\nwith a file" || len(last.Attachments) != 1 || last.Attachments[0].ID != "att1" || app.attachments["chat1"] != nil {
+		t.Fatalf("resent: %+v, waiting %+v", last, app.attachments["chat1"])
+	}
+	// With nothing queued, ↑ recalls the history as before.
+	app.editor.SetHistory([]string{"older prompt"})
+	app.handleKey(ctx, Key{Kind: KeyUp})
+	if app.editor.Text() != "older prompt" {
+		t.Fatalf("↑ without a queue: %q", app.editor.Text())
+	}
+	app.editor.Clear()
+	// A held queue: Esc interrupted the turn, the queued message stays.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "interrupted"
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "q3", Role: "user", Text: "held one", Delivery: "queued"})
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	joined = plain(strings.Join(RenderTranscript(app.chat(), 100, false), "\n"))
+	if !strings.Contains(joined, "(queued · held: /queue send lets it go, or the next message)") {
+		t.Fatalf("held marker: %s", joined)
+	}
+	app.submit(ctx, "/queue")
+	if !strings.Contains(plain(app.notice), "held since the agent was stopped") {
+		t.Fatalf("/queue held: %q", app.notice)
+	}
+	app.submit(ctx, "/queue send")
+	if app.notice != "sending the queued messages" || app.chat().Status != "queued" {
+		t.Fatalf("/queue send: %q %s", app.notice, app.chat().Status)
+	}
+	f.mu.Lock()
+	calls := strings.Join(f.calls, "\n")
+	f.mu.Unlock()
+	if !strings.Contains(calls, "POST chats/chat1/withdraw") || !strings.Contains(calls, "POST chats/chat1/send-queued") {
+		t.Fatalf("calls:\n%s", calls)
+	}
+	app.submit(ctx, "/queue nonsense")
+	if !strings.HasPrefix(app.notice, "/queue lists") {
+		t.Fatalf("/queue nonsense: %q", app.notice)
+	}
+	// Esc while running says the queue is held.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if !strings.Contains(app.notice, "queued messages are held") {
+		t.Fatalf("Esc notice: %q", app.notice)
+	}
+}
+
+// /edit N on a message the agent got confirms, rewinds the conversation
+// to before it (the code too with "both") and puts it in the editor;
+// Esc-Esc on an empty draft is /edit on the last message; a queued
+// message just leaves the queue.
+func TestEditCommandRewindsAndPrefills(t *testing.T) {
+	f := newFakeServer(t, State{Chats: []*Chat{{ID: "chat1", Title: "Edit", Provider: "claude", Status: "idle", Conversation: Conversation{Entries: []Entry{
+		{ID: "u1", Role: "user", Text: "Add a counter component", Delivery: "sent", Attachments: []Attachment{{ID: "att1", Name: "spec.md", Kind: "file", Size: 9}}},
+		{ID: "a1", Role: "assistant", Text: "Done."},
+		{ID: "u2", Role: "user", Text: "Now make it blue", Delivery: "sent"},
+		{ID: "a2", Role: "assistant", Text: "Blue now."},
+	}}}}})
+	ctx := context.Background()
+	now := time.Unix(0, 0)
+	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Now: func() time.Time { return now }}
+	app.refreshState(ctx)
+	for _, bad := range []string{"/edit 3", "/edit x", "/edit 2 sideways", "/edit 2 both extra"} {
+		app.submit(ctx, bad)
+		if app.confirm != nil || !strings.HasPrefix(app.notice, "/edit [N]") {
+			t.Fatalf("%s: confirm %v notice %q", bad, app.confirm != nil, app.notice)
+		}
+	}
+	app.submit(ctx, "/edit 2")
+	if app.confirm == nil || !strings.Contains(app.confirm.prompt, `Edit message 2 "Now make it blue"? The conversation goes back to before it`) {
+		t.Fatalf("confirm: %+v", app.confirm)
+	}
+	app.submit(ctx, "n")
+	if app.confirm != nil || app.notice != "cancelled" || app.editor.Text() != "" {
+		t.Fatalf("cancel: %+v %q %q", app.confirm, app.notice, app.editor.Text())
+	}
+	app.submit(ctx, "/edit 2")
+	app.submit(ctx, "y")
+	if app.confirm != nil || app.editor.Text() != "Now make it blue" || !strings.HasPrefix(app.notice, "rewound to before message 2 (conversation)") || !strings.HasSuffix(app.notice, "edit the message and Enter sends it") {
+		t.Fatalf("edit: %+v %q %q", app.confirm, app.editor.Text(), app.notice)
+	}
+	f.mu.Lock()
+	calls := strings.Join(f.calls, "\n")
+	entries := f.state.Chats[0].Conversation.Entries
+	f.mu.Unlock()
+	if !strings.Contains(calls, "POST chats/chat1/rewind") || len(entries) != 3 || entries[2].Role != "rewind" {
+		t.Fatalf("rewind route: %d entries, calls:\n%s", len(entries), calls)
+	}
+	app.editor.Clear()
+	// Esc-Esc on an empty draft: /edit on the last message left, with
+	// its file back on the list once confirmed; "both" rewinds the code.
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if app.confirm != nil {
+		t.Fatal("one Esc asked to edit")
+	}
+	now = now.Add(200 * time.Millisecond)
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if app.confirm == nil || !strings.Contains(app.confirm.prompt, `Edit message 1 "Add a counter component"?`) {
+		t.Fatalf("Esc-Esc: %+v", app.confirm)
+	}
+	app.submit(ctx, "n")
+	app.submit(ctx, "/edit 1 both")
+	if app.confirm == nil || !strings.Contains(app.confirm.prompt, "Code and conversation goes back") {
+		t.Fatalf("/edit 1 both: %+v", app.confirm)
+	}
+	app.submit(ctx, "y")
+	if app.editor.Text() != "Add a counter component" || len(app.attachments["chat1"]) != 1 || app.attachments["chat1"][0].Name != "spec.md" || !strings.HasPrefix(app.notice, "rewound to before message 1 (code and conversation)") {
+		t.Fatalf("/edit 1 both: %q files %+v notice %q", app.editor.Text(), app.attachments["chat1"], app.notice)
+	}
+	// Two Escapes far apart do not edit; a running chat is refused.
+	app.editor.Clear()
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	now = now.Add(2 * time.Second)
+	app.handleKey(ctx, Key{Kind: KeyEscape})
+	if app.confirm != nil {
+		t.Fatal("slow Esc Esc asked to edit")
+	}
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "u3", Role: "user", Text: "sent one", Delivery: "sent"}, Entry{ID: "q1", Role: "user", Text: "queued one", Delivery: "queued"})
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.submit(ctx, "/edit 1")
+	if app.confirm != nil || app.notice != "stop the agent first (Esc)" {
+		t.Fatalf("running: %+v %q", app.confirm, app.notice)
+	}
+	// A queued message: no rewind, it just leaves the queue.
+	n := len(rewindTargets(app.chat()))
+	app.submit(ctx, "/edit "+strconv.Itoa(n))
+	if app.confirm != nil || app.editor.Text() != "queued one" || len(queuedMessages(app.chat())) != 0 {
+		t.Fatalf("/edit of a queued message: %+v %q", app.confirm, app.editor.Text())
 	}
 }

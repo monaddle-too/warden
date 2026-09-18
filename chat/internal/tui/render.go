@@ -179,7 +179,11 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 		case "user":
 			label := senderLabel(e)
 			out = append(out, wrap(text, width, bold+cyan+label+" › "+reset, strings.Repeat(" ", len(label)+3))...)
-			if e.Delivery != "" && e.Delivery != "delivered" && e.Delivery != "confirmed" {
+			switch {
+			case e.Delivery == "queued":
+				// Held by Warden until the agent's turn ends (queue.go).
+				out = append(out, yellow+"      ("+queueMarker(c)+")"+reset)
+			case e.Delivery != "" && e.Delivery != "delivered" && e.Delivery != "confirmed":
 				out = append(out, dim+"      ("+sanitize(e.Delivery)+")"+reset)
 			}
 		case "assistant":

@@ -53,10 +53,11 @@ type App struct {
 	quiet    bool // hide tool steps and thinking (Ctrl+O)
 	// diff is the session diff /diff fetched, shown under the transcript
 	// (one line per file; Tab expands the hunks) until /diff again.
-	diff   *WorkspaceChanges
-	redraw bool // clear the screen on the next draw (Ctrl+L)
-	quit   bool
-	ctrlC  time.Time // last Ctrl+C; a second within ctrlCQuit quits
+	diff    *WorkspaceChanges
+	redraw  bool // clear the screen on the next draw (Ctrl+L)
+	quit    bool
+	ctrlC   time.Time // last Ctrl+C; a second within ctrlCQuit quits
+	lastEsc time.Time // last Esc on an idle chat; a second within doubleEscape edits the last message
 
 	menu        *Menu
 	menuOff     string // the draft the menu was dismissed for (Esc)
@@ -127,6 +128,7 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /attach PATH /attachments /detach N · /export [md|json] [all] [FILE]
            /stop /model M /provider P /mode M · /open /previews /preview N /unpublish N
            /rewind (list) /rewind N [code|conv|both] · /diff (toggle; Tab expands)
+           /queue (list) /queue send · /withdraw N · /edit [N] [both] (N from /rewind)
            /find TEXT /copy /expand /verbose /clear /quit
            /compact [what to keep] asks Claude to replace the history with a summary
 composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
@@ -135,6 +137,8 @@ composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste ke
            #note appends a bullet to the workspace's CLAUDE.md
            @path completes a workspace path (Tab or Enter accepts)
            Up/Down recall prompts (or move between lines) · Ctrl+R searches them
+           a message sent while the agent runs is queued: ↑ (empty draft) edits the last one
+           Esc Esc (empty draft, agent idle) edits your last message: the conversation rewinds to before it
            Ctrl+A/E line start/end · Ctrl+U/K delete to line start/end · Ctrl+W a word
 keys       y / n answer the first pending approval; typed text answers a question
            tool asks: y allow · a allow always · n [message] deny
@@ -413,10 +417,18 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 		case c != nil && c.Running():
 			if err := a.Client.Stop(ctx, c.ID); err != nil {
 				a.setNotice(err.Error())
+			} else if len(queuedMessages(c)) > 0 {
+				a.setNotice("interrupting the agent; the queued messages are held (/queue send lets them go)")
 			} else {
 				a.setNotice("interrupting the agent")
 			}
+		case c != nil && a.editor.Text() == "" && !a.lastEsc.IsZero() && a.now().Sub(a.lastEsc) <= doubleEscape:
+			// Esc-Esc (Claude Code's): the last message back into the
+			// editor, the conversation rewound to before it (queue.go).
+			a.lastEsc = time.Time{}
+			a.editLast(ctx, c)
 		default:
+			a.lastEsc = a.now()
 			a.scroll = 0
 		}
 	case KeyCtrlO:
@@ -467,6 +479,15 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 		}
 	case KeyEnter:
 		a.send(ctx)
+	case KeyUp:
+		// On an empty draft with a message queued, ↑ edits the last one
+		// (Claude Code's); otherwise the line above, or the history.
+		if a.editor.Text() == "" && a.editLastQueued(ctx, c) {
+			return
+		}
+		if a.editor.Handle(k) {
+			a.refreshMenu(ctx)
+		}
 	default:
 		if a.editor.Handle(k) {
 			a.refreshMenu(ctx)
@@ -1149,6 +1170,12 @@ func (a *App) command(ctx context.Context, line string) {
 		a.export(c, arg)
 	case "rewind":
 		a.rewind(ctx, c, arg)
+	case "queue":
+		a.queue(ctx, c, arg)
+	case "withdraw":
+		a.withdraw(ctx, c, arg)
+	case "edit":
+		a.edit(ctx, c, arg)
 	case "diff":
 		a.showDiff(ctx, c, arg)
 	case "verbose":

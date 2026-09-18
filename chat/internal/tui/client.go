@@ -593,6 +593,22 @@ type RewindResult struct {
 	Restored     []string `json:"restored"`
 	Removed      []string `json:"removed"`
 	Conversation string   `json:"conversation"`
+	// Withdrawn counts the queued messages a conversation rewind took
+	// out of the queue (queue.go).
+	Withdrawn int `json:"withdrawn"`
+}
+
+// Withdraw takes a queued message out of the chat before the agent gets
+// it; the entry comes back for the editor (queue.go).
+func (c *Client) Withdraw(ctx context.Context, chatID, messageID string) (Entry, error) {
+	var out Entry
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/withdraw", map[string]string{"id": messageID}, &out)
+	return out, err
+}
+
+// SendQueued lets a held queue go: the queued messages send in order.
+func (c *Client) SendQueued(ctx context.Context, chatID string) error {
+	return c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/send-queued", map[string]any{}, nil)
 }
 
 func (c *Client) Checkpoints(ctx context.Context, chatID string) ([]Checkpoint, error) {
