@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "id": "3f2a9c1e5b7d4a0c8e6f1b2d3c4a5e6f",
+  "kind": "error",
+  "createdAt": "2026-09-18T09:41:07Z",
+  "component": "chat",
+  "trigger": "test",
+  "summary": "test exception from /test bugreporting",
+  "description": "",
+  "error": {
+    "message": "test exception from /test bugreporting",
+    "stack": "goroutine 71 [running]:\nruntime/debug.Stack()\n\t/usr/local/go/src/runtime/debug/stack.go:26 +0x5e\nwarden/chat/internal/bugreport.recovered({0x104f2e8a0, 0x1400012c0c0})\n\t~/go/src/warden/chat/internal/bugreport/capture.go:58 +0x64\nwarden/chat/internal/chats.(*Server).bugTest.func1()\n\t~/go/src/warden/chat/internal/chats/bug.go:41 +0x88\npanic({0x104e0c3a0, 0x104f75c40})\n\t/usr/local/go/src/runtime/panic.go:792 +0x124\nwarden/chat/internal/chats.(*Server).bugTest.func1.1()\n\t~/go/src/warden/chat/internal/chats/bug.go:38 +0x2c",
+    "operation": "bug-test"
+  },
+  "warden": {
+    "version": "v0.1.0-alpha.12-210-g81d0bfc",
+    "protocol": 2,
+    "runtime": "sbx",
+    "installed": {
+      "codex": "0.154.0",
+      "claude": "2.1.272",
+      "guestArch": "arm64"
+    }
+  },
+  "system": {
+    "os": "darwin",
+    "arch": "arm64",
+    "osVersion": "24.6.0",
+    "cpus": 10,
+    "memoryMB": 32768
+  },
+  "logs": [
+    {
+      "name": "warden-chat.log",
+      "lines": [
+        "2026/09/18 09:41:05 chat listening on 127.0.0.1:18780",
+        "2026/09/18 09:41:06 POST /api/bug-test from owner",
+        "2026/09/18 09:41:07 recovered panic in bug-test: test exception from /test bugreporting"
+      ]
+    },
+    {
+      "name": "warden.log",
+      "lines": [
+        "2026/09/18 09:40:58 warden start: policy, runner, chat, edge",
+        "2026/09/18 09:41:05 chat ready"
+      ]
+    }
+  ],
+  "context": {
+    "chatID": "8c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f",
+    "runID": "",
+    "provider": "claude",
+    "model": "claude-opus-5"
+  }
+}
