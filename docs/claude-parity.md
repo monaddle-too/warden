@@ -563,9 +563,12 @@ fix` then `/search 1` opened the other chat. After merging item 16 the
 TUI parts were re-based on the scrollback model (decisions 5 and 6) and
 re-verified by their unit tests (`TestFindReachesNestedAndFoldedEntries`,
 `TestSearchAcrossChatsListsAndJumps`, `TestEntryLines`) and one more pty
-run on the merged build: `/find grep exit` printed the child's line with
-"(output expanded)", `/search zebrafish` then ↓ Enter printed the Agent
-card with its steps under the "tool output · … (output expanded)" line.
+run on the merged build (4a13594): `/find grep exit` printed the two
+child lines under `2 line(s) contain "grep exit" (output expanded)`,
+`/search zebrafish` then ↓ Enter printed the Agent card with its steps
+under "Activity status test · tool output · 2026-09-18 06:28:" (the
+transcript already expanded by the find), `/search first message fix`
+then `/search 1` opened the other chat.
 
 Left: the web's ⌘K palette still searches the browser's state rather
 than the new route (it has every transcript and folds accents; a
