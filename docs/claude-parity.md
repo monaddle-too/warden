@@ -279,9 +279,9 @@ E–G after.
 - [x] R2.6 **Permission history**: what was allowed, denied or auto-answered in a chat and by whom, from the chat menu and TUI `/permissions`. Merged to main 72aee03 (2026-09-18); verified as the Round 2 B section says.
 
 ### C. Live activity, search, export (`feat/parity-r2-c-activity-search`)
-- [ ] R2.7 **Live activity status**: the chat status line and sidebar dot say what the agent is doing ("Running go test…", "Editing engine.go", "Explore: 3 tool calls"), `task_progress` while a subagent runs (item 2's leftover).
-- [ ] R2.8 **Search and export nesting-aware**: ⌘F, ⌘K and TUI `/find` reach nested subagent entries and `!` cards; export nests children under their parent (items 2 and 12's leftovers).
-- [ ] R2.9 **TUI search across chats**: `/search <text>` over titles and transcripts of every chat, with a jump.
+- [x] R2.7 **Live activity status**: the chat status line and sidebar dot say what the agent is doing ("Running go test…", "Editing engine.go", "Explore: 3 tool calls"), `task_progress` while a subagent runs (item 2's leftover). Merged to main fbd25a5 (2026-09-18); verified as the Round 2 C section says.
+- [x] R2.8 **Search and export nesting-aware**: ⌘F, ⌘K and TUI `/find` reach nested subagent entries and `!` cards; export nests children under their parent (items 2 and 12's leftovers). Merged to main fbd25a5 (2026-09-18); verified as the Round 2 C section says.
+- [x] R2.9 **TUI search across chats**: `/search <text>` over titles and transcripts of every chat, with a jump (on the scrollback TUI: the entry is printed). Merged to main fbd25a5 (2026-09-18); verified as the Round 2 C section says.
 
 ### D. Queue and rewind polish (`feat/parity-r2-d-queue-rewind`)
 - [x] R2.10 **Edit a queued message in place**: inline on the queued card (web) and back into its slot (TUI `/edit N`). Merged to main 917fb2a (2026-09-18); "### Round 2 D" below.
@@ -578,7 +578,9 @@ the fence); `activity` shows nothing for a streaming reply beyond
 "Agent is working".
 
 Progress: started 2026-09-18; implemented and live-verified 2026-09-18
-(c661a58); merge sha recorded under "## Round 2" once landed.
+(c661a58); merged to main fbd25a5 (2026-09-18) after merging round 2 A,
+B and D, the bug-report receiver and item 16 in. Not deployed to
+`~/.warden`.
 ### Item 16: scrollback rendering (Claude-style TUI)
 
 Branch `feat/parity-16-scrollback-tui`, worktree
