@@ -369,6 +369,10 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 			}
 			out = append(out, renderMarkdown(text, width, bold+green+name+" › "+reset, strings.Repeat(" ", utf8.RuneCountInString(name)+3))...)
 			if e.IsStreaming {
+				if len(out) == 0 {
+					// Nothing streamed yet: the label alone carries the cursor.
+					out = append(out, bold+green+name+" ›"+reset)
+				}
 				out[len(out)-1] += dim + " ▍" + reset
 			}
 		case "activity":

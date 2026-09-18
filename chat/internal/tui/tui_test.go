@@ -97,6 +97,12 @@ func sampleChat() *Chat {
 }
 
 func TestRenderTranscriptSanitizesAndWraps(t *testing.T) {
+	// A reply that has not streamed a character yet shows its label with
+	// the cursor (this used to index an empty slice).
+	empty := &Chat{ID: "e", Provider: "claude", Status: "running", Conversation: Conversation{Entries: []Entry{{ID: "m0", Role: "assistant", IsStreaming: true}}}}
+	if got := RenderTranscript(empty, 40, false); len(got) != 2 || !strings.Contains(plain(got[0]), "claude › ▍") {
+		t.Fatalf("empty streaming reply: %q", got)
+	}
 	lines := RenderTranscript(sampleChat(), 40, false)
 	joined := plain(strings.Join(lines, "\n"))
 	if strings.Contains(strings.Join(lines, "\n"), "\x1b[31m") {
