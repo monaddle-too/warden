@@ -21,6 +21,7 @@ import {
   File as FileIcon,
   Folder,
   Paperclip,
+  Shrink,
   Square,
 } from "lucide-react";
 import {
@@ -56,6 +57,7 @@ import {
 import { sameFooter, turnFooters, type TurnFooter } from "../turns";
 import type { Chat, Entry } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
+import { ContextMeter } from "./ContextMeter";
 import { chatStatusLabel, startupLine } from "../stages";
 import { pendingReply } from "../thinking";
 import { ActivityGroup, EntryView } from "./EntryView";
@@ -115,6 +117,8 @@ const commandIcon = (name: string) =>
     <Cpu size={15} />
   ) : name === "export" ? (
     <Download size={15} />
+  ) : name === "compact" ? (
+    <Shrink size={15} />
   ) : (
     <Eraser size={15} />
   );
@@ -444,9 +448,9 @@ export function Conversation({
   const commands = useMemo(
     () =>
       open && trigger.kind === "command"
-        ? commandItems(trigger.query, models)
+        ? commandItems(trigger.query, models, chat.provider)
         : [],
-    [open, trigger, models],
+    [open, trigger, models, chat.provider],
   );
   const { paths, error: pathError } = usePathCompletion(
     chat.id,
@@ -624,6 +628,11 @@ export function Conversation({
       case "model":
         // The list then shows the models.
         place({ text: "/model " + rest, caret: 7 });
+        break;
+      case "compact":
+        // The agent's own command: the draft is sent as text, with
+        // whatever instructions follow ("/compact keep the file list").
+        place({ text: "/compact " + rest, caret: 9 });
         break;
       case "export":
         onExport?.();
@@ -960,6 +969,9 @@ export function Conversation({
                   label="Model for the next turn"
                 />
               </span>
+              {chat.conversation.context && (
+                <ContextMeter context={chat.conversation.context} />
+              )}
               <span
                 className={`status-dot ${chat.startup && running ? "starting" : chat.status}`}
               />

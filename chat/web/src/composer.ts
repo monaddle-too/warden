@@ -16,11 +16,25 @@ export type Trigger = {
   query: string;
 };
 
-export type Command = { name: string; label: string; hint: string };
+export type Command = {
+  name: string;
+  label: string;
+  hint: string;
+  /* The command is the agent's, not the composer's: picking it puts
+     "/name " in the draft and sending the draft sends it as text for the
+     agent to expand. Only for the providers listed. */
+  passthrough?: string[];
+};
 
 export const COMMANDS: Command[] = [
   { name: "stop", label: "Stop", hint: "Interrupt the agent's turn" },
   { name: "model", label: "Model", hint: "Choose the model for the next turn" },
+  {
+    name: "compact",
+    label: "Compact context",
+    hint: "Replace the history with a summary; add what to keep after it",
+    passthrough: ["claude"],
+  },
   { name: "export", label: "Export…", hint: "Download this chat as a file" },
   {
     name: "clear",
@@ -61,12 +75,17 @@ export function triggerAt(text: string, caret: number): Trigger | undefined {
 export function commandItems(
   query: string,
   models: ModelOption[],
+  provider?: string,
 ): CommandItem[] {
   const trimmed = query.replace(/^\s+/, "");
   const at = trimmed.search(/\s/);
   const name = (at === -1 ? trimmed : trimmed.slice(0, at)).toLowerCase();
   if (at === -1)
-    return COMMANDS.filter((c) => c.name.startsWith(name)).map((command) => ({
+    return COMMANDS.filter(
+      (c) =>
+        c.name.startsWith(name) &&
+        (!c.passthrough || (!!provider && c.passthrough.includes(provider))),
+    ).map((command) => ({
       kind: "command",
       command,
     }));
@@ -83,7 +102,8 @@ export function commandItems(
 
 /* A message that is exactly a command ("/stop", "/model opus") runs it
    instead of being sent, so a command typed in full and sent with the
-   keyboard does not reach the agent as text. */
+   keyboard does not reach the agent as text. A passthrough command
+   ("/compact", "/compact keep the file list") is not one: it is sent. */
 export function exactCommand(
   text: string,
   models: ModelOption[],
@@ -93,7 +113,9 @@ export function exactCommand(
   const items = commandItems(trimmed.slice(1), models);
   const [first, ...rest] = trimmed.slice(1).trim().split(/\s+/);
   if (rest.length === 0) {
-    const command = COMMANDS.find((c) => c.name === first.toLowerCase());
+    const command = COMMANDS.find(
+      (c) => c.name === first.toLowerCase() && !c.passthrough,
+    );
     return command ? { kind: "command", command } : undefined;
   }
   const arg = rest.join(" ").toLowerCase();

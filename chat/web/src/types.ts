@@ -18,7 +18,26 @@ export type Entry = {
      search's hits, a unified diff per changed file). Absent on entries
      from before it was recorded, whose detail starts with a status line. */
   tool?: Tool;
+  /* What a compaction entry records: the agent compacted its context
+     here; `detail` is the summary it continues from, when given. */
+  compaction?: Compaction;
 };
+/* One compaction of the agent's context (conversation.Compaction):
+   `trigger` is "manual" (the owner's /compact) or "auto" (the agent near
+   its window), `preTokens` the context before it and `postTokens` the
+   summary it came down to (absent when not reported); `status` running,
+   completed or failed with `error`. */
+export type Compaction = {
+  trigger?: string;
+  preTokens?: number;
+  postTokens?: number;
+  status: string;
+  error?: string;
+};
+/* How full the agent's context is (conversation.Context): `used` is what
+   its latest model call was given (or its estimate right after a
+   compaction), `window` the model's context window, in tokens. */
+export type Context = { used: number; window: number; model?: string };
 /* One agent tool call as the service records it (conversation.Tool):
    `kind` is what the card renders by, `name` the tool as the agent names
    it, `server` an MCP tool's server, `status` running, completed or failed
@@ -117,6 +136,7 @@ export type Chat = {
     activeTurnID?: string;
     entries: Entry[];
     turns?: Turn[];
+    context?: Context;
   };
   approvals: Approval[];
   typing?: { principalID: string; name: string; until: number }[];

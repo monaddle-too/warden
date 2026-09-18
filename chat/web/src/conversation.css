@@ -925,3 +925,87 @@ button.attachment-chip {
     animation: none;
   }
 }
+
+/* The context meter in the composer footer: a small bar and "42k / 200k",
+   amber from 80 % of the window, red from 95 %. */
+.context-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: default;
+}
+.context-bar {
+  display: inline-block;
+  width: 40px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.context-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--muted);
+  transition: width 0.3s;
+}
+.context-meter.warn {
+  color: var(--accent-text);
+}
+.context-meter.warn .context-bar > span {
+  background: var(--accent);
+}
+.context-meter.high {
+  color: var(--danger);
+}
+.context-meter.high .context-bar > span {
+  background: var(--danger);
+}
+
+/* The divider where the agent compacted its context. */
+.compaction-entry {
+  align-self: stretch;
+  font-size: 12px;
+  color: var(--muted);
+}
+.compaction-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.compaction-line::before,
+.compaction-line::after {
+  content: "";
+  flex: 1;
+  border-top: 1px dashed var(--line-strong);
+}
+.compaction-entry.running .compaction-line span {
+  color: var(--accent-text);
+}
+.compaction-entry.failed .compaction-line span {
+  color: var(--danger);
+}
+.compaction-summary {
+  max-width: 720px;
+  margin: 6px auto 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.compaction-summary > summary {
+  cursor: pointer;
+  text-align: center;
+  color: var(--muted);
+}
+.compaction-summary > summary:hover {
+  color: var(--text);
+}
+.compaction-summary[open] > summary {
+  margin-bottom: 6px;
+}
+.compaction-entry + .turn-stats.block {
+  margin-top: -4px;
+  align-self: center;
+}

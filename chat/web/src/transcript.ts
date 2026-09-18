@@ -70,7 +70,8 @@ export function unreadIndex<T extends Item>(entries: T[], id: string): number {
   return id ? entries.findIndex((e) => e.id === id) : -1;
 }
 
-/* How many messages (not tool steps) follow `lastID`, the last entry the
+/* How many messages (not tool steps, thinking or compaction dividers)
+   follow `lastID`, the last entry the
    reader had in view when they left the bottom of the transcript. An empty
    ID is an empty transcript, so everything counts; an ID that is gone
    counts nothing rather than everything. */
@@ -83,7 +84,11 @@ export function newSince<T extends Item>(entries: T[], lastID: string): number {
   }
   let count = 0;
   for (let i = from; i < entries.length; i++)
-    if (entries[i].role !== "activity" && entries[i].role !== "thinking")
+    if (
+      entries[i].role !== "activity" &&
+      entries[i].role !== "thinking" &&
+      entries[i].role !== "compaction"
+    )
       count++;
   return count;
 }

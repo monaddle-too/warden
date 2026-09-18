@@ -62,7 +62,7 @@ describe("composer triggers", () => {
     expect(triggerAt("x @src y", 8)).toBeUndefined();
   });
   it("lists commands by prefix and models by substring once model has an argument", () => {
-    expect(commandItems("", models).map((i) => i.kind)).toEqual(
+    expect(commandItems("", models, "claude").map((i) => i.kind)).toEqual(
       COMMANDS.map(() => "command"),
     );
     expect(
@@ -130,5 +130,22 @@ describe("composer triggers", () => {
       withoutCommand("/stop\nkeep this", triggerAt("/stop\nkeep this", 5)!),
     ).toBe("keep this");
     expect(withoutCommand("/stop", triggerAt("/stop", 5)!)).toBe("");
+  });
+});
+
+describe("passthrough commands", () => {
+  it("lists /compact for Claude only and never runs it locally", () => {
+    const names = (provider?: string) =>
+      commandItems("", [], provider).map((i) =>
+        i.kind === "command" ? i.command.name : "",
+      );
+    expect(names("claude")).toContain("compact");
+    expect(names("codex")).not.toContain("compact");
+    expect(names()).not.toContain("compact");
+    expect(commandItems("comp", [], "claude")).toHaveLength(1);
+    // Typed in full and sent, it goes to the agent as text.
+    expect(exactCommand("/compact", [])).toBeUndefined();
+    expect(exactCommand("/compact keep the file list", [])).toBeUndefined();
+    expect(exactCommand("/stop", [])).toBeDefined();
   });
 });
