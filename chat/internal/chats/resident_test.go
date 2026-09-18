@@ -35,10 +35,11 @@ func (e *Engine) sessionIdle(id string) bool {
 	a := e.active[id]
 	return a != nil && a.idle.Load()
 }
-func residentSetup(t *testing.T) (*Engine, *fakeWorker) {
+func residentSetup(t *testing.T, configure ...func(*Engine)) (*Engine, *fakeWorker) {
 	t.Helper()
-	e, w, _ := setup(t)
-	e.ResidentProviders = []string{"codex"} // the fake speaks the Codex protocol
+	e, w, _ := setup(t, append([]func(*Engine){func(e *Engine) {
+		e.ResidentProviders = []string{"codex"} // the fake speaks the Codex protocol
+	}}, configure...)...)
 	return e, w
 }
 func completeTurn(t *testing.T, e *Engine, w *fakeWorker, id string) {

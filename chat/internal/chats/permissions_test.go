@@ -264,7 +264,9 @@ func (w *claudeWorker) controlsSoFar() []map[string]any {
 	return append([]map[string]any(nil), w.controls...)
 }
 
-func claudeSetup(t *testing.T) (*Engine, *claudeWorker, string) {
+// claudeSetup is setup with a worker speaking the Claude protocol;
+// configure runs before Serve starts.
+func claudeSetup(t *testing.T, configure ...func(*Engine)) (*Engine, *claudeWorker, string) {
 	t.Helper()
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -273,6 +275,9 @@ func claudeSetup(t *testing.T) (*Engine, *claudeWorker, string) {
 	w := &claudeWorker{}
 	e := NewEngine(s, w)
 	e.ResidentProviders = []string{} // one run per message; residency is covered elsewhere
+	for _, f := range configure {
+		f(e)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go e.Serve(ctx)
 	t.Cleanup(func() {

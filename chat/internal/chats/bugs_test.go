@@ -20,12 +20,24 @@ func bugCapturer(t *testing.T, enabled bool) (*bugreport.Capturer, string) {
 	return c, state
 }
 
+// bugsEngine is an engine no Serve loop runs: the bug routes need only the
+// store, and the tests swap e.Bugs between calls.
+func bugsEngine(t *testing.T) *Engine {
+	t.Helper()
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return NewEngine(s, &fakeWorker{})
+}
+
 // "/bug text": the route drafts a user report with the person's text as
 // the description and the chat's ids as the context (never a message),
 // plus the chat log's tail, redacted; off, it answers the notice and
 // writes nothing.
 func TestBugRouteDraftsAUserReportWithIdsOnly(t *testing.T) {
-	e, _, _ := setup(t)
+	e := bugsEngine(t)
 	id, err := e.Create("Bugs", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +104,7 @@ func TestBugRouteDraftsAUserReportWithIdsOnly(t *testing.T) {
 // the service, the recovery drafts it as a test report with the stack, and
 // the answer names the draft; off, nothing is raised or written.
 func TestBugTestRouteRaisesAndDraftsTheTestException(t *testing.T) {
-	e, _, _ := setup(t)
+	e := bugsEngine(t)
 	h := &HTTP{Engine: e, Token: "owner-secret", Host: "localhost:18780", Origin: "http://localhost:18780"}
 	off, offState := bugCapturer(t, false)
 	e.Bugs = off

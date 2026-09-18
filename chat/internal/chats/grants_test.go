@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -80,6 +81,20 @@ func (f *fakeSharing) op(i int) map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.ops[i]
+}
+
+// actions returns the ops with one of the named actions, in order (the
+// engine's delivery poll adds pr_state/doc_state ops of its own).
+func (f *fakeSharing) actions(names ...string) []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []map[string]any
+	for _, op := range f.ops {
+		if slices.Contains(names, agent.String(op["action"])) {
+			out = append(out, op)
+		}
+	}
+	return out
 }
 
 // Grant tools park a pending approval with the exact request shown to the

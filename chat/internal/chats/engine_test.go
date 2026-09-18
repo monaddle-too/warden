@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"warden/chat/internal/agent"
@@ -227,7 +228,10 @@ func (f *fakeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWriteC
 	}()
 	return client, sandbox.Response{Version: 2}, nil
 }
-func setup(t *testing.T) (*Engine, *fakeWorker, context.CancelFunc) {
+
+// setup opens a store and serves an engine on it; configure runs before
+// Serve starts, the place for fields Serve reads (PolicyAddress, Bugs).
+func setup(t *testing.T, configure ...func(*Engine)) (*Engine, *fakeWorker, context.CancelFunc) {
 	t.Helper()
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -236,6 +240,9 @@ func setup(t *testing.T) (*Engine, *fakeWorker, context.CancelFunc) {
 	w := &fakeWorker{}
 	e := NewEngine(s, w)
 	e.ResidentProviders = []string{} // these tests exercise one run per message; resident_test.go covers sessions
+	for _, f := range configure {
+		f(e)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go e.Serve(ctx)
 	t.Cleanup(func() {
@@ -832,9 +839,9 @@ func TestArchiveEnvironmentStopsAndArchivesAllChats(t *testing.T) {
 // indicators show for TypingTTL after the last reported keystroke and
 // vanish when that person sends.
 func TestAttributionAndTypingIndicators(t *testing.T) {
-	e, _, _ := setup(t)
-	now := time.Unix(1000, 0)
-	e.Now = func() time.Time { return now }
+	var now atomic.Int64 // the test's clock, read by the engine's run goroutines too
+	now.Store(1000)
+	e, _, _ := setup(t, func(e *Engine) { e.Now = func() time.Time { return time.Unix(now.Load(), 0) } })
 	h := &HTTP{Engine: e, Token: "private", Host: "127.0.0.1:18780", Origin: "http://127.0.0.1:18780", WebDir: t.TempDir()}
 	id, _ := e.Create("shared", "", "", nil)
 	call := func(path, body string, identity map[string]string) int {
@@ -886,11 +893,11 @@ func TestAttributionAndTypingIndicators(t *testing.T) {
 		t.Fatalf("owner sender: %+v", s)
 	}
 	// Bob's indicator lapses eight seconds after his last keystroke.
-	now = time.Unix(1007, 0)
+	now.Store(1007)
 	if len(e.View().chat(id).Typing) != 1 {
 		t.Fatal("indicator lapsed early")
 	}
-	now = time.Unix(1008, 0)
+	now.Store(1008)
 	if len(e.View().chat(id).Typing) != 0 {
 		t.Fatal("indicator outlived its ttl")
 	}

@@ -313,8 +313,8 @@ func TestDraftWatcherPresentsEachNewDraftOnce(t *testing.T) {
 		t.Fatalf("%d waiting", n)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go w.run(ctx)
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); w.run(ctx) }()
 	one := write("first after")
 	two := write("second after")
 	deadline := time.Now().Add(3 * time.Second)
@@ -328,6 +328,8 @@ func TestDraftWatcherPresentsEachNewDraftOnce(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	time.Sleep(50 * time.Millisecond) // a few more ticks: nothing is shown twice
+	cancel()
+	<-stopped // the log is read once the watcher has stopped writing it
 	mu.Lock()
 	got := append([]string(nil), shown...)
 	mu.Unlock()
@@ -339,7 +341,7 @@ func TestDraftWatcherPresentsEachNewDraftOnce(t *testing.T) {
 	}
 	// presentNew directly (the exit path) shows only what is new.
 	three := write("third")
-	w.presentNew(ctx)
+	w.presentNew(context.Background())
 	mu.Lock()
 	last := shown[len(shown)-1]
 	n := len(shown)

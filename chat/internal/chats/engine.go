@@ -134,8 +134,11 @@ type Engine struct {
 	// titling: chat id -> a title being made (title.go).
 	asides  map[string]bool
 	titling map[string]bool
-	wake    chan struct{}
-	done    chan struct{}
+	// background counts the goroutines a run leaves behind it (a naming
+	// beside the idle session); Serve returns once they are done.
+	background sync.WaitGroup
+	wake       chan struct{}
+	done       chan struct{}
 }
 
 const runSlots = 2
@@ -218,6 +221,7 @@ func (e *Engine) Wake() {
 }
 func (e *Engine) Serve(ctx context.Context) {
 	defer close(e.done)
+	defer e.background.Wait() // after the runs, which spawn them
 	defer e.Bugs.Recover("engine serve loop")
 	e.fillDefaultModels()
 	if e.PolicyAddress != "" {
@@ -1156,7 +1160,8 @@ func (e *Engine) run(parent context.Context, id string) {
 		e.settleTurn(parent, id, a)
 		// A chat still at the default title is named from its first
 		// exchange, beside the idle session (title.go).
-		go e.autoTitle(parent, id, a)
+		e.background.Add(1)
+		go func() { defer e.background.Done(); e.autoTitle(parent, id, a) }()
 		var agentTurn string
 		message, agentTurn = e.awaitMessage(ctx, id, &current, a, client, frames)
 		if agentTurn != "" {

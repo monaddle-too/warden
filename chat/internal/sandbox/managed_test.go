@@ -741,10 +741,15 @@ func TestExplicitCancelStopsCurrentGuestAndInvalidatesPreview(t *testing.T) {
 	if runtimeStops(d) != 1 {
 		t.Fatal("explicit current cancellation must stop guest exactly once", d.calls)
 	}
+	// The registry's own answer: a status op that finds the lock busy (the
+	// stream's last bookkeeping) answers from the snapshot, without
+	// attachments.
 	r.Operation = "status"
-	res, err := w.dispatch(context.Background(), r)
-	if err != nil || res.Sandbox.State != "stopped" || res.Attachments[0].State != "stopped" || res.Attachments[0].URL != "" {
-		t.Fatal(res, err)
+	w.mu.Lock()
+	res := w.statusLocked(r)
+	w.mu.Unlock()
+	if res.Sandbox.State != "stopped" || len(res.Attachments) != 1 || res.Attachments[0].State != "stopped" || res.Attachments[0].URL != "" {
+		t.Fatal(res)
 	}
 	response, err := http.Get(a.URL)
 	if err != nil {
