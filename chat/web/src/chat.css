@@ -1480,6 +1480,124 @@ button.danger:hover {
   margin: 0;
 }
 
+/* Admin console: the Bug reports section. */
+.bug-reports h2 button.ghost {
+  margin-left: auto;
+  height: 26px;
+  padding: 0 6px;
+}
+.bug-table tbody tr {
+  cursor: pointer;
+}
+.bug-table tbody tr:hover td {
+  background: var(--surface-2);
+}
+.bug-table tbody tr.selected td {
+  background: var(--accent-soft);
+}
+.bug-table td.bug-summary {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bug-kind {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.bug-kind.error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.bug-report {
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 0 12px 12px;
+}
+.bug-report > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+.bug-report > header strong {
+  margin-right: auto;
+  overflow-wrap: anywhere;
+}
+.bug-report > header button {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+.bug-report h4 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 14px 0 6px;
+}
+.bug-report h4 code {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}
+.bug-report pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 360px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.bug-description {
+  white-space: pre-wrap;
+  margin: 0;
+}
+.bug-error-message {
+  color: var(--danger);
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+}
+.bug-environment th {
+  width: 120px;
+  white-space: nowrap;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+.bug-environment td {
+  font-size: 13px;
+}
+.bug-raw {
+  margin-top: 14px;
+}
+.bug-raw summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}
+.bug-raw pre {
+  margin-top: 6px;
+  max-height: 480px;
+}
+
 .workspace-section li.expired > a,
 .sharing-dialog .expired {
   opacity: 0.6;
