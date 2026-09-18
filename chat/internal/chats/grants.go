@@ -58,9 +58,9 @@ func grantTools(local bool) []any {
 		return map[string]any{"type": "string", "description": desc, "maxLength": max}
 	}
 	tools := []any{
-		map[string]any{"type": "function", "name": "request_network_access", "description": "Ask the owner to let this sandbox reach one public website host (HTTP or HTTPS on ports 80 and 443) for a limited time through Warden's gateway, when the network policy refused it. Give the exact hostname without scheme or path, why you need it, and for how long. Waits for the decision; on approval retry the request. No credential is ever attached to a host allowed this way.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+		map[string]any{"type": "function", "name": "request_network_access", "description": "Ask the owner to let this sandbox reach one public website host (HTTP or HTTPS on ports 80 and 443) for a limited time through Warden's gateway, when the network policy refused it: a package index, a download site, a documentation site. Not for GitHub: github.com and api.github.com are always reachable for the repositories shared with this workspace, and a refused git clone, fetch or API call means the repository is not shared; ask with request_repository_access instead. Give the exact hostname without scheme or path, why you need it, and for how long. Waits for the decision; on approval retry the request. No credential is ever attached to a host allowed this way.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"host": str("hostname, e.g. pypi.org", 253), "reason": str("why you need it", 500), "duration_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "how long, in minutes (default 60)"}}, "required": []string{"host", "reason"}, "additionalProperties": false}},
-		map[string]any{"type": "function", "name": "request_repository_access", "description": "Ask the owner to share a GitHub repository with this workspace, or to widen the read categories of one already shared: contents (code, branches, commits, clone), issues (issues, comments, labels, milestones), pull_requests (pull requests, their files and reviews). Read-only; writes need github_write or request_pull_request. Waits for the decision; a request the workspace already satisfies is answered at once without asking, and a failure says why (for example a GitHub sign-in the owner must refresh).", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+		map[string]any{"type": "function", "name": "request_repository_access", "description": "Ask the owner to share a GitHub repository with this workspace, or to widen the read categories of one already shared: contents (code, branches, commits, clone), issues (issues, comments, labels, milestones), pull_requests (pull requests, their files and reviews). This is how a repository is cloned: ask for contents, then run git clone https://github.com/owner/name.git; the sandbox proxy attaches the owner's credential, so never ask for a token or for network access to github.com. Read-only; writes need github_write or request_pull_request. Waits for the decision; a request the workspace already satisfies is answered at once without asking, and a failure says why (for example a GitHub sign-in the owner must refresh).", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"repository": str("owner/name", 200), "categories": map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"contents", "issues", "pull_requests"}}, "minItems": 1, "maxItems": 3}, "reason": str("why you need it", 500)}, "required": []string{"repository", "categories", "reason"}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "github_write", "description": "Perform one small GitHub write on a repository shared with this workspace, after the owner approves the exact payload: comment_issue or comment_pull_request (number, body), create_issue (title, body), add_labels (number, labels). Warden posts it with the owner's credential; you never hold a token. Waits for the decision and returns the created URL. Larger changes go through request_pull_request.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"repository": str("owner/name", 200), "action": map[string]any{"type": "string", "enum": []string{"comment_issue", "comment_pull_request", "create_issue", "add_labels"}}, "number": map[string]any{"type": "integer", "minimum": 1, "description": "issue or pull request number"}, "title": str("issue title (create_issue)", 256), "body": str("Markdown body", 65536), "labels": map[string]any{"type": "array", "items": map[string]any{"type": "string", "maxLength": 50}, "maxItems": 20}}, "required": []string{"repository", "action"}, "additionalProperties": false}},
@@ -74,6 +74,13 @@ func grantTools(local bool) []any {
 		)
 	}
 	return tools
+}
+
+// isGitHubHost reports whether host is GitHub itself or one of its
+// subdomains (api., codeload., uploads.), the authorities the gateway
+// brokers for shared repositories.
+func isGitHubHost(host string) bool {
+	return host == "github.com" || strings.HasSuffix(host, ".github.com")
 }
 
 // requestGrant validates a grant tool call and parks it as a pending
@@ -127,6 +134,13 @@ func (e *Engine) requestGrant(c *Chat, client *agent.Client, f agent.Frame) erro
 		}
 		if in.Host == "" || strings.ContainsAny(in.Host, "/: ") || in.Reason == "" || in.Duration < 1 || in.Duration > 1440 {
 			return fail("host (no scheme or path), reason and 1–1440 minutes are required")
+		}
+		// GitHub is brokered, not firewalled: a refused clone or API call
+		// means the repository is not shared. A network grant there would
+		// bypass repository sharing (and still fail for a private
+		// repository), so the answer points at the right tool.
+		if isGitHubHost(in.Host) {
+			return fail("github.com is reached through repository sharing, not a network grant: a refused git clone, fetch or GitHub API call means the repository is not shared with this workspace. Call request_repository_access with the repository (owner/name) and the categories you need (contents to clone), then retry; list_shared_repositories shows what is already shared.")
 		}
 		params = map[string]any{"host": in.Host, "reason": in.Reason, "duration_minutes": in.Duration}
 	case methodRepositoryAccess:
@@ -296,6 +310,9 @@ func (e *Engine) resolveGrant(c *Chat, a Approval, allow bool, actor cv.Actor) a
 		out := map[string]any{"repository": repo, "access": anyList(list), "shared": result["repositories"]}
 		if shared {
 			out["widened_from"] = anyList(before)
+		}
+		if merged["contents"] {
+			out["note"] = "clone with git clone https://github.com/" + repo + ".git (HTTPS through the sandbox proxy, no token needed)"
 		}
 		return toolResult(out, nil)
 	case methodGitHubWrite:
