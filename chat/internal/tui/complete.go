@@ -29,7 +29,8 @@ type Command struct {
 
 // Commands is the `/` menu, in the order it shows them.
 var Commands = []Command{
-	{"help", "", "show the commands and keys"},
+	{"help", "", "show the commands"},
+	{"keys", "", "list every key by area, from the table the keys are handled with"},
 	{"new", "[TITLE]", "start a chat on a fresh workspace"},
 	{"chats", "", "list chats"},
 	{"switch", "N", "open chat N"},
