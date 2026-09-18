@@ -104,6 +104,7 @@ Legacy macOS-VM stack (pre-SBX, still in tree): `warden` (Python launcher),
 | Inspected egress: gateway CA, per-host leaf certs, provider SSE streaming (`ProviderEndpoints` in `policy/stream.go`: OpenAI, Codex and Anthropic `/v1/messages`; other routes are buffered), destination policy | `policy/ca.go`, `policy/gateway.go`, `policy/gatewaypool.go`, `policy/stream.go`, `policy/egress.go`, `policy/registry.go` | runner→policy `bindGateway`, `configureProvider`, `egress`, `authorize` | | `policy/*_test.go` | [warden-gateway-ca-plan](warden-gateway-ca-plan.md), [response-streaming](response-streaming.md) |
 | Egress mode restricted / open (runtime switch) | `policy/egress.go`, `policy.Registry.SetEgressMode` | `sharing/egress`, `sharing/egress_set` | `AdminConsole.tsx` | | |
 | Admin console: egress mode, disconnect Google / GitHub, sign-in ledger | `edge/owner.go`, `policy/sharing.go` `disconnect` | `/api/admin/*` (edge), `sharing/disconnect` | `AdminConsole.tsx` | | [admin-console-plan](admin-console-plan.md) |
+| GitHub sign-in / refresh from the browser (user-token mode; owner-only device flow run by the policy service) | `policy/githublogin.go`, `policy/githubuser.go` `Save`, `login/github.go` `DeviceFlow` | `sharing/github_login_start`, `sharing/github_login_status`, `sharing/github_login_cancel` | `GitHubSignIn.tsx` (in `AdminConsole.tsx`, `RepositorySharing.tsx`) | `policy/githublogin_test.go`, `edge/edge_test.go` | [github-browser-login-plan](github-browser-login-plan.md) |
 | Sign-in: owner mode (local capability cookie) and Google (server mode; sessions kept across restarts in `<edge state>/sessions.json`) | `edge/edge.go`, `edge/owner.go`, `edge/ledger.go`, `browserauth/` (`Config.SessionsFile`) | `/auth/*`, `/oauth/*` | `AuthRoot.tsx`, `GoogleLogin.tsx` | `edge/*_test.go`, `browserauth/auth_test.go` | [google-login-publishing-plan](google-login-publishing-plan.md) |
 | Provider logins (Codex / Claude / Google / GitHub device flow) | `login/github.go`, `cmd/warden/login.go`, `cmd/warden/github_login.go`, `sandbox/openai.go`, `policy/oauth.go`, `policy/credentials.go` | | `warden login` | | [warden-local-deployments-plan](warden-local-deployments-plan.md) |
 | Local install: `warden install|doctor|start|open|stop|status|uninstall`, private sbx namespace, runtimes layout, popups | `cmd/warden/*.go` (`install.go`, `doctor.go`, `sbx.go`, `runtimes.go`, `notify.go`, `service.go`), `hostinfo/` | | | `cmd/warden/*_test.go` | [warden-local-install](warden-local-install.md), [warden-local-deployments-plan](warden-local-deployments-plan.md) |
@@ -133,7 +134,8 @@ activity,runtime,file,image-file,paths,attachments}`, `chats/{id}/attachments/{a
 `ports`, `ports/{id}/{revoke,proxy/*}`, `cluster`, `cluster/logs`, `sharing/*` (forwarded to the policy
 service: `status, files, select, request, get, resolve, revoke, history,
 blocked, block, connect, callback, disconnect, github_list,
-github_repositories, github_select, github_write, network_allow, egress,
+github_repositories, github_select, github_write, github_login_start,
+github_login_status, github_login_cancel, network_allow, egress,
 egress_set, pr_preview, pr_get`).
 
 Runner protocol (`chat/internal/sandbox/client.go`): versioned request/response
