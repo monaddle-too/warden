@@ -65,6 +65,7 @@ import {
   commandItems,
   exactCommand,
   isBugTest,
+  MODES,
   mentionFor,
   nextMode,
   prefixed,
@@ -135,7 +136,6 @@ import { HistorySearch } from "./HistorySearch";
 import { ComposerMenu } from "./ComposerMenu";
 import { modelOptions } from "../models";
 import { SpendChip } from "./SpendChip";
-import { ModeSelect } from "./ModeSelect";
 import { arrowStep, isKey, modifierKey } from "../shortcuts";
 import { CostCard } from "./CostCard";
 import { ComposerPastes } from "./Pastes";
@@ -1853,18 +1853,6 @@ const ASIDE_RELEASE_MS = 1500;
               >
                 <Paperclip size={16} />
               </button>
-              {modes && (
-                <span className="composer-mode">
-                  <ModeSelect
-                    value={chat.mode || "auto"}
-                    disabled={chat.archived}
-                    onChange={(mode) => {
-                      setError("");
-                      void onMode(mode).catch((e) => setError(String(e)));
-                    }}
-                  />
-                </span>
-              )}
             </div>
             <div className="composer-actions">
               {running && (
@@ -1960,6 +1948,14 @@ const ASIDE_RELEASE_MS = 1500;
         </div>
         <div className="composer-hint">
           <span className="composer-status">
+            {modes && chat.mode && chat.mode !== "auto" && (
+              <span
+                className={`composer-mode-mark mode-${chat.mode}`}
+                title={`${MODES.find((m) => m.value === chat.mode)?.hint || ""} · Shift+Tab or /mode changes it`}
+              >
+                {chat.mode === "plan" ? "Plan mode" : "Ask mode"}
+              </span>
+            )}
             <span
               className={`status-dot ${chat.startup && running ? "starting" : chat.status}`}
             />

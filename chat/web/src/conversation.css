@@ -845,28 +845,19 @@
   padding: 0 10px;
   font-size: 13px;
 }
-/* The permission mode: a quiet pill (a native select, so the keyboard
-   and screen readers get the real control). */
-.composer-mode select {
-  width: auto;
-  height: 30px;
-  min-height: 0;
-  padding: 0 22px 0 8px;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background-color: transparent;
-  font-size: 13px;
-  font-weight: 500;
+/* The permission mode has no control in the footer: Shift+Tab and /mode
+   set it, and the line under the composer says when it is not auto. */
+.composer-mode-mark {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  font-size: 11px;
+  font-weight: 600;
   color: var(--text-2);
-  cursor: pointer;
+  white-space: nowrap;
 }
-.composer-mode select:hover:not(:disabled) {
-  background-color: var(--surface-3);
-  color: var(--text);
-}
-.composer-mode select:disabled {
-  opacity: 0.6;
-  cursor: default;
+.composer-mode-mark.mode-plan {
+  color: var(--accent-text);
 }
 /* The model · effort menu (ComposerMenu.tsx). */
 .composer-menu {
