@@ -29,7 +29,9 @@ const chatUsage = `usage: warden chat [flags] [CHAT]           interactive termi
 CHAT is a chat id, an id prefix, a title, or a number from 'warden chat list'.
 Flags: --config PATH, --state DIR, --provider codex|claude, --model NAME,
        --cpus N and --memory SIZE (new: the fresh workspace's size, e.g.
-       --cpus 2 --memory 4g; default: the runner's, whole CPUs on SBX).
+       --cpus 2 --memory 4g; default: the runner's, whole CPUs on SBX),
+       --network restricted|open (new: the fresh workspace's own network
+       access; default: the install's setting; the owner's choice).
 `
 
 // endpoint reads the running chat service's URL and capability.
@@ -66,12 +68,13 @@ func (c *cli) chat(args []string) error {
 	model := fs.String("model", "", "model for a new chat (default: the provider's default)")
 	cpus := fs.Float64("cpus", 0, "new: CPUs for the fresh workspace (default: the runner's)")
 	memory := fs.String("memory", "", "new: memory for the fresh workspace, e.g. 4g or 2048m (default: the runner's)")
+	network := fs.String("network", "", "new: the fresh workspace's own network access, restricted or open (default: the install's setting)")
 	wait := fs.Bool("wait", false, "send: stream the message's own turn until it ends")
 	waitAll := fs.Bool("wait-all", false, "send: stream the transcript until the agent is idle, queued messages included")
 	decline := fs.Bool("decline", false, "approve: decline instead of allowing")
 	answer := fs.String("answer", "", "approve: the answer to the agent's question")
 	all := fs.Bool("all", false, "list: include archived chats")
-	if err := fs.Parse(interleaved(args, map[string]bool{"config": true, "state": true, "provider": true, "model": true, "answer": true, "cpus": true, "memory": true})); err != nil {
+	if err := fs.Parse(interleaved(args, map[string]bool{"config": true, "state": true, "provider": true, "model": true, "answer": true, "cpus": true, "memory": true, "network": true})); err != nil {
 		return errUsage
 	}
 	cfg, _, err := loadConfig(*configPath, *state)
@@ -123,7 +126,10 @@ func (c *cli) chat(args []string) error {
 				}
 			}
 		}
-		id, err := client.Create(ctx, title, p, *model, "", resources)
+		if *network != "" && *network != "restricted" && *network != "open" {
+			return errors.New("--network must be restricted or open")
+		}
+		id, err := client.Create(ctx, title, p, *model, "", resources, *network)
 		if err != nil {
 			return err
 		}

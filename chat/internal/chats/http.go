@@ -245,6 +245,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Message   string             `json:"message"`
 		Mode      string             `json:"mode"`
 		Resources *sandbox.Resources `json:"resources"`
+		// Network, on chats and environments/{id}/network, is the
+		// workspace's own network access (network.go): "" follows the
+		// install, else restricted or open.
+		Network string `json:"network"`
 		// Attachments are upload IDs a message sends along.
 		Attachments []string `json:"attachments"`
 		// Thinking, Effort and Fast are the body of chats/{id}/settings
@@ -300,9 +304,22 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = h.Engine.DeleteEnvironment(r.Context(), parts[1])
 	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "resize":
 		err = h.Engine.ResizeEnvironment(r.Context(), parts[1], body.Resources)
+	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "network":
+		if !isOwner(r) {
+			http.Error(w, errNetworkOwner, 403)
+			return
+		}
+		err = h.Engine.SetWorkspaceNetwork(r.Context(), parts[1], body.Network, requester(r))
 	case path == "chats":
+		if body.Network != "" && !isOwner(r) {
+			http.Error(w, errNetworkOwner, 403)
+			return
+		}
 		var id string
 		id, err = h.Engine.CreateFrom(requester(r), body.Title, body.SandboxID, body.Repository, body.Resources, body.Provider, body.Model)
+		if err == nil && body.Network != "" {
+			id, err = h.Engine.createdOnNetwork(r.Context(), id, body.Network, requester(r))
+		}
 		result = map[string]string{"id": id}
 	case len(parts) == 3 && parts[0] == "chats":
 		switch parts[2] {
@@ -427,6 +444,15 @@ func requester(r *http.Request) conversation.Actor {
 		return v
 	}
 	return conversation.Actor{PrincipalID: principal, Email: clip(r.Header.Get("X-Warden-Email"), 254), Name: clip(r.Header.Get("X-Warden-Name"), 120)}
+}
+
+const errNetworkOwner = "only the owner chooses a workspace's network access"
+
+// isOwner reports whether the edge marked the request as the owner's
+// (X-Warden-Role, which it strips from clients), or no edge is involved
+// and the capability holder is the owner.
+func isOwner(r *http.Request) bool {
+	return r.Header.Get("X-Warden-Principal") == "" || r.Header.Get("X-Warden-Role") == "admin"
 }
 
 func respond(w http.ResponseWriter, value any, err error) {

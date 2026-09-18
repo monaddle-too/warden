@@ -348,6 +348,7 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 		resources = &resolved
 	}
 	id := cv.ID()
+	network := "" // a shared workspace's own network access comes along
 	err := e.Store.update(func(st *State) error {
 		title = strings.TrimSpace(title)
 		// A chat named by its creator keeps that name; one left at the
@@ -370,6 +371,7 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 					sbxID = shared
 					repository = c.Repository
 					resources = c.Resources
+					network = c.Network
 					found = true
 					break
 				}
@@ -379,7 +381,7 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 			}
 		}
 		creator := actor
-		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, Titled: titled, SandboxID: sbxID, Repository: repository, Resources: resources, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
+		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, Titled: titled, SandboxID: sbxID, Repository: repository, Resources: resources, Network: network, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
 		return nil
 	})
 	return id, err

@@ -332,7 +332,7 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 		if op == "github_list" {
 			data["chatID"] = r.URL.Query().Get("chatID")
 		}
-		if op == "history" {
+		if op == "history" || (op == "egress" && r.URL.Query().Get("sandboxID") != "") {
 			data["sandboxID"] = r.URL.Query().Get("sandboxID")
 		}
 		if op == "pr_preview" || op == "doc_preview" {

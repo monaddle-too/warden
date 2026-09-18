@@ -581,6 +581,17 @@ default in `warden.json` and restart Warden:
 A console choice wins over the file until `<state>/policy/egress.json` is
 deleted.
 
+A workspace can have a network access of its own, chosen by the owner:
+the new-chat form's Network access fieldset (or `warden chat new
+--network restricted|open`) for a fresh workspace, and the workspace
+panel's Network access section, **Change…**, afterwards; every chat in
+the workspace follows, running ones included, and a fork with a copy of
+the workspace keeps it. "Install setting" (the default) follows the
+console switch above. Workspaces with a setting of their own are counted
+under the console switch, which leaves them alone; the policy service
+keeps them in `<state>/policy/egress-overrides.json`. Agents cannot ask
+for it: `request_network_access` stays one host for a bounded time.
+
 ## 9. Limits
 
 - One owner. The launcher capability is the only identity and it is the

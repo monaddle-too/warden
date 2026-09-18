@@ -100,6 +100,10 @@ const (
 	HeaderPrincipal = "X-Warden-Principal"
 	HeaderEmail     = "X-Warden-Email"
 	HeaderName      = "X-Warden-Name"
+	// HeaderRole is "admin" on the owner's requests, for the decisions the
+	// chat service reserves to the owner but cannot tell apart by path (a
+	// workspace's network access chosen on POST chats).
+	HeaderRole = "X-Warden-Role"
 )
 
 type Server struct {
@@ -469,6 +473,9 @@ func ownerOnly(path string) bool {
 		// /test bugreporting raises an exception in the chat service.
 		trimmed == "api/bug-test" ||
 		trimmed == "api/sharing/connect" || trimmed == "api/sharing/disconnect" || trimmed == "api/sharing/egress_set" || trimmed == "api/sharing/block" || trimmed == "api/sharing/unblock" ||
+		// A workspace's own network access widens or narrows what its
+		// sandbox reaches: the owner's call, like the install-wide switch.
+		(strings.HasPrefix(trimmed, "api/environments/") && strings.HasSuffix(trimmed, "/network")) ||
 		// The GitHub sign-in code binds whichever account types it to this
 		// Warden, so only the owner may see or start one.
 		strings.HasPrefix(trimmed, "api/sharing/github_login_")
@@ -642,11 +649,16 @@ func (s *Server) proxy(binding string, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal, email, name, known := s.Auth.Identity(r)
+	role := s.Auth.Role(r)
 	proxy := httputil.NewSingleHostReverseProxy(s.target)
 	proxy.Director = func(req *http.Request) {
 		req.Header.Del(HeaderPrincipal)
 		req.Header.Del(HeaderEmail)
 		req.Header.Del(HeaderName)
+		req.Header.Del(HeaderRole)
+		if role == "admin" {
+			req.Header.Set(HeaderRole, role)
+		}
 		if known && principal != "" {
 			req.Header.Set(HeaderPrincipal, principal)
 			if email != "" {

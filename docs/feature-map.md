@@ -31,6 +31,7 @@ identifiers were kept stable). Grep for the right-hand column.
 | **guest image** | `deploy/guest/`, `release.GuestImage*`, config `sbx.guestImage` |
 | **suggestion** (a proposed edit to a Google Doc), **draft** (what the owner approves) | `policy.DocumentProposals`, `document_proposals` table, `sharing/doc_*` routes, `DocHunk` (one change), `DocParagraph` |
 | **egress mode** restricted / open | `policy/egress.go`, `sharing/egress_set`, `<state>/policy/egress.json` overrides `warden.json` |
+| **network access** (a workspace's own egress mode, the owner's choice) | `Chat.Network`, `chats/network.go`, `POST chats` `network`, `environments/{id}/network`, `sharing/egress_set` with `sandboxID`, `Registry.SetSandboxEgress`, `<state>/policy/egress-overrides.json`, `web/src/network.ts`, `NetworkSelect.tsx`, `warden chat new --network`; plan `docs/workspace-egress-plan.md` |
 | **Kubernetes shape** (the third install, beside Mac and OVH) | config `runtime.kind: kubernetes`, `config.RuntimeKubernetes`; chart `deploy/helm/warden`; drivers `sandbox/kube`, `policy/kube` |
 | **tier** (isolation boundary of a sandbox pod: `kata` or `gvisor`) | config `kubernetes.tier`, `config.TierKata`/`TierGVisor`; chart `runtime.tier`; the RuntimeClass `kubernetes.runtimeClass` |
 | **canary** (two throwaway pods proving NetworkPolicy is enforced) | `policy/kube/canary.go` (`CanaryOptions`, `runCanaries`), pods labelled `warden.monaddle.com/canary` |
