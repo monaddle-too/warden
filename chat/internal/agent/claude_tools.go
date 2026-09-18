@@ -284,6 +284,12 @@ func claudeToolItem(id string, t claudeTool, result map[string]any, structured a
 			status = "failed"
 		}
 		output = claudeResultText(result["content"])
+		if t.name == "TaskOutput" {
+			// The task's output alone, not the tags the model reads it in.
+			if _, out, status := claudeTaskOutput(result, structured); status != "" {
+				output = out
+			}
+		}
 	}
 	in := t.input
 	// A subagent's item names its Agent call; a background task's says so.

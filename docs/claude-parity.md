@@ -132,9 +132,9 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Typed tool cards (Bash, Read, Grep, Glob, Edit, Write, WebFetch…) | ✅ | ✅ | item 1: `agent/claude_tools.go`, `Entry.Tool`, `ToolCard.tsx`, `tui/render.go` |
 | Edit/Write/MultiEdit as diffs | ✅ | ✅ | item 1: the CLI's `structuredPatch` hunks with line numbers |
 | Output folding ("+N lines, expand") | ✅ | ✅ | item 1: 12 lines on the web, 8 in the TUI (Tab) |
-| Subagent nesting, child transcript | ✗ | ✗ | `parent_tool_use_id` |
-| Background task cards, task notifications | ✗ | ✗ | |
-| Todo panel (TodoWrite) | ✗ | ✗ | |
+| Subagent nesting, child transcript | ✅ | ✅ | item 2: `Entry.ParentID`, collapsed under the Agent card |
+| Background task cards, task notifications | ✅ | ✅ | item 2: `Tool.Background`, `TaskOutput` lands the output |
+| Todo panel (TodoWrite) | ◐ | ◐ | item 2: one card updated in place; the pinned CLI offers no todo tool |
 | Compaction boundary marker | ✗ | ✗ | `system/compact_boundary` |
 | Context-left indicator, auto-compact warning | ✗ | ✗ | `result` usage |
 | Per-turn tokens, cost, duration | ✅ | ◐ | `TurnStats.tsx`; TUI elapsed only |
@@ -456,6 +456,42 @@ Decisions:
    behind "n steps · elapsed"; the card shows the prompt, the child
    transcript and the result. Turn footers, unread and jump counts skip
    children. TUI: children indent under the card, Tab expands them.
+7. A `result` whose `origin.kind` is `task-notification` arriving while
+   the turn Warden asked for still runs (seen by item 6: a foreground
+   Bash still streaming) does not end that turn: the answer is a message
+   in it and the turn ends with its own result. Only a turn the CLI
+   started ends on such a result.
+
+On the guest's 2.1.272 (live): the model sees `Agent`, `TaskOutput` and
+`TaskStop` but no `Monitor`, `TodoWrite` or `TaskCreate/TaskUpdate/
+TaskList/TaskGet`, so the todo card is unit-tested only there; the
+subagent runs in the foreground unless asked for `run_in_background`; an
+async subagent's notification after the turn made the CLI start a turn
+of its own, exactly as on 2.1.275; `TaskOutput`'s structured result is the
+same shape.
+
+Verified: `go vet`, `gofmt -l`, `go test ./...`, `pnpm build`, `pnpm test`
+(128 tests; `transcript.test.ts` and `tools.test.ts` extended, the CSS
+brace test now covers `conversation.css`); live on a cloned home
+(`~/.warden-p4`, build 97e22d6) with a Claude chat that ran a background
+Bash (`run_in_background`), a foreground Explore subagent and
+`TaskOutput` in one turn, then an async Explore subagent whose result
+arrived after the turn: through `GET state` (child entries with
+`parentID` and the parent's turn, the Agent card completed at the
+notification with `endedAt` and the child's text, the background card
+with `background: true` and the real output, the CLI-started turn with
+its own record and usage, chat idle after), the web UI (the group's
+cards with the `background` badge and "1 tool call · 4s", the Agent card
+expanded to its prompt, the nested "Explore: 1 tool call, 1 message"
+transcript with the child's command card and message, and the result;
+the CLI-started turn's message with its stats line) and the TUI in a pty
+(collapsed count line, Tab expanding the indented child command and the
+`Explore ›` message before the result, `[background]` mark).
+
+Left: a subagent's entries are not found by the transcript search or
+counted in the export as nested; `task_progress` (the subagent's current
+step) is not shown while it runs beyond the child cards themselves; the
+todo card has no live test until the pinned CLI offers a todo tool.
 
 ### Item 6: TUI catch-up
 

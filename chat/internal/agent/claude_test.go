@@ -959,7 +959,7 @@ func TestClaudeBackgroundCommandCards(t *testing.T) {
 	if bash1[3]["_method"] != "item/completed" || bash1[3]["status"] != "completed" || bash1[3]["aggregatedOutput"] != "BG\n\n[exited with code 0]" || bash1[3]["background"] != true {
 		t.Fatalf("output read: %v", bash1[3])
 	}
-	if len(out1) != 2 || out1[0]["title"] != "Task output: Slow echo" || out1[1]["status"] != "completed" {
+	if len(out1) != 2 || out1[0]["title"] != "Task output: Slow echo" || out1[1]["status"] != "completed" || out1[1]["output"] != "BG\n\n[exited with code 0]" {
 		t.Fatalf("TaskOutput card: %v", out1)
 	}
 	if len(bash2) != 3 || bash2[2]["status"] != "failed" || bash2[2]["_turn"] != turn1 || !strings.Contains(String(bash2[2]["aggregatedOutput"]), "exit code 3") {
