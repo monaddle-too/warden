@@ -284,9 +284,9 @@ E–G after.
 - [ ] R2.12 **Undo a conversation rewind**: the removed tail is kept and can be restored until the next turn (restore the entries; a session that cannot un-rewind starts fresh with the recap, as item 11's fallback does).
 
 ### E. Workspace fork, resource mentions, rich reads (`feat/parity-r2-e-fork-mentions`)
-- [ ] R2.13 **Fork with a copy of the workspace**: "Fork…" gains "copy the workspace" — a new environment cloned from the sandbox (the runner's clone path on both drivers) plus the forked session; markers link both.
-- [ ] R2.14 **Resource mentions**: the composer's `@` menu offers the chat's shared documents, repositories and previews (`@doc:`, `@repo:`, `@preview:`) and expands them to what the agent needs; TUI too.
-- [ ] R2.15 **Rich Read results**: a Read of an image shows the image in the card (today "[image]"), PDFs and notebooks show a page/cell summary.
+- [x] R2.13 **Fork with a copy of the workspace**: "Fork…" gains "copy the workspace" — a new environment cloned from the sandbox (the runner's clone path on both drivers) plus the forked session; markers link both. Merged to main <MERGESHA> (2026-09-18); verified as the Round 2 E section says.
+- [x] R2.14 **Resource mentions**: the composer's `@` menu offers the chat's shared documents, repositories and previews (`@doc:`, `@repo:`, `@preview:`) and expands them to what the agent needs; TUI too. Merged to main <MERGESHA> (2026-09-18); verified as the Round 2 E section says.
+- [x] R2.15 **Rich Read results**: a Read of an image shows the image in the card (today "[image]"), PDFs and notebooks show a page/cell summary. Merged to main <MERGESHA> (2026-09-18); verified as the Round 2 E section says.
 
 ### F. TUI: vim mode, attachments, unread (`feat/parity-r2-f-tui`)
 - [ ] R2.16 **Vim mode**: `/vim on|off` persisted; normal/insert, motions, operators, `u`, `:` commands.
@@ -435,6 +435,8 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 13 Per-user instructions and memory — merged to main a5012c0 (2026-09-18); verified as the Item 13 section says.
 - [ ] 14 Project MCP, OAuth, plugins.
 - [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
+- [x] Round 2 A (titles, spend, model catalog) — merged fe1deaa (2026-09-18).
+- [x] Round 2 E (workspace fork copy, resource mentions, rich reads) — merged to main <MERGESHA> (2026-09-18); verified as the Round 2 E section says.
 
 ### Round 2 A: auto-titles, spend, the model catalog
 
@@ -568,6 +570,145 @@ spend controls ellipsise each other at 1280 px; the chip itself never
 shrinks); the aside op's cost is not in the spend; the catalog is asked
 at every session start (cheap, but a `list_models` refusal is only
 logged); the TUI's `/effort` menu was not seen live.
+
+### Round 2 E: workspace fork, resource mentions, rich reads
+
+Branch `feat/parity-r2-e-fork-mentions`, worktree
+`.local/warden-parity-r2-e-fork-mentions`, from main 33317c5
+(2026-09-18). R2.13 fork with a copy of the workspace, R2.14 resource
+mentions, R2.15 rich Read results.
+
+**What the pinned CLI (2.1.272) returns for a non-text Read**, probed
+2026-09-18 on a cloned home (`~/.warden-p18`) inside a chat's sandbox
+with the resident CLI's environment (item 7's method: a one-shot
+`/tmp/warden-claude -p --output-format stream-json --verbose` with the
+resident process's proxy/credential env exported from `/proc/<pid>/
+environ`), Read of the agent's `img.png`/`doc.pdf`/`nb.ipynb`:
+
+- **Image (PNG/JPEG).** The `tool_result` content is an `image` block
+  `{type:"image", source:{type:"base64", data, media_type}}`; the frame's
+  `tool_use_result` is `{type:"image", file:{base64, type:"image/png",
+  originalSize, dimensions:{originalWidth, originalHeight, displayWidth,
+  displayHeight}}}`. The model receives the image and answered the
+  colour. Warden stores the bytes through the chat's image store
+  (imageguard + policy `image_add`, the same path as `attach_image`;
+  `chats/images.go` `keepReadImage`) and the entry keeps the stored id in
+  `Tool.Read.Image`, never the bytes; the card shows it from
+  `chats/{id}/images/{id}`.
+- **PDF.** The content is a `text` block `"PDF file read: <path> (<n>
+  bytes)"` then a `document` block `{type:"document", source:{type:
+  "base64", media_type:"application/pdf", data}}`; `tool_use_result` is
+  `{type:"pdf", file:{filePath, base64, originalSize}}`. The CLI hands
+  the model the whole document and returns **no text per page**, so the
+  card shows the size and a page count Warden counts from the bytes
+  (`/Type /Pages … /Count`, falling back to counting `/Type /Page`
+  objects; 0 when the pages are inside compressed object streams).
+- **Notebook (`.ipynb`).** The content is a `text` block with the cells
+  as `<cell id="cell-N">source</cell …>` (a markdown cell prefixed
+  `<cell_type>markdown</cell_type>`); `tool_use_result` is
+  `{type:"notebook", file:{filePath, cells:[{cellType, source, cell_id,
+  language?}]}}`. The card shows each cell's type, language and first
+  line.
+
+The adapter maps all three on the item's `read` object
+(`agent/claude_tools.go` `claudeRead`), replacing the output text with a
+summary; `conversation.Read`/`ReadCell` carry it to the surfaces
+(`ToolCard.tsx` `ReadBody` with the stored image in the lightbox, the
+notebook cells, the PDF summary; TUI `render.go` `readCount`).
+
+**Fork with a copy of the workspace.** `POST chats/{id}/fork
+{copyWorkspace:true}` gives the fork a new sandbox the runner creates as
+a copy of the source's disk (op `clone`, `sandbox/clone.go`
+`cloneLocked`): the workspace's idle sessions are released first (the
+SBX snapshot needs the sandbox stopped, and the runner refuses a sandbox
+with a run), then the driver clones. **What the SBX clone path allows
+live** (sbx 0.43.0): there is no sandbox clone, and `sbx template save`
+**refuses a running sandbox** ("Sandbox … is running and must be stopped
+before saving"), so the worker stops the source (a resident source is
+snapshotted and its residency restored after; a stopped one is snapshot
+directly), saves it as `warden-copy-<name>`, creates the copy from that
+template at the source's size with the deny-all rule, and drops the
+template — a stopped-source save+create was ~15 s end to end. The old
+`sbx create --clone` invocation was VM-clone-of-a-git-repo, not a disk
+copy, and is gone. The Kubernetes driver's PVC clone/tar-copy already
+existed (decision 8) and `Create` runs it from `spec.Source`. The copy
+keeps the source's repository binding and checkpoint records (both on
+the disk), waits stopped for its first chat, and both chats get a
+marker: the copy's names the source, the source's the fork
+(`Entry.Fork.Into`). Access grants **stay with the source** — the policy
+service scopes every grant to one sandbox ("grants belong to the
+environment", `policy/sharing.go`), each an approval the owner gave for
+that sandbox — so a copy shares nothing until shared with; the marker
+and the panel's "Copied from …" line say so. Web: the `ForkDialog`
+checkbox; TUI `/fork [N|all] [copy]`.
+
+*The image pin.* Live, the copy's first message was refused
+(`enforcement_unavailable (unsupported runtime profile)`): the SBX
+inspector pins the guest image digest and a sandbox created from a saved
+template reports the snapshot's **own** digest (an SBX resize's
+regeneration has the same shape and the same latent bug). The runner now
+reads the digest of a sandbox it derived from a snapshot (`sbx inspect`;
+`ImageInspector`, `recordImageLocked` — at a copy's creation and after a
+restarting resize) and every grant context declares it
+(`GrantContext.ImageDigest` → context key `imageDigest`); the registry
+keeps it on the binding (learned again from the first request naming it
+after a restart, not part of the binding identity) and the inspector
+accepts exactly that digest for that binding besides the pinned images
+(`allowedImage`). The runner is trusted infrastructure with the daemon
+in hand; the pin guards the daemon's state, not the runner.
+
+**Resource mentions.** The composer's `@` menu offers, besides paths,
+the chat's shared documents, repositories and previews (from
+`chats/{id}/resources`, which reads the policy service's `list`/
+`github_list` and the state's approved port bindings). Picking one
+inserts a token — `@doc:"Budget 2026"`, `@repo:owner/name`,
+`@preview:Name` — that the transcript keeps; on send the token expands
+(`chats/mentions.go` `ExpandMentions`, in `Engine.input`) to what the
+agent acts on: a document's `document_id` and URL (as
+`read_google_document` takes), a repository's clone URL and read access
+(as `list_shared_repositories` reports), a preview's URL. Pure expansion
+with tests on both surfaces (`composer.ts` `resourceItems`/`mentionToken`,
+`tui/complete.go` `resourceItems`).
+
+Verified (2026-09-18): `gofmt -l`, `go vet ./...`, `go test ./...`
+(`sandbox/clone_test.go`: the SBX stop/snapshot/restore call order, the
+pod start/stop order, the refusals, the recorded snapshot digest and the
+grant declaring it; `chats/fork_test.go` `TestForkWithACopyOfTheWorkspace`:
+the clone request, the origin record, both markers, the environments
+view, the busy-sibling and runner-failure refusals; `chats/mentions_test.go`:
+the token grammar and expansion, the resources route, the expanded agent
+input with the transcript kept and no policy call without a token;
+`policy/registry_test.go` `TestRegistryPassesTheDeclaredImageDigest…`:
+the digest to the verifier on register/re-register/new-generation/
+restart, a malformed digest refused, the identity unchanged;
+`agent/claude_test.go` `TestClaudeReadOfImagePDFAndNotebook` with the CLI
+fixtures; `chats/images_test.go` `TestReadImageIsStoredNotKept`;
+`tui/tui_test.go` the rich reads, `/fork copy`, the resource menu),
+`pnpm build`, `pnpm test` (204; `composer.test.ts`, `tools.test.ts`
+extended). Live on a cloned home (`~/.warden-p18`, build 41bd4de, CLI
+2.1.272): a fork with a copy — the resident source stopped for the
+snapshot and restored, the copy stopped with its snapshot digest
+recorded (~16 s), its first message ran on the copy (it saw the copied
+files, created `only-in-copy.txt`), and the source stayed untouched
+afterwards (its `ls` still the three files); the copy's panel says
+"Copied from probe …". `@preview:Files` reached the agent as the preview
+URL with the transcript keeping the token; the `@` menu listed the
+preview and picking it inserted `@preview:Files `. A Read of the PNG
+showed the red square inline in the card (served 64×64 PNG from
+`chats/{id}/images/{id}`), the PDF showed "2 pages", the notebook "3
+cells"; the TUI in a pty showed the same read cards, the fork-into
+marker and the `/fork … copy` hint. Repository sharing could not be
+exercised: the cloned home's GitHub user token is expired at GitHub
+(401 on `/user/repos`), a pre-existing condition; `@repo:` is
+unit-tested and the resources route returns the policy service's rows.
+
+Progress: implemented and live-verified 2026-09-18; merged to main
+<MERGESHA> (2026-09-18) after merging origin/main in.
+
+Left: repository sharing not live-tested here (the home's GitHub token is
+stale); a PDF whose pages live in compressed object streams shows no page
+count; the Kubernetes clone path was not exercised on this Mac (no
+cluster); Codex is unit-test only.
 
 ### Item 15: the long tail
 
