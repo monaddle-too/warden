@@ -305,7 +305,7 @@ func entryFinal(c *Chat, e Entry, children map[string][]Entry) bool {
 			return false
 		}
 	case "aside":
-		if e.Aside != nil && e.Aside.Status == "running" {
+		if e.Aside != nil && (e.Aside.Status == "running" || e.Aside.Status == "starting") {
 			return false
 		}
 	}
@@ -1002,6 +1002,8 @@ func renderAside(c *Chat, e Entry, width int) []string {
 	out := wrap(sanitize(e.Text), width, bold+magenta+label+" › "+reset, strings.Repeat(" ", utf8.RuneCountInString(label)+3))
 	a := e.Aside
 	switch {
+	case a != nil && a.Status == "starting":
+		out = append(out, dim+"  ⋯ starting the agent's session for the question"+reset)
 	case a != nil && a.Status == "running", e.IsStreaming && e.Detail == "":
 		out = append(out, dim+"  ⋯ answering from a copy of the session"+reset)
 	case a != nil && a.Status == "failed":
@@ -1029,7 +1031,11 @@ func renderAside(c *Chat, e Entry, width int) []string {
 		if a.CostUSD > 0 {
 			facts = append(facts, FormatCost(a.CostUSD))
 		}
-		out = append(out, dim+"    "+strings.Join(facts, " · ")+" · not sent to the agent"+reset)
+		tail := " · not sent to the agent"
+		if a.Promoted != "" {
+			tail = " · asked in chat"
+		}
+		out = append(out, dim+"    "+strings.Join(facts, " · ")+tail+reset)
 	}
 	return out
 }

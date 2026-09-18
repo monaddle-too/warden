@@ -20,12 +20,30 @@ type CostSummary struct {
 	Usage           Usage
 	Priced          bool
 	Seconds         float64
+	// Answered side questions (R2.19): in the usage above, marked here
+	// with their share of the cost.
+	Asides       int
+	AsideCostUSD float64
 }
 
-// SessionCost sums the chat's turn records; nowSeconds counts a running
-// turn up to now when positive.
+// SessionCost sums the chat's turn records and its answered side
+// questions; nowSeconds counts a running turn up to now when positive.
 func SessionCost(c *Chat, nowSeconds float64) CostSummary {
 	var out CostSummary
+	for _, e := range c.Conversation.Entries {
+		if e.Role != "aside" || e.Aside == nil || e.Aside.Status != "completed" {
+			continue
+		}
+		out.Asides++
+		out.Usage.Input += e.Aside.Input
+		out.Usage.Output += e.Aside.Output
+		out.Usage.Total += e.Aside.Input + e.Aside.Output
+		if e.Aside.CostUSD > 0 {
+			out.Priced = true
+			out.Usage.CostUSD += e.Aside.CostUSD
+			out.AsideCostUSD += e.Aside.CostUSD
+		}
+	}
 	for _, t := range c.Conversation.Turns {
 		out.Turns++
 		if u := t.Usage; u != nil {
@@ -74,7 +92,15 @@ func CostLines(s CostSummary) []string {
 	if s.Priced {
 		cost = FormatCost(s.Usage.CostUSD)
 	}
-	rows = append(rows, [2]string{"cost", cost}, [2]string{"time in turns", FormatDuration(s.Seconds)})
+	rows = append(rows, [2]string{"cost", cost})
+	if s.Asides > 0 {
+		share := "no cost reported"
+		if s.AsideCostUSD > 0 {
+			share = FormatCost(s.AsideCostUSD)
+		}
+		rows = append(rows, [2]string{"  of it, side questions", fmt.Sprintf("%d · %s", s.Asides, share)})
+	}
+	rows = append(rows, [2]string{"time in turns", FormatDuration(s.Seconds)})
 	out := []string{"cost so far (this chat; not sent to the agent)"}
 	for _, r := range rows {
 		out = append(out, fmt.Sprintf("  %-20s %s", r[0], r[1]))
@@ -105,6 +131,8 @@ func WorkspaceCost(c *Chat, chats []*Chat, nowSeconds float64) (CostSummary, int
 		out.Usage.CostUSD += s.Usage.CostUSD
 		out.Priced = out.Priced || s.Priced
 		out.Seconds += s.Seconds
+		out.Asides += s.Asides
+		out.AsideCostUSD += s.AsideCostUSD
 	}
 	return out, n
 }
@@ -115,6 +143,9 @@ func WorkspaceCostLine(s CostSummary, chats int) string {
 	parts := []string{fmt.Sprintf("%d chat%s", chats, plural(chats)), fmt.Sprintf("%d turn%s", s.Turns, plural(s.Turns)), FormatTokens(s.Usage.Total) + " tokens"}
 	if s.Priced {
 		parts = append(parts, FormatCost(s.Usage.CostUSD))
+	}
+	if s.Asides > 0 {
+		parts = append(parts, fmt.Sprintf("%d side question%s", s.Asides, plural(s.Asides)))
 	}
 	return "this workspace: " + strings.Join(parts, " · ")
 }
@@ -203,13 +234,31 @@ func forkOutcome(session string) string {
 
 // btw asks a side question in the background and reports the answer as
 // a notice when it arrives; the aside entry itself comes over the stream.
+// A released session is started for it (the service does; the notice
+// says so). Without an argument the chat's side questions are listed;
+// "/btw promote N" asks the Nth (the last without N) in chat as a
+// message of the person's, the answer quoted (R2.19).
 func (a *App) btw(ctx context.Context, c *Chat, question string) {
 	if c == nil {
 		a.setNotice("no chat selected")
 		return
 	}
 	if question == "" {
-		a.setNotice("/btw QUESTION asks a copy of the agent's session, from this chat's context; the agent never sees it")
+		asides := asideEntries(c)
+		if len(asides) == 0 {
+			a.setNotice(btwUsage)
+			return
+		}
+		var b strings.Builder
+		for i, e := range asides {
+			fmt.Fprintf(&b, "%2d   %s %s\n", i+1, asideMark(e), truncate(excerptOf(e.Text), 66))
+		}
+		b.WriteString(btwUsage)
+		a.setNotice(b.String())
+		return
+	}
+	if word, rest, _ := strings.Cut(question, " "); word == "promote" {
+		a.promoteAside(ctx, c, strings.TrimSpace(rest))
 		return
 	}
 	if c.Provider != "claude" {
@@ -217,10 +266,14 @@ func (a *App) btw(ctx context.Context, c *Chat, question string) {
 		return
 	}
 	if c.Running() {
-		a.setNotice("wait for the agent's turn to finish before a side question")
+		a.setNotice("the agent's turn is running; ask the side question after this turn")
 		return
 	}
-	a.setNotice("asking a copy of the session: " + truncate(question, 60))
+	if c.Session == nil {
+		a.setNotice("asking a copy of the session (starting it first, as it was released): " + truncate(question, 60))
+	} else {
+		a.setNotice("asking a copy of the session: " + truncate(question, 60))
+	}
 	go func() {
 		result, err := a.Client.Aside(ctx, c.ID, question)
 		report := func(context.Context) {
@@ -230,7 +283,7 @@ func (a *App) btw(ctx context.Context, c *Chat, question string) {
 			case result.Error != "":
 				a.setNotice("side question failed: " + result.Error)
 			default:
-				a.setNotice("side question answered" + costSuffix(result.CostUSD))
+				a.setNotice("side question answered" + costSuffix(result.CostUSD) + " · /btw promote asks it in chat")
 			}
 		}
 		select {
@@ -238,6 +291,60 @@ func (a *App) btw(ctx context.Context, c *Chat, question string) {
 		case <-ctx.Done():
 		}
 	}()
+}
+
+const btwUsage = "/btw QUESTION asks a copy of the agent's session, from this chat's context; the agent never sees it · /btw promote [N] asks side question N (the last) in chat, its answer quoted"
+
+// asideEntries are the chat's side questions in order.
+func asideEntries(c *Chat) []Entry {
+	var out []Entry
+	for _, e := range c.Conversation.Entries {
+		if e.Role == "aside" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// asideMark is a side question's state in the /btw listing.
+func asideMark(e Entry) string {
+	a := e.Aside
+	switch {
+	case a == nil:
+		return "·"
+	case a.Promoted != "":
+		return "✓ asked in chat ·"
+	case a.Status == "starting", a.Status == "running":
+		return "⋯"
+	case a.Status == "failed":
+		return "!"
+	}
+	return "·"
+}
+
+// promoteAside asks side question N (the last when arg is empty) in chat.
+func (a *App) promoteAside(ctx context.Context, c *Chat, arg string) {
+	asides := asideEntries(c)
+	if len(asides) == 0 {
+		a.setNotice("no side question to ask in chat; /btw QUESTION asks one")
+		return
+	}
+	n := len(asides)
+	if arg != "" {
+		v, err := strconv.Atoi(arg)
+		if err != nil || v < 1 || v > len(asides) {
+			a.setNotice(fmt.Sprintf("/btw promote N with N from 1 to %d (/btw lists them)", len(asides)))
+			return
+		}
+		n = v
+	}
+	e := asides[n-1]
+	result, err := a.Client.PromoteAside(ctx, c.ID, e.ID)
+	if err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	a.setNotice("asked in chat as your message, the side answer quoted: " + truncate(excerptOf(result.Text), 60))
 }
 
 func costSuffix(usd float64) string {

@@ -873,9 +873,38 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/aside")
 		f.mu.Lock()
 		c := f.state.Chat(id)
-		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "aside1", Role: "aside", Text: body.Text, Detail: "Forty-two.", Aside: &Aside{Status: "completed", CostUSD: 0.03, Input: 1200, Output: 8, DurationMS: 2600}})
+		asideID := fmt.Sprintf("aside%d", len(c.Conversation.Entries)+1)
+		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: asideID, Role: "aside", Text: body.Text, Detail: "Forty-two.", Aside: &Aside{Status: "completed", CostUSD: 0.03, Input: 1200, Output: 8, DurationMS: 2600}})
 		f.mu.Unlock()
-		json.NewEncoder(w).Encode(AsideResult{ID: "aside1", Text: "Forty-two.", CostUSD: 0.03})
+		json.NewEncoder(w).Encode(AsideResult{ID: asideID, Text: "Forty-two.", CostUSD: 0.03})
+	case strings.HasSuffix(path, "/promote"):
+		// chats/{id}/aside/{entryID}/promote: the question as a message
+		// with the answer quoted, the aside marked.
+		parts := strings.Split(strings.TrimPrefix(path, "chats/"), "/")
+		f.mu.Lock()
+		c := f.state.Chat(parts[0])
+		var text string
+		for i := range c.Conversation.Entries {
+			e := &c.Conversation.Entries[i]
+			if e.ID == parts[2] && e.Role == "aside" {
+				if e.Aside.Promoted != "" {
+					f.mu.Unlock()
+					w.WriteHeader(400)
+					w.Write([]byte(`{"error":"the side question was already asked in chat"}`))
+					return
+				}
+				text = e.Text + "\n\n(I asked this as a side question of a copy of your session; its answer, to build on:)\n> " + e.Detail
+				e.Aside.Promoted = "promoted-" + e.ID
+				c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "promoted-" + e.ID, Role: "user", Text: text})
+			}
+		}
+		f.mu.Unlock()
+		if text == "" {
+			w.WriteHeader(400)
+			w.Write([]byte(`{"error":"no such side question"}`))
+			return
+		}
+		json.NewEncoder(w).Encode(PromoteResult{MessageID: "promoted-" + parts[2], Text: text})
 	case strings.HasSuffix(path, "/style"):
 		var body struct{ Style string }
 		json.NewDecoder(r.Body).Decode(&body)
@@ -3473,8 +3502,14 @@ func TestSideQuestionAndItsCard(t *testing.T) {
 	if !strings.HasPrefix(app.notice, "/btw QUESTION") {
 		t.Fatalf("usage: %q", app.notice)
 	}
+	app.submit(ctx, "/btw promote")
+	if !strings.HasPrefix(app.notice, "no side question to ask in chat") {
+		t.Fatalf("promote with none: %q", app.notice)
+	}
+	// Without a session (released) the service starts it; the notice
+	// says so.
 	app.submit(ctx, "/btw what is the answer?")
-	if !strings.HasPrefix(app.notice, "asking a copy of the session: what is the answer?") {
+	if !strings.HasPrefix(app.notice, "asking a copy of the session (starting it first, as it was released): what is the answer?") {
 		t.Fatalf("asking: %q", app.notice)
 	}
 	select {
@@ -3483,7 +3518,7 @@ func TestSideQuestionAndItsCard(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("no report")
 	}
-	if app.notice != "side question answered ($0.03)" {
+	if app.notice != "side question answered ($0.03) · /btw promote asks it in chat" {
 		t.Fatalf("answered: %q", app.notice)
 	}
 	app.refreshState(ctx)
@@ -3497,9 +3532,60 @@ func TestSideQuestionAndItsCard(t *testing.T) {
 			t.Fatalf("aside card lacks %q:\n%s", want, lines)
 		}
 	}
+	// With a session up the notice is the plain one.
+	f.mu.Lock()
+	f.state.Chats[0].Session = &SessionInfo{Model: "sonnet"}
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.submit(ctx, "/btw and again?")
+	if !strings.HasPrefix(app.notice, "asking a copy of the session: and again?") {
+		t.Fatalf("asking with a session: %q", app.notice)
+	}
+	select {
+	case report := <-app.later:
+		report(ctx)
+	case <-time.After(3 * time.Second):
+		t.Fatal("no report")
+	}
+	app.refreshState(ctx)
+	// /btw alone lists them; /btw promote N asks one in chat and the
+	// card and listing say so; again is refused by the service.
+	app.submit(ctx, "/btw")
+	if listing := plain(app.notice); !strings.Contains(listing, " 1   · what is the answer?") || !strings.Contains(listing, " 2   · and again?") || !strings.HasSuffix(listing, btwUsage) {
+		t.Fatalf("listing: %q", listing)
+	}
+	app.submit(ctx, "/btw promote 9")
+	if !strings.HasPrefix(app.notice, "/btw promote N with N from 1 to 2") {
+		t.Fatalf("promote out of range: %q", app.notice)
+	}
+	app.submit(ctx, "/btw promote 1")
+	if !strings.HasPrefix(app.notice, "asked in chat as your message, the side answer quoted: what is the answer?") {
+		t.Fatalf("promote: %q", app.notice)
+	}
+	app.refreshState(ctx)
+	c = app.chat()
+	if last := c.Conversation.Entries[len(c.Conversation.Entries)-1]; last.Role != "user" || !strings.HasPrefix(last.Text, "what is the answer?\n\n(I asked this") || !strings.Contains(last.Text, "> Forty-two.") {
+		t.Fatalf("promoted message: %+v", last)
+	}
+	lines = plain(strings.Join(RenderTranscript(c, 100, false), "\n"))
+	if !strings.Contains(lines, "$0.03 · asked in chat") {
+		t.Fatalf("promoted card:\n%s", lines)
+	}
+	app.submit(ctx, "/btw")
+	if !strings.Contains(plain(app.notice), " 1   ✓ asked in chat · what is the answer?") {
+		t.Fatalf("listing after the promotion: %q", plain(app.notice))
+	}
+	app.submit(ctx, "/btw promote 1")
+	if app.notice != "the side question was already asked in chat" {
+		t.Fatalf("second promotion: %q", app.notice)
+	}
 	running := RenderTranscript(&Chat{Provider: "claude", Conversation: Conversation{Entries: []Entry{{ID: "x", Role: "aside", Text: "hm?", IsStreaming: true, Aside: &Aside{Status: "running"}}}}}, 80, false)
 	if !strings.Contains(plain(strings.Join(running, "\n")), "⋯ answering from a copy of the session") {
 		t.Fatalf("running aside: %v", running)
+	}
+	starting := RenderTranscript(&Chat{Provider: "claude", Conversation: Conversation{Entries: []Entry{{ID: "x", Role: "aside", Text: "hm?", IsStreaming: true, Aside: &Aside{Status: "starting"}}}}}, 80, false)
+	if !strings.Contains(plain(strings.Join(starting, "\n")), "⋯ starting the agent's session for the question") {
+		t.Fatalf("starting aside: %v", starting)
 	}
 	failed := RenderTranscript(&Chat{Provider: "claude", Conversation: Conversation{Entries: []Entry{{ID: "x", Role: "aside", Text: "hm?", Aside: &Aside{Status: "failed", Error: "API Error: 503"}}}}}, 80, false)
 	if !strings.Contains(plain(strings.Join(failed, "\n")), "! could not answer: API Error: 503") {
@@ -3511,7 +3597,7 @@ func TestSideQuestionAndItsCard(t *testing.T) {
 	f.mu.Unlock()
 	app.refreshState(ctx)
 	app.submit(ctx, "/btw now?")
-	if !strings.HasPrefix(app.notice, "wait for the agent's turn") {
+	if !strings.HasPrefix(app.notice, "the agent's turn is running; ask the side question after this turn") {
 		t.Fatalf("running: %q", app.notice)
 	}
 	app.selectChat("chat2")
@@ -3820,9 +3906,26 @@ func TestCostShowsTheWorkspaceTotal(t *testing.T) {
 	app.refreshState(ctx)
 	app.submit(ctx, "/cost")
 	notice := plain(app.notice)
-	if !strings.Contains(notice, "cost                 $0.10") || !strings.Contains(notice, "this workspace: 2 chats · 2 turns · 3.0k tokens · $0.30") {
+	if !strings.Contains(notice, "cost                 $0.10") || !strings.Contains(notice, "this workspace: 2 chats · 2 turns · 3.0k tokens · $0.30") || strings.Contains(notice, "side question") {
 		t.Fatalf("/cost:\n%s", notice)
 	}
+	// Answered side questions count, marked apart; a failed one does not.
+	f.mu.Lock()
+	f.state.Chats[0].Conversation.Entries = []Entry{
+		{ID: "s1", Role: "aside", Text: "q", Aside: &Aside{Status: "completed", Input: 400, Output: 100, CostUSD: 0.02}},
+		{ID: "s2", Role: "aside", Text: "q", Aside: &Aside{Status: "failed", Input: 400, Output: 100, CostUSD: 0.02}},
+	}
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	app.submit(ctx, "/cost")
+	notice = plain(app.notice)
+	if !strings.Contains(notice, "total tokens         1.5k") || !strings.Contains(notice, "cost                 $0.12") || !strings.Contains(notice, "  of it, side questions 1 · $0.02") || !strings.Contains(notice, "this workspace: 2 chats · 2 turns · 3.5k tokens · $0.32 · 1 side question") {
+		t.Fatalf("/cost with asides:\n%s", notice)
+	}
+	f.mu.Lock()
+	f.state.Chats[0].Conversation.Entries = nil
+	f.mu.Unlock()
+	app.refreshState(ctx)
 	// Alone on its workspace: no total line.
 	app.selectChat("c")
 	app.submit(ctx, "/cost")
