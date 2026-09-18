@@ -97,6 +97,11 @@ func (e *Engine) SendQueued(id string) error {
 	return err
 }
 
+// A queued entry sits where it was sent until confirm hands it over and
+// moves it to the end of the transcript, so the surfaces render queued
+// entries last (the web's queuedLast, the TUI's) and the persisted order
+// agrees once the message opens its turn.
+
 // queuedLeft reports whether the chat still has a message waiting for
 // the agent.
 func queuedLeft(c *Chat) bool {

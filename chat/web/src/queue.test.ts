@@ -7,6 +7,7 @@ import {
   queueHeld,
   queueHint,
   queueLabel,
+  queuedLast,
   queuedMessages,
 } from "./queue";
 import { rewindOutcome } from "./rewind";
@@ -53,6 +54,13 @@ const chat = (status: string, list = entries) => ({
 describe("the queue", () => {
   it("lists the queued messages in order, a subagent's prompt aside", () => {
     expect(queuedMessages(entries).map((e) => e.id)).toEqual(["q1", "q2"]);
+  });
+  it("renders the queued messages last, in their order", () => {
+    const list = [entries[4], entries[0], entries[5], entries[1]];
+    expect(queuedLast(list).map((e) => e.id)).toEqual(["u1", "a1", "q1", "q2"]);
+    // Nothing queued: the same list, so memoised renders keep their keys.
+    const plain = entries.slice(0, 2);
+    expect(queuedLast(plain)).toBe(plain);
   });
   it("is held once nothing runs", () => {
     expect(queueHeld(chat("running"))).toBe(false);

@@ -2235,6 +2235,15 @@ func TestQueueMarkersWithdrawAndEditLastQueued(t *testing.T) {
 	if strings.Count(joined, "(queued · sends when the agent finishes)") != 2 {
 		t.Fatalf("markers: %s", joined)
 	}
+	// Queued messages render last, after what the running turn appends.
+	f.mu.Lock()
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "a1", Role: "assistant", Text: "still working"})
+	f.mu.Unlock()
+	app.refreshState(ctx)
+	joined = plain(strings.Join(RenderTranscript(app.chat(), 100, false), "\n"))
+	if strings.Index(joined, "still working") > strings.Index(joined, "second, while it runs") {
+		t.Fatalf("queued messages not last: %s", joined)
+	}
 	app.submit(ctx, "/queue")
 	notice := plain(app.notice)
 	if !strings.Contains(notice, " 1  second, while it runs") || !strings.Contains(notice, " 2  third with a file") || !strings.Contains(notice, "sent in order after this turn") {

@@ -26,6 +26,15 @@ export function queuedMessages(entries: Entry[]): Entry[] {
   );
 }
 
+/* The entries with the queued messages last, in their order: a queued
+   message waits at the bottom of the transcript however early it was
+   sent, and the service moves it there for good when the agent gets it. */
+export function queuedLast(entries: Entry[]): Entry[] {
+  const queued = queuedMessages(entries);
+  if (!queued.length) return entries;
+  return entries.filter((e) => !queued.includes(e)).concat(queued);
+}
+
 /* Whether the queue is held: nothing runs (Stop interrupted the turn, or
    the run ended) while messages are still queued. They go with Send on a
    card or with the next message. */

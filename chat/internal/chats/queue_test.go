@@ -83,6 +83,35 @@ func TestQueuedMessagesSendInOrderEachAsItsOwnTurn(t *testing.T) {
 	}
 }
 
+// A queued message sent while the earlier turn still appends (its reply)
+// opens its own turn after that reply in the transcript: confirm moves
+// the entry to the end when the agent gets it.
+func TestSentQueuedMessageMovesPastTheEarlierTurn(t *testing.T) {
+	e, w, id := queueSetup(t)
+	if err := e.Message(id, "second", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	w.send(agent.Frame{Method: "item/completed", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "reply-1", "type": "agentMessage", "text": "first reply"}}})
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 3 })
+	order := func() string {
+		var out []string
+		for _, v := range e.Store.Snapshot().chat(id).Conversation.Entries {
+			out = append(out, v.Role+":"+v.Text)
+		}
+		return strings.Join(out, ",")
+	}
+	if got := order(); got != "user:first,user:second,assistant:first reply" {
+		t.Fatalf("while queued: %s", got)
+	}
+	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
+	until(t, func() bool { return w.turnCount() == 2 })
+	until(t, func() bool { return order() == "user:first,assistant:first reply,user:second" })
+	c := e.Store.Snapshot().chat(id)
+	if last := c.Conversation.Entries[2]; last.Delivery != "sent" || last.TurnID == nil {
+		t.Fatalf("moved entry: %+v", last)
+	}
+}
+
 // Withdraw takes a queued message out before the agent gets it; a sent
 // message, or another person's queued one, is refused.
 func TestWithdrawQueuedMessage(t *testing.T) {

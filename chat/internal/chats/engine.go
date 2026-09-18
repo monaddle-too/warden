@@ -1330,13 +1330,24 @@ func (e *Engine) confirm(id, message, turn string) error {
 		c := st.chat(id)
 		c.Conversation.Begin(turn, e.at())
 		c.Recap, c.NewSession = "", false // delivered with this turn (rewind.go)
-		for i := range c.Conversation.Entries {
-			v := &c.Conversation.Entries[i]
-			if v.ID == message {
-				v.Delivery = "sent"
-				v.Detail = ""
-				v.TurnID = cv.Ptr(turn)
+		entries := c.Conversation.Entries
+		for i := range entries {
+			v := &entries[i]
+			if v.ID != message {
+				continue
 			}
+			v.Delivery = "sent"
+			v.Detail = ""
+			v.TurnID = cv.Ptr(turn)
+			if i < len(entries)-1 {
+				// The message opens its turn now: it moves past what the
+				// earlier turn appended while it waited in the queue, so
+				// the transcript reads in the order things happened.
+				sent := *v
+				entries = append(entries[:i:i], entries[i+1:]...)
+				c.Conversation.Entries = append(entries, sent)
+			}
+			break
 		}
 		return nil
 	})

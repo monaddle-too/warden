@@ -97,6 +97,7 @@ import {
   queueHeld,
   queueHint,
   queueLabel,
+  queuedLast,
   type Editing,
 } from "../queue";
 import { canRewind, doubleEscape, excerpt } from "../rewind";
@@ -313,7 +314,11 @@ export function Conversation({
   // (`nested`) and render inside it, so counts, groups, the unread mark and
   // the turns' lines see only the flow the reader scrolls.
   const all = chat.conversation.entries;
-  const { top: entries, nested } = useMemo(() => nestEntries(all), [all]);
+  // Queued messages read last, wherever they sit (queue.ts).
+  const { top: entries, nested } = useMemo(() => {
+    const { top, nested } = nestEntries(all);
+    return { top: queuedLast(top), nested };
+  }, [all]);
   // Following: the transcript keeps its end in view as it grows. Once the
   // reader scrolls up, `away` holds the ID of the last entry they had in
   // view, so the jump button can say how many messages arrived since; the

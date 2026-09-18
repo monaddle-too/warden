@@ -141,7 +141,7 @@ func lastLines(text string, n int) []string {
 func RenderTranscript(c *Chat, width int, expanded bool) []string {
 	top, children := nestEntries(c.Conversation.Entries)
 	var out []string
-	for _, e := range top {
+	for _, e := range queuedLast(top) {
 		out = append(out, renderEntry(c, e, width, expanded, children, "")...)
 		out = append(out, "")
 	}
