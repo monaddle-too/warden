@@ -385,6 +385,40 @@ func queueHeldFor(c *Chat) bool {
 	return c.Status != "running" && c.Status != "queued" && c.Status != "stopping" && queuedLeft(c)
 }
 
+// A rewind on a chat owed a fresh session (thread dropped, recap kept)
+// re-renders the recap from the transcript it leaves; undoing it gives
+// the earlier recap back.
+func TestRewindRefreshesARecapOwedToAFreshSession(t *testing.T) {
+	e, w := residentSetup(t)
+	id, first, second := twoTurns(t, e, w)
+	if _, err := e.Rewind(context.Background(), id, second, "conversation"); err != nil {
+		t.Fatal(err)
+	}
+	marker := e.Store.Snapshot().chat(id).Conversation.Entries[1]
+	if undo, err := e.UndoRewind(context.Background(), id, marker.ID, false, cv.Actor{}); err != nil || undo.Session != "fresh" {
+		t.Fatalf("undo: %v %+v", err, undo)
+	}
+	c := e.Store.Snapshot().chat(id)
+	if c.Conversation.ThreadID != nil || !strings.Contains(c.Recap, "User: second") {
+		t.Fatalf("after the undo: thread %v recap %q", c.Conversation.ThreadID, c.Recap)
+	}
+	full := c.Recap
+	if _, err := e.Rewind(context.Background(), id, second, "conversation"); err != nil {
+		t.Fatal(err)
+	}
+	c = e.Store.Snapshot().chat(id)
+	if !c.NewSession || strings.Contains(c.Recap, "second") || !strings.Contains(c.Recap, "User: first") {
+		t.Fatalf("the recap must describe the rewound transcript: new %v %q", c.NewSession, c.Recap)
+	}
+	marker = c.Conversation.Entries[len(c.Conversation.Entries)-1]
+	if undo, err := e.UndoRewind(context.Background(), id, marker.ID, false, cv.Actor{}); err != nil || undo.Session != "" {
+		t.Fatalf("undo without a thread: %v %+v", err, undo)
+	}
+	if c = e.Store.Snapshot().chat(id); c.Recap != full || !c.NewSession || c.Conversation.Entries[1].ID != second || c.Conversation.Entries[0].ID != first {
+		t.Fatalf("after the second undo: recap %q new %v", c.Recap, c.NewSession)
+	}
+}
+
 func TestUndoRewindRefusals(t *testing.T) {
 	e, w := residentSetup(t)
 	id, _, second := twoTurns(t, e, w)

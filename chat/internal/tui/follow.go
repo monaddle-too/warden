@@ -149,13 +149,19 @@ func followMessage(out io.Writer, c *Chat, messageID string, seen map[string]boo
 			}
 			if ahead > 0 {
 				fmt.Fprintf(out, "  (queued: %d message(s) ahead)\n", ahead)
-			} else if c.Running() {
+			} else if c.Status == "running" {
 				fmt.Fprintln(out, "  (queued: sends when the agent finishes)")
 			}
 		}
 	}
 	switch message.Delivery {
 	case "failed":
+		if c.Running() {
+			// The service marks a message unconfirmed while it hands it
+			// over and confirms it with the turn; final only once the run
+			// is over.
+			return false, c.Status, nil
+		}
 		detail := message.Detail
 		if detail == "" {
 			detail = "not delivered"

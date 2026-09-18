@@ -270,6 +270,11 @@ func (e *Engine) Rewind(ctx context.Context, id, turnID, what string) (RewindRes
 			tail.DiffBase = c.DiffBase
 			tail.Before = before
 			c.RewoundTail = &tail
+			if c.Conversation.ThreadID == nil && c.NewSession && c.Recap != "" {
+				// A fresh session is owed the transcript as it now is,
+				// not the one an earlier fallback rendered.
+				c.Recap = recap(c.Conversation.Entries)
+			}
 		}
 		if what != "conversation" {
 			c.DiffBase = message.ID

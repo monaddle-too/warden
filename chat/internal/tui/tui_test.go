@@ -774,8 +774,40 @@ func TestFollowOneMessageHeldOrWithdrawn(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "held in the queue") || status != "interrupted" || !strings.Contains(out.String(), "(queued: 1 message(s) ahead)") {
 		t.Fatalf("held: %q %v\n%s", status, err, out.String())
 	}
+	// The hand-over marks the message unconfirmed for a moment (the
+	// service's attempt, then confirm): not final while the run is on.
 	f.mu.Lock()
 	f.state.Chats[0].Status = "running"
+	f.state.Chats[0].Conversation.Entries = f.state.Chats[0].Conversation.Entries[1:]
+	f.state.Chats[0].Conversation.Entries[0].Delivery = "failed"
+	f.state.Chats[0].Conversation.Entries[0].Detail = "Delivery unconfirmed. Check the agent response before retrying."
+	f.mu.Unlock()
+	tid := "t9"
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		f.mu.Lock()
+		c := f.state.Chats[0]
+		c.Conversation.Entries[0].Delivery, c.Conversation.Entries[0].TurnID = "sent", &tid
+		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "a9", Role: "assistant", Text: "confirmed reply", TurnID: &tid})
+		c.Conversation.Turns = []Turn{{ID: tid, StartedAt: 1, EndedAt: 2}}
+		c.Status = "idle"
+		f.mu.Unlock()
+	}()
+	out.Reset()
+	if status, err := Follow(ctx, f.client(), "c1", &out, nil, "q1"); err != nil || status != "idle" || !strings.Contains(out.String(), "confirmed reply") {
+		t.Fatalf("unconfirmed then confirmed: %q %v\n%s", status, err, out.String())
+	}
+	// A message that failed for good, with the run over, ends the wait.
+	f.mu.Lock()
+	f.state.Chats[0].Status = "failed"
+	f.state.Chats[0].Conversation.Entries = append(f.state.Chats[0].Conversation.Entries, Entry{ID: "q3", Role: "user", Text: "mine", Delivery: "failed", Detail: "Not delivered"})
+	f.mu.Unlock()
+	if _, err := Follow(ctx, f.client(), "c1", &out, nil, "q3"); err == nil || !strings.Contains(err.Error(), "Not delivered") {
+		t.Fatalf("failed for good: %v", err)
+	}
+	f.mu.Lock()
+	f.state.Chats[0].Status = "running"
+	f.state.Chats[0].Conversation.Entries = []Entry{{ID: "u0", Role: "user", Text: "earlier", Delivery: "sent"}, {ID: "q1", Role: "user", Text: "mine", Delivery: "queued"}}
 	f.mu.Unlock()
 	go func() {
 		time.Sleep(80 * time.Millisecond)
