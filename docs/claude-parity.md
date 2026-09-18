@@ -294,9 +294,9 @@ E–G after.
 - [x] R2.15 **Rich Read results**: a Read of an image shows the image in the card (today "[image]"), PDFs and notebooks show a page/cell summary. Merged to main e465b66 (2026-09-18); verified as the Round 2 E section says.
 
 ### F. TUI: vim mode, attachments, unread (`feat/parity-r2-f-tui`)
-- [ ] R2.16 **Vim mode**: `/vim on|off` persisted; normal/insert, motions, operators, `u`, `:` commands.
-- [ ] R2.17 **Attachments and paste**: `/attach a b c`, a local `@file` path attaches, a paste-preview chip (items 6 and 12's leftovers).
-- [ ] R2.18 **Unread and jump**: unread markers per chat in `/chats` and the sidebar, an unread divider on switch, `G`/End jumps to the bottom.
+- [x] R2.16 **Vim mode**: `/vim on|off` persisted; normal/insert, motions, operators, `u`, `:` commands. Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says.
+- [x] R2.17 **Attachments and paste**: `/attach a b c`, a local `@file` path attaches, a paste-preview chip (items 6 and 12's leftovers). Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says.
+- [x] R2.18 **Unread and jump**: unread markers per chat in `/chats` and the sidebar, an unread divider on switch, `G`/End jumps to the bottom. Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says (the TUI's status bar is the sidebar's equivalent; on the scrollback TUI the jump is a reprint).
 
 ### G. Asides and shortcuts (`feat/parity-r2-g-asides-keys`)
 - [ ] R2.19 **`/btw` polish**: starts the session when it was released instead of refusing, cleans the aside's session copies in the guest, and an aside can be promoted into the chat as a message (item 15's leftovers).
@@ -606,6 +606,11 @@ before it is lost, as with every command; Ctrl+P is the in-place way);
 the unread divider cannot scroll the terminal to itself; the web
 sidebar still has no unread badge (the plan named the TUI's status bar
 as its equivalent).
+
+Progress: started 2026-09-18; implemented, re-based on item 16 and
+live-verified the same day (1e48674); merged to main b7e7e8b
+(2026-09-18) after merging the bug-reports client track and round 2 E
+in. Not deployed beyond the test home.
 
 ### Round 2 C: live activity, nesting-aware search and export, TUI search across chats
 
