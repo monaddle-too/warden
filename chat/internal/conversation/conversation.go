@@ -76,6 +76,23 @@ func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) 
 		if e.Text == "" {
 			e.Text = e.Tool.Name
 		}
+	case "compaction":
+		// The agent compacted its context (Claude's /compact, or its own
+		// auto-compaction near the window): a divider in the transcript
+		// with the trigger and the token counts, and the summary the
+		// agent continues from as the detail.
+		e.Role = "compaction"
+		n := func(k string) int64 { f, _ := item[k].(float64); return int64(f) }
+		e.Compaction = &Compaction{Trigger: agent.String(item["trigger"]), PreTokens: n("preTokens"), PostTokens: n("postTokens"), Status: toolStatus(item), Error: agent.String(item["error"])}
+		e.Detail = tail(agent.String(item["summary"]), 30000)
+		switch e.Compaction.Status {
+		case "running":
+			e.Text = "Compacting context…"
+		case "failed":
+			e.Text = "Compaction failed"
+		default:
+			e.Text = "Context compacted"
+		}
 	case "reasoning":
 		// The model's thinking (the long silence before a first reply is
 		// usually this): its summary, or the text itself where the agent

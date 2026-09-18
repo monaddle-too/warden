@@ -854,6 +854,12 @@ func TestTurnTimingAndTokenUsage(t *testing.T) {
 	if u := usage(); u.Input != 2500 || u.Cached != 1500 || u.Output != 700 {
 		t.Fatalf("usage %+v", u)
 	}
+	// The agent's context report is kept on the conversation as it stands.
+	w.send(agent.Frame{Method: "thread/context/updated", Params: map[string]any{"threadId": "thread-one", "turnId": "turn-one", "context": map[string]any{"used": 42787.0, "window": 200000.0, "model": "claude-sonnet-5"}}})
+	until(t, func() bool { c := e.Store.Snapshot().chat(id).Conversation.Context; return c != nil && c.Used == 42787 })
+	if c := e.Store.Snapshot().chat(id).Conversation.Context; c.Window != 200000 || c.Model != "claude-sonnet-5" {
+		t.Fatalf("context %+v", c)
+	}
 	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
 	c = e.Store.Snapshot().chat(id)

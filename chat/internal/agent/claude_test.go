@@ -682,3 +682,127 @@ func TestClaudeToolItemsThroughTheStream(t *testing.T) {
 		}
 	}
 }
+
+// A /compact turn, as CLI 2.1.272 emits it: a compaction item runs from
+// the "compacting" status to the compact_boundary, which completes it
+// with the trigger and the token counts; the synthetic user frame that
+// follows completes it again with the summary. The context is reported
+// per model call from the assistant frame's usage (input plus cache read
+// and written), re-estimated at the boundary from post_tokens and the
+// fixed prefix, with the window from the result's modelUsage. A failed
+// auto-compaction completes the item as failed.
+func TestClaudeCompactionAndContext(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	raw, fake := net.Pipe()
+	defer fake.Close()
+	done := make(chan Frame, 60)
+	go func() {
+		d := json.NewDecoder(fake)
+		e := json.NewEncoder(fake)
+		var v map[string]any
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
+		if d.Decode(&v) != nil {
+			return
+		}
+		usage := map[string]any{"input_tokens": 2.0, "cache_creation_input_tokens": 11788.0, "cache_read_input_tokens": 28803.0, "output_tokens": 2.0}
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "model": "claude-sonnet-5"})
+		_ = e.Encode(map[string]any{"type": "assistant", "message": map[string]any{"model": "claude-sonnet-5", "usage": usage, "content": []any{map[string]any{"type": "thinking", "thinking": ""}}}})
+		_ = e.Encode(map[string]any{"type": "assistant", "message": map[string]any{"model": "claude-sonnet-5", "usage": usage, "content": []any{map[string]any{"type": "text", "text": "ok"}}}})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": "compacting", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": nil, "compact_result": "success", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "model": "claude-sonnet-5"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "compact_boundary", "session_id": "s", "compact_metadata": map[string]any{"trigger": "manual", "pre_tokens": 171238.0, "post_tokens": 2194.0, "cumulative_dropped_tokens": 169044.0, "duration_ms": 22526.0}})
+		_ = e.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. Files read: a.txt (lima)"}, "isSynthetic": true, "isReplay": false})
+		_ = e.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "<local-command-stdout>Compacted </local-command-stdout>"}, "isReplay": true})
+		_ = e.Encode(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": "", "num_turns": 0.0, "usage": map[string]any{"input_tokens": 0.0, "cache_creation_input_tokens": 0.0, "cache_read_input_tokens": 0.0, "output_tokens": 0.0}, "total_cost_usd": 0.78, "modelUsage": map[string]any{"claude-sonnet-5": map[string]any{"contextWindow": 200000.0, "maxOutputTokens": 64000.0}}})
+		// The next turn: an automatic compaction that fails.
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "model": "claude-sonnet-5"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": "compacting", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": nil, "compact_result": "failed", "compact_error": "API Error: refused", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "assistant", "message": map[string]any{"model": "<synthetic>", "usage": map[string]any{"input_tokens": 0.0, "output_tokens": 0.0}, "content": []any{map[string]any{"type": "text", "text": "Prompt is too long · automatic compaction failed: API Error: refused"}}}})
+		_ = e.Encode(map[string]any{"type": "result", "subtype": "success", "is_error": true, "result": "Prompt is too long · automatic compaction failed: API Error: refused", "usage": map[string]any{"input_tokens": 0.0, "output_tokens": 0.0}, "total_cost_usd": 0.78})
+	}()
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(_ *Client, f Frame) { done <- f })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err = c.Call(ctx, "thread/start", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "/compact keep the file list"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var items []map[string]any
+	var contexts []map[string]any
+	collect := func() {
+		for {
+			select {
+			case f := <-done:
+				switch f.Method {
+				case "item/started", "item/completed":
+					if item := Map(f.Params["item"]); item["type"] == "compaction" {
+						items = append(items, item)
+					}
+				case "thread/context/updated":
+					contexts = append(contexts, Map(f.Params["context"]))
+				case "turn/completed":
+					return
+				}
+			case <-ctx.Done():
+				t.Fatal("translation timed out")
+			}
+		}
+	}
+	collect()
+	if len(items) != 3 || items[0]["status"] != "running" || items[1]["status"] != "completed" || items[2]["status"] != "completed" || items[0]["id"] != items[2]["id"] {
+		t.Fatalf("compaction items %+v", items)
+	}
+	if items[1]["trigger"] != "manual" || items[1]["preTokens"] != 171238.0 || items[1]["postTokens"] != 2194.0 || items[1]["summary"] != nil {
+		t.Fatalf("boundary item %+v", items[1])
+	}
+	if items[2]["trigger"] != "manual" || items[2]["preTokens"] != 171238.0 || !strings.HasPrefix(String(items[2]["summary"]), "This session is being continued") {
+		t.Fatalf("summary item %+v", items[2])
+	}
+	// One report per change: the call (the table's window before any
+	// result), the boundary's estimate (the summary plus the prefix, the
+	// smallest context seen); the result's window is the same 200k.
+	if len(contexts) != 2 || contexts[0]["used"] != 40593.0 || contexts[0]["window"] != 200000.0 || contexts[0]["model"] != "claude-sonnet-5" || contexts[1]["used"] != 2194.0+40593 || contexts[1]["window"] != 200000.0 {
+		t.Fatalf("contexts %+v", contexts)
+	}
+	items, contexts = nil, nil
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "go on"}}}); err != nil {
+		t.Fatal(err)
+	}
+	collect()
+	if len(items) != 2 || items[0]["status"] != "running" || items[1]["status"] != "failed" || items[1]["error"] != "API Error: refused" || len(contexts) != 0 {
+		t.Fatalf("failed compaction %+v, contexts %+v", items, contexts)
+	}
+}
+
+func TestClaudeContextWindowTable(t *testing.T) {
+	for model, want := range map[string]int64{"claude-sonnet-5": 200000, "claude-sonnet-5[1m]": 1000000, "claude-opus-4-5": 200000, "claude-opus-4-6": 1000000, "claude-opus-5": 1000000, "claude-haiku-4-5-20251001": 200000, "claude-sonnet-4-6": 1000000, "claude-fable-5": 1000000, "": 200000} {
+		if got := claudeContextWindow(model); got != want {
+			t.Errorf("%s: %d, want %d", model, got, want)
+		}
+	}
+	// The result's modelUsage overrides the table (a [1m] session on a
+	// model the table calls 200k, or the other way round).
+	c := claudeContext{}
+	c.model("claude-sonnet-5")
+	c.result(map[string]any{"modelUsage": map[string]any{"claude-sonnet-5": map[string]any{"contextWindow": 1000000.0}}})
+	if c.window != 1000000 {
+		t.Fatalf("window %d", c.window)
+	}
+	c.result(map[string]any{"modelUsage": map[string]any{"other": map[string]any{"contextWindow": 500000.0}}})
+	if c.window != 500000 {
+		t.Fatalf("lone entry: window %d", c.window)
+	}
+}

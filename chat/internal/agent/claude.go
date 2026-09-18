@@ -94,6 +94,17 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		// An interrupt asked of the CLI: its next result ends the turn as
 		// interrupted, whatever the CLI calls the abort.
 		interrupting := false
+		// The context: what the last model call was given and the model's
+		// window, reported as thread/context/updated when either changes
+		// (claudeContext); a compaction in flight, as a transcript item.
+		ctx2 := claudeContext{}
+		compaction := ""
+		var compactionMeta map[string]any
+		reportContext := func() {
+			if p, ok := ctx2.changed(); ok {
+				event("thread/context/updated", map[string]any{"threadId": thread, "turnId": turn, "context": p})
+			}
+		}
 		flushThinking := func() {
 			if thinkingID == "" {
 				return
@@ -266,9 +277,32 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						control(id, map[string]any{"behavior": "deny", "message": "Unsupported Warden control request"})
 					}
 				case "system":
-					if v["subtype"] == "init" {
+					switch v["subtype"] {
+					case "init":
 						thread = String(v["session_id"])
+						ctx2.model(String(v["model"]))
 						event("thread/started", map[string]any{"thread": map[string]any{"id": thread}})
+					case "status":
+						// The CLI compacting its context (/compact, or on its
+						// own near the window): a compaction item runs from
+						// the status to the boundary, or to the failure.
+						if v["status"] == "compacting" {
+							if compaction == "" {
+								compaction = claudeID()
+								event("item/started", map[string]any{"turnId": turn, "item": map[string]any{"id": compaction, "type": "compaction", "status": "running"}})
+							}
+						} else if v["compact_result"] == "failed" && compaction != "" {
+							event("item/completed", map[string]any{"turnId": turn, "item": map[string]any{"id": compaction, "type": "compaction", "status": "failed", "error": String(v["compact_error"])}})
+							compaction, compactionMeta = "", nil
+						}
+					case "compact_boundary":
+						if compaction == "" {
+							compaction = claudeID()
+						}
+						compactionMeta = Map(v["compact_metadata"])
+						event("item/completed", map[string]any{"turnId": turn, "item": claudeCompactionItem(compaction, compactionMeta, "")})
+						ctx2.compacted(compactionMeta)
+						reportContext()
 					}
 				case "stream_event":
 					e := Map(v["event"])
@@ -305,6 +339,9 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 					}
 				case "assistant":
 					flushThinking()
+					if ctx2.call(Map(v["message"])) {
+						reportContext()
+					}
 					for _, x := range Array(Map(v["message"])["content"]) {
 						b := Map(x)
 						if b["type"] == "tool_use" {
@@ -319,6 +356,13 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						}
 					}
 				case "user":
+					if compaction != "" && v["isSynthetic"] == true {
+						// The summary the CLI continues from, sent as a
+						// synthetic user message right after the boundary.
+						event("item/completed", map[string]any{"turnId": turn, "item": claudeCompactionItem(compaction, compactionMeta, claudeMessageText(Map(v["message"])))})
+						compaction, compactionMeta = "", nil
+						continue
+					}
 					results := []map[string]any{}
 					for _, x := range Array(Map(v["message"])["content"]) {
 						if b := Map(x); b["type"] == "tool_result" {
@@ -357,6 +401,9 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						total = total.add(last)
 						event("thread/tokenUsage/updated", map[string]any{"threadId": thread, "turnId": turn, "tokenUsage": map[string]any{"last": last.params(), "total": total.params()}})
 					}
+					ctx2.result(v)
+					reportContext()
+					compaction, compactionMeta = "", nil
 					event("turn/completed", map[string]any{"turn": map[string]any{"id": turn, "status": status}})
 				}
 			}
@@ -412,4 +459,140 @@ func claudeTurnUsage(v map[string]any, sofar claudeUsage) (claudeUsage, bool) {
 		u.cost = cost - sofar.cost
 	}
 	return u, true
+}
+
+// claudeCompactionItem is the transcript item for a compaction: the
+// boundary's trigger (manual for /compact, auto) and the context before
+// and after it in tokens, and the summary the CLI continues from once it
+// follows (the metadata is sent again with it, as the conversation
+// replaces the item whole).
+func claudeCompactionItem(id string, meta map[string]any, summary string) map[string]any {
+	item := map[string]any{"id": id, "type": "compaction", "status": "completed"}
+	if meta != nil {
+		item["trigger"] = String(meta["trigger"])
+		item["preTokens"] = meta["pre_tokens"]
+		item["postTokens"] = meta["post_tokens"]
+	}
+	if summary != "" {
+		item["summary"] = summary
+	}
+	return item
+}
+
+// claudeMessageText is the text of a CLI message whose content is either
+// a string or a list of text blocks.
+func claudeMessageText(m map[string]any) string {
+	if s, ok := m["content"].(string); ok {
+		return s
+	}
+	parts := []string{}
+	for _, b := range Array(m["content"]) {
+		if block := Map(b); block["type"] == "text" {
+			parts = append(parts, String(block["text"]))
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// claudeContext tracks how full the model's context is. Every assistant
+// frame carries its API call's usage, whose input, cache-read and
+// cache-written tokens together are the prompt that call was given: the
+// context length. (The result's usage is the turn's calls summed, so it
+// cannot say.) The window comes from the result's modelUsage once the
+// CLI has reported one, and from claudeContextWindow before that. After a
+// compaction the CLI reports only the summary's size (post_tokens); the
+// context is that plus the fixed prefix — the system prompt and tools,
+// estimated as the smallest context the process has seen — until the
+// next call says.
+type claudeContext struct {
+	used, window, prefix int64
+	name                 string
+	// reported is what the last notification said, so one goes out only
+	// on a change.
+	reportedUsed, reportedWindow int64
+}
+
+func (c *claudeContext) model(name string) {
+	if name != "" {
+		c.name = name
+	}
+	if c.window == 0 && c.name != "" {
+		c.window = claudeContextWindow(c.name)
+	}
+}
+
+// call records an assistant frame's message; false when it carries no
+// usage (the CLI's synthetic messages).
+func (c *claudeContext) call(m map[string]any) bool {
+	if String(m["model"]) == "<synthetic>" {
+		return false
+	}
+	u := Map(m["usage"])
+	if u == nil {
+		return false
+	}
+	n := func(k string) int64 { f, _ := u[k].(float64); return int64(f) }
+	used := n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens")
+	if used == 0 {
+		return false
+	}
+	c.used = used
+	if c.prefix == 0 || used < c.prefix {
+		c.prefix = used
+	}
+	c.model(String(m["model"]))
+	return true
+}
+
+// compacted re-estimates the context from a compact_boundary's metadata.
+func (c *claudeContext) compacted(meta map[string]any) {
+	post, _ := meta["post_tokens"].(float64)
+	if post > 0 {
+		c.used = int64(post) + c.prefix
+	}
+}
+
+// result reads the model's window from a result's modelUsage: the entry
+// for the session's model, else the only one.
+func (c *claudeContext) result(v map[string]any) {
+	models := Map(v["modelUsage"])
+	if models == nil {
+		return
+	}
+	pick := Map(models[c.name])
+	if pick == nil && len(models) == 1 {
+		for _, m := range models {
+			pick = Map(m)
+		}
+	}
+	if w, ok := pick["contextWindow"].(float64); ok && w > 0 {
+		c.window = int64(w)
+	}
+}
+
+// changed is the notification's params when the context differs from the
+// last one sent.
+func (c *claudeContext) changed() (map[string]any, bool) {
+	if c.used == 0 || (c.used == c.reportedUsed && c.window == c.reportedWindow) {
+		return nil, false
+	}
+	c.reportedUsed, c.reportedWindow = c.used, c.window
+	return map[string]any{"used": c.used, "window": c.window, "model": c.name}, true
+}
+
+// claudeContextWindow is the context window of a model as the pinned CLI
+// (2.1.272) knows it, for the calls before the first result reports it:
+// 1M for the `[1m]` variants and the models that are natively 1M
+// (sonnet 4.6, opus 4.6 and later, opus 5, fable 5), 200k otherwise.
+func claudeContextWindow(model string) int64 {
+	m := strings.ToLower(model)
+	if strings.Contains(m, "[1m]") {
+		return 1_000_000
+	}
+	for _, id := range []string{"sonnet-4-6", "opus-4-6", "opus-4-7", "opus-4-8", "opus-4-9", "opus-5", "fable-5"} {
+		if strings.Contains(m, id) {
+			return 1_000_000
+		}
+	}
+	return 200_000
 }

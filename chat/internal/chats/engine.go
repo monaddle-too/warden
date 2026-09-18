@@ -1353,6 +1353,12 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 			if usage != nil {
 				c.Report(usageTurn, *usage)
 			}
+		case "thread/context/updated":
+			// How full the agent's context is (the Claude adapter reports
+			// it per model call and after a compaction).
+			if context := cv.ContextFrom(agent.Map(p["context"])); context != nil {
+				c.Context = context
+			}
 		case "error":
 			if p["willRetry"] != true {
 				c.Entries = append(c.Entries, cv.NewEntry("system", agent.String(agent.Map(p["error"])["message"])))
