@@ -28,24 +28,6 @@ func queuedMessages(c *Chat) []Entry {
 	return out
 }
 
-// queuedLast puts the queued messages last, in their order: a queued
-// message waits at the bottom of the transcript however early it was
-// sent (the service moves it there for good when the agent gets it).
-func queuedLast(entries []Entry) []Entry {
-	var rest, queued []Entry
-	for _, e := range entries {
-		if e.Role == "user" && e.ParentID == "" && e.Delivery == "queued" {
-			queued = append(queued, e)
-		} else {
-			rest = append(rest, e)
-		}
-	}
-	if len(queued) == 0 {
-		return entries
-	}
-	return append(rest, queued...)
-}
-
 // queueHeld reports a queue nothing is draining: messages queued while
 // the chat is not running (Esc interrupted the turn).
 func queueHeld(c *Chat) bool {

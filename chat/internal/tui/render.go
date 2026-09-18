@@ -230,31 +230,62 @@ type Block struct {
 }
 
 // RenderBlocks lays out the chat's entries one block each, in the order
-// the transcript shows them (queued messages last).
+// the transcript shows them: the conversation, then the agent's todo
+// list, then the queued messages. The todo list is one entry the agent
+// rewrites in place with every write, in this turn and the next, so it
+// is never final: it is a live panel at the bottom of the transcript, as
+// Claude Code shows its own above the composer, and goes away once the
+// chat is idle with every item done (the web and an export keep it).
 func RenderBlocks(c *Chat, width int, expanded bool) []Block {
 	top, children := nestEntries(c.Conversation.Entries)
 	var out []Block
-	for _, e := range queuedLast(top) {
+	var todos, queued []Entry
+	for _, e := range top {
+		switch {
+		case e.Role == "user" && e.ParentID == "" && e.Delivery == "queued":
+			queued = append(queued, e)
+		case e.Tool != nil && e.Tool.Kind == "todo":
+			if c.Running() || !todoDone(e) {
+				todos = append(todos, e)
+			}
+		default:
+			lines := renderEntry(c, e, width, expanded, children, "")
+			out = append(out, Block{Lines: append(lines, ""), Final: entryFinal(c, e, children)})
+		}
+	}
+	for _, e := range append(todos, queued...) {
 		lines := renderEntry(c, e, width, expanded, children, "")
-		out = append(out, Block{Lines: append(lines, ""), Final: entryFinal(e, children)})
+		out = append(out, Block{Lines: append(lines, "")})
 	}
 	return out
 }
 
+// todoDone reports a todo list with every item checked off (conversation
+// todoText: one `[x]`, `[>]` or `[ ]` line per item).
+func todoDone(e Entry) bool {
+	for _, l := range strings.Split(strings.TrimRight(e.Detail, "\n"), "\n") {
+		if strings.HasPrefix(l, "[ ] ") || strings.HasPrefix(l, "[>] ") {
+			return false
+		}
+	}
+	return true
+}
+
 // entryFinal reports an entry the service will not change any more: not
 // streaming, not a running tool (a background command counts as running
-// until its notification lands), not a message still queued, not a
-// compaction or an aside under way, and not a subagent's card while any
-// entry under it is still one of these. A todo list is final after every
-// write although the next write replaces it in place; the painter notices
-// the change and reprints.
-func entryFinal(e Entry, children map[string][]Entry) bool {
+// until its notification lands), not a message still queued or being
+// delivered (the engine marks it "failed" until the agent acknowledges
+// it), not a compaction or an aside under way, and not a subagent's card
+// while any entry under it is still one of these. A todo list is final
+// after every write although the next write replaces it in place; the
+// painter notices the change and reprints.
+func entryFinal(c *Chat, e Entry, children map[string][]Entry) bool {
 	if e.IsStreaming {
 		return false
 	}
 	switch e.Role {
 	case "user":
-		if e.Delivery == "queued" {
+		if e.Delivery == "queued" || (e.Delivery == "failed" && c.Running()) {
 			return false
 		}
 	case "activity":
@@ -264,7 +295,7 @@ func entryFinal(e Entry, children map[string][]Entry) bool {
 			}
 			if t.Kind == "task" {
 				for _, k := range children[e.ID] {
-					if !entryFinal(k, children) {
+					if !entryFinal(c, k, children) {
 						return false
 					}
 				}
@@ -317,8 +348,15 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 			case e.Delivery == "queued":
 				// Held by Warden until the agent's turn ends (queue.go).
 				out = append(out, yellow+"      ("+queueMarker(c)+")"+reset)
-			case e.Delivery != "" && e.Delivery != "delivered" && e.Delivery != "confirmed":
-				out = append(out, dim+"      ("+sanitize(e.Delivery)+")"+reset)
+			case e.Delivery == "failed" && !c.Running():
+				// Not delivered (the web says the same); while the chat
+				// runs, "failed" is the engine's "unconfirmed" between the
+				// attempt and the agent's acknowledgement, not a failure.
+				detail := sanitize(strings.TrimSpace(e.Detail))
+				if detail == "" {
+					detail = "not delivered"
+				}
+				out = append(out, wrap(detail, width, red+"      ! "+reset, "        ")...)
 			}
 		case "assistant":
 			name := label

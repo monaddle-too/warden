@@ -218,6 +218,8 @@ func TestFrameSplitsCommittedFromLiveTail(t *testing.T) {
 
 func TestEntryFinality(t *testing.T) {
 	kids := map[string][]Entry{"task": {{ID: "k1", Role: "activity", Tool: &Tool{Kind: "command", Status: "running"}}}}
+	running := &Chat{Status: "running"}
+	idle := &Chat{Status: "idle"}
 	cases := []struct {
 		name  string
 		e     Entry
@@ -225,6 +227,7 @@ func TestEntryFinality(t *testing.T) {
 	}{
 		{"user", Entry{Role: "user", Text: "hi", Delivery: "sent"}, true},
 		{"queued", Entry{Role: "user", Text: "hi", Delivery: "queued"}, false},
+		{"being delivered", Entry{Role: "user", Text: "hi", Delivery: "failed"}, false},
 		{"streaming", Entry{Role: "assistant", IsStreaming: true}, false},
 		{"reply", Entry{Role: "assistant", Text: "ok"}, true},
 		{"running tool", Entry{Role: "activity", Tool: &Tool{Kind: "command", Status: "running"}}, false},
@@ -239,9 +242,24 @@ func TestEntryFinality(t *testing.T) {
 		{"thinking done", Entry{Role: "thinking", EndedAt: 2, CreatedAt: 1}, true},
 	}
 	for _, tc := range cases {
-		if got := entryFinal(tc.e, kids); got != tc.final {
+		if got := entryFinal(running, tc.e, kids); got != tc.final {
 			t.Errorf("%s: final %v, want %v", tc.name, got, tc.final)
 		}
+	}
+	// Once the chat is idle, "failed" is a real failure and final; the
+	// transcript says it was not delivered, and says nothing for "sent".
+	failed := Entry{ID: "u", Role: "user", Text: "hi", Delivery: "failed", Detail: "Delivery unconfirmed."}
+	if !entryFinal(idle, failed, nil) {
+		t.Fatal("a failed message on an idle chat is not final")
+	}
+	idle.Conversation.Entries = []Entry{failed, {ID: "u2", Role: "user", Text: "again", Delivery: "sent"}}
+	got := plain(strings.Join(RenderTranscript(idle, 80, false), "\n"))
+	if !strings.Contains(got, "! Delivery unconfirmed.") || strings.Contains(got, "(sent)") {
+		t.Fatalf("delivery markers:\n%s", got)
+	}
+	running.Conversation.Entries = []Entry{failed}
+	if got := plain(strings.Join(RenderTranscript(running, 80, false), "\n")); strings.Contains(got, "unconfirmed") {
+		t.Fatalf("a message being delivered reads as failed:\n%s", got)
 	}
 }
 
@@ -3340,5 +3358,53 @@ func TestColumnWidths(t *testing.T) {
 	}
 	if got := plain(clip("abcdef", 3)); got != "abc" {
 		t.Errorf("clip: %q", got)
+	}
+}
+
+// The todo list is a live panel at the bottom of the transcript, never
+// committed, above the queued messages; it goes away once the chat is
+// idle with every item done.
+func TestTodoListIsALivePanel(t *testing.T) {
+	c := &Chat{ID: "c", Title: "Todo", Provider: "claude", Status: "running"}
+	c.Conversation.Entries = []Entry{
+		{ID: "u1", Role: "user", Text: "plan it", Delivery: "sent"},
+		{ID: "todo", Role: "activity", Text: "Todo list · 1 of 2 done", Detail: "[x] Parse\n[>] Test\n", Tool: &Tool{Kind: "todo", Status: "completed"}},
+		{ID: "a1", Role: "activity", Text: "go test", Detail: "ok", Tool: &Tool{Kind: "command", Status: "completed"}},
+		{ID: "u2", Role: "user", Text: "later", Delivery: "queued"},
+	}
+	blocks := RenderBlocks(c, 80, false)
+	if len(blocks) != 4 || !blocks[0].Final || !blocks[1].Final || blocks[2].Final || blocks[3].Final {
+		t.Fatalf("blocks: %+v", blocks)
+	}
+	if got := plain(strings.Join(blocks[2].Lines, "\n")); !strings.Contains(got, "Todo list") || !strings.Contains(got, "▸ Test") {
+		t.Fatalf("todo panel:\n%s", got)
+	}
+	if got := plain(strings.Join(blocks[3].Lines, "\n")); !strings.Contains(got, "you › later") {
+		t.Fatalf("queued last:\n%s", got)
+	}
+	// Every write replaces the entry in place without a reprint: the
+	// committed prefix (the message and the command) is unchanged.
+	app := &App{Now: func() time.Time { return time.Unix(0, 0) }, Output: io.Discard, Size: func() (int, int) { return 80, 24 }}
+	app.state = &State{Chats: []*Chat{c}}
+	app.ChatID = "c"
+	app.draw()
+	var out bytes.Buffer
+	app.Output = &out
+	c.Conversation.Entries[1].Detail = "[x] Parse\n[x] Test\n"
+	c.Conversation.Entries[1].Text = "Todo list · 2 of 2 done"
+	app.draw()
+	if strings.Contains(out.String(), "\x1b[2J") || !strings.Contains(plain(out.String()), "2 of 2 done") {
+		t.Fatalf("todo write:\n%q", out.String())
+	}
+	// Idle with everything done: the panel goes, nothing is reprinted.
+	out.Reset()
+	c.Status = "idle"
+	c.Conversation.Entries = c.Conversation.Entries[:3]
+	app.draw()
+	if strings.Contains(out.String(), "\x1b[2J") || strings.Contains(plain(out.String()), "Todo list") {
+		t.Fatalf("idle and done:\n%q", out.String())
+	}
+	if !todoDone(c.Conversation.Entries[1]) || todoDone(Entry{Detail: "[ ] one\n"}) {
+		t.Fatal("todoDone")
 	}
 }
