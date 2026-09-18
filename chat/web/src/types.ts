@@ -87,9 +87,16 @@ export type Chat = {
     turns?: Turn[];
   };
   approvals: Approval[];
+  /* Slash commands the agent's session offers (Claude Code's built-ins and
+     the workspace's own commands and skills); "/name …" is sent as text
+     and the agent expands it. Absent for Codex. */
+  commands?: AgentCommand[];
+  /* What the agent reported when its session started. */
+  session?: { model?: string; permissionMode?: string; outputStyle?: string };
   typing?: { principalID: string; name: string; until: number }[];
   startup?: Startup;
 };
+export type AgentCommand = { name: string; description?: string };
 /* Where a chat's start is while its message waits for the agent: the
    stage (stages.ts names them), the runtime's detail for it, and when the
    stage began (unix seconds). Absent once the turn is running. */

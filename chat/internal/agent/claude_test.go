@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -454,6 +455,93 @@ next:
 			}
 		case <-ctx.Done():
 			t.Fatal("next turn never completed")
+		}
+	}
+}
+
+// The CLI's system/init lists the session's slash commands (built-ins
+// plus whatever the workspace defines); thread/started carries them, less
+// the terminal-only and internal ones, with the resolved settings. A
+// /compact turn then brings a compact_boundary and an empty result: the
+// boundary is its own notification and the turn still completes. Frames
+// as observed on CLI 2.1.272.
+func TestClaudeInitCommandsAndCompaction(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	raw, fake := net.Pipe()
+	defer fake.Close()
+	done := make(chan Frame, 40)
+	go func() {
+		d := json.NewDecoder(fake)
+		e := json.NewEncoder(fake)
+		var v map[string]any
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s",
+			"slash_commands": []any{"code-review", "compact", "init", "doctor", "__remote-workflow", "probe-cmd"}, "terminal_slash_commands": []any{"doctor"},
+			"model": "claude-opus-5[1m]", "permissionMode": "default", "output_style": "default", "mcp_servers": []any{map[string]any{"name": "warden", "status": "connected"}}})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": "compacting", "session_id": "s"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "slash_commands": []any{"compact"}})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "compact_boundary", "session_id": "s", "compact_metadata": map[string]any{"trigger": "manual", "pre_tokens": 27230.0, "post_tokens": 1850.0, "duration_ms": 28060.0}})
+		_ = e.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "This session is being continued from a previous conversation…"}, "isReplay": true, "isSynthetic": true})
+		_ = e.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "<local-command-stdout>Compacted </local-command-stdout>"}, "isReplay": true})
+		_ = e.Encode(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": "", "num_turns": 0.0, "usage": map[string]any{"input_tokens": 0.0, "output_tokens": 0.0}, "total_cost_usd": 0.1})
+	}()
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(_ *Client, f Frame) { done <- f })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err = c.Call(ctx, "thread/start", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "/compact"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnID := String(Map(turn["turn"])["id"])
+	var threads []map[string]any
+	var compacted map[string]any
+	items := 0
+	for {
+		select {
+		case f := <-done:
+			switch f.Method {
+			case "thread/started":
+				threads = append(threads, Map(f.Params["thread"]))
+			case "thread/compacted":
+				compacted = f.Params
+			case "item/started", "item/completed":
+				items++
+			case "turn/completed":
+				if len(threads) != 2 {
+					t.Fatalf("thread/started %d times", len(threads))
+				}
+				first := threads[0]
+				names := []string{}
+				for _, v := range Array(first["commands"]) {
+					names = append(names, String(Map(v)["name"]))
+				}
+				if first["id"] != "s" || fmt.Sprint(names) != "[code-review compact init probe-cmd]" || first["model"] != "claude-opus-5[1m]" || first["permissionMode"] != "default" || first["outputStyle"] != "default" {
+					t.Fatalf("thread %+v", first)
+				}
+				if compacted == nil || compacted["threadId"] != "s" || compacted["turnId"] != turnID || compacted["trigger"] != "manual" || compacted["preTokens"] != 27230.0 || compacted["postTokens"] != 1850.0 {
+					t.Fatalf("compacted %+v", compacted)
+				}
+				// The summary and the local command's stdout are the CLI's
+				// own user frames, not transcript items; nothing streamed.
+				if items != 0 || String(Map(f.Params["turn"])["status"]) != "completed" {
+					t.Fatalf("items %d, turn %+v", items, f.Params)
+				}
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal("translation timed out")
 		}
 	}
 }

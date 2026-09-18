@@ -21,6 +21,7 @@ import {
   File as FileIcon,
   Folder,
   Paperclip,
+  Slash,
   Square,
 } from "lucide-react";
 import {
@@ -32,6 +33,8 @@ import {
 } from "../drafts";
 import { api, me, newID, downloadFile, uploadAttachment } from "../api";
 import {
+  agentCommandNamed,
+  agentHint,
   commandItems,
   exactCommand,
   mentionFor,
@@ -441,12 +444,16 @@ export function Conversation({
     () => modelOptions(chat.provider || "codex"),
     [chat.provider],
   );
+  // The agent's own commands (Claude Code's built-ins and the workspace's)
+  // join the list after the chat's; "/name …" goes to the agent as text.
+  const agentCommands = useMemo(() => chat.commands ?? [], [chat.commands]);
+  const agentGroup = chat.provider === "claude" ? "Claude" : "Agent";
   const commands = useMemo(
     () =>
       open && trigger.kind === "command"
-        ? commandItems(trigger.query, models)
+        ? commandItems(trigger.query, models, agentCommands)
         : [],
-    [open, trigger, models],
+    [open, trigger, models, agentCommands],
   );
   const { paths, error: pathError } = usePathCompletion(
     chat.id,
@@ -466,6 +473,7 @@ export function Conversation({
                 label: item.command.label,
                 hint: item.command.hint,
                 icon: commandIcon(item.command.name),
+                group: "Chat",
                 disabled:
                   item.command.name === "stop"
                     ? !running || chat.status === "stopping"
@@ -473,15 +481,28 @@ export function Conversation({
                       ? running
                       : false,
               }
-            : {
-                id: "model:" + item.model.value,
-                label: item.model.label,
-                hint: item.model.value,
-                icon: <Cpu size={15} />,
-                disabled: running,
-              },
+            : item.kind === "model"
+              ? {
+                  id: "model:" + item.model.value,
+                  label: item.model.label,
+                  hint: item.model.value,
+                  icon: <Cpu size={15} />,
+                  disabled: running,
+                }
+              : {
+                  id: "agent:" + item.command.name,
+                  label: "/" + item.command.name,
+                  hint: agentHint(item.command),
+                  icon: <Slash size={15} />,
+                  group: agentGroup,
+                },
       );
-      return { items, note: items.length ? undefined : "No such command" };
+      if (items.length) return { items };
+      // An agent command with its argument typed: nothing to pick, the
+      // message goes as it is; its hint stays up while it is written.
+      const named = agentCommandNamed(trigger.query, agentCommands);
+      if (named) return { items, note: agentHint(named) || undefined };
+      return { items, note: "No such command" };
     }
     if (pathError) return { items: [], note: pathError };
     if (!paths) return { items: [], note: "Looking up paths…" };
@@ -505,7 +526,17 @@ export function Conversation({
           ? "Keep typing to narrow the list"
           : undefined,
     };
-  }, [open, trigger, commands, paths, pathError, running, chat.status]);
+  }, [
+    open,
+    trigger,
+    commands,
+    agentCommands,
+    agentGroup,
+    paths,
+    pathError,
+    running,
+    chat.status,
+  ]);
   // The row the keys act on: never a disabled one, so Enter on a fresh
   // list runs something. -1 when every row is disabled.
   const selected = active < 0 ? -1 : Math.min(active, items.length - 1);
@@ -607,6 +638,13 @@ export function Conversation({
   // A command picked from the list, or sent as exactly "/name": the
   // command line leaves the composer and `rest` of the draft stays.
   function runCommand(item: CommandItem, rest: string) {
+    if (item.kind === "agent") {
+      // Filled in, not sent: the person adds an argument or sends it as
+      // it is, and the agent expands it.
+      const line = "/" + item.command.name + " ";
+      place({ text: line + (rest ? "\n" + rest : ""), caret: line.length });
+      return;
+    }
     if (item.kind === "model") {
       // The list disables models while the agent runs; "/model x" typed in
       // full and sent gets the same answer the service would give.
@@ -647,7 +685,9 @@ export function Conversation({
       (c) =>
         (c.kind === "command"
           ? "command:" + c.command.name
-          : "model:" + c.model.value) === item.id,
+          : c.kind === "model"
+            ? "model:" + c.model.value
+            : "agent:" + c.command.name) === item.id,
     );
     if (chosen) runCommand(chosen, withoutCommand(text, trigger));
   }
@@ -866,7 +906,7 @@ export function Conversation({
           )}
         </p>
         <div className={`composer${dragging ? " dragging" : ""}`}>
-          {open && (
+          {open && (items.length > 0 || note) && (
             <Suggest
               id="composer-suggest"
               items={items}

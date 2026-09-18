@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   COMMANDS,
+  agentCommandNamed,
+  agentHint,
   commandItems,
   exactCommand,
   mentionFor,
@@ -130,5 +132,75 @@ describe("composer triggers", () => {
       withoutCommand("/stop\nkeep this", triggerAt("/stop\nkeep this", 5)!),
     ).toBe("keep this");
     expect(withoutCommand("/stop", triggerAt("/stop", 5)!)).toBe("");
+  });
+});
+
+/* The agent's own commands, as Claude Code's session lists them (the
+   built-ins and a workspace command). */
+const agent = [
+  { name: "compact" },
+  { name: "init" },
+  { name: "model" },
+  { name: "clear" },
+  { name: "security-review" },
+  { name: "probe-cmd", description: "Probe command from the workspace" },
+];
+
+describe("agent commands in the composer", () => {
+  it("lists the agent's commands after the chat's, by prefix, local names first", () => {
+    const names = (query: string) =>
+      commandItems(query, models, agent).map((i) =>
+        i.kind === "command"
+          ? i.command.name
+          : i.kind === "agent"
+            ? "/" + i.command.name
+            : "",
+      );
+    expect(names("")).toEqual([
+      "stop",
+      "model",
+      "export",
+      "clear",
+      "/compact",
+      "/init",
+      "/security-review",
+      "/probe-cmd",
+    ]);
+    // The chat's "model" and "clear" shadow the agent's.
+    expect(names("mo")).toEqual(["model"]);
+    expect(names("c")).toEqual(["clear", "/compact"]);
+    expect(names("Pro")).toEqual(["/probe-cmd"]);
+    // With an argument there is nothing to pick: the text goes as it is.
+    expect(names("compact focus on tests")).toEqual([]);
+    expect(names("probe-cmd alpha")).toEqual([]);
+    // Without agent commands the list is as before.
+    expect(commandItems("c", models).map((i) => i.kind)).toEqual(["command"]);
+  });
+  it("names the agent command a query is for, argument or not", () => {
+    expect(agentCommandNamed("compact", agent)?.name).toBe("compact");
+    expect(agentCommandNamed("compact focus on tests", agent)?.name).toBe(
+      "compact",
+    );
+    expect(agentCommandNamed("probe-cmd alpha beta", agent)?.description).toBe(
+      "Probe command from the workspace",
+    );
+    expect(agentCommandNamed("comp", agent)).toBeUndefined();
+    expect(agentCommandNamed("model opus", agent)).toBeUndefined();
+    expect(agentCommandNamed("", agent)).toBeUndefined();
+    expect(agentCommandNamed("no-such", agent)).toBeUndefined();
+  });
+  it("never runs an agent command locally: exactly /compact is sent as text", () => {
+    expect(exactCommand("/compact", models)).toBeUndefined();
+    expect(exactCommand("/init", models)).toBeUndefined();
+    expect(exactCommand("/probe-cmd alpha", models)).toBeUndefined();
+    expect(exactCommand("/stop", models)?.kind).toBe("command");
+  });
+  it("hints known built-ins and prefers the agent's description", () => {
+    expect(agentHint({ name: "compact" })).toMatch(/context/);
+    expect(agentHint({ name: "init" })).toMatch(/CLAUDE\.md/);
+    expect(agentHint({ name: "init", description: "Own words" })).toBe(
+      "Own words",
+    );
+    expect(agentHint({ name: "goal" })).toBe("");
   });
 });

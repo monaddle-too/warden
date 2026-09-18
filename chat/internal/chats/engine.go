@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1323,7 +1324,8 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 		usageTurn, usage = e.turnUsage(id, f.Params)
 	}
 	return e.Store.update(func(st *State) error {
-		c := &st.chat(id).Conversation
+		chat := st.chat(id)
+		c := &chat.Conversation
 		p := f.Params
 		turn := agent.String(p["turnId"])
 		if turn == "" {
@@ -1331,7 +1333,14 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 		}
 		switch f.Method {
 		case "thread/started":
-			c.ThreadID = cv.Ptr(agent.String(agent.Map(p["thread"])["id"]))
+			thread := agent.Map(p["thread"])
+			c.ThreadID = cv.Ptr(agent.String(thread["id"]))
+			chat.sessionStarted(thread)
+		case "thread/compacted":
+			// The agent compacted its context (Claude's /compact or its
+			// auto-compaction): say so where it happened, with what it
+			// kept, until the transcript has a marker of its own.
+			c.Entries = append(c.Entries, cv.NewEntry("system", compactionNote(p)))
 		case "turn/started":
 			c.ActiveTurnID = cv.Ptr(turn)
 		case "item/started", "item/completed":
@@ -1479,10 +1488,41 @@ func (e *Engine) ConfigureAgent(id, provider, model string) error {
 		if provider != old && len(c.Conversation.Entries) > 0 {
 			return errors.New("start a new conversation to change providers")
 		}
+		if provider != old {
+			c.Commands, c.Session = nil, nil
+		}
 		c.Provider = provider
 		c.Model = model
 		return nil
 	})
+}
+
+// compactionNote is the system line for a `thread/compacted` notification:
+// how the context was compacted and what it came down to.
+func compactionNote(p map[string]any) string {
+	note := "Context compacted"
+	if agent.String(p["trigger"]) == "auto" {
+		note = "Context compacted automatically"
+	}
+	before, _ := p["preTokens"].(float64)
+	after, _ := p["postTokens"].(float64)
+	if before > 0 && after > 0 {
+		note += fmt.Sprintf(": %s → %s tokens", formatTokens(before), formatTokens(after))
+	}
+	return note + "."
+}
+
+// formatTokens writes a token count the way the usage line does (1.2k, 27k).
+func formatTokens(n float64) string {
+	switch {
+	case n >= 1e6:
+		return strconv.FormatFloat(n/1e6, 'f', 1, 64) + "M"
+	case n >= 1e4:
+		return strconv.FormatFloat(n/1e3, 'f', 0, 64) + "k"
+	case n >= 1e3:
+		return strconv.FormatFloat(n/1e3, 'f', 1, 64) + "k"
+	}
+	return strconv.FormatFloat(n, 'f', 0, 64)
 }
 
 // ConfigureAgentAndRelease applies ConfigureAgent and ends the chat's resident

@@ -39,12 +39,59 @@ type Chat struct {
 	Archived     bool                      `json:"archived"`
 	Conversation conversation.Conversation `json:"conversation"`
 	Approvals    []Approval                `json:"approvals"`
+	// Commands is what the agent's session offers as slash commands (Claude
+	// Code's built-ins and the workspace's own commands and skills, from its
+	// `system/init`), for the composer's "/" menu. A message "/name …" is
+	// sent as text and the agent expands it. Empty for Codex.
+	Commands []Command `json:"commands,omitempty"`
+	// Session is what the agent reported when its session started: the
+	// model it resolved, its permission mode and output style. Nil for
+	// Codex.
+	Session *Session `json:"session,omitempty"`
 	// Typing is who is composing a message right now. It is filled in for
 	// clients by Engine.View and never stored.
 	Typing []Typist `json:"typing,omitempty"`
 	// Startup is where the chat's start is while its message waits for the
 	// agent (startup.go); filled in by Engine.View, never stored.
 	Startup *Startup `json:"startup,omitempty"`
+}
+
+// Command is one slash command the agent's session offers.
+type Command struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// Session is the agent's own report of its session settings.
+type Session struct {
+	Model          string `json:"model,omitempty"`
+	PermissionMode string `json:"permissionMode,omitempty"`
+	OutputStyle    string `json:"outputStyle,omitempty"`
+}
+
+// sessionStarted records what the agent sent with `thread/started`: the
+// commands its session offers and its settings. Codex's carries neither
+// and leaves the chat's as they were; Claude's arrives with every turn
+// (its `system/init`), so the list follows the workspace.
+func (c *Chat) sessionStarted(thread map[string]any) {
+	if list, ok := thread["commands"].([]any); ok {
+		c.Commands = []Command{}
+		for _, v := range list {
+			m, _ := v.(map[string]any)
+			name, _ := m["name"].(string)
+			if name == "" {
+				continue
+			}
+			description, _ := m["description"].(string)
+			c.Commands = append(c.Commands, Command{Name: name, Description: description})
+		}
+	}
+	model, _ := thread["model"].(string)
+	mode, _ := thread["permissionMode"].(string)
+	style, _ := thread["outputStyle"].(string)
+	if model != "" || mode != "" || style != "" {
+		c.Session = &Session{Model: model, PermissionMode: mode, OutputStyle: style}
+	}
 }
 
 // Typist is one person composing a message in a chat.

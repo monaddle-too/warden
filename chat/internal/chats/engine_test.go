@@ -882,3 +882,81 @@ func TestTurnTimingAndTokenUsage(t *testing.T) {
 		t.Fatalf("stopped run left the turn wrong: %+v", turns)
 	}
 }
+
+// The agent's thread/started names the session's slash commands and
+// settings (Claude's system/init); they are on the chat, in GET state as
+// chat.commands and chat.session, survive a restart, and follow the
+// next thread/started. A thread/started without them (Codex) leaves them
+// alone. A thread/compacted notification is a system line in the
+// transcript.
+func TestSessionCommandsInStateAndCompactionNote(t *testing.T) {
+	e, w, _ := setup(t)
+	// The fake worker speaks the Codex protocol; the frames below are what
+	// the Claude adapter emits into it.
+	id, _ := e.Create("Commands", "", "", nil)
+	_ = e.Message(id, "/compact", cv.ID())
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Conversation.Entries[0].Delivery == "sent" })
+	if c := e.Store.Snapshot().chat(id); len(c.Commands) != 0 || c.Session != nil {
+		t.Fatalf("commands before the session reported any: %+v", c)
+	}
+	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one",
+		"commands": []any{map[string]any{"name": "compact"}, map[string]any{"name": "probe-cmd", "description": "From the workspace"}, map[string]any{"name": ""}},
+		"model":    "claude-opus-5[1m]", "permissionMode": "default", "outputStyle": "default"}}})
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Commands) == 2 })
+	h := &HTTP{Engine: e, Token: "private", Host: "127.0.0.1:18780", Origin: "http://127.0.0.1:18780", WebDir: t.TempDir()}
+	r := httptest.NewRequest("GET", "http://"+h.Host+"/api/state", nil)
+	r.Header.Set("Authorization", "Bearer private")
+	out := httptest.NewRecorder()
+	h.ServeHTTP(out, r)
+	var state struct {
+		Chats []struct {
+			Commands []Command `json:"commands"`
+			Session  *Session  `json:"session"`
+		} `json:"chats"`
+	}
+	if err := json.Unmarshal(out.Body.Bytes(), &state); err != nil || len(state.Chats) != 1 {
+		t.Fatal(err, out.Body.String())
+	}
+	got := state.Chats[0]
+	if len(got.Commands) != 2 || got.Commands[0] != (Command{Name: "compact"}) || got.Commands[1] != (Command{Name: "probe-cmd", Description: "From the workspace"}) {
+		t.Fatalf("commands %+v", got.Commands)
+	}
+	if got.Session == nil || *got.Session != (Session{Model: "claude-opus-5[1m]", PermissionMode: "default", OutputStyle: "default"}) {
+		t.Fatalf("session %+v", got.Session)
+	}
+	w.send(agent.Frame{Method: "thread/compacted", Params: map[string]any{"threadId": "thread-one", "turnId": "turn-one", "trigger": "manual", "preTokens": 27230.0, "postTokens": 1850.0}})
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 2 })
+	if note := e.Store.Snapshot().chat(id).Conversation.Entries[1]; note.Role != "system" || note.Text != "Context compacted: 27k → 1.9k tokens." {
+		t.Fatalf("note %+v", note)
+	}
+	// Codex's thread/started, and a later Claude init with fewer commands.
+	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one"}}})
+	w.send(agent.Frame{Method: "thread/compacted", Params: map[string]any{"threadId": "thread-one", "turnId": "turn-one", "trigger": "auto"}})
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 3 })
+	if c := e.Store.Snapshot().chat(id); len(c.Commands) != 2 || c.Session == nil || c.Conversation.Entries[2].Text != "Context compacted automatically." {
+		t.Fatalf("unchanged by a bare thread/started: %+v", c)
+	}
+	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one", "commands": []any{map[string]any{"name": "init"}}}}})
+	until(t, func() bool {
+		c := e.Store.Snapshot().chat(id)
+		return len(c.Commands) == 1 && c.Commands[0].Name == "init"
+	})
+	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
+	if c := e.Store.Snapshot().chat(id); c.Session == nil || len(c.Commands) != 1 {
+		t.Fatalf("session lost with the turn: %+v", c)
+	}
+	// The commands belong to the provider: choosing the other one drops them
+	// (only possible before the chat has history).
+	fresh, _ := e.Create("Fresh", "", "", nil, "claude", "")
+	_ = e.Store.update(func(st *State) error {
+		st.chat(fresh).sessionStarted(map[string]any{"commands": []any{map[string]any{"name": "compact"}}, "model": "m"})
+		return nil
+	})
+	if err := e.ConfigureAgent(fresh, "codex", ""); err != nil {
+		t.Fatal(err)
+	}
+	if c := e.Store.Snapshot().chat(fresh); len(c.Commands) != 0 || c.Session != nil {
+		t.Fatalf("commands survived the provider change: %+v", c)
+	}
+}

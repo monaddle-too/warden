@@ -265,9 +265,14 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						control(id, map[string]any{"behavior": "deny", "message": "Unsupported Warden control request"})
 					}
 				case "system":
-					if v["subtype"] == "init" {
+					switch v["subtype"] {
+					case "init":
+						// Sent at the start of every turn, so the commands and
+						// settings follow the workspace as it changes.
 						thread = String(v["session_id"])
-						event("thread/started", map[string]any{"thread": map[string]any{"id": thread}})
+						event("thread/started", map[string]any{"thread": claudeThread(thread, v)})
+					case "compact_boundary":
+						event("thread/compacted", claudeCompaction(v, thread, turn))
 					}
 				case "stream_event":
 					e := Map(v["event"])
@@ -358,6 +363,37 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 	return client
 }
 func claudeID() string { var b [16]byte; _, _ = rand.Read(b[:]); return hex.EncodeToString(b[:]) }
+
+// claudeThread is the `thread/started` thread from Claude Code's
+// `system/init`: the session id and what the session offers. Its
+// `slash_commands` are the built-ins plus the workspace's commands and
+// skills (whatever the launch's setting sources load); the terminal-only
+// ones (`terminal_slash_commands`) and internal `__` names are left out.
+// A message "/name args" sent as text is expanded by the CLI itself, so
+// the list is all a client needs.
+func claudeThread(id string, init map[string]any) map[string]any {
+	terminal := map[string]bool{}
+	for _, v := range Array(init["terminal_slash_commands"]) {
+		terminal[String(v)] = true
+	}
+	commands := []any{}
+	for _, v := range Array(init["slash_commands"]) {
+		name := String(v)
+		if name == "" || terminal[name] || strings.HasPrefix(name, "__") {
+			continue
+		}
+		commands = append(commands, map[string]any{"name": name})
+	}
+	return map[string]any{"id": id, "commands": commands, "model": String(init["model"]), "permissionMode": String(init["permissionMode"]), "outputStyle": String(init["output_style"])}
+}
+
+// claudeCompaction is the `thread/compacted` notification for a
+// `system/compact_boundary` frame: why the CLI compacted (`manual` for
+// /compact, `auto`) and the context before and after, in tokens.
+func claudeCompaction(v map[string]any, thread, turn string) map[string]any {
+	meta := Map(v["compact_metadata"])
+	return map[string]any{"threadId": thread, "turnId": turn, "trigger": String(meta["trigger"]), "preTokens": meta["pre_tokens"], "postTokens": meta["post_tokens"]}
+}
 
 func claudeResultError(v map[string]any) string {
 	if errors := Array(v["errors"]); len(errors) > 0 {

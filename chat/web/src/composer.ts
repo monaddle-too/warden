@@ -3,9 +3,20 @@
    A command is a message that starts with "/" (the whole first line is the
    command and its argument, so "/model gpt-5.5" reads as one). A mention is
    an "@" at the start of a word; the text from it to the caret is the path
-   prefix to complete, shell style. Neither changes what is sent: a command
-   is run only when picked from the list (or sent as exactly "/name"), and
-   a mention stays in the text as written for the agent to read. */
+   prefix to complete, shell style. Neither changes what is sent: a local
+   command is run only when picked from the list (or sent as exactly
+   "/name"), and a mention stays in the text as written for the agent to
+   read.
+
+   Besides the local commands, the list offers the agent's own (the chat's
+   `commands`, from Claude Code's session: its built-ins and the
+   workspace's commands and skills). Those are never run here: picking one
+   puts "/name " in the composer and the message is sent as text, which the
+   agent expands. A "/name" the agent does not know is sent all the same;
+   the agent answers that it is unknown. */
+
+import type { AgentCommand } from "./types";
+export type { AgentCommand };
 
 export type Trigger = {
   kind: "command" | "path";
@@ -33,7 +44,26 @@ export type ModelOption = { value: string; label: string };
 
 export type CommandItem =
   | { kind: "command"; command: Command }
-  | { kind: "model"; model: ModelOption };
+  | { kind: "model"; model: ModelOption }
+  | { kind: "agent"; command: AgentCommand };
+
+/* What the agent's built-in commands do, for the list's hint column: the
+   CLI names them without a description. A description the agent sends
+   wins over these. */
+export const AGENT_HINTS: Record<string, string> = {
+  compact: "Summarize the conversation to free up context; add a focus",
+  init: "Write a CLAUDE.md for this workspace",
+  context: "What fills the context window",
+  usage: "Session cost and token usage",
+  "security-review": "Security review of the pending changes",
+  "code-review": "Review the current changes",
+  effort: "Set the effort level",
+  mcp: "MCP server status",
+};
+
+export function agentHint(command: AgentCommand) {
+  return command.description || AGENT_HINTS[command.name] || "";
+}
 
 const space = (c: string) => c === " " || c === "\t" || c === "\n";
 
@@ -55,23 +85,40 @@ export function triggerAt(text: string, caret: number): Trigger | undefined {
   return { kind: "path", start, end, query: text.slice(start + 1, caret) };
 }
 
-/* The rows for a command query: the commands whose name starts with the
-   word typed, or, once "model" has its argument, the models whose value
-   or label contains it ("5.5" finds GPT-5.5). */
+/* The first word of a command query, lower-cased, and what follows it. */
+function split(query: string): { name: string; rest?: string } {
+  const trimmed = query.replace(/^\s+/, "");
+  const at = trimmed.search(/\s/);
+  if (at === -1) return { name: trimmed.toLowerCase() };
+  return { name: trimmed.slice(0, at).toLowerCase(), rest: trimmed.slice(at) };
+}
+
+/* The rows for a command query: the local commands whose name starts with
+   the word typed, then the agent's (a local name shadows the agent's, so
+   "/model" is always the chat's own); or, once "model" has its argument,
+   the models whose value or label contains it ("5.5" finds GPT-5.5). An
+   agent command with an argument has no rows: the text is sent as it is. */
 export function commandItems(
   query: string,
   models: ModelOption[],
+  agent: AgentCommand[] = [],
 ): CommandItem[] {
-  const trimmed = query.replace(/^\s+/, "");
-  const at = trimmed.search(/\s/);
-  const name = (at === -1 ? trimmed : trimmed.slice(0, at)).toLowerCase();
-  if (at === -1)
-    return COMMANDS.filter((c) => c.name.startsWith(name)).map((command) => ({
+  const { name, rest } = split(query);
+  if (rest === undefined) {
+    const local = COMMANDS.filter((c) => c.name.startsWith(name));
+    const rows: CommandItem[] = local.map((command) => ({
       kind: "command",
       command,
     }));
+    for (const command of agent) {
+      const lower = command.name.toLowerCase();
+      if (lower.startsWith(name) && !COMMANDS.some((c) => c.name === lower))
+        rows.push({ kind: "agent", command });
+    }
+    return rows;
+  }
   if (name !== "model") return [];
-  const arg = trimmed.slice(at).trim().toLowerCase();
+  const arg = rest.trim().toLowerCase();
   return models
     .filter(
       (m) =>
@@ -81,9 +128,22 @@ export function commandItems(
     .map((model) => ({ kind: "model", model }));
 }
 
-/* A message that is exactly a command ("/stop", "/model opus") runs it
-   instead of being sent, so a command typed in full and sent with the
-   keyboard does not reach the agent as text. */
+/* The agent command a query names, with or without an argument: "/compact
+   focus on the tests" names compact. Undefined when the first word is not
+   one of the agent's commands (or is shadowed by a local one). */
+export function agentCommandNamed(
+  query: string,
+  agent: AgentCommand[],
+): AgentCommand | undefined {
+  const { name } = split(query);
+  if (!name || COMMANDS.some((c) => c.name === name)) return undefined;
+  return agent.find((c) => c.name.toLowerCase() === name);
+}
+
+/* A message that is exactly a local command ("/stop", "/model opus") runs
+   it instead of being sent, so a command typed in full and sent with the
+   keyboard does not reach the agent as text. The agent's commands are not
+   local: "/compact" is sent. */
 export function exactCommand(
   text: string,
   models: ModelOption[],
