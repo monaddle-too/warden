@@ -122,7 +122,7 @@ export function footerText(footer: TurnFooter, now?: number): string {
   if (footer.start !== undefined && end !== undefined)
     parts.push(formatDuration(end - footer.start));
   if (footer.usage) {
-    parts.push(usageSummary(footer.usage));
+    if (footer.usage.total > 0) parts.push(usageSummary(footer.usage));
     if (footer.usage.costUSD) parts.push(formatCost(footer.usage.costUSD));
   }
   return parts.join(" · ");

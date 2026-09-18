@@ -1633,6 +1633,17 @@ func TestCompactionDividerContextAndPassthrough(t *testing.T) {
 	if s := plain(StatusLine(c, nil, true, now)); !strings.Contains(s, "ctx 43k") || strings.Contains(s, "/") {
 		t.Fatalf("windowless indicator: %q", s)
 	}
+	// A /compact turn reports no tokens, only the compaction's cost.
+	c.Conversation.Turns = []Turn{{ID: "t", StartedAt: 990, EndedAt: 1017, Usage: &Usage{CostUSD: 0.16}}}
+	c.Conversation.Entries[1].TurnID = &c.Conversation.Turns[0].ID
+	if s := plain(StatusLine(c, nil, true, now)); strings.Contains(s, "0 tokens") || !strings.Contains(s, "27s · $0.16") {
+		t.Fatalf("compaction turn stats: %q", s)
+	}
+	var out bytes.Buffer
+	printEntry(&out, c, c.Conversation.Entries[1])
+	if out.String() != "  ── Context compacted · manual · 171k → 2.2k tokens ──\n" {
+		t.Fatalf("follow line: %q", out.String())
+	}
 	// /compact is sent as text to a Claude chat.
 	codex := sampleChat()
 	codex.Status = "idle"

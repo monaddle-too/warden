@@ -91,6 +91,8 @@ func printEntry(out io.Writer, c *Chat, e Entry) {
 		}
 	case "system":
 		fmt.Fprintf(out, "  ! %s\n", text)
+	case "compaction":
+		fmt.Fprintf(out, "  ── %s ──\n", sanitize(CompactionText(e)))
 	default:
 		fmt.Fprintf(out, "  %s: %s\n", e.Role, text)
 	}

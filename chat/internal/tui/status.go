@@ -98,7 +98,10 @@ func TurnStats(c *Chat) string {
 		parts = append(parts, FormatDuration(t.EndedAt-start))
 	}
 	if t.Usage != nil {
-		parts = append(parts, UsageSummary(*t.Usage))
+		// A /compact turn reports no tokens, only the compaction's cost.
+		if t.Usage.Total > 0 {
+			parts = append(parts, UsageSummary(*t.Usage))
+		}
 		if t.Usage.CostUSD != 0 {
 			parts = append(parts, FormatCost(t.Usage.CostUSD))
 		}
