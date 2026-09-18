@@ -312,6 +312,28 @@ type State struct {
 	Version int     `json:"version"`
 	Chats   []*Chat `json:"chats"`
 	Ports   []Port  `json:"ports"`
+	// AgentOptions mirrors chats.AgentOptions: the costlier Claude
+	// features this Warden allows and each provider's model catalog.
+	AgentOptions AgentOptions `json:"agentOptions"`
+}
+
+// AgentOptions mirrors chats.AgentOptions.
+type AgentOptions struct {
+	FastMode    bool                   `json:"fastMode"`
+	LongContext bool                   `json:"longContext"`
+	Models      map[string][]ModelInfo `json:"models"`
+}
+
+// ModelInfo mirrors chats.ModelInfo: one row of a provider's catalog as
+// its CLI reported it.
+type ModelInfo struct {
+	Value            string   `json:"value"`
+	Resolved         string   `json:"resolved"`
+	Label            string   `json:"label"`
+	Description      string   `json:"description"`
+	Efforts          []string `json:"efforts"`
+	AdaptiveThinking bool     `json:"adaptiveThinking"`
+	FastMode         bool     `json:"fastMode"`
 }
 
 // Chat finds a chat by id.

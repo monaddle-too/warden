@@ -121,10 +121,12 @@ type Engine struct {
 	startupTrace map[string][]string
 	mu           sync.Mutex
 	active       map[string]*activeRun
-	// asides: chat id -> a side question being answered (aside.go).
-	asides map[string]bool
-	wake   chan struct{}
-	done   chan struct{}
+	// asides: chat id -> a side question being answered (aside.go);
+	// titling: chat id -> a title being made (title.go).
+	asides  map[string]bool
+	titling map[string]bool
+	wake    chan struct{}
+	done    chan struct{}
 }
 
 const runSlots = 2
@@ -330,8 +332,11 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 	id := cv.ID()
 	err := e.Store.update(func(st *State) error {
 		title = strings.TrimSpace(title)
+		// A chat named by its creator keeps that name; one left at the
+		// default is named from its first exchange (title.go).
+		titled := "manual"
 		if title == "" {
-			title = "New chat"
+			title, titled = DefaultTitle, ""
 		}
 		if len(title) > 160 || len(repository) > 300 {
 			return errors.New("title or repository too long")
@@ -356,7 +361,7 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 			}
 		}
 		creator := actor
-		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, SandboxID: sbxID, Repository: repository, Resources: resources, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
+		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, Titled: titled, SandboxID: sbxID, Repository: repository, Resources: resources, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
 		return nil
 	})
 	return id, err
@@ -487,18 +492,26 @@ type View struct {
 }
 
 // AgentOptions are the optional, costlier Claude features an operator
-// enables (config providers.claude.allowFastMode, allowLongContext).
+// enables (config providers.claude.allowFastMode, allowLongContext), and
+// each provider's model catalog as its CLI reported it (catalog.go), by
+// provider; a provider without one is absent and clients fall back to
+// their own rows.
 type AgentOptions struct {
-	FastMode    bool `json:"fastMode"`
-	LongContext bool `json:"longContext"`
+	FastMode    bool                   `json:"fastMode"`
+	LongContext bool                   `json:"longContext"`
+	Models      map[string][]ModelInfo `json:"models,omitempty"`
 }
 
 func (e *Engine) View() View {
-	return View{State: e.state(), Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext}}
+	st := e.state()
+	models := catalogRows(st.Catalog)
+	st.Catalog = nil // clients get it as agentOptions.models
+	return View{State: st, Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models}}
 }
 
-// state is the store with typing indicators filled in and the people's
-// instructions left out (each person reads their own, me/instructions).
+// state is the store with typing indicators and each chat's spend filled
+// in, and the people's instructions left out (each person reads their
+// own through me/instructions).
 func (e *Engine) state() State {
 	st := e.Store.Snapshot()
 	st.Instructions = nil
@@ -507,6 +520,8 @@ func (e *Engine) state() State {
 		if c.Status == "queued" || c.Status == "running" {
 			c.Startup = e.startupOf(c.ID)
 		}
+		spend := spendOf(c.Conversation.Turns)
+		c.Spend = &spend
 	}
 	e.typingMu.Lock()
 	defer e.typingMu.Unlock()
@@ -543,6 +558,11 @@ func (e *Engine) Edit(id, title string, archived bool) error {
 		}
 		if !archived && c.Archived && st.deleted(c.SandboxID) {
 			return errors.New("this chat's workspace was deleted; start a new chat")
+		}
+		if title != c.Title {
+			// A person's name for the chat wins over, and ends, the
+			// automatic naming (title.go).
+			c.Titled = "manual"
 		}
 		c.Title = title
 		c.Archived = archived
@@ -1039,6 +1059,9 @@ func (e *Engine) run(parent context.Context, id string) {
 	if err != nil {
 		return
 	}
+	// The provider's model catalog, from the process just started
+	// (catalog.go); a refusal or a slow answer leaves the cached one.
+	e.loadCatalog(ctx, current.Provider, client)
 	if current.Rewind != nil && !e.applyPendingRewind(ctx, id, client, threadID) {
 		// The resumed session could not rewind: this run ends cleanly and
 		// the message stays queued for a fresh session (rewind.go).
@@ -1080,12 +1103,21 @@ func (e *Engine) run(parent context.Context, id string) {
 	// first item of the turn ends the start (turn below).
 	e.setStartup(id, stageFirstResponse, "waiting for the model's first reply")
 	for {
-		if err = e.turn(ctx, id, &current, a, client, frames, threadID, turnID, prep.Directory, turn); err != nil || !a.resident {
+		if err = e.turn(ctx, id, &current, a, client, frames, threadID, turnID, prep.Directory, turn); err != nil {
+			return
+		}
+		if !a.resident {
+			// The run ends with the turn; a chat still at the default
+			// title is named from the transcript alone (title.go).
+			e.autoTitle(parent, id, nil)
 			return
 		}
 		// The turn finished but the session stays open: settle the transcript,
 		// report idle, and wait for the chat's next message.
 		e.settleTurn(parent, id, a)
+		// A chat still at the default title is named from its first
+		// exchange, beside the idle session (title.go).
+		go e.autoTitle(parent, id, a)
 		var agentTurn string
 		message, agentTurn = e.awaitMessage(ctx, id, &current, a, client, frames)
 		if agentTurn != "" {

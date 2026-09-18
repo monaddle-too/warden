@@ -444,7 +444,7 @@ func (s *Server) main(w http.ResponseWriter, r *http.Request) {
 }
 func ownerOnly(path string) bool {
 	trimmed := strings.Trim(path, "/")
-	return strings.HasPrefix(path, "/oauth/") || strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/cluster") ||
+	return strings.HasPrefix(path, "/oauth/") || strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/cluster") || trimmed == "api/spend" ||
 		trimmed == "api/sharing/connect" || trimmed == "api/sharing/disconnect" || trimmed == "api/sharing/egress_set" || trimmed == "api/sharing/block" || trimmed == "api/sharing/unblock" ||
 		// The GitHub sign-in code binds whichever account types it to this
 		// Warden, so only the owner may see or start one.

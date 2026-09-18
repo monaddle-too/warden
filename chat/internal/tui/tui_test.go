@@ -484,7 +484,17 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))
-	case strings.HasSuffix(path, "/agent"), strings.HasSuffix(path, "/revoke"):
+	case strings.HasSuffix(path, "/agent"):
+		// The chat's provider and model for the next turn.
+		var body struct{ Provider, Model string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		if c := f.state.Chat(strings.TrimSuffix(strings.TrimPrefix(path, "chats/"), "/agent")); c != nil {
+			c.Provider, c.Model = body.Provider, body.Model
+		}
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
+	case strings.HasSuffix(path, "/revoke"):
 		w.Write([]byte(`{"ok":true}`))
 	case strings.HasSuffix(path, "/checkpoints"):
 		// Every user message but the first has a checkpoint.
@@ -2970,5 +2980,145 @@ func TestTitleAndBellEvents(t *testing.T) {
 	app.bellForEvents()
 	if strings.Contains(out.String(), "\a") {
 		t.Fatal("the bell rang while off")
+	}
+}
+
+// The /model menu lists the provider's rows: the CLI's catalog when the
+// service reported one (the default row first, a 1M row the operator has
+// not allowed with its hint), else the static rows; picking the default
+// row sends the provider default. /effort lists the model's levels from
+// the catalog, and a model without any refuses a level.
+func TestModelAndEffortMenusFromTheCatalog(t *testing.T) {
+	claude := &Chat{ID: "c1", Title: "Claude", Provider: "claude", Model: "haiku", Status: "idle"}
+	codex := &Chat{ID: "c2", Title: "Codex", Provider: "codex", Status: "idle"}
+	catalog := []ModelInfo{
+		{Value: "default", Resolved: "claude-sonnet-5", Label: "Default (recommended)", Description: "Sonnet 5 · Efficient", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, AdaptiveThinking: true},
+		{Value: "sonnet", Resolved: "claude-sonnet-5", Label: "Sonnet", Description: "Sonnet 5 · Efficient", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, AdaptiveThinking: true},
+		{Value: "opus[1m]", Resolved: "claude-opus-5[1m]", Label: "Opus (1M context)", Efforts: []string{"low", "max"}, FastMode: true},
+		{Value: "haiku", Resolved: "claude-haiku-4-5", Label: "Haiku"},
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{claude, codex}, AgentOptions: AgentOptions{Models: map[string][]ModelInfo{"claude": catalog}}})
+	app := &App{Client: f.client(), ChatID: "c1", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	ctx := context.Background()
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/model ")
+	if app.menu == nil || app.menu.Trigger.Kind != "model" || len(app.menu.Items) != 4 {
+		t.Fatalf("model menu: %+v", app.menu)
+	}
+	items := app.menu.Items
+	if items[0].Insert != "default" || !strings.Contains(items[0].Label, "Provider default") || !strings.Contains(items[0].Hint, "claude-sonnet-5") {
+		t.Fatalf("default row: %+v", items[0])
+	}
+	if items[1].Insert != "sonnet" || !strings.Contains(items[1].Label, "Sonnet") || items[2].Insert != "opus[1m]" || items[2].Hint != LongContextHint || items[3].Insert != "haiku" {
+		t.Fatalf("rows: %+v", items)
+	}
+	// Typing narrows by value or label; Enter picks and runs.
+	typeText(app, ctx, "son")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Insert != "sonnet" {
+		t.Fatalf("narrowed: %+v", app.menu)
+	}
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	app.state, _ = app.Client.State(ctx)
+	if app.state.Chats[0].Model != "sonnet" || app.editor.Text() != "" {
+		t.Fatalf("picked: %q draft %q", app.state.Chats[0].Model, app.editor.Text())
+	}
+	// The default row sends "" (the provider default).
+	typeText(app, ctx, "/model def")
+	app.handleKey(ctx, Key{Kind: KeyEnter})
+	app.state, _ = app.Client.State(ctx)
+	if app.state.Chats[0].Model != "" {
+		t.Fatalf("default row sent %q", app.state.Chats[0].Model)
+	}
+	// With the operator's leave the 1M row has its own hint.
+	f.mu.Lock()
+	f.state.AgentOptions.LongContext = true
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/model 1m")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Hint == LongContextHint || !strings.Contains(app.menu.Items[0].Hint, "claude-opus-5[1m]") {
+		t.Fatalf("allowed 1M row: %+v", app.menu)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	// /effort on the default model lists the default row's levels; on
+	// Haiku (no levels) it refuses one.
+	typeText(app, ctx, "/effort ")
+	if app.menu == nil || app.menu.Trigger.Kind != "effort" || len(app.menu.Items) != 6 || app.menu.Items[0].Insert != "default" || app.menu.Items[5].Insert != "max" {
+		t.Fatalf("effort menu: %+v", app.menu)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	app.submit(ctx, "/model haiku")
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/effort ")
+	if app.menu == nil || len(app.menu.Items) != 1 || app.menu.Items[0].Insert != "default" {
+		t.Fatalf("effort menu on haiku: %+v", app.menu)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	app.submit(ctx, "/effort high")
+	if !strings.Contains(app.notice, "takes no effort level") {
+		t.Fatalf("effort on haiku: %q", app.notice)
+	}
+	app.submit(ctx, "/effort")
+	if !strings.Contains(app.notice, "takes no effort level") {
+		t.Fatalf("effort on haiku: %q", app.notice)
+	}
+	// Without a catalog the static rows serve, every level offered.
+	f.mu.Lock()
+	f.state.AgentOptions.Models = nil
+	f.mu.Unlock()
+	app.state, _ = app.Client.State(ctx)
+	typeText(app, ctx, "/model ")
+	if app.menu == nil || len(app.menu.Items) != 6 || app.menu.Items[1].Insert != "sonnet" || app.menu.Items[4].Insert != "sonnet[1m]" {
+		t.Fatalf("static rows: %+v", app.menu)
+	}
+	if levels := EffortsFor(app.chat(), app.agentOptions()); len(levels) != 5 {
+		t.Fatalf("static efforts: %v", levels)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	// Codex has its own static rows.
+	app.selectChat("c2")
+	typeText(app, ctx, "/model ")
+	if app.menu == nil || len(app.menu.Items) != 6 || app.menu.Items[1].Insert != "gpt-6-astra" {
+		t.Fatalf("codex rows: %+v", app.menu)
+	}
+	app.editor.Set("")
+	app.menu = nil
+	typeText(app, ctx, "/effort ")
+	if app.menu != nil {
+		t.Fatalf("effort menu on codex: %+v", app.menu)
+	}
+}
+
+// /cost ends with the workspace's total when the chat shares it: every
+// chat's turns summed, archived ones included.
+func TestCostShowsTheWorkspaceTotal(t *testing.T) {
+	turns := func(cost float64, total int64) Conversation {
+		return Conversation{Turns: []Turn{{ID: "t", StartedAt: 1, EndedAt: 2, Usage: &Usage{Input: total - 10, Output: 10, Total: total, CostUSD: cost}}}}
+	}
+	f := newFakeServer(t, State{Chats: []*Chat{
+		{ID: "a", Title: "A", Provider: "claude", SandboxID: "ws", Status: "idle", Conversation: turns(0.10, 1000)},
+		{ID: "b", Title: "B", Provider: "claude", SandboxID: "ws", Status: "idle", Archived: true, Conversation: turns(0.20, 2000)},
+		{ID: "c", Title: "C", Provider: "claude", SandboxID: "other", Status: "idle", Conversation: turns(5, 50000)},
+	}})
+	app := &App{Client: f.client(), ChatID: "a", Output: io.Discard, Now: func() time.Time { return time.Unix(0, 0) }}
+	ctx := context.Background()
+	app.refreshState(ctx)
+	app.submit(ctx, "/cost")
+	notice := plain(app.notice)
+	if !strings.Contains(notice, "cost                 $0.10") || !strings.Contains(notice, "this workspace: 2 chats · 2 turns · 3.0k tokens · $0.30") {
+		t.Fatalf("/cost:\n%s", notice)
+	}
+	// Alone on its workspace: no total line.
+	app.selectChat("c")
+	app.submit(ctx, "/cost")
+	if strings.Contains(plain(app.notice), "this workspace") {
+		t.Fatalf("/cost alone:\n%s", app.notice)
+	}
+	codex, n := WorkspaceCost(&Chat{SandboxID: "x"}, []*Chat{{SandboxID: "x", Conversation: turns(0, 15)}, {SandboxID: "x"}}, 0)
+	if n != 2 || codex.Priced || WorkspaceCostLine(codex, n) != "this workspace: 2 chats · 1 turn · 15 tokens" {
+		t.Fatalf("codex: %q", WorkspaceCostLine(codex, n))
 	}
 }
