@@ -373,9 +373,9 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 2 Subagents and background tasks — merged to main 38daa78 (2026-09-17); verified as the Item 2 section says.
 - [ ] 3 Permission model.
 - [ ] 4 Plan mode.
-- [ ] 5 Slash-command pass-through.
+- [x] 5 Slash-command pass-through — merged to main 32138ea (2026-09-17); verified as the Item 5 section says; TUI `/` menu from `chat.commands` left for a follow-up.
 - [x] 6 TUI catch-up — merged to main c60d938 (2026-09-17); verified as the Item 6 section says.
-- [ ] 7 Workspace `.claude/` loading and policy.
+- [x] 7 Workspace `.claude/` loading — verified on CLI 2.1.272, merged to main 32138ea (2026-09-17); the launch-flag change (`--setting-sources=project` + `disableAllHooks`) is recommended under "Decisions needed", not made.
 - [ ] 8 Compaction and context.
 - [ ] 9 Mid-session model, effort, thinking.
 - [ ] 10 Queueing and rewind.
@@ -716,3 +716,11 @@ as the note while the argument is typed, and Cmd-Enter sends it (48k →
 1.1k). Unit tests: `TestClaudeInitCommandsAndCompaction`,
 `TestSessionCommandsInStateAndCompactionNote`, `composer.test.ts` "agent
 commands in the composer".
+
+Progress: started 2026-09-17 on `feat/parity-5-slash-commands` from main
+5ff4767; implemented and live-verified 2026-09-17 (22951f7); merged to
+main 32138ea (2026-09-17) after merging items 1, 2 and 6 in (claude.go's
+`system` case now one switch with item 2's task frames). Left: the TUI's
+`/` menu does not yet list `chat.commands` (it sends "/name …" as text
+all the same); descriptions for the built-ins are a static table until
+the CLI sends them.
