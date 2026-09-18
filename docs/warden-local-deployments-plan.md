@@ -857,6 +857,15 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   status line, title and bell count reviews with approvals, `send --wait`
   announces them. Decision: one knob (`--popups`), no separate flag for
   reviews. The web's polling of the three state routes is unchanged.
+  Landed on main as 971eee0 (dd4fafc, 842d7bf: `openBrowser` honours
+  `$BROWSER`). Live on a cloned home: two document proposals still pending
+  in the policy database reappeared as reviews at start and the launcher
+  opened the app on each (through a `$BROWSER` stub); the TUI card, status
+  count, title, `/review` and `send --wait` line verified under a pty; a
+  `doc_resolve` rejection and a `resolve` denial each removed the review at
+  once. Not verified live: the pull request path (the owner's GitHub
+  sign-in had expired; the engine test covers submit, settle and
+  reconcile). Not deployed to `~/.warden`.
 - 2026-09-16: approval popups. The launcher watches the event stream and
   surfaces each newly pending approval once (desktop notification; browser
   opened on the chat in `--popups browser`, the default when detached); the
