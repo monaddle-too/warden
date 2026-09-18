@@ -417,6 +417,14 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - Each item ticks its box below with the merge sha and a line on how it
   was verified.
 
+## Deployments
+
+- 2026-09-18: main f998301 (items 1–13, 15) deployed to `~/.warden/release`
+  on the owner's Mac (a wedged SBX daemon had to be terminated first).
+- 2026-09-18: main e5bf597 (the above plus round 2 A/B) deployed to GKE
+  Autopilot at cloud.warden.monaddle.com (images
+  `warden:v0.1.0-alpha.12-316-ge5bf597`), replacing 1a8a06f.
+
 ## Progress
 
 - [x] Design discussion, inventory and priority order (this document).
