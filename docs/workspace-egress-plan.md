@@ -140,5 +140,16 @@ choice of its own, and says how many workspaces override it.
   inheritance; owner gate; `network_test.go`, edge tests). Web 2d094ac
   (`network.ts`, `NetworkSelect`, New chat fieldset, panel section,
   console override count). CLI 18a4070 (`--network`). Docs in this
-  commit. Full Go, web and CLI suites pass. Step 7 (live test on a cloned
-  home and on GKE) remains.
+  commit. Full Go, web and CLI suites pass.
+- 2026-09-18: step 7, live on a cloned home (`~/.warden-p20`, build
+  f889f58): `warden chat new --network open` wrote
+  `policy/egress-overrides.json` before the sandbox existed and the
+  agent's `curl https://example.com/` answered 200, while a sibling
+  workspace on the install's setting got the gateway's 403 (CONNECT
+  refused); `environments/{id}/network open` on the running restricted
+  workspace flipped it to 200 in place (audit `policy.updated … egress
+  mode public`); the install-wide switch to restricted left both alone
+  (`overrides: 2`); the panel's Change… → Install setting brought the
+  403 back. New chat form fieldset, panel section and the console's
+  override sentence checked in the browser. `GET sharing/egress` now
+  passes `sandboxID` through. Not tested on GKE; not deployed.
