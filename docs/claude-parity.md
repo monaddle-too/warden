@@ -440,3 +440,22 @@ Design (see the feature map for paths):
   `Unknown command: /x`).
 - TUI: its `/` menu should read `chat.commands` too — follow-up under item
   6, not done here.
+
+Verified 2026-09-17 (branch 22951f7 on a cloned home `~/.warden-p3`,
+CLI 2.1.272): `GET state` carries `chat.session` (`claude-sonnet-5`,
+`default`, `default`) and 39 `chat.commands` (the terminal-only
+`doctor`/`color`/`reload-plugins` and `__remote-workflow` filtered);
+`/context` sent through `warden chat send` renders the CLI's context table
+as the reply; `/compact` completes the turn with the system line "Context
+compacted: 46k → 1.1k tokens."; a workspace command the agent wrote
+(`.claude/commands/hello.md`) is answered `Unknown command: /hello` under
+the current `--setting-sources=` (the pass-through is intact, the CLI
+does not load it), and with a throwaway build using the recommended
+`--setting-sources=project --settings '{"disableAllHooks":true}'` it is
+listed and `/hello world` expands to `HELLO-FROM-WORKSPACE world` (run as
+a skill). In the browser, `/` opens the menu with the Chat group first and
+the Claude group after, `/comp` + Enter fills in `/compact ` with the hint
+as the note while the argument is typed, and Cmd-Enter sends it (48k →
+1.1k). Unit tests: `TestClaudeInitCommandsAndCompaction`,
+`TestSessionCommandsInStateAndCompactionNote`, `composer.test.ts` "agent
+commands in the composer".
