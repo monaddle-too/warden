@@ -255,6 +255,48 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Notifications | ✗ | ✗ | |
 | IDE, Chrome, computer use, cloud sessions | — | — | out of scope |
 
+## Round 2: twenty more features (2026-09-18)
+
+Chosen from the inventory's remaining ✗/◐ rows and the "left" notes of
+items 1–15, excluding what waits on the owner's decisions (workspace
+settings, project MCP, plugins, hooks, collaborator policy). Seven
+bundles, one worktree and one cloned home each; bundles A–D run first,
+E–G after.
+
+### A. Titles, spend, model catalog (`feat/parity-r2-a-titles-spend`)
+- [ ] R2.1 **Auto-titles**: a chat titled "New chat" gets a title from its first exchange (a one-shot inside the sandbox on the cheapest model, as `/btw` runs; fallback the first message's first line); rename still wins; the sidebar and TUI show it.
+- [ ] R2.2 **Spend**: cost per chat (sum of turns) in the chat header/menu, per workspace in the workspace panel (all its chats), and today / 7 days / all-time totals in the admin console; Codex shows tokens without cost.
+- [ ] R2.3 **Model catalog from the CLI**: the picker's rows, effort levels and fast/1M availability come from `list_models` (per session, cached per provider), and disallowed costlier options show a hint instead of vanishing (item 9's leftover).
+
+### B. Permission rules (`feat/parity-r2-b-rules`)
+- [ ] R2.4 **Workspace-wide allow-always**: the "Allow always" answer offers this chat / this workspace; workspace rules apply to every chat of the environment.
+- [ ] R2.5 **Rules editor**: allow / deny / ask rules by tool pattern (Claude's `Bash(git *)`, `Edit(src/**)` syntax) per workspace, in the workspace panel and TUI `/rules`; deny rules answer without asking in every mode, ask rules force a card even in `auto`.
+- [ ] R2.6 **Permission history**: what was allowed, denied or auto-answered in a chat and by whom, from the chat menu and TUI `/permissions`.
+
+### C. Live activity, search, export (`feat/parity-r2-c-activity-search`)
+- [ ] R2.7 **Live activity status**: the chat status line and sidebar dot say what the agent is doing ("Running go test…", "Editing engine.go", "Explore: 3 tool calls"), `task_progress` while a subagent runs (item 2's leftover).
+- [ ] R2.8 **Search and export nesting-aware**: ⌘F, ⌘K and TUI `/find` reach nested subagent entries and `!` cards; export nests children under their parent (items 2 and 12's leftovers).
+- [ ] R2.9 **TUI search across chats**: `/search <text>` over titles and transcripts of every chat, with a jump.
+
+### D. Queue and rewind polish (`feat/parity-r2-d-queue-rewind`)
+- [ ] R2.10 **Edit a queued message in place**: inline on the queued card (web) and back into its slot (TUI `/edit N`).
+- [ ] R2.11 **Queue semantics**: `!` and `#` release a held queue; `warden chat send --wait` waits for its own message's turn only (item 10's leftovers).
+- [ ] R2.12 **Undo a conversation rewind**: the removed tail is kept and can be restored until the next turn (restore the entries; a session that cannot un-rewind starts fresh with the recap, as item 11's fallback does).
+
+### E. Workspace fork, resource mentions, rich reads (`feat/parity-r2-e-fork-mentions`)
+- [ ] R2.13 **Fork with a copy of the workspace**: "Fork…" gains "copy the workspace" — a new environment cloned from the sandbox (the runner's clone path on both drivers) plus the forked session; markers link both.
+- [ ] R2.14 **Resource mentions**: the composer's `@` menu offers the chat's shared documents, repositories and previews (`@doc:`, `@repo:`, `@preview:`) and expands them to what the agent needs; TUI too.
+- [ ] R2.15 **Rich Read results**: a Read of an image shows the image in the card (today "[image]"), PDFs and notebooks show a page/cell summary.
+
+### F. TUI: vim mode, attachments, unread (`feat/parity-r2-f-tui`)
+- [ ] R2.16 **Vim mode**: `/vim on|off` persisted; normal/insert, motions, operators, `u`, `:` commands.
+- [ ] R2.17 **Attachments and paste**: `/attach a b c`, a local `@file` path attaches, a paste-preview chip (items 6 and 12's leftovers).
+- [ ] R2.18 **Unread and jump**: unread markers per chat in `/chats` and the sidebar, an unread divider on switch, `G`/End jumps to the bottom.
+
+### G. Asides and shortcuts (`feat/parity-r2-g-asides-keys`)
+- [ ] R2.19 **`/btw` polish**: starts the session when it was released instead of refusing, cleans the aside's session copies in the guest, and an aside can be promoted into the chat as a message (item 15's leftovers).
+- [ ] R2.20 **Keyboard help**: a `?` overlay on the web listing every shortcut (⌘K, ⌘F, Esc, Esc-Esc, ↑, Ctrl-R, Shift-Tab where applicable) and TUI `/keys`; both generated from one table so they cannot drift.
+
 ## Decisions needed
 
 Recommendations from the item 7 probe (evidence under "Item 7" below);
