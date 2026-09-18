@@ -23,6 +23,7 @@ import type { PullRequestProposal } from "./PullRequestReview";
 import { resourcesLabel } from "./Approvals";
 import { SizeSelect, sameSize } from "./SizeSelect";
 import type { DocumentProposal } from "./DocumentReview";
+import { MemorySection } from "./MemorySection";
 
 const remaining = (value: number | null) => {
   if (!value) return "";
@@ -584,6 +585,7 @@ export function WorkspacePanel({
           ))}
         </ul>
       </section>
+      <MemorySection chat={chat} disabled={!!ws?.deleted} />
       {ws && (
         <section className="workspace-section">
           <details

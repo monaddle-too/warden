@@ -1307,7 +1307,8 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s",
 			"slash_commands": []any{"code-review", "compact", "init", "doctor", "__remote-workflow", "probe-cmd"}, "terminal_slash_commands": []any{"doctor"},
-			"model": "claude-opus-5[1m]", "permissionMode": "default", "output_style": "default", "mcp_servers": []any{map[string]any{"name": "warden", "status": "connected"}}})
+			"model": "claude-opus-5[1m]", "permissionMode": "default", "output_style": "default", "mcp_servers": []any{map[string]any{"name": "warden", "status": "connected"}},
+			"memory_paths": map[string]any{"auto": "/home/agent/.claude/projects/-home-agent-workspace/memory"}})
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": "compacting", "session_id": "s"})
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "slash_commands": []any{"compact"}})
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "compact_boundary", "session_id": "s", "compact_metadata": map[string]any{"trigger": "manual", "pre_tokens": 27230.0, "post_tokens": 1850.0, "duration_ms": 28060.0}})
@@ -1359,7 +1360,7 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 				for _, v := range Array(first["commands"]) {
 					names = append(names, String(Map(v)["name"]))
 				}
-				if first["id"] != "s" || fmt.Sprint(names) != "[code-review compact init probe-cmd]" || first["model"] != "claude-opus-5[1m]" || first["permissionMode"] != "default" || first["outputStyle"] != "default" {
+				if first["id"] != "s" || fmt.Sprint(names) != "[code-review compact init probe-cmd]" || first["model"] != "claude-opus-5[1m]" || first["permissionMode"] != "default" || first["outputStyle"] != "default" || first["autoMemory"] != "/home/agent/.claude/projects/-home-agent-workspace/memory" {
 					t.Fatalf("thread %+v", first)
 				}
 				if compacted == nil || compacted["trigger"] != "manual" || compacted["preTokens"] != 27230.0 || compacted["postTokens"] != 1850.0 || compacted["status"] != "completed" {
@@ -1375,6 +1376,130 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("translation timed out")
 		}
+	}
+}
+
+// The model, thinking budget, effort level and fast mode of a live
+// session are control requests: set_model (the CLI's refusal fails the
+// call), set_max_thinking_tokens (null for the default, 0 for off, else
+// the budget) and apply_flag_settings (effortLevel, fastMode), each sent
+// only when it changes what the CLI has; the fast-mode state the CLI
+// reports rides on thread/started.
+func TestClaudeModelThinkingEffortAndFastMode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, cf, frames := newClaudeFake(t, ctx)
+	// answer accepts the next control request, checks it and answers it.
+	answer := func(want map[string]any, response map[string]any) {
+		go func() {
+			v := cf.next(t, ctx)
+			req := Map(v["request"])
+			for k, expected := range want {
+				got := req[k]
+				if m, ok := expected.(map[string]any); ok {
+					got = Map(req[k])
+					for kk, vv := range m {
+						if got.(map[string]any)[kk] != vv {
+							t.Errorf("%s.%s = %v, want %v in %+v", k, kk, got.(map[string]any)[kk], vv, req)
+						}
+					}
+					continue
+				}
+				if got != expected {
+					t.Errorf("%s = %v, want %v in %+v", k, got, expected, req)
+				}
+			}
+			cf.send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": response}})
+		}()
+	}
+	refuse := func(message string) {
+		go func() {
+			v := cf.next(t, ctx)
+			cf.send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": v["request_id"], "error": message}})
+		}()
+	}
+	quiet := func(what string) {
+		t.Helper()
+		select {
+		case v := <-cf.writes:
+			t.Fatalf("%s: unexpected write %+v", what, v)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	// Model: the alias goes as it is, "" as "default".
+	answer(map[string]any{"subtype": "set_model", "model": "opus"}, nil)
+	if r, err := c.Call(ctx, "model/set", map[string]any{"model": "opus"}); err != nil || r["model"] != "opus" {
+		t.Fatal(r, err)
+	}
+	answer(map[string]any{"subtype": "set_model", "model": "default"}, nil)
+	if r, err := c.Call(ctx, "model/set", map[string]any{"model": ""}); err != nil || r["model"] != "" {
+		t.Fatal(r, err)
+	}
+	refuse("Model 'bogus' not found")
+	if _, err := c.Call(ctx, "model/set", map[string]any{"model": "bogus"}); err == nil || !strings.Contains(err.Error(), "Model 'bogus' not found") {
+		t.Fatal(err)
+	}
+	// Thinking: the default needs no request on a fresh process; off is a
+	// budget of 0; a number is the budget; back to the default is null.
+	if r, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": ""}); err != nil || r["thinking"] != "" {
+		t.Fatal(r, err)
+	}
+	quiet("thinking default")
+	answer(map[string]any{"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0.0}, nil)
+	if r, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": "off"}); err != nil || r["thinking"] != "off" {
+		t.Fatal(r, err)
+	}
+	if r, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": "off"}); err != nil || r["thinking"] != "off" {
+		t.Fatal(r, err)
+	}
+	quiet("thinking unchanged")
+	answer(map[string]any{"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 8000.0}, nil)
+	if r, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": "8000"}); err != nil || r["thinking"] != "8000" {
+		t.Fatal(r, err)
+	}
+	answer(map[string]any{"subtype": "set_max_thinking_tokens", "max_thinking_tokens": nil}, nil)
+	if r, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": ""}); err != nil || r["thinking"] != "" {
+		t.Fatal(r, err)
+	}
+	// A refusal leaves the CLI's value as it was, so the same ask is sent again.
+	refuse("set_max_thinking_tokens: max_thinking_tokens must be an integer or null")
+	if _, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": "off"}); err == nil || !strings.Contains(err.Error(), "must be an integer") {
+		t.Fatal(err)
+	}
+	answer(map[string]any{"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0.0}, nil)
+	if _, err := c.Call(ctx, "thinking/set", map[string]any{"thinking": "off"}); err != nil {
+		t.Fatal(err)
+	}
+	// Effort through the flag settings; the default is null.
+	answer(map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": "low"}}, nil)
+	if r, err := c.Call(ctx, "effort/set", map[string]any{"effort": "low"}); err != nil || r["effort"] != "low" {
+		t.Fatal(r, err)
+	}
+	if _, err := c.Call(ctx, "effort/set", map[string]any{"effort": "low"}); err != nil {
+		t.Fatal(err)
+	}
+	quiet("effort unchanged")
+	answer(map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": nil}}, nil)
+	if r, err := c.Call(ctx, "effort/set", map[string]any{"effort": ""}); err != nil || r["effort"] != "" {
+		t.Fatal(r, err)
+	}
+	// Fast mode likewise.
+	if _, err := c.Call(ctx, "fastMode/set", map[string]any{"fast": false}); err != nil {
+		t.Fatal(err)
+	}
+	quiet("fast mode off already")
+	answer(map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"fastMode": true}}, nil)
+	if r, err := c.Call(ctx, "fastMode/set", map[string]any{"fast": true}); err != nil || r["fast"] != true {
+		t.Fatal(r, err)
+	}
+	// The next init reports the model and the fast-mode state.
+	cf.send(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "model": "claude-opus-5", "permissionMode": "default", "fast_mode_state": "on"})
+	f := nextFrame(t, ctx, frames, "thread/started")
+	if th := Map(f.Params["thread"]); th["model"] != "claude-opus-5" || th["fastMode"] != "on" {
+		t.Fatalf("%+v", th)
+	}
+	if claudeThinkingBudget("") != nil || claudeThinkingBudget("off") != 0 || claudeThinkingBudget("4000") != 4000 || claudeThinkingBudget("x") != nil {
+		t.Fatal("claudeThinkingBudget")
 	}
 }
 

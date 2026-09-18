@@ -185,11 +185,11 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
-| Model choice | ✅ | ✅ | fixed per chat |
-| Change model mid-session | ✗ | ✗ | `set_model` |
-| Effort level | ✗ | ✗ | |
-| Thinking on/off, budget | ✗ | ✗ | `set_max_thinking_tokens` |
-| Fast mode, 1M context | ✗ | ✗ | policy |
+| Model choice | ✅ | ✅ | per chat; the session's resolved model shown |
+| Change model mid-session | ✅ | ✅ | item 9: `set_model` on the live session; Codex relaunches |
+| Effort level | ✅ | ✅ | item 9: `apply_flag_settings` `effortLevel`; `/effort` |
+| Thinking on/off, budget | ✅ | ✅ | item 9: `set_max_thinking_tokens`; `/thinking` |
+| Fast mode, 1M context | ✅ | ✅ | item 9: behind `providers.claude.allowFastMode` / `allowLongContext`, off by default |
 | Output style | ✗ | ✗ | |
 | Status line, terminal title | — | ✗ | |
 | `/cost`, `/context`, `/usage` | ◐ | ✗ | plan limits n/a behind the gateway |
@@ -237,10 +237,10 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
-| Project `CLAUDE.md`, imports, rules | ✗ | ✗ | not loaded under `--setting-sources=` (item 7); needs `project` |
-| User-level `CLAUDE.md` | ✗ | ✗ | policy: per principal |
-| Auto-memory | ◐ | ◐ | per sandbox home, not per principal |
-| `/memory` editor | ✗ | ✗ | |
+| Project `CLAUDE.md`, imports, rules | ✗ | ✗ | not loaded under `--setting-sources=` (item 7); needs `project`; viewed and edited from the memory view (item 13) |
+| User-level `CLAUDE.md` | ✅ | ✅ | per principal: standing instructions in the chat store, appended to the system prompt (item 13) |
+| Auto-memory | ◐ | ◐ | per sandbox home; the directory is listed and its files editable (item 13); the CLI wrote none under Warden's flags |
+| `/memory` editor | ✅ | ✅ | workspace panel "Memory", TUI `/memory` (item 13) |
 | Warden's appended system prompt | ✅ | ✅ | |
 
 ### MCP, hooks, integrations
@@ -291,9 +291,10 @@ until the owner confirms.
   wanted.
 - **Per-principal instructions and memory.** The CLI reports
   `memory_paths.auto` = `~/.claude/projects/<cwd>/memory/` in the sandbox
-  home, so auto-memory is per sandbox; a per-principal layout needs
-  Warden to set `HOME`/`CLAUDE_CONFIG_DIR` or to inject the user's
-  `CLAUDE.md` — item 13.
+  home, so auto-memory is per sandbox; item 13 injects each person's
+  instructions into the system prompt instead and lists that directory
+  in the memory view. A per-principal auto-memory (`HOME` or
+  `CLAUDE_CONFIG_DIR` per person) remains open.
 
 ## To verify on the pinned CLI
 
@@ -385,11 +386,11 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 6 TUI catch-up — merged to main c60d938 (2026-09-17); verified as the Item 6 section says.
 - [x] 7 Workspace `.claude/` loading — verified on CLI 2.1.272, merged to main 32138ea (2026-09-17); the launch-flag change (`--setting-sources=project` + `disableAllHooks`) is recommended under "Decisions needed", not made.
 - [x] 8 Compaction and context — merged to main e84a7bc (2026-09-17); verified as the Item 8 section says.
-- [ ] 9 Mid-session model, effort, thinking.
+- [x] 9 Mid-session model, effort, thinking — merged to main a007b96 (2026-09-18); verified as the Item 9 section says.
 - [ ] 10 Queueing and edit-and-resend — implemented and live-verified 2026-09-18 (cd4a51e); merge pending.
 - [x] 11 Checkpoints and session diff — merged to main 4d0a05e (2026-09-17); verified as the Item 11 section says.
 - [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
-- [ ] 13 Per-user instructions and memory.
+- [x] 13 Per-user instructions and memory — merged to main a5012c0 (2026-09-18); verified as the Item 13 section says.
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
 
@@ -525,6 +526,176 @@ used, so nothing here exercises `commands_queued`.
 Progress: started 2026-09-18; implemented and live-verified 2026-09-18
 (cd4a51e).
 
+### Item 13: per-user instructions and memory
+
+Branch `feat/parity-13-user-memory`, worktree
+`.local/warden-parity-13-user-memory`, from main a3b0a00, fast-forwarded to
+5114d71 (item 12) before the first code (2026-09-17). Started 2026-09-17.
+
+What exists: a chat's entries carry `Sender` (the principal the edge
+identified: `owner`, or a Google `sub` with email and name); a chat has no
+record of who created it. Claude's only system prompt is the
+`--append-system-prompt` text in `sandbox/runtime.go` `AgentCommand`
+(the adapter ignores the engine's `developerInstructions`, which Codex
+takes at `thread/start`). `--setting-sources=` means the CLI reads no
+`CLAUDE.md`, rules or auto-memory from the workspace (item 7); it still
+reports `memory_paths.auto` in `system/init`. Item 12's `#note` appends
+to `CLAUDE.md` through runner op `memory-append` and `POST
+chats/{id}/memory`.
+
+Steps:
+
+1. Per-principal instructions in the chat store (`State.Instructions`,
+   keyed by principal, never in the streamed state), `GET`/`POST
+   me/instructions`; web "Instructions" in the sidebar footer (a markdown
+   textarea dialog; a blank save removes), TUI `/instructions` shows,
+   `/instructions edit` loads them into the composer (Enter saves, Esc
+   cancels), `/instructions clear`.
+2. Delivery: at a launch the runner appends, after Warden's own prompt, a
+   header and one block per participant — `From "<name>":` + text — for
+   the chat's creator (now recorded, `Chat.Creator`) and every sender so
+   far (`Request.Instructions` on the `stream` op → `RunSpec.Instructions`
+   → `claudeSystemPrompt`); Codex gets the same on `developerInstructions`.
+   A queued message whose sender's current text is not what the idle
+   session was launched with (a late joiner; text changed or removed)
+   ends the run cleanly and the chat's next run relaunches with
+   everyone's current blocks (`thread/resume` keeps the conversation);
+   Codex steering leaves such a message queued the same way. The launch
+   passes `--system-prompt-snapshot off` (see decision 7).
+3. Memory view: `GET chats/{id}/memory` lists the workspace's `CLAUDE.md`,
+   `CLAUDE.local.md`, `AGENTS.md`, `.claude/CLAUDE.md`, `.claude/rules/**.md`
+   (three levels) and the CLI's auto-memory directory (`memory_paths.auto`
+   from `system/init`, kept as `Chat.Session.AutoMemory`, validated by the
+   runner as a `memory` directory under the home's `.claude/projects`;
+   derived from the workspace path otherwise) with contents (256 KiB per
+   file, marked when cut); `POST chats/{id}/memory/write` `{scope, path,
+   text}` replaces one file (runner op `memory-write`: staged 0644 on the
+   worker host, copied into the agent home, placed by a descriptor-relative
+   script that creates missing folders and follows no symlink; paths
+   limited to those locations, validated on both sides). Web: a "Memory"
+   section in the workspace panel (opened on demand like Access history,
+   files grouped Instructions / Rules / Auto-memory, an editor dialog,
+   Create CLAUDE.md / New rule…); TUI `/memory`, `/memory N|FILE`,
+   `/memory edit N|FILE` (`auto:PATH` for an auto-memory file; a new
+   workspace path can be edited into being).
+4. Attribution: every write leaves a `notice` entry with `Sender`
+   ("The owner edited CLAUDE.md", "Ada edited auto-memory MEMORY.md").
+5. Tests, feature map, live check on a cloned home, merge.
+
+Decisions:
+
+1. Instructions live in Warden's store, keyed by principal, never in the
+   sandbox: a workspace is shared by chats and people, and the sandbox
+   home is the agent's; the store is where the principal already exists.
+   Display name for a block: the person's name, else email, else "the
+   owner" for the owner principal, else the name stored with the text.
+2. Delivery is plain text in the system prompt, never a policy change,
+   introduced in Warden's own voice: a bare quoted `Instructions from
+   "the owner":` block was refused by the model as an injection on the
+   first live probe ("that text appeared … not through any legitimate
+   system or Warden channel"); with a header saying what the blocks are
+   and that Warden keeps and delivers them, the same text was followed.
+3. **No message prefix** (deviation from the design's "delivered once as
+   a prefix"): Claude Code declines standing instructions carried inside
+   a user message — live, it kept the haiku rule from the system prompt
+   and refused the one in the prefix, saying genuine updates arrive as a
+   system-reminder, not as chat text. A late joiner or a change relaunches
+   the session instead (step 2); the cost is one CLI start (a few seconds,
+   `--resume`) per change, and one prompt-cache miss.
+4. The instructions ride the `stream` request as data (`AgentCommand`'s
+   argument list; the drivers never go through a shell); one person's
+   text is capped at 16 KiB, the assembled text at 96 KiB (cut, not
+   failed: a guest argument has a hard size on Linux).
+5. `GET`/`POST` rather than `PUT`: the service answers `GET` and `POST`
+   only and the web client speaks those two. The write route is
+   `chats/{id}/memory/write`, separate from item 12's append on
+   `chats/{id}/memory`, so append and replace do not share one verb.
+6. The memory listing shows what exists even though the launch reads
+   none of it (item 7): the view carries `read` and a `hint` sentence
+   (Claude: read only once the workspace's settings are loaded; Codex:
+   reads `AGENTS.md`), which both surfaces show.
+7. `--system-prompt-snapshot off` on every Claude launch. The pinned CLI
+   records the system prompt at a conversation's first request and reuses
+   it verbatim on every later request and resume, "even when a later
+   launch passes different text, until the conversation is compacted"
+   (its own option text); live, a relaunched session quoted the old
+   instructions while its command line carried the new ones. Off renders
+   the prompt fresh each request, which is what a relaunch needs.
+8. The staged copy of a memory file goes to `<home>/.warden-memory-<id>`,
+   not `/tmp`: the runtime copies it in as the host's uid with the host
+   mode, and at 0600 in sticky `/tmp` the agent user could neither read
+   nor remove it (the first live write failed that way).
+
+Findings on the pinned CLI (2.1.272), for the record:
+
+- `system/init` `memory_paths.auto` is
+  `/home/agent/.claude/projects/-home-agent-workspace/memory/` (trailing
+  slash; the project directory name is the workspace path with every
+  character outside `[a-zA-Z0-9_-]` replaced by a dash, which the runner
+  derives when the chat has no report). The CLI creates that directory at
+  session start (with `sessions/`, `backups/`, the session `.jsonl`) under
+  Warden's flags; across some fifteen turns in three sessions it wrote
+  nothing into it, so whether `-p` mode ever writes auto-memory under
+  `--setting-sources=` is not established. Files a person puts there are
+  listed and editable, and readable by the agent by path.
+- The agent, asked to `cat` files that appeared in its workspace between
+  turns, flagged them as untrusted data and asked how they got there —
+  the launch does not read them as instructions (item 7), and it does not
+  treat them as such either.
+- `--system-prompt-snapshot` (decision 7) and `--append-system-prompt-file`
+  exist in this version.
+
+Also fixed on the way: `conversation.css` had lost the closing brace of
+`.todo-active` in item 12's merge, nesting the context meter's rules under
+it, and the stylesheet brace-balance test never saw it because a `?raw`
+stylesheet import is empty under vitest (the test asserted on ""); the
+test now reads both files from disk (`src/node-fs.d.ts` types the one
+call).
+
+Verified 2026-09-18 on a cloned home (`~/.warden-p10`, CLI 2.1.272,
+builds 7d55238 → bb2b993): unit — `go test ./...` (`sandbox/memory_test.go`
+runs both guest scripts locally: the fixed files, rules three levels down,
+the reported or derived auto-memory directory, symlinks never followed on
+read or write, a cut file marked, folders created on write; the ops
+through the fake runtime with the reported directory, path and scope
+refusals, the staged copy and its placement; `claudeSystemPrompt` and the
+launch flag; `chats/instructions_test.go`: the routes per principal, the
+blocks, the launch's `stream` request and `developerInstructions`, the
+relaunch for a late joiner / changed / removed text and none for a known
+sender, the memory routes with the notice; `agent/claude_test.go` the
+`autoMemory` on `thread/started`; `tui/tui_test.go` both commands and the
+editing mode), `pnpm test` (161: `memory.test.ts`, the CSS test now
+real). Live: instructions set through the API, a new Claude chat answered
+"What is the capital of France?" as a haiku signed WARDENHAIKU; the block
+read back from the CLI's `/proc/<pid>/cmdline`; `GET chats/{id}/memory`
+listed the empty workspace with the auto-memory directory; writes of
+`CLAUDE.md`, `.claude/rules/style.md` and `auto:MEMORY.md` through the
+API, then the agent's `cat` showing all three (owned `agent agent`, 0644,
+no staged file left in the home) and three notices in the transcript;
+the refused `README.md`. Browser: the Instructions dialog loaded the text
+with its saved stamp, a change saved and read back; the workspace panel's
+Memory section listed the three files under their groups with the hint,
+the editor opened `CLAUDE.md`, a saved change appeared as "The owner
+edited CLAUDE.md" and the panel refreshed to 76 B. TUI in a pty: `/memory`
+(listing with sizes and the directories), `/memory 1`, `/memory 3`,
+`/instructions`, `/memory edit auto:MEMORY.md` → the editing banner,
+Alt+Enter, Enter → "saved auto:MEMORY.md" and its notice. Changing the
+owner's instructions while a session was live: the next message
+relaunched the CLI (`--resume`, the new block in its command line) and,
+with the snapshot off, the answer followed the new text ("two lines of
+prose … GIRAFFE"); before the flag the relaunched session still quoted
+the old text. Codex is unit-tested only (usage exhausted).
+
+Left: Google mode (a second principal) is unit-tested only — the cloned
+home runs in owner mode; the auto-memory question above; the memory view
+needs a running sandbox (the runner refuses with "sandbox is stopped",
+which the panel shows); no `#`-style append for rules or auto-memory.
+
+Progress: started 2026-09-17; implemented and live-verified 2026-09-18;
+merged to main a5012c0 (2026-09-18) after merging items 9 and 11 in
+(append-append seams only); the merged build re-checked on the cloned
+home (a two-line GIRAFFE answer on the resumed session, the listing).
+
 ### Item 11: checkpoints, rewind and the session diff
 
 Branch `feat/parity-11-rewind`, worktree `.local/warden-parity-11-rewind`,
@@ -656,6 +827,7 @@ committed leaves its commits in place and moves the working tree only;
 the marker is not an undo (the removed transcript stays only in the
 CLI's own session file); Codex sessions always take the fresh-session
 fallback for a conversation rewind.
+
 ### Item 12: composer polish
 
 Branch `feat/parity-12-composer`, worktree `.local/warden-parity-12-composer`,
@@ -1301,6 +1473,168 @@ ask; the web UI (selector, `/mode plan` from the composer, the command
 card, the diff card, the plan card rendered as markdown, the markers);
 the TUI in a pty (Shift-Tab auto → ask → plan, `/mode`, the status
 line, the command and diff cards, `a`, `n <message>`, `y`).
+
+### Item 9: mid-session model, effort and thinking
+
+Branch `feat/parity-9-model-controls`, worktree
+`.local/warden-parity-9-model-controls`, from main 05df4fa (2026-09-17).
+
+What the pinned CLI (2.1.272) accepts, probed inside a sandbox with a
+second CLI driven over stream-json with the resident one's env and argv
+(the item-7 method; the probe driver answered the SDK-MCP handshake and
+every `can_use_tool`, and the gateway's credential lapsed twice at the
+10-minute idle mark, each time revived with one message on the chat):
+
+- **`set_model`** `{"subtype":"set_model","model":…}` → `{"subtype":
+  "success"}` (no body); the next `system/init` reports the resolved
+  model (`claude-opus-5`) and the model answers as it ("I'm Opus 5 … the
+  session switched models after my previous answer"). Accepted: `opus`,
+  `sonnet`, `haiku`, `default` (the session default), `sonnet[1m]`,
+  `opusplan`, a dated name (`claude-haiku-4-5` → `claude-haiku-4-5-
+  20251001`). Refused: an unknown name, `{"subtype":"error","error":
+  "Model 'bogus-model-x' not found"}`. `model` null or omitted resets to
+  the default; an `@internal system_prompt` field exists. Cost: `result`'s
+  `total_cost_usd` keeps running across the switch (0.054 → 0.466 → 0.535
+  over sonnet → opus → haiku), with a per-model `modelUsage` breakdown, so
+  the adapter's per-turn cost (growth of the total) is right as it was.
+- **`list_models`** → the account's catalog: `default` (→ sonnet),
+  `sonnet`, `sonnet[1m]`, `opus`, `opus[1m]`, `haiku`, each with
+  `supportsEffort`, `supportedEffortLevels` (`low medium high xhigh
+  max` on the Sonnet/Opus rows, none on Haiku), `supportsAdaptiveThinking`
+  (Sonnet/Opus), `supportsFastMode` (the Opus rows only); `opusplan` is
+  accepted by `set_model` but not listed. The binary's alias list is
+  `sonnet opus haiku fable best sonnet[1m] opus[1m] fable[1m] opusplan`.
+- **`set_max_thinking_tokens`** `{"max_thinking_tokens": int|null,
+  "thinking_display"?: "summarized"|"omitted"|null}` → success; a
+  non-integer is refused with `max_thinking_tokens must be an integer or
+  null…` (a negative integer is accepted). The value maps to the CLI's
+  thinking config: `0` → disabled, `n` → enabled with budget n, `null` →
+  the default (adaptive on Sonnet 5 / Opus 5). Live on Haiku 4.5 (fixed-
+  budget thinking, on by default): `0` → no thinking block, 0 thinking
+  tokens; `2048` → a thinking block (69 tokens); `null` → thinking again.
+  On Sonnet 5 the model decides: neither `0` nor `8000` produced thinking
+  on the puzzles tried, so the budget is a cap there, `0` the switch off.
+  Launch equivalents: `--thinking enabled|adaptive|disabled`,
+  `--max-thinking-tokens N` (deprecated, `-p` only), env
+  `MAX_THINKING_TOKENS` (0 = off), `CLAUDE_CODE_DISABLE_THINKING`.
+- **Effort**: no `set_effort`; the control request is
+  **`apply_flag_settings`** `{"settings":{"effortLevel":"low"}}` (the
+  session-scoped flag layer) → success; `get_settings` then reports
+  `effective.effortLevel` and `applied.effort` (`low`, `max`, back to
+  `high` — the model's default — on `null`). Levels `low medium high
+  xhigh max` (`max` applies although the settings schema lists only the
+  first four); an unknown level is *accepted and dropped* (no error),
+  so Warden validates. Launch equivalents: `--effort <level>`, env
+  `CLAUDE_CODE_EFFORT_LEVEL` (which then pins effort for the session),
+  the `effortLevel` setting.
+- **Fast mode**: `system/init` carries `fast_mode_state` (`off`,
+  `cooldown`, `on`) and `fast_mode_disabled_reason`
+  (`sdk_opt_in_required` under `-p` until opted in; `not_first_party`,
+  `model_not_allowed`, `disabled_by_env`…). `apply_flag_settings
+  {"settings":{"fastMode":true}}` is the opt-in: the next init says
+  `off` on Sonnet (no reason: the model has no fast mode) and `on` once
+  the model is Opus; `false` turns it off. No `--fast` flag; the launch
+  equivalent is `--settings '{"fastMode":true}'`; env
+  `CLAUDE_CODE_DISABLE_FAST_MODE` forbids it.
+- **1M context**: the `[1m]` aliases; env `CLAUDE_CODE_DISABLE_1M_CONTEXT`
+  forbids them.
+- Also there, unused: `get_session_cost`, `get_context_usage` (item 8),
+  `rewind_conversation`, `fork_conversation`, `update_settings`
+  (writes the project's local settings file).
+
+Design (as implemented):
+
+1. **Model.** `chats/{id}/agent` on a Claude chat with a live session
+   sends `model/set` → `set_model` and keeps the session (`Chat.RunID`,
+   the thread and the CLI's context unchanged); the store follows with a
+   `notice` marker "Model → opus". A "not found" refusal is returned to
+   the caller and nothing changes; any other refusal falls back to the
+   old path (record, release the session, relaunch with `--model`). A
+   Claude chat's model may change while a turn runs (the CLI applies it
+   to the next model call); a Codex chat's still waits for idle and
+   relaunches (its app-server's `turn/start` has `model` and `effort`
+   fields — 24 in this build — but the account's Codex usage was
+   exhausted, so that path is untouched and unverified). The CLI's
+   resolved model rides on `thread/started` as before
+   (`chat.session.model`); the web's picker shows it on the chosen option
+   ("Claude Opus · claude-opus-5") and the TUI's status line as
+   "opus (claude-opus-5)".
+2. **Settings.** `Chat.Thinking` ("" default, "off", or a budget in
+   tokens), `Chat.Effort` ("" default, else a level), `Chat.Fast`;
+   `POST chats/{id}/settings` `{thinking?, effort?, fast?}` sets what is
+   present (`Engine.SetSettings`), Claude chats only, each change a
+   `notice` marker. Pushed at once to a live session (`thinking/set` →
+   `set_max_thinking_tokens`, `effort/set` and `fastMode/set` →
+   `apply_flag_settings`) and, with the permission mode, before every
+   turn (`applySession`), so a fresh process gets them before its first
+   model call; the adapter sends each only when it changes what the CLI
+   has (a new process starts at the defaults). Launch flags were not
+   used: the push is one code path and leaves the runner protocol alone.
+3. **Policy.** `providers.claude.allowFastMode` and `allowLongContext`
+   (config, default off; Helm `providers.claude.allowFastMode` /
+   `allowLongContext`) reach the engine as `AllowFastMode` /
+   `AllowLongContext` and clients as `GET state` → `agentOptions`
+   `{fastMode, longContext}`. Fast mode on is refused unless allowed; the
+   `[1m]` models are refused by `Create` and the agent route unless
+   allowed (`sandbox.ValidateAgent` now admits the suffix). The picker
+   offers the "Claude Sonnet 1M" / "Claude Opus 1M" rows and the Fast
+   checkbox only when allowed; the CLI's `fast_mode_state` is
+   `chat.session.fastMode` for the checkbox's title and the TUI's `/fast`.
+4. **Surfaces.** Web: beside the model, "Thinking: default / off / 4k /
+   16k / 32k" and "Effort: default / low … max" selects (Claude chats),
+   the Fast checkbox when allowed; `/thinking on|off|<tokens>` (8k
+   accepted) and `/effort <level>|default` in the composer, run locally
+   like `/mode`. TUI: `/thinking`, `/effort`, `/fast on|off` (bare: what
+   is set), the status line adds "thinking off", "effort low", "fast"
+   when set.
+
+Verified (2026-09-17): `gofmt -l`, `go vet ./...`, `go test ./...`;
+`pnpm build`, `pnpm test` (138 tests; `composer.test.ts` thinking,
+effort and the 1M rows); `deploy/helm/warden/test.sh` (goldens
+unchanged: the switches render only when true). Unit: `agent/claude_test.go`
+`TestClaudeModelThinkingEffortAndFastMode` (each request's shape, the
+refusal path, dedup, the init's fast-mode state);
+`chats/settings_test.go` (validation and markers, the route's policy,
+the live switch keeping the run, the not-found refusal, the fallback
+release and the settings pushed to the new session, a switch during a
+running turn); `config/config_test.go` (the switches parse, the secret
+rule still applies); `tui/tui_test.go` `TestThinkingEffortAndFastCommands`.
+Live on a cloned home (`~/.warden-p9`, CLI 2.1.272, build be53f5d): a
+Claude chat on sonnet, `chats/{id}/agent` → opus — `GET state` kept
+`runID` and `conversation.threadID`, the sandbox's CLI PID stayed 334,
+the marker "Model → opus" landed, the next reply said "I'm Opus 5
+(model ID: claude-opus-5)" and `session.model` followed; turn costs
+$0.02 (sonnet) then $0.46 (opus). Then haiku live: thinking off → no
+thinking entry (the reply alone), a 2000 budget → "Thought for 1.0s"
+entry back, default → thinking again, effort low accepted — all on the
+same run. Refusals: `bogus-x` → 409 "Model 'bogus-x' not found" with
+the model unchanged; fast mode and `opus[1m]` → 409 naming the config
+switch. With `allowFastMode`/`allowLongContext` on (and the restart
+that ended the session): fast on + opus → the new session's init
+reported `fastMode: on` (the settings pushed before its first turn:
+"Effort: low" carried over), `opus[1m]` set live → "claude-opus-5[1m]"
+in the reply and `session.model`, fast off → `off`. Web (1280 px):
+the picker reads "Claude Opus 1M · claude-opus-5[1m]", the Thinking and
+Effort selects and the Fast checkbox beside it, the Thinking select →
+"Thinking off" marker, `/effort hi` + Enter → the "Effort high" row and
+marker, the picker → sonnet + a message → "Model → sonnet" and the
+reply "I'm Sonnet 5"; at 800 px the group wraps to a second line. TUI
+in a pty: status "claude · sonnet (claude-sonnet-5) · auto · thinking
+off · effort high", `/thinking 8k`, `/effort low`, `/effort ultra`
+(usage), `/fast` ("fast mode off (session: off)"), `/model opus` →
+"opus (claude-sonnet-5)" until the reply, then "opus (claude-opus-5)",
+`/fast on` during the turn → "· fast" in the status. Codex: unit-tested
+only (usage exhausted).
+
+Progress: started 2026-09-17 on `feat/parity-9-model-controls` from main
+05df4fa; implemented and live-verified 2026-09-17 (be53f5d); merged to
+main a007b96 (2026-09-18) after merging items 8, 11 and 12 in.
+
+Left: Codex's model change still relaunches (its `turn/start` takes
+`model`/`effort`, untested); the `thinking_display` field and the
+launch flags are unused; `list_models` could replace the picker's
+static Claude rows; the `[1m]` rows and the Fast checkbox are hidden
+rather than explained when the operator has not allowed them.
 
 ### Item 5: slash-command pass-through
 

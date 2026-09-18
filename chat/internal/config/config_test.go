@@ -86,6 +86,18 @@ func TestProvidersCanBeRemoved(t *testing.T) {
 	if err != nil || c.Providers.Google != nil || c.Providers.Codex.AuthFile != "/x/auth.json" || c.GitHubMode() != "user" {
 		t.Fatalf("%+v %v", c.Providers, err)
 	}
+	// The Claude session features are off unless the file turns them on;
+	// the login is validated like Codex's.
+	if c.Providers.Claude == nil || c.Providers.Claude.AllowFastMode || c.Providers.Claude.AllowLongContext {
+		t.Fatalf("%+v", c.Providers.Claude)
+	}
+	c, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"providers":{"claude":{"authFile":"/x/claude.json","allowFastMode":true,"allowLongContext":true}}}`))
+	if err != nil || c.Providers.Claude.AuthFile != "/x/claude.json" || !c.Providers.Claude.AllowFastMode || !c.Providers.Claude.AllowLongContext {
+		t.Fatalf("%+v %v", c.Providers.Claude, err)
+	}
+	if _, err = Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"providers":{"claude":{"secret":"warden-claude-login"}}}`)); err == nil || !strings.Contains(err.Error(), "providers.claude.secret") {
+		t.Fatal(err)
+	}
 }
 
 func TestWriteRoundTrip(t *testing.T) {
