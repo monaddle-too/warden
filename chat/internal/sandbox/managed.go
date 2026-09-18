@@ -926,6 +926,7 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	}
 	send(res)
 }
+
 // operationTimeout bounds one operation. The ones that create or boot a
 // sandbox (a fresh chat's prepare, a resume, a fork's copy, a resize that
 // restarts) take PrepareTimeout, since on Kubernetes the pod may wait for
