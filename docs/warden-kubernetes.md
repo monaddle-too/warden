@@ -1024,7 +1024,14 @@ every pod's are set on purpose: a chart that sets none gets Autopilot's
 defaults of 500m / 2Gi per pod — cert-manager's three pods came to about
 $70 a month that way, until `scripts/k8s-gke.sh addons` gave them 50m /
 64–128Mi. Node count is not a cost signal: Autopilot fills spare node
-capacity with `gke-system-balloon-pod`s and reclaims empty nodes itself. `sandboxes.warmSpares` is 0 in `deploy/k8s/gke/values.yaml` for
+capacity with `gke-system-balloon-pod`s and reclaims empty nodes itself.
+A request is a floor, not a cap: Autopilot sets no CPU quota (a pod with
+no CPU limit is `Burstable` with `cpu.max = max`), it pins the pod to a
+cpuset of whole physical cores that grows with the request — measured on
+1.35: 100m and 250m both get one core (two hyperthreads), 1000m two,
+2000m three — and the burst is free. So the policy service at 100m can
+still use a whole core for TLS inspection; a second core costs a 1000m
+request, about $32 a month. `sandboxes.warmSpares` is 0 in `deploy/k8s/gke/values.yaml` for
 that reason (a warm spare is billed around the clock), so the first
 sandbox after an idle period waits for a GKE Sandbox node.
 
