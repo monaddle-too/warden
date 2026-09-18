@@ -129,6 +129,12 @@ start`/`stop`/`restart`/`status` drive the manager instead of a pid file.
   restart captures the endpoint stamp before restarting. The owner's
   `~/.warden` untouched; clone removed. Linux unit unverified (no Linux
   host here), as the rest of the Linux path.
-- Remaining: merge, deploy to `~/.warden` and register the real service
-  (`warden install --upgrade` from the deployed release, or `warden service
-  install`).
+- 2026-09-18: merged to main as 3982852 (two merges of main on the way:
+  shared repositories before the first turn, workspace egress; the latter
+  brought two tests assigning `PolicyAddress` after `Serve`, fixed with the
+  setup option). Deployed to `~/.warden/release` and the real service
+  registered: `com.monaddle.warden` running under launchd, doctor all
+  PASS, a Claude turn answered through it (the launchd PATH suffices).
+- Remaining: nothing on the branch. Later: the owner-session rotation on a
+  restart the service made (a KeepAlive restart logs the browser tab out;
+  persist the capability or tell the page); a Linux run of the unit.
