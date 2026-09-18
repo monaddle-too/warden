@@ -191,3 +191,20 @@ describe("subagent nesting", () => {
     expect(groupEntries(top).length).toBe(2);
   });
 });
+
+describe("a person's own command", () => {
+  it("stands on its own, never in the agent's step group", () => {
+    const you = { principalID: "owner" };
+    const entries = [
+      { id: "a", role: "activity", createdAt: 1, turnID: "t1" },
+      { id: "b", role: "activity", createdAt: 2, turnID: "t1" },
+      { id: "c", role: "activity", createdAt: 3, sender: you },
+      { id: "d", role: "activity", createdAt: 4, sender: you },
+      { id: "e", role: "activity", createdAt: 5 },
+    ];
+    const items = groupEntries(entries).map((item) =>
+      "group" in item ? item.group.map((e) => e.id).join("+") : item.entry.id,
+    );
+    expect(items).toEqual(["a+b", "c", "d", "e"]);
+  });
+});

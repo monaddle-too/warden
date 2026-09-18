@@ -113,7 +113,9 @@ export function newSince<T extends Item>(entries: T[], lastID: string): number {
 
 /* Consecutive tool steps render as one collapsible group; a group never
    spans the unread divider, so the divider can sit before `breakAt`, and
-   never two turns, so a turn's line can follow its last group. */
+   never two turns, so a turn's line can follow its last group. A step
+   with a sender (a command the person ran) stands on its own, never in
+   the agent's group. */
 export function groupEntries<T extends Item>(
   entries: T[],
   breakAt = -1,
@@ -121,12 +123,13 @@ export function groupEntries<T extends Item>(
   const items: ({ entry: T } | { group: T[] })[] = [];
   entries.forEach((entry, index) => {
     const last = items[items.length - 1];
-    if (entry.role === "activity") {
+    if (entry.role === "activity" && !entry.sender) {
       if (
         last &&
         "group" in last &&
         index !== breakAt &&
-        last.group[0].turnID === entry.turnID
+        last.group[0].turnID === entry.turnID &&
+        !last.group[0].sender
       )
         last.group.push(entry);
       else items.push({ group: [entry] });

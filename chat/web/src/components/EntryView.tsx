@@ -9,6 +9,7 @@ import {
   LoaderCircle,
   Pencil,
   RotateCcw,
+  Send,
   User,
 } from "lucide-react";
 import { hasDiff, parseDiff } from "../diff";
@@ -139,6 +140,7 @@ export const ActivityGroup = memo(function ActivityGroup({
   nested,
   chatID,
   provider,
+  onQuote,
 }: {
   entries: Entry[];
   /* Opens a workspace file a step names (a read's path). */
@@ -148,6 +150,9 @@ export const ActivityGroup = memo(function ActivityGroup({
   nested?: Map<string, Entry[]>;
   chatID?: string;
   provider?: string;
+  /* Puts a command the person ran (a card with a sender) into the
+     composer for the agent: the agent sees such a card only that way. */
+  onQuote?: (entry: Entry) => void;
 }) {
   const ctx: StepContext = { onFile, nested, chatID, provider };
   const streaming = entries.some((e) => e.isStreaming);
@@ -156,9 +161,9 @@ export const ActivityGroup = memo(function ActivityGroup({
   if (entries.length === 1)
     return (
       <details
-        className={`activity-group${latest.tool ? ` tool-card tool-kind-${latest.tool.kind}` : ""}`}
+        className={`activity-group${latest.tool ? ` tool-card tool-kind-${latest.tool.kind}` : ""}${latest.sender ? " by-person" : ""}`}
         data-entry={latest.id}
-        open={latest.tool?.kind === "todo" || undefined}
+        open={latest.tool?.kind === "todo" || !!latest.sender || undefined}
       >
         <summary>
           <ChevronRight size={14} className="chevron" />
@@ -172,6 +177,20 @@ export const ActivityGroup = memo(function ActivityGroup({
           )}
         </summary>
         <StepBody entry={latest} ctx={ctx} />
+        {latest.sender && onQuote && !latest.isStreaming && (
+          <div className="tool-actions">
+            <button
+              type="button"
+              className="ghost"
+              title="Put this command and its output into the composer, for the agent"
+              disabled={latest.tool?.status === "running"}
+              onClick={() => onQuote(latest)}
+            >
+              <Send size={13} />
+              Send to agent
+            </button>
+          </div>
+        )}
       </details>
     );
   return (
@@ -273,6 +292,7 @@ export const EntryView = memo(function EntryView({
   onFile,
   onEdit,
   onRetry,
+  onQuote,
   actions = false,
   stats,
   nested,
@@ -284,6 +304,8 @@ export const EntryView = memo(function EntryView({
   onFile: (href: string) => void;
   onEdit?: (entry: Entry) => void;
   onRetry?: (entry: Entry) => void;
+  /* For a command the person ran: quote it into the composer. */
+  onQuote?: (entry: Entry) => void;
   /* Whether retry and edit would be accepted right now. */
   actions?: boolean;
   /* The turn's timing and usage, under the turn's last message. */
@@ -311,6 +333,7 @@ export const EntryView = memo(function EntryView({
         chatID={chatID}
         provider={provider}
         onFile={onFile}
+        onQuote={onQuote}
       />
     );
   if (entry.role === "thinking")

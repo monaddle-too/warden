@@ -166,6 +166,52 @@ export function exactCommand(
   return hit;
 }
 
+/* A draft that starts with "!" runs the rest as a shell command in the
+   workspace — by the person, not the agent (the service records it as
+   their command card, and the agent sees it only if they quote it into a
+   message). "#" appends the rest to the workspace's CLAUDE.md. Neither is
+   sent as a message. A lone "!" or "#" is text; so is either after a
+   space or on a later line. */
+export type Prefixed =
+  | { kind: "shell"; command: string }
+  | { kind: "memory"; note: string };
+
+export function prefixed(text: string): Prefixed | undefined {
+  if (text.startsWith("!")) {
+    const command = text.slice(1).trim();
+    return command ? { kind: "shell", command } : undefined;
+  }
+  if (text.startsWith("#")) {
+    const note = text.slice(1).trim();
+    return note ? { kind: "memory", note } : undefined;
+  }
+  return undefined;
+}
+
+/* What a "!" command's card becomes when quoted into a message for the
+   agent: the command and its output as a fenced block, with how it
+   ended when that was not a clean exit. */
+export function quoteCommand(entry: {
+  text: string;
+  detail: string;
+  tool?: { status: string };
+}): string {
+  const status = entry.tool?.status;
+  const ended =
+    status && status !== "completed" && status !== "running"
+      ? ` (${status})`
+      : "";
+  const output = entry.detail.replace(/\n$/, "");
+  return (
+    "I ran `" +
+    entry.text +
+    "` in the workspace" +
+    ended +
+    (output ? ":\n```\n" + output + "\n```" : "; it printed nothing.") +
+    "\n"
+  );
+}
+
 /* The text with the trigger's range replaced, and where the caret goes. */
 export function replaceTrigger(
   text: string,

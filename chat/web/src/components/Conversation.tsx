@@ -23,6 +23,7 @@ import {
   Paperclip,
   Slash,
   Square,
+  Terminal,
 } from "lucide-react";
 import {
   canResend,
@@ -38,11 +39,31 @@ import {
   commandItems,
   exactCommand,
   mentionFor,
+  prefixed,
+  quoteCommand,
   replaceTrigger,
   triggerAt,
   withoutCommand,
   type CommandItem,
 } from "../composer";
+import {
+  NOT_BROWSING,
+  onFirstLine,
+  onLastLine,
+  promptHistory,
+  recallNewer,
+  recallOlder,
+  type Recall,
+} from "../history";
+import {
+  collapsePaste,
+  expandPastes,
+  livePastes,
+  longPaste,
+  readPastes,
+  removePaste,
+  type Paste,
+} from "../paste";
 import {
   attachmentError,
   hasFiles,
@@ -65,7 +86,9 @@ import { pendingReply } from "../thinking";
 import { ActivityGroup, EntryView } from "./EntryView";
 import { ApprovalCard } from "./Approvals";
 import { FindBar, isFindKey, type FindRequest } from "./FindBar";
+import { HistorySearch } from "./HistorySearch";
 import { ModelSelect, modelOptions } from "./ModelSelect";
+import { ComposerPastes } from "./Pastes";
 import { Suggest, usePathCompletion, type Suggestion } from "./Suggest";
 import { PendingReply } from "./Thinking";
 import { TurnStats } from "./TurnStats";
@@ -85,6 +108,13 @@ function draft(key: string) {
     return localStorage.getItem(key) || "";
   } catch {
     return "";
+  }
+}
+function readPastesLocal(key: string) {
+  try {
+    return readPastes(localStorage, key);
+  } catch {
+    return [];
   }
 }
 function readSeenLocal(key: string) {
@@ -143,6 +173,11 @@ export function Conversation({
 }) {
   const key = "warden-draft:" + location.origin + ":" + chat.id;
   const [text, setText] = useState(() => draft(key));
+  // Long pastes collapsed in the text (paste.ts): the placeholder stays
+  // in `text`, the text itself here, put back when the message is sent.
+  const [pastes, setPastes] = useState<Paste[]>(() =>
+    readPastesLocal(key + ":pastes"),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Files chosen for the next message. Each uploads as soon as it is added
@@ -298,12 +333,17 @@ export function Conversation({
     unreadEntry(
       entries,
       readSeenLocal(seenKey),
+      // Their own messages, commands and notes are never unread.
       (e) =>
-        e.role === "user" &&
+        (e.role === "user" || !!e.sender) &&
         (e.sender?.principalID ?? "owner") === me.principalID,
     ),
   );
   const unread = unreadIndex(entries, unreadID);
+  // This person's earlier prompts, newest first, for Up/Down and Ctrl-R.
+  const history = useMemo(() => promptHistory(all, me.principalID), [all]);
+  const [recall, setRecall] = useState<Recall>(NOT_BROWSING);
+  const [searching, setSearching] = useState(false);
   // `wake` only re-runs the effect when the tab comes back (the state it
   // reads is the document's, taken live: a page that loads hidden may
   // become visible before any listener is attached).
@@ -622,6 +662,34 @@ export function Conversation({
       else localStorage.removeItem(key);
     } catch {}
   }, [text, key]);
+  // The pastes still placed in the text; deleting a placeholder drops its
+  // paste, and what is kept persists with the draft.
+  const kept = useMemo(() => livePastes(text, pastes), [text, pastes]);
+  useEffect(() => {
+    try {
+      if (kept.length)
+        localStorage.setItem(key + ":pastes", JSON.stringify(kept));
+      else localStorage.removeItem(key + ":pastes");
+    } catch {}
+  }, [kept, key]);
+  // What the composer would send or run right now (prefixes are read on
+  // the text as typed; the pastes are put back when it is sent).
+  const prefix = useMemo(() => prefixed(text), [text]);
+  // "Send to agent" on a command the person ran: the command and its
+  // output go into the draft as a fenced block, for the next message.
+  const quote = useCallback((entry: Entry) => {
+    setText((current) => {
+      const lead =
+        current && !current.endsWith("\n") ? current + "\n" : current;
+      return lead + quoteCommand(entry);
+    });
+    requestAnimationFrame(() => {
+      const el = input.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }, []);
   // A chat opens at its end, unless the unread stretch is longer than the
   // view: then it opens at the divider, with the jump button showing how
   // much is below.
@@ -696,11 +764,44 @@ export function Conversation({
     );
     if (chosen) runCommand(chosen, withoutCommand(text, trigger));
   }
+  // A "!" command: the draft clears at once and the card shows the
+  // command running in the transcript (over the event stream); the
+  // request itself may take up to a minute, so the composer is not held.
+  function runShell(command: string) {
+    setError("");
+    setText("");
+    setPastes([]);
+    setRecall(NOT_BROWSING);
+    void api(`chats/${chat.id}/exec`, { text: command }).catch((e) =>
+      setError(String(e)),
+    );
+  }
+  async function remember(note: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`chats/${chat.id}/memory`, { text: note });
+      setText("");
+      setPastes([]);
+      setRecall(NOT_BROWSING);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function send(event: FormEvent) {
     event.preventDefault();
     const command = exactCommand(text, models);
     if (command) {
       runCommand(command, "");
+      return;
+    }
+    if (prefix && !busy) {
+      // Pastes are put back here too: "!" with a pasted script runs it.
+      const full = expandPastes(text, pastes);
+      if (prefix.kind === "shell") runShell(full.slice(1).trim());
+      else void remember(full.slice(1).trim());
       return;
     }
     const attachments = ready.map((p) => p.attachment!.id);
@@ -709,7 +810,7 @@ export function Conversation({
     setError("");
     const message = messageAttempt(
       attempted.current,
-      text.trim(),
+      expandPastes(text, pastes).trim(),
       newID,
       attachments,
     );
@@ -725,6 +826,8 @@ export function Conversation({
       await api(`chats/${chat.id}/message`, message);
       lastTyping.current = 0;
       setText("");
+      setPastes([]);
+      setRecall(NOT_BROWSING);
       setPending([]);
       attempted.current = undefined;
       try {
@@ -828,6 +931,7 @@ export function Conversation({
                       onFile={onFile}
                       onEdit={edit}
                       onRetry={retry}
+                      onQuote={quote}
                       actions={!busy && canResend(item.entry, chat, live)}
                       stats={inline ? footer : undefined}
                     />
@@ -918,7 +1022,7 @@ export function Conversation({
           )}
         </p>
         <div className={`composer${dragging ? " dragging" : ""}`}>
-          {open && (items.length > 0 || note) && (
+          {open && !searching && (items.length > 0 || note) && (
             <Suggest
               id="composer-suggest"
               items={items}
@@ -928,10 +1032,32 @@ export function Conversation({
               onPick={pick}
             />
           )}
+          {searching && (
+            <HistorySearch
+              history={history}
+              onPick={(picked) => {
+                setSearching(false);
+                setRecall(NOT_BROWSING);
+                place({ text: picked, caret: picked.length });
+              }}
+              onClose={() => {
+                setSearching(false);
+                input.current?.focus();
+              }}
+            />
+          )}
           <ComposerAttachments
             chatID={chat.id}
             items={pending}
             onRemove={removePending}
+          />
+          <ComposerPastes
+            items={kept}
+            onRemove={(paste) => {
+              setText((current) => removePaste(current, paste));
+              setPastes((list) => list.filter((p) => p !== paste));
+              input.current?.focus();
+            }}
           />
           <textarea
             ref={input}
@@ -955,6 +1081,9 @@ export function Conversation({
             onChange={(e) => {
               setText(e.target.value);
               setCaret(e.target.selectionStart);
+              // Typing makes the text the draft again, wherever the
+              // history was.
+              setRecall(NOT_BROWSING);
               if (e.target.value) reportTyping();
             }}
             onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
@@ -962,9 +1091,28 @@ export function Conversation({
             onBlur={() => setFocused(false)}
             onPaste={(e) => {
               const files = transferFiles(e.clipboardData);
-              if (!files.length) return;
+              if (files.length) {
+                e.preventDefault();
+                addFiles(files, true);
+                return;
+              }
+              const pasted = e.clipboardData?.getData("text/plain") ?? "";
+              if (!longPaste(pasted)) return;
+              // A long paste becomes a placeholder and a chip; the text
+              // goes back in when the message is sent.
               e.preventDefault();
-              addFiles(files, true);
+              const el = e.currentTarget;
+              const next = collapsePaste(
+                el.value,
+                el.selectionStart,
+                el.selectionEnd,
+                pasted,
+                pastes,
+              );
+              setPastes(next.pastes);
+              setRecall(NOT_BROWSING);
+              place(next);
+              reportTyping();
             }}
             disabled={busy || chat.archived}
             rows={3}
@@ -995,6 +1143,43 @@ export function Conversation({
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
                 e.currentTarget.form?.requestSubmit();
+                return;
+              }
+              if (e.key === "r" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+                // Ctrl-R (or ⌘R, which would reload): search the history.
+                e.preventDefault();
+                setSearching(true);
+                return;
+              }
+              // Up at the draft's first line recalls the previous prompt,
+              // Down at its last line the next (then the draft again);
+              // inside a longer draft the arrows move the caret.
+              if (
+                e.key === "ArrowUp" &&
+                !e.altKey &&
+                !e.shiftKey &&
+                !e.metaKey &&
+                onFirstLine(text, e.currentTarget.selectionStart)
+              ) {
+                const step = recallOlder(recall, history, text);
+                if (!step) return;
+                e.preventDefault();
+                setRecall(step.recall);
+                place({ text: step.text, caret: step.text.length });
+                return;
+              }
+              if (
+                e.key === "ArrowDown" &&
+                !e.altKey &&
+                !e.shiftKey &&
+                !e.metaKey &&
+                onLastLine(text, e.currentTarget.selectionStart)
+              ) {
+                const step = recallNewer(recall, history);
+                if (!step) return;
+                e.preventDefault();
+                setRecall(step.recall);
+                place({ text: step.text, caret: step.text.length });
               }
             }}
           />
@@ -1060,18 +1245,35 @@ export function Conversation({
               )}
               <button
                 className="send-button"
-                aria-label="Send message"
+                aria-label={
+                  prefix?.kind === "shell"
+                    ? "Run in the workspace"
+                    : prefix?.kind === "memory"
+                      ? "Add to CLAUDE.md"
+                      : "Send message"
+                }
+                title={
+                  prefix?.kind === "shell"
+                    ? "Run this shell command in the workspace, as you"
+                    : prefix?.kind === "memory"
+                      ? "Append this note to CLAUDE.md in the workspace"
+                      : undefined
+                }
                 disabled={
                   (!text.trim() && !ready.length) ||
                   uploading ||
                   busy ||
                   !live ||
                   chat.archived ||
-                  chat.status === "queued" ||
-                  chat.status === "stopping"
+                  (!prefix &&
+                    (chat.status === "queued" || chat.status === "stopping"))
                 }
               >
-                <ArrowUp size={17} />
+                {prefix?.kind === "shell" ? (
+                  <Terminal size={16} />
+                ) : (
+                  <ArrowUp size={17} />
+                )}
               </button>
             </div>
           </div>
@@ -1079,11 +1281,17 @@ export function Conversation({
         <div className="composer-hint">
           {!live
             ? "Reconnecting · your draft is preserved"
-            : chat.status === "running"
-              ? chat.provider === "claude"
-                ? "Queued for the next turn"
-                : "Send to steer the current run"
-              : "⌘ / Ctrl + Enter to send · / for commands · @ to name a file"}
+            : prefix?.kind === "shell"
+              ? "Runs as a shell command in the workspace, by you — the agent sees it only if you send the result to it"
+              : prefix?.kind === "memory"
+                ? chat.provider === "codex"
+                  ? "Appends a note to CLAUDE.md in the workspace (Codex reads AGENTS.md, not CLAUDE.md)"
+                  : "Appends a note to CLAUDE.md in the workspace — the agent reads it only once the workspace's settings are loaded"
+                : chat.status === "running"
+                  ? chat.provider === "claude"
+                    ? "Queued for the next turn"
+                    : "Send to steer the current run"
+                  : "⌘ / Ctrl + Enter to send · / commands · @ file · ! shell · # note · ↑ history · Ctrl+R search"}
         </div>
       </form>
     </div>
