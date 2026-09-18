@@ -619,7 +619,17 @@
   font-size: 13px;
   color: var(--text-2);
 }
-/* The model picker sits in the composer, as in the desktop agent apps. */
+/* The model picker sits in the composer, as in the desktop agent apps;
+   on Claude chats the thinking, effort and fast-mode controls follow it
+   and wrap to a second line where the footer is narrow. */
+.composer-footer > span > span.composer-model {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  overflow: visible;
+  white-space: normal;
+}
 .composer-model select {
   width: auto;
   height: 30px;
