@@ -264,9 +264,9 @@ bundles, one worktree and one cloned home each; bundles A–D run first,
 E–G after.
 
 ### A. Titles, spend, model catalog (`feat/parity-r2-a-titles-spend`)
-- [x] R2.1 **Auto-titles**: a chat titled "New chat" gets a title from its first exchange (a one-shot inside the sandbox on the cheapest model, as `/btw` runs; fallback the first message's first line); rename still wins; the sidebar and TUI show it. Merged to main MERGE_SHA (2026-09-18); verified as the Round 2 A section says.
-- [x] R2.2 **Spend**: cost per chat (sum of turns) in the chat header/menu, per workspace in the workspace panel (all its chats), and today / 7 days / all-time totals in the admin console; Codex shows tokens without cost. Merged to main MERGE_SHA (2026-09-18); verified as the Round 2 A section says.
-- [x] R2.3 **Model catalog from the CLI**: the picker's rows, effort levels and fast/1M availability come from `list_models` (per session, cached per provider), and disallowed costlier options show a hint instead of vanishing (item 9's leftover). Merged to main MERGE_SHA (2026-09-18); verified as the Round 2 A section says.
+- [x] R2.1 **Auto-titles**: a chat titled "New chat" gets a title from its first exchange (a one-shot inside the sandbox on the cheapest model, as `/btw` runs; fallback the first message's first line); rename still wins; the sidebar and TUI show it. Merged to main fe1deaa (2026-09-18); verified as the Round 2 A section says.
+- [x] R2.2 **Spend**: cost per chat (sum of turns) in the chat header/menu, per workspace in the workspace panel (all its chats), and today / 7 days / all-time totals in the admin console; Codex shows tokens without cost. Merged to main fe1deaa (2026-09-18); verified as the Round 2 A section says.
+- [x] R2.3 **Model catalog from the CLI**: the picker's rows, effort levels and fast/1M availability come from `list_models` (per session, cached per provider), and disallowed costlier options show a hint instead of vanishing (item 9's leftover). Merged to main fe1deaa (2026-09-18); verified as the Round 2 A section says.
 
 ### B. Permission rules (`feat/parity-r2-b-rules`)
 - [ ] R2.4 **Workspace-wide allow-always**: the "Allow always" answer offers this chat / this workspace; workspace rules apply to every chat of the environment.
@@ -556,6 +556,12 @@ the panel's "Workspace $0.06 · 139k tokens · 3 turns · 2 chats" and
 Codex column of tokens). TUI in a pty: `/cost` with the workspace line,
 the `/model` menu's six rows with hints, `/chats` with the generated
 title. Codex titling is unit-tested only (usage exhausted).
+
+Progress: started 2026-09-18 on `feat/parity-r2-a-titles-spend` from
+main adbf4f5; implemented and live-verified 2026-09-18 (79961e1);
+merged to main fe1deaa (2026-09-18) after merging main's TUI status-bar
+rows and the "sending" delivery state in (one append-append seam in
+`tui_test.go`).
 
 Left: the composer footer is crowded (the style, mode, context and
 spend controls ellipsise each other at 1280 px; the chip itself never
