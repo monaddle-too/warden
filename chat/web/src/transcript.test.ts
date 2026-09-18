@@ -124,10 +124,11 @@ describe("unread divider", () => {
 });
 
 describe("new messages since the reader left the bottom", () => {
-  it("counts messages after the entry that was last in view, not steps", () => {
+  it("counts messages after the entry that was last in view, not steps or thinking", () => {
     expect(newSince(entries, "m1")).toBe(2);
     expect(newSince(entries, "u2")).toBe(1);
     expect(newSince(entries, "m2")).toBe(0);
+    expect(newSince([...entries, entry("t1", "thinking", 23)], "m2")).toBe(0);
   });
   it("counts everything after an empty transcript and nothing after a lost entry", () => {
     expect(newSince(entries, "")).toBe(4);

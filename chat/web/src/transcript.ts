@@ -83,7 +83,8 @@ export function newSince<T extends Item>(entries: T[], lastID: string): number {
   }
   let count = 0;
   for (let i = from; i < entries.length; i++)
-    if (entries[i].role !== "activity") count++;
+    if (entries[i].role !== "activity" && entries[i].role !== "thinking")
+      count++;
   return count;
 }
 

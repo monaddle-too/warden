@@ -46,11 +46,7 @@ export function chatStatusLabel(
     case "running": {
       const entries = c.conversation?.entries ?? [];
       const last = entries[entries.length - 1];
-      if (
-        last?.role === "activity" &&
-        last.isStreaming &&
-        last.text === "Thinking…"
-      )
+      if (last?.role === "thinking" && last.isStreaming)
         return "Agent is thinking";
       return "Agent is running";
     }

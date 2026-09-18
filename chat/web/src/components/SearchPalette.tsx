@@ -31,6 +31,7 @@ function Marked({ before, match, after }: Snippet) {
 function fieldLabel(entry: Entry, provider: string | undefined, field: string) {
   if (entry.role === "activity")
     return field === "detail" ? "Tool output" : "Agent step";
+  if (entry.role === "thinking") return "Thinking";
   if (entry.role === "system") return "System";
   if (entry.role === "image") return "Image";
   return authorLabel(entry, provider);

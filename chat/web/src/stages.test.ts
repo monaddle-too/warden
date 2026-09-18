@@ -25,6 +25,24 @@ describe("stages", () => {
       }),
     ).toBe("Starting the agent");
     expect(chatStatusLabel({ status: "running" })).toBe("Agent is running");
+    const thinking = (isStreaming: boolean) => ({
+      status: "running",
+      conversation: {
+        entries: [
+          {
+            id: "t",
+            role: "thinking",
+            text: "",
+            detail: "",
+            createdAt: 0,
+            isStreaming,
+            delivery: "",
+          },
+        ],
+      },
+    });
+    expect(chatStatusLabel(thinking(true))).toBe("Agent is thinking");
+    expect(chatStatusLabel(thinking(false))).toBe("Agent is running");
     expect(chatStatusLabel({ status: "queued" })).toBe("Waiting to start");
     expect(
       chatStatusLabel({

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -174,6 +175,19 @@ func RenderTranscript(c *Chat, width int, expanded bool) []string {
 			out[len(out)-1] += reset
 			if strings.TrimSpace(e.Detail) != "" {
 				out = append(out, renderDetail(sanitize(e.Detail), width, expanded)...)
+			}
+		case "thinking":
+			// The model's thinking: a dim line while it streams, then how
+			// long it took, and the text itself when expanded.
+			label := "Thought"
+			if e.IsStreaming {
+				label = "Thinking…"
+			} else if e.EndedAt > e.CreatedAt {
+				label = fmt.Sprintf("Thought for %s", (time.Duration((e.EndedAt - e.CreatedAt) * float64(time.Second))).Round(time.Second))
+			}
+			out = append(out, dim+"  ∴ "+label+reset)
+			if expanded && strings.TrimSpace(text) != "" {
+				out = append(out, wrap(dim+text+reset, width, "    ", "    ")...)
 			}
 		case "system":
 			out = append(out, wrap(text, width, red+"  ! "+reset, "    ")...)

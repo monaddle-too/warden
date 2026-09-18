@@ -86,6 +86,17 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 			textID = claudeID()
 			streamed = true
 		}
+		// A thinking block is a reasoning item in Codex's shape, streamed
+		// as it arrives so the transcript can show the model at work; each
+		// block (one per model call, so one before every tool) is its own.
+		thinkingID, thinking := "", ""
+		flushThinking := func() {
+			if thinkingID == "" {
+				return
+			}
+			event("item/completed", map[string]any{"turnId": turn, "item": map[string]any{"id": thinkingID, "type": "reasoning", "summary": []any{thinking}}})
+			thinkingID, thinking = "", ""
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -248,18 +259,39 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 					}
 				case "stream_event":
 					e := Map(v["event"])
-					if e["type"] == "content_block_delta" {
+					switch e["type"] {
+					case "content_block_start":
+						if Map(e["content_block"])["type"] == "thinking" {
+							flushThinking()
+							thinkingID = claudeID()
+							event("item/started", map[string]any{"turnId": turn, "item": map[string]any{"id": thinkingID, "type": "reasoning", "summary": []any{}}})
+						}
+					case "content_block_delta":
 						d := Map(e["delta"])
-						if d["type"] == "text_delta" {
+						switch d["type"] {
+						case "text_delta":
 							if text == "" {
 								event("item/started", map[string]any{"turnId": turn, "item": map[string]any{"id": textID, "type": "agentMessage", "text": ""}})
 							}
 							delta := String(d["text"])
 							text += delta
 							event("item/agentMessage/delta", map[string]any{"turnId": turn, "itemId": textID, "delta": delta})
+						case "thinking_delta":
+							if thinkingID == "" {
+								thinkingID = claudeID()
+								event("item/started", map[string]any{"turnId": turn, "item": map[string]any{"id": thinkingID, "type": "reasoning", "summary": []any{}}})
+							}
+							delta := String(d["thinking"])
+							thinking += delta
+							event("item/reasoning/summaryTextDelta", map[string]any{"turnId": turn, "itemId": thinkingID, "delta": delta})
 						}
+					case "content_block_stop":
+						// Only a thinking block is tracked to its stop; text ends
+						// with the message or the next tool.
+						flushThinking()
 					}
 				case "assistant":
+					flushThinking()
 					for _, x := range Array(Map(v["message"])["content"]) {
 						b := Map(x)
 						if b["type"] == "tool_use" {
@@ -292,6 +324,7 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 					if text == "" && !streamed {
 						text = String(v["result"])
 					}
+					flushThinking()
 					flushText()
 					status := "completed"
 					if v["is_error"] == true {
@@ -324,15 +357,15 @@ func claudeResultError(v map[string]any) string {
 // claudeUsage is a token count in the shape of Codex's TokenUsageBreakdown
 // plus the cost, which Claude Code estimates and Codex does not.
 type claudeUsage struct {
-	input, cached, cacheWrite, output int64
-	cost                              float64
+	input, cached, cacheWrite, output, reasoning int64
+	cost                                         float64
 }
 
 func (u claudeUsage) add(v claudeUsage) claudeUsage {
-	return claudeUsage{u.input + v.input, u.cached + v.cached, u.cacheWrite + v.cacheWrite, u.output + v.output, u.cost + v.cost}
+	return claudeUsage{u.input + v.input, u.cached + v.cached, u.cacheWrite + v.cacheWrite, u.output + v.output, u.reasoning + v.reasoning, u.cost + v.cost}
 }
 func (u claudeUsage) params() map[string]any {
-	return map[string]any{"inputTokens": u.input, "cachedInputTokens": u.cached, "cacheWriteInputTokens": u.cacheWrite, "outputTokens": u.output, "reasoningOutputTokens": int64(0), "totalTokens": u.input + u.output, "costUSD": u.cost}
+	return map[string]any{"inputTokens": u.input, "cachedInputTokens": u.cached, "cacheWriteInputTokens": u.cacheWrite, "outputTokens": u.output, "reasoningOutputTokens": u.reasoning, "totalTokens": u.input + u.output, "costUSD": u.cost}
 }
 
 // claudeTurnUsage reads what a turn cost from Claude Code's `result`: with
@@ -349,6 +382,10 @@ func claudeTurnUsage(v map[string]any, sofar claudeUsage) (claudeUsage, bool) {
 	n := func(k string) int64 { f, _ := usage[k].(float64); return int64(f) }
 	u := claudeUsage{cached: n("cache_read_input_tokens"), cacheWrite: n("cache_creation_input_tokens"), output: n("output_tokens")}
 	u.input = n("input_tokens") + u.cached + u.cacheWrite
+	// The thinking tokens are part of the output, as Codex counts them.
+	if f, ok := Map(usage["output_tokens_details"])["thinking_tokens"].(float64); ok {
+		u.reasoning = int64(f)
+	}
 	if cost, ok := v["total_cost_usd"].(float64); ok && cost > sofar.cost {
 		u.cost = cost - sofar.cost
 	}

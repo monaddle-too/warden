@@ -19,6 +19,7 @@ import { EntryAttachments } from "./Attachments";
 import { DiffView } from "./DiffView";
 import { ImageAttachment } from "./ImageAttachment";
 import { RichText } from "./RichText";
+import { ThinkingBlock } from "./Thinking";
 import { TurnStats } from "./TurnStats";
 import { useCopy } from "./useCopy";
 const time = (v: number) =>
@@ -182,6 +183,15 @@ export const EntryView = memo(function EntryView({
       />
     );
   if (entry.role === "activity") return <ActivityGroup entries={[entry]} />;
+  if (entry.role === "thinking")
+    return (
+      <ThinkingBlock
+        entry={entry}
+        provider={provider}
+        chatID={chatID}
+        onFile={onFile}
+      />
+    );
   if (entry.role === "system")
     return (
       <div className="system-entry" data-entry={entry.id}>
