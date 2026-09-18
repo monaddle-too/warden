@@ -279,9 +279,9 @@ E–G after.
 - [ ] R2.9 **TUI search across chats**: `/search <text>` over titles and transcripts of every chat, with a jump.
 
 ### D. Queue and rewind polish (`feat/parity-r2-d-queue-rewind`)
-- [x] R2.10 **Edit a queued message in place**: inline on the queued card (web) and back into its slot (TUI `/edit N`). Merged to main MERGE_SHA_D (2026-09-18); "### Round 2 D" below.
-- [x] R2.11 **Queue semantics**: `!` and `#` leave a held queue held, explicitly (the reason in "### Round 2 D"); `warden chat send --wait` waits for its own message's turn only, `--wait-all` for the chat (item 10's leftovers). Merged to main MERGE_SHA_D.
-- [x] R2.12 **Undo a conversation rewind**: the removed tail is kept and can be restored until the next turn (restore the entries; a session that cannot un-rewind starts fresh with the recap, as item 11's fallback does). Merged to main MERGE_SHA_D.
+- [x] R2.10 **Edit a queued message in place**: inline on the queued card (web) and back into its slot (TUI `/edit N`). Merged to main 917fb2a (2026-09-18); "### Round 2 D" below.
+- [x] R2.11 **Queue semantics**: `!` and `#` leave a held queue held, explicitly (the reason in "### Round 2 D"); `warden chat send --wait` waits for its own message's turn only, `--wait-all` for the chat (item 10's leftovers). Merged to main 917fb2a.
+- [x] R2.12 **Undo a conversation rewind**: the removed tail is kept and can be restored until the next turn (restore the entries; a session that cannot un-rewind starts fresh with the recap, as item 11's fallback does). Merged to main 917fb2a.
 
 ### E. Workspace fork, resource mentions, rich reads (`feat/parity-r2-e-fork-mentions`)
 - [ ] R2.13 **Fork with a copy of the workspace**: "Fork…" gains "copy the workspace" — a new environment cloned from the sandbox (the runner's clone path on both drivers) plus the forked session; markers link both.
@@ -866,7 +866,7 @@ restored transcript only through the recap (item 11's limit); the
 pre-restore snapshot costs one more `commit-tree` per code rewind.
 
 Progress: started 2026-09-18; implemented and live-verified 2026-09-18
-(abdd2ad); merged to main MERGE_SHA_D (2026-09-18).
+(abdd2ad); merged to main 917fb2a (2026-09-18).
 
 ### Item 15: the long tail
 
