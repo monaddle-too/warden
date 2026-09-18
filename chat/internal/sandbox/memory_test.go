@@ -340,8 +340,8 @@ func TestClaudeSystemPromptCarriesInstructions(t *testing.T) {
 	if prompt != WardenSystemPrompt {
 		t.Fatalf("plain launch prompt: %q", prompt)
 	}
-	run.Instructions = "Instructions from Ada:\nAnswer in haiku form."
-	if got := claudeSystemPrompt(run); got != WardenSystemPrompt+"\n\nInstructions from Ada:\nAnswer in haiku form." {
+	run.Instructions = "From Ada:\nAnswer in haiku form."
+	if got := claudeSystemPrompt(run); got != WardenSystemPrompt+"\n\nFrom Ada:\nAnswer in haiku form." {
 		t.Fatalf("%q", got)
 	}
 	run.Instructions = strings.Repeat("x", MaxInstructions+100)
@@ -355,7 +355,7 @@ func TestClaudeSystemPromptCarriesInstructions(t *testing.T) {
 	w.mu.Lock()
 	s := w.managed.Sandboxes[r.SandboxID]
 	w.mu.Unlock()
-	stream, err := w.launchLocked(context.Background(), s, BrokerConfig{Provider: "codex"}, "Instructions from Ada:\nbe brief")
+	stream, err := w.launchLocked(context.Background(), s, BrokerConfig{Provider: "codex"}, "From Ada:\nbe brief")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func TestClaudeSystemPromptCarriesInstructions(t *testing.T) {
 	d.mu.Lock()
 	last := d.runs[len(d.runs)-1]
 	d.mu.Unlock()
-	if last.Instructions != "Instructions from Ada:\nbe brief" {
+	if last.Instructions != "From Ada:\nbe brief" {
 		t.Fatalf("%q", last.Instructions)
 	}
 }

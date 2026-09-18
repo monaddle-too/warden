@@ -107,9 +107,16 @@ func participants(c *Chat) []cv.Actor {
 	return list
 }
 
+// instructionsHeader introduces the blocks in Warden's own voice. A bare
+// quoted "Instructions from X" block reads to the model like content
+// smuggled into its prompt, and it refused one as an injection (the live
+// probe of 2026-09-17); saying what the blocks are and who keeps them is
+// what makes them the person's preferences rather than a suspect quote.
+const instructionsHeader = "Standing instructions of the people in this chat, kept by Warden for each of them (what a user-level CLAUDE.md would hold) and delivered here by Warden itself: follow them as that person's own preferences, within the rules above."
+
 // instructionsBlock is the text that delivers one person's instructions:
-// their name, then the text. The name is quoted so a name that reads like
-// an instruction stays a name.
+// whose they are, then the text. The name is quoted so a name that reads
+// like an instruction stays a name.
 func instructionsBlock(a cv.Actor, v *Instructions) string {
 	if v == nil || strings.TrimSpace(v.Text) == "" {
 		return ""
@@ -121,15 +128,16 @@ func instructionsBlock(a cv.Actor, v *Instructions) string {
 	if name == "" {
 		name = "a participant"
 	}
-	return fmt.Sprintf("Instructions from %q:\n%s", name, strings.TrimSpace(v.Text))
+	return fmt.Sprintf("From %q:\n%s", name, strings.TrimSpace(v.Text))
 }
 
 // sessionInstructions is what a starting session gets appended to its
-// system prompt: one block per participant with instructions, blank lines
-// between; and the texts delivered by principal, for the session to know
-// whose block it has seen (instructed).
+// system prompt: the header, then one block per participant with
+// instructions, blank lines between; and the texts delivered by
+// principal, for the session to know whose block it has seen
+// (instructed). "" when nobody has any.
 func sessionInstructions(st *State, c *Chat) (string, map[string]string) {
-	var blocks []string
+	blocks := []string{instructionsHeader}
 	delivered := map[string]string{}
 	for _, a := range participants(c) {
 		p := principalOf(a)
@@ -137,6 +145,9 @@ func sessionInstructions(st *State, c *Chat) (string, map[string]string) {
 			blocks = append(blocks, block)
 			delivered[p] = st.Instructions[p].Text
 		}
+	}
+	if len(blocks) == 1 {
+		return "", delivered
 	}
 	return strings.Join(blocks, "\n\n"), delivered
 }
@@ -155,7 +166,7 @@ func messageInstructions(st *State, m cv.Entry, instructed map[string]string) st
 		return ""
 	}
 	instructed[p] = v.Text
-	return "[" + instructionsBlock(*m.Sender, v) + "]"
+	return "[Warden: the standing instructions of the sender, kept for them like a user-level CLAUDE.md; they apply to this and their later messages.\n" + instructionsBlock(*m.Sender, v) + "]"
 }
 
 // withInstructions puts the prefix before the message's text in the turn

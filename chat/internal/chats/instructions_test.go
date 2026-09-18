@@ -87,7 +87,7 @@ func TestInstructionBlocks(t *testing.T) {
 		{Role: "user", Sender: &bob}, {Role: "user", Sender: &ada}, {Role: "assistant"}, {Role: "user", Sender: &owner}, {Role: "user", Sender: &ada},
 	}}}
 	text, delivered := sessionInstructions(&st, c)
-	want := "Instructions from \"the owner\":\nAnswer in haiku form.\n\nInstructions from \"Ada\":\nBe terse."
+	want := instructionsHeader + "\n\nFrom \"the owner\":\nAnswer in haiku form.\n\nFrom \"Ada\":\nBe terse."
 	if text != want {
 		t.Fatalf("%q", text)
 	}
@@ -103,7 +103,7 @@ func TestInstructionBlocks(t *testing.T) {
 		t.Fatalf("ada again: %q", p)
 	}
 	st.Instructions["u1"].Text = "Be brief."
-	if p := messageInstructions(&st, cv.Entry{Sender: &ada}, delivered); p != "[Instructions from \"Ada\":\nBe brief.]" {
+	if p := messageInstructions(&st, cv.Entry{Sender: &ada}, delivered); !strings.HasPrefix(p, "[Warden: the standing instructions of the sender") || !strings.HasSuffix(p, "\nFrom \"Ada\":\nBe brief.]") {
 		t.Fatalf("ada changed: %q", p)
 	}
 	if p := messageInstructions(&st, cv.Entry{Sender: &ada}, delivered); p != "" {
@@ -111,7 +111,7 @@ func TestInstructionBlocks(t *testing.T) {
 	}
 	// A name is quoted; without name or email the stored name serves.
 	st.Instructions["u2"] = &Instructions{Text: "x", Name: "Bob"}
-	if p := messageInstructions(&st, cv.Entry{Sender: &cv.Actor{PrincipalID: "u2"}}, map[string]string{}); p != "[Instructions from \"Bob\":\nx]" {
+	if p := messageInstructions(&st, cv.Entry{Sender: &cv.Actor{PrincipalID: "u2"}}, map[string]string{}); !strings.HasSuffix(p, "\nFrom \"Bob\":\nx]") {
 		t.Fatalf("%q", p)
 	}
 	items := withInstructions([]any{map[string]any{"type": "text", "text": "hello", "text_elements": []any{}}, map[string]any{"type": "localImage"}}, "[x]")
@@ -158,10 +158,10 @@ func TestInstructionsReachTheLaunchAndLateJoiners(t *testing.T) {
 	first := agent.Map(w.inputs[0][0])["text"]
 	developer := w.developer
 	w.mu.Unlock()
-	if stream.Instructions != "Instructions from \"the owner\":\nAnswer in haiku form." {
+	if stream.Instructions != instructionsHeader+"\n\nFrom \"the owner\":\nAnswer in haiku form." {
 		t.Fatalf("stream instructions %q", stream.Instructions)
 	}
-	if !strings.HasPrefix(developer, "You are an agent in a Warden-managed sandbox.") || !strings.HasSuffix(developer, "\n\nInstructions from \"the owner\":\nAnswer in haiku form.") {
+	if !strings.HasPrefix(developer, "You are an agent in a Warden-managed sandbox.") || !strings.HasSuffix(developer, "\n\nFrom \"the owner\":\nAnswer in haiku form.") {
 		t.Fatalf("developerInstructions %q", developer)
 	}
 	if first != "Hello" {
@@ -174,9 +174,9 @@ func TestInstructionsReachTheLaunchAndLateJoiners(t *testing.T) {
 	}
 	until(t, func() bool { return w.turnCount() == 2 })
 	w.mu.Lock()
-	second := agent.Map(w.inputs[1][0])["text"]
+	second, _ := agent.Map(w.inputs[1][0])["text"].(string)
 	w.mu.Unlock()
-	if second != "[Instructions from \"Ada\":\nBe terse.]\n\nHi from Ada" {
+	if !strings.HasPrefix(second, "[Warden: the standing instructions of the sender") || !strings.HasSuffix(second, "\nFrom \"Ada\":\nBe terse.]\n\nHi from Ada") {
 		t.Fatalf("late joiner: %q", second)
 	}
 	completeTurn(t, e, w, id)
@@ -200,9 +200,9 @@ func TestInstructionsReachTheLaunchAndLateJoiners(t *testing.T) {
 	}
 	until(t, func() bool { return w.turnCount() == 4 })
 	w.mu.Lock()
-	fourth := agent.Map(w.inputs[3][0])["text"]
+	fourth, _ := agent.Map(w.inputs[3][0])["text"].(string)
 	w.mu.Unlock()
-	if fourth != "[Instructions from \"the owner\":\nAnswer in limericks.]\n\nOnce more" {
+	if !strings.HasSuffix(fourth, "\nFrom \"the owner\":\nAnswer in limericks.]\n\nOnce more") {
 		t.Fatalf("changed text: %q", fourth)
 	}
 	completeTurn(t, e, w, id)
@@ -221,7 +221,7 @@ func TestInstructionsReachTheLaunchAndLateJoiners(t *testing.T) {
 	}
 	fifth := agent.Map(w.inputs[4][0])["text"]
 	w.mu.Unlock()
-	if stream.Instructions != "Instructions from \"the owner\":\nAnswer in limericks.\n\nInstructions from \"Ada\":\nBe terse." {
+	if stream.Instructions != instructionsHeader+"\n\nFrom \"the owner\":\nAnswer in limericks.\n\nFrom \"Ada\":\nBe terse." {
 		t.Fatalf("relaunch instructions %q", stream.Instructions)
 	}
 	if fifth != "Back" {
