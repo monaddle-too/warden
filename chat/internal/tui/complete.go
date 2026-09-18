@@ -337,8 +337,10 @@ func effortItems(c *Chat, options AgentOptions, query string) []MenuItem {
 }
 
 // chatItems are the chats a /switch argument can name: by number, or by a
-// word of the title; unread, when given, counts a chat's unread messages
-// for the hint (unread.go).
+// word of the title, the chat whose number is exactly the query first
+// (Enter picks the first row, and a title may contain the digits typed);
+// unread, when given, counts a chat's unread messages for the hint
+// (unread.go).
 func chatItems(chats []*Chat, query string, unread func(*Chat) int) []MenuItem {
 	q := strings.ToLower(strings.TrimSpace(query))
 	var out []MenuItem
@@ -353,7 +355,12 @@ func chatItems(chats []*Chat, query string, unread func(*Chat) int) []MenuItem {
 				hint += " · " + u
 			}
 		}
-		out = append(out, MenuItem{Insert: n, Label: n + "  " + truncate(sanitize(c.Title), 40), Hint: hint, Run: true})
+		item := MenuItem{Insert: n, Label: n + "  " + truncate(sanitize(c.Title), 40), Hint: hint, Run: true}
+		if n == q {
+			out = append([]MenuItem{item}, out...)
+			continue
+		}
+		out = append(out, item)
 	}
 	return out
 }

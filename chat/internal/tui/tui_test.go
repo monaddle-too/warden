@@ -4957,4 +4957,10 @@ func TestUnreadMarkersDividerAndJump(t *testing.T) {
 	if LoadSeen(filepath.Join(t.TempDir(), "none.json")) == nil {
 		t.Fatal("LoadSeen of a missing file")
 	}
+	// The chat whose number is exactly what was typed comes first in the
+	// /switch menu, ahead of a title that contains the digits.
+	items := chatItems([]*Chat{{ID: "a", Title: "build 12"}, {ID: "b", Title: "two"}}, "2", nil)
+	if len(items) != 2 || items[0].Insert != "2" || items[1].Insert != "1" {
+		t.Fatalf("chat menu order: %+v", items)
+	}
 }
