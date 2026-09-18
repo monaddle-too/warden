@@ -135,8 +135,8 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Subagent nesting, child transcript | ✅ | ✅ | item 2: `Entry.ParentID`, collapsed under the Agent card |
 | Background task cards, task notifications | ✅ | ✅ | item 2: `Tool.Background`, `TaskOutput` lands the output |
 | Todo panel (TodoWrite) | ◐ | ◐ | item 2: one card updated in place; the pinned CLI offers no todo tool |
-| Compaction boundary marker | ◐ | ◐ | `system/compact_boundary` → a system entry with the token counts (item 5); a real marker is item 8 |
-| Context-left indicator, auto-compact warning | ✗ | ✗ | `result` usage |
+| Compaction boundary marker | ✅ | ✅ | item 8: `compaction` entry (running → divider with trigger, counts, summary) |
+| Context-left indicator, auto-compact warning | ✅ | ✅ | item 8: `conversation.context` {used, window, threshold} |
 | Per-turn tokens, cost, duration | ✅ | ◐ | `TurnStats.tsx`; TUI elapsed only |
 | Session cost total | ◐ | ✗ | |
 | Inline images | ✅ | — | TUI: path + `/open` |
@@ -201,7 +201,7 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | New, rename, archive, delete | ✅ | ◐ | TUI `/new` only |
 | Resume between turns | ✅ | ✅ | resident sessions |
 | `/clear` | ✅ | ✅ | new chat |
-| `/compact`, auto-compact | ✗ | ✗ | |
+| `/compact`, auto-compact | ✅ | ✅ | item 8: passthrough from the CLI's list; both triggers as dividers |
 | Fork a session | ✗ | ✗ | pairs with sandbox fork |
 | Auto titles | ◐ | ◐ | verify |
 | Session picker | ✅ | ✅ | |
@@ -449,6 +449,17 @@ fresh session that read seven such files:
 - Also: `system/status {status: "requesting"}` precedes every API call;
   `system/init` carries no window (`model`, `tools`, `slash_commands`,
   … as item 5 records).
+- **`get_context_usage`** (a client control request, answered in about
+  a second, between turns and mid-turn): `totalTokens` (the context as
+  the CLI counts it — the same figure as the last call's usage, 40541
+  both ways), `maxTokens` and `rawMaxTokens` (200000),
+  `autocompactSource: "model-default"`, `percentage`, `categories`
+  (`System prompt` 8516, `System tools` 27263, `Skills` 1941,
+  `Messages`, `Autocompact buffer` 33000 with `kind: "buffer"`, `Free
+  space`) and `gridRows` for the CLI's own `/context` picture. So the
+  CLI compacts on its own at the window less 33k = 167k on the 200k
+  models, which matches the auto-compaction seen at 184k–189k
+  `pre_tokens` (the last read's output pushed it past).
 
 Design:
 
@@ -461,25 +472,59 @@ Design:
    synthetic user frame follows; `compact_result: failed` completes it as
    `failed` with the error (the CLI's own error result still ends the
    turn). The context is a `thread/context/updated` notification `{used,
-   window, model}`: `used` from each `assistant` frame's usage (input +
-   cache creation + cache read), `window` from `result.modelUsage` once
-   seen (a table by model id before that: 1M for the `[1m]` suffix and
-   the native-1M ids above, 200k otherwise), re-estimated at a boundary
-   as `post_tokens` + the smallest context the process has seen (the
-   fixed prefix) until the next call reports the truth.
+   window, threshold, model}`: as the turn runs, `used` from each
+   `assistant` frame's usage (input + cache creation + cache read; the
+   conversation's own calls, not a subagent's) with `window` from
+   `result.modelUsage` once seen (a table by model id before that: 1M
+   for the `[1m]` suffix and the native-1M ids above, 200k otherwise)
+   and, at a boundary, `post_tokens` + the smallest context the process
+   has seen (the fixed prefix) as the estimate; then the CLI's own
+   account, `get_context_usage` sent after every `turn/completed` and
+   after every boundary (from a goroutine behind a mutex on the CLI's
+   stdin, so a slow reader never stalls the adapter), whose answer gives
+   `used` exactly, `window`, and `threshold` = `maxTokens` − the buffer
+   category. One boundary path: item 5's `thread/compacted` → system
+   line (which its plan marked as item 8's to replace) is gone.
 2. Conversation: entry role `compaction` with `Compaction{Trigger,
-   PreTokens, PostTokens}` and the summary in `Detail`; `Conversation.
-   Context{Used, Window, Model}` kept by the engine from the notification
-   (in `GET state` / `events` as `conversation.context`). Codex reports
-   no window today; the field stays nil.
+   PreTokens, PostTokens, Status, Error}` and the summary in `Detail`;
+   `Conversation.Context{Used, Window, Threshold, Model}` kept by the
+   engine from the notification (in `GET state` / `events` as
+   `conversation.context`). Codex reports no window today; the field
+   stays nil.
 3. Web: the divider "Context compacted · manual · 171k → 2.2k tokens"
-   with "Show summary"; a context meter beside the model in the composer
-   footer ("42k / 200k", amber from 80 %, red from 95 %, with the
-   auto-compact note in its title); "Compacting context…" while it runs.
-   `/compact` in the local `/` menu as a passthrough until item 5's list
-   arrives. TUI: `ctx 42k/200k (21%)` in the status line (yellow/red at
-   the same thresholds), the divider, `/compact [instructions]` sent as
-   text.
+   with the summary behind a disclosure, "Compacting context…" while it
+   runs (the status says so too), the error when it failed; a context
+   meter beside the model in the composer footer ("42k / 200k" with a
+   tick at the threshold; amber from 80 % of the way to the threshold,
+   red from 95 %, the title naming the threshold and what happens); a
+   `/compact` turn's footer shows its duration and cost, not "0 tokens".
+   `/compact` comes from the CLI's list in the `/` menu (item 5). TUI:
+   `ctx 42k/200k (21%)` in the status line (yellow/red on the same way
+   to the threshold), the divider (summary on Tab), `/compact
+   [INSTRUCTIONS]` in the menu from the chat's reported list (the
+   provider default until it reports), sent as text; `warden chat send
+   --wait` prints the divider line.
+
+Verified (2026-09-17): `go vet`, `gofmt -l`, `go test ./...` (the
+`kube` framing test flakes under the full run and passes alone, as
+noted before), `pnpm build`, `pnpm test` (139 tests; `context.test.ts`
+new); live on a cloned home (`~/.warden-p6`, build e664770) with a
+Claude chat: three 1500-line files generated and read (the context grew
+to 189k and the CLI compacted on its own mid-turn — divider "Context
+compacted · automatic · 189k → 25k tokens", summary captured, the meter
+at 100k / 200k afterwards; `GET state` `context {used: 99747, window:
+200000}` while the turn's summed usage said 593k); `/compact keep the
+list of files and their last words` from the web composer (picked from
+the `/` menu) — "Compacting context…" in amber with the turn timer and
+the status "Compacting context" for 27 s, then "Context compacted ·
+manual · 100k → 2.7k tokens" with the footer "27s · $0.16" and the meter
+down to 49k / 200k; the follow-up "which files…" answered correctly from
+the compacted session (context 47.3k, the estimate had said 48.7k);
+`/compact` through `warden chat send` (a third divider, 47k → 2.7k);
+after the merge, `context.threshold: 167000` from `get_context_usage`,
+the meter's tick at 83.5 % with "at about 167,000 tokens" in its title,
+and the TUI under a pty: status line `… $0.03  ctx 49k/200k (25%)`, the
+three dividers, `/comp` → `/compact [INSTRUCTIONS]` → Tab.
 
 ### Item 1: typed tool cards and diffs
 
