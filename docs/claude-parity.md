@@ -389,6 +389,75 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
 
+### Item 13: per-user instructions and memory
+
+Branch `feat/parity-13-user-memory`, worktree
+`.local/warden-parity-13-user-memory`, from main a3b0a00, fast-forwarded to
+5114d71 (item 12) before the first code (2026-09-17). Started 2026-09-17.
+
+What exists: a chat's entries carry `Sender` (the principal the edge
+identified: `owner`, or a Google `sub` with email and name); a chat has no
+record of who created it. Claude's only system prompt is the
+`--append-system-prompt` text in `sandbox/runtime.go` `AgentCommand`
+(the adapter ignores the engine's `developerInstructions`, which Codex
+takes at `thread/start`). `--setting-sources=` means the CLI reads no
+`CLAUDE.md`, rules or auto-memory from the workspace (item 7); it still
+reports `memory_paths.auto` in `system/init`. Item 12's `#note` appends
+to `CLAUDE.md` through runner op `memory-append` and `POST
+chats/{id}/memory`.
+
+Steps:
+
+1. Per-principal instructions in the chat store (`State.Instructions`,
+   keyed by principal), `GET`/`POST me/instructions`; web "Instructions…"
+   in the sidebar footer (a markdown textarea dialog), TUI
+   `/instructions` shows and `/instructions edit` loads them into the
+   composer, Enter saves.
+2. Delivery: at a Claude launch the runner appends, after Warden's own
+   prompt, one block per participant — "Instructions from <name>:" + text
+   — for the chat's creator and every sender so far (`Request.
+   Instructions` on the `stream` op → `RunSpec.Instructions` →
+   `claudeSystemPrompt`); Codex gets the same blocks appended to
+   `developerInstructions`. A person whose block the live session has not
+   seen (a late joiner, or instructions changed since) gets it once as a
+   prefix on their next message, both providers.
+3. Memory view: `GET chats/{id}/memory` lists the workspace's `CLAUDE.md`,
+   `CLAUDE.local.md`, `AGENTS.md`, `.claude/CLAUDE.md`, `.claude/rules/**.md`
+   and the CLI's auto-memory directory (`memory_paths.auto` from
+   `system/init`, kept on `Chat.Session`, validated by the runner; else
+   derived) with contents; `POST chats/{id}/memory/write` writes one file
+   (runner op `memory-write`: staged and copied in like an attachment,
+   placed by a descriptor-relative script, paths limited to those
+   locations). Web: a "Memory" section in the workspace panel with an
+   editor dialog; TUI `/memory`, `/memory FILE`, `/memory edit FILE`.
+4. Attribution: every write leaves a `notice` entry "<name> edited
+   CLAUDE.md" with `Sender`.
+5. Tests, feature map, live check on a cloned home, merge.
+
+Decisions:
+
+1. Instructions live in Warden's store, keyed by principal, never in the
+   sandbox: a workspace is shared by chats and people, and the sandbox
+   home is the agent's; the store is where the principal already exists.
+   Display name for the block: the person's name, else email, else "the
+   owner" for the owner principal.
+2. Delivery is plain text in the system prompt (and a message prefix),
+   never a policy change; a block is quoted as the person's, so
+   instructions that read like commands to Warden stay text.
+3. The instructions ride the `stream` request as data (`AgentCommand`'s
+   argument list; the drivers never go through a shell); one person's
+   text is capped at 16 KiB so the argument list stays small.
+4. `GET`/`POST` rather than `PUT`: the service answers `GET` and `POST`
+   only and the web client speaks those two.
+5. The memory listing shows what exists even though the launch reads
+   none of it (item 7); each file carries `read: true|false` so the
+   surfaces can say so, and the auto-memory directory is listed only when
+   it exists.
+6. `#` (item 12) is left as it is; the write route is separate
+   (`memory/write`) so append and replace do not share one verb.
+
+Progress: started 2026-09-17.
+
 ### Item 12: composer polish
 
 Branch `feat/parity-12-composer`, worktree `.local/warden-parity-12-composer`,
