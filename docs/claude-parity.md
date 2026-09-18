@@ -384,7 +384,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [ ] 9 Mid-session model, effort, thinking.
 - [ ] 10 Queueing and rewind.
 - [ ] 11 Checkpoints and session diff.
-- [ ] 12 Composer polish — implemented and live-verified 2026-09-17 (a19cc28); merge pending.
+- [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
 - [ ] 13 Per-user instructions and memory.
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
@@ -471,6 +471,14 @@ needed"); a `!` command's card is not searched by the transcript find
 (activity entries never were); the TUI's paste placeholder is not a
 chip (no preview), and a `!` command with a paste placeholder expands it
 on the TUI too but the TUI shows no chip to inspect first.
+
+Progress: started 2026-09-17; implemented and live-verified 2026-09-17
+(a19cc28); merged to main 981ef68 (2026-09-17) after merging items 3, 4
+and 8 in (append-append conflicts in the TUI and its tests, the
+Conversation.tsx imports, both docs); the merged build re-checked on the
+cloned home (a `!` against the stopped sandbox gives the clean refusal
+card; Ctrl-R finds the pasted prompt; the mode selector sits beside the
+composer's).
 
 ### Item 8: compaction and context
 
