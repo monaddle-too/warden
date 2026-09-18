@@ -387,7 +387,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 8 Compaction and context — merged to main e84a7bc (2026-09-17); verified as the Item 8 section says.
 - [ ] 9 Mid-session model, effort, thinking.
 - [ ] 10 Queueing and rewind.
-- [x] 11 Checkpoints and session diff — merged to main (sha below); verified as the Item 11 section says.
+- [x] 11 Checkpoints and session diff — merged to main 4d0a05e (2026-09-17); verified as the Item 11 section says.
 - [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
 - [ ] 13 Per-user instructions and memory.
 - [ ] 14 Project MCP, OAuth, plugins.
@@ -511,6 +511,11 @@ first, then "1 file restored, 1 file removed; … when its session
 resumes"), the ↶ markers in the transcript, the panel's Changes section.
 TUI in a pty: `/rewind` listing with • marks, `/diff` folded then Tab
 expanded, `/rewind 2 conv` confirmed with `y` and rewound.
+
+Progress: started 2026-09-17; implemented and live-verified 2026-09-17;
+merged to main 4d0a05e (2026-09-17) after merging items 3, 4, 5, 7, 8 and
+12 in (the adapter, the engine's turn start, the test fakes and the TUI
+render were the conflicts; the merged build was smoke-tested live).
 
 Left: nested repositories inside a non-repository workspace are recorded
 as gitlinks (their working trees are outside the snapshot); a checkpoint
