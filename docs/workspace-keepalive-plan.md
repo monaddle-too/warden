@@ -100,7 +100,32 @@ session release not counting.
    under the old counting a workspace lived ~25 minutes after its last
    turn, so 15 minutes from the last turn would have been a cut.
 
+4. The report goes in the background with a five-minute timeout and its
+   own timestamp: `settleTurn` runs right before the wait for the next
+   message, and the runner serialises the op behind a `prepare` that can
+   hold its lock for minutes on a cluster; the timestamp keeps a late
+   report exact and the runner never moves the clock back.
+5. The policy's warm window (`WarmSeconds`, the background re-verification
+   after a lease ends, meant to outlast the idle stop) grows from 20 to 40
+   minutes with the default.
+
 ## Progress log
 
 - 2026-09-18: diagnosis on the GKE cluster (events and runner log);
   worktree and plan opened.
+- 2026-09-18: steps 1–4 done (4562b48, 8e58c43): `Reconciler` returns the
+  resident runtimes, the Kubernetes driver keeps a registered running
+  pod at its generation (`TestReconcileKeepsResidentPodsAndRetiresTheRest`,
+  the live test updated), the worker keeps it running
+  (`TestRestartKeepsTheGuestsTheDriverFindsRunning`); the `activity` op
+  takes `At`, the engine reports every turn's end, the stream's end no
+  longer counts (`TestIdleWindowCountsFromReportedActivityNotTheStreamEnd`,
+  `TestTurnEndReportsActivityToTheRunner`); default 30 minutes in config,
+  flag, chart (goldens regenerated) and docs. Full Go suite and the chart
+  checks pass. Note: `TestAsideStartsAReleasedSession` releases the chat
+  as soon as its status is idle, a moment before the run marks the
+  session idle; the report is sent before the status update so the
+  test's timing is unchanged, but the race is the test's own.
+- Remaining: step 5, the live check on GKE (build from this branch,
+  deploy, restart the runner, confirm the pod survives and the next
+  message resumes at once).
