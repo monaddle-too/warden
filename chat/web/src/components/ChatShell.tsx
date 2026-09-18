@@ -959,7 +959,8 @@ export function ChatShell({
                 Name
                 <input
                   autoFocus
-                  placeholder="What are we working on?"
+                  placeholder="Optional: named from the first reply"
+                  title="Leave it empty and the chat is named from its first exchange; a name you give, or a rename, always wins"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   maxLength={160}
@@ -985,6 +986,7 @@ export function ChatShell({
                   value={model}
                   onChange={setModel}
                   label="New conversation model"
+                  options={state.agentOptions}
                 />
               </label>
               <label>
