@@ -33,6 +33,7 @@ type installer struct {
 	upgrade    bool
 	guestTar   string
 	sbxLogin   bool
+	service    bool   // --service: register and start the user service
 	bugReports string // --bug-reports: yes, no, or "" to ask
 	client     *http.Client
 	memoryMB   int
@@ -65,6 +66,7 @@ func (c *cli) install(args []string) error {
 	fs.BoolVar(&in.upgrade, "upgrade", false, "accept a state directory installed by another Warden release")
 	fs.StringVar(&in.guestTar, "guest-image-tar", "", "a saved Warden guest image tar to load when the release pins one for this architecture")
 	fs.BoolVar(&in.sbxLogin, "sbx-login", true, "run the SBX device login when Warden's namespace is not signed in yet")
+	fs.BoolVar(&in.service, "service", true, "register Warden with launchd (macOS) or systemd --user (Linux) and start it; --service=false leaves starting it to you")
 	fs.StringVar(&in.bugReports, "bug-reports", "", "yes or no: send bug reports to Monaddle (you review every report before it is sent); asked on the terminal when not given")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
@@ -81,7 +83,7 @@ func (c *cli) install(args []string) error {
 	}
 	// Everything printed is also kept: a failure's report carries the
 	// installer's own output so far.
-	in.c = &cli{stdin: c.stdin, stdout: io.MultiWriter(c.stdout, &in.transcript), stderr: io.MultiWriter(c.stderr, &in.transcript), terminal: c.terminal, openFn: c.openFn, notifyFn: c.notifyFn}
+	in.c = &cli{stdin: c.stdin, stdout: io.MultiWriter(c.stdout, &in.transcript), stderr: io.MultiWriter(c.stderr, &in.transcript), terminal: c.terminal, openFn: c.openFn, notifyFn: c.notifyFn, serviceFn: c.serviceFn}
 	err := in.run()
 	if err != nil {
 		in.reportFailure(err)
@@ -202,11 +204,68 @@ func (in *installer) run() error {
 		return err
 	}
 	in.step("config", in.configPath)
+	previous, _, _ := readRecord(in.state)
 	if err = writeRecord(in.state, currentRecord(in.arch)); err != nil {
 		return err
 	}
-	fmt.Fprintf(in.c.stdout, "\nInstalled. Bug reports: %s. Next: `warden login codex` (and `warden login claude`, `warden login github` as needed), then `warden start` and `warden open`.\n", in.bugReportsSummary())
+
+	// 9. The service: registered with the user service manager and
+	// started, so Warden runs from now on and again at every login.
+	in.phase = "service"
+	running, err := in.ensureService(cfg, previous)
+	if err != nil {
+		return err
+	}
+	next := "then `warden start` and `warden open`"
+	if running {
+		next = "then `warden open`"
+	}
+	fmt.Fprintf(in.c.stdout, "\nInstalled. Bug reports: %s. Next: `warden login codex` (and `warden login claude`, `warden login github` as needed), %s.\n", in.bugReportsSummary(), next)
 	return nil
+}
+
+// ensureService registers the service for this launcher and starts it
+// (idempotent: an unchanged, running service is left alone, unless this
+// install brought a new release, which restarts it). It reports whether
+// Warden is running afterwards.
+func (in *installer) ensureService(cfg config.Config, previous installRecord) (bool, error) {
+	if !in.service {
+		in.step("service", "not registered (--service=false); `warden start` runs Warden, `warden service install` registers it later")
+		return false, nil
+	}
+	svc, reason := in.c.service(in.state)
+	if svc == nil {
+		in.step("service", "not registered ("+reason+"); `warden start --detach` runs Warden in the background")
+		return false, nil
+	}
+	if pid, alive := runningPID(cfg); alive {
+		in.step("service", fmt.Sprintf("not registered: a detached Warden is running (pid %d); `warden stop` it, then `warden service install`", pid))
+		return true, nil
+	}
+	before := svc.status()
+	upgraded := previous.Warden != "" && previous.Warden != revision && before.Running
+	result, err := in.c.registerService(cfg, svc, in.configPath)
+	if err != nil {
+		return false, err
+	}
+	if upgraded && svc.status().PID == before.PID {
+		// The unit did not change (it names the launcher through a link
+		// such as ~/.warden/release/bin/warden), so the old release is
+		// still the one running.
+		previous := fileStamp(cfg.OwnerTokenFile())
+		if err := svc.restart(); err != nil {
+			return false, err
+		}
+		if err := awaitReady(cfg, previous, func() bool { return svc.status().Running }); err != nil {
+			return false, err
+		}
+		result = svc.kind() + " " + svc.label() + ": restarted on " + revision + " (" + svc.status().String() + ")"
+	}
+	in.step("service", result)
+	for _, h := range svc.hints() {
+		in.step("note", h)
+	}
+	return true, nil
 }
 
 // bugReportsQuestion is asked once on the terminal.

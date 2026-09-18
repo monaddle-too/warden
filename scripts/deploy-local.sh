@@ -45,10 +45,13 @@ echo "deployed $VERSION to $HOME_DIR"
 "$HOME_DIR/bin/warden" version
 
 if [ "$RESTART" = 1 ]; then
-  if "$HOME_DIR/bin/warden" status 2>/dev/null | grep -q 'running in the background'; then
+  status="$("$HOME_DIR/bin/warden" status 2>/dev/null || true)"
+  if echo "$status" | grep -qE '^service: .*: running'; then
+    "$HOME_DIR/bin/warden" restart
+  elif echo "$status" | grep -q 'running detached'; then
     "$HOME_DIR/bin/warden" stop
     "$HOME_DIR/bin/warden" start --detach
   else
-    echo "no background Warden running; start one with: warden start --detach"
+    echo "no Warden running; start one with: warden start (the service) or warden start --detach"
   fi
 fi
