@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Archive,
   ExternalLink,
@@ -15,8 +15,10 @@ import type {
   ResourceLimits,
   Resources,
   SandboxUsage,
+  Startup,
 } from "../types";
 import { stageLabel } from "../stages";
+import { EventList } from "./Events";
 import { cpu, memory } from "../units";
 import { api } from "../api";
 import type { PullRequestProposal } from "./PullRequestReview";
@@ -130,8 +132,57 @@ function UsageRows({ usage }: { usage: SandboxUsage }) {
     </ul>
   );
 }
-/* The sandbox pod on Kubernetes: where it runs and what it was given. */
-function Pod({ pod }: { pod: PodInfo }) {
+/* The chat's start, explained: the stage, the runtime's whole detail
+   (the status line clamps it), how long the stage has taken, and the
+   pod's events under it when there is a pod — the autoscaler's answer to
+   a wait for a node lives there. */
+function Starting({
+  startup,
+  pod,
+  now,
+}: {
+  startup: Startup;
+  pod?: PodInfo | null;
+  now: number;
+}) {
+  const elapsed = Math.max(0, Math.floor(now / 1000 - startup.since));
+  const events = pod?.events ?? [];
+  return (
+    <section className="workspace-section">
+      <h2>Starting</h2>
+      <div className="workspace-startup">
+        <strong>
+          {stageLabel(startup.stage)}
+          {elapsed >= 3 && (
+            <span className="muted"> · {elapsedLabel(elapsed)}</span>
+          )}
+        </strong>
+        {startup.detail && <p>{startup.detail}</p>}
+      </div>
+      {events.length > 0 && (
+        <>
+          <h3 className="workspace-subhead">Pod events</h3>
+          <EventList events={events} now={now} />
+        </>
+      )}
+    </section>
+  );
+}
+
+const elapsedLabel = (s: number) =>
+  s < 60 ? `${s} s` : `${Math.floor(s / 60)} m ${s % 60} s`;
+
+/* The sandbox pod on Kubernetes: where it runs and what it was given,
+   and its recent events unless the Starting section shows them. */
+function Pod({
+  pod,
+  now,
+  events = true,
+}: {
+  pod: PodInfo;
+  now: number;
+  events?: boolean;
+}) {
   const facts: [string, string][] = [
     ["Pod", `${pod.namespace}/${pod.name}`],
     ["Node", pod.node || "not scheduled yet"],
@@ -172,6 +223,12 @@ function Pod({ pod }: { pod: PodInfo }) {
           </div>
         ))}
       </dl>
+      {events && pod.events?.length > 0 && (
+        <>
+          <h3 className="workspace-subhead">Events</h3>
+          <EventList events={pod.events} now={now} limit={5} />
+        </>
+      )}
     </section>
   );
 }
@@ -216,6 +273,17 @@ export function WorkspacePanel({
   // The size being edited, or null when the row shows the current size.
   const [sizing, setSizing] = useState<Resources | null>(null);
   const ws = workspace;
+  // The chat's start while it lasts: ticks each second for the elapsed
+  // time and the event ages.
+  const starting =
+    chat.startup && (chat.status === "running" || chat.status === "queued")
+      ? chat.startup
+      : undefined;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), starting ? 1000 : 5000);
+    return () => clearInterval(id);
+  }, [!!starting]);
   async function loadHistory() {
     if (!ws) return;
     setHistoryError("");
@@ -370,6 +438,9 @@ export function WorkspacePanel({
           first.
         </p>
       )}
+      {starting && !ws?.deleted && (
+        <Starting startup={starting} pod={ws?.pod} now={now} />
+      )}
       {ws?.deleted && (
         <p className="workspace-note">
           This workspace was deleted. Its chats are archived and cannot be
@@ -468,7 +539,9 @@ export function WorkspacePanel({
           )}
         </section>
       )}
-      {ws?.pod && !ws.deleted && <Pod pod={ws.pod} />}
+      {ws?.pod && !ws.deleted && (
+        <Pod pod={ws.pod} now={now} events={!starting} />
+      )}
       <section className="workspace-section">
         <h2>Chats in this workspace</h2>
         <ul>

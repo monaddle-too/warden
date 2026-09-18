@@ -1331,9 +1331,6 @@ button.danger:hover {
 }
 
 /* Startup stage in the composer status line and the workspace panel. */
-.composer-startup {
-  color: var(--accent-text);
-}
 .workspace-facts {
   margin: 0 0 8px;
   padding: 0;
@@ -1425,6 +1422,116 @@ button.danger:hover {
 .cluster-meter::-moz-meter-bar {
   background: var(--accent);
   border-radius: 2px;
+}
+/* Events (Events.tsx): one row each, newest first; a Warning's when is
+   coloured; with-objects adds the object column on the cluster page. */
+.cluster-events {
+  list-style: none;
+  margin: 4px 0 8px;
+  padding: 0;
+  font-size: 13px;
+}
+.cluster-events li {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 4px 10px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+  align-items: start;
+}
+.cluster-events li:first-child {
+  border-top: 0;
+}
+.cluster-events.with-objects li {
+  grid-template-columns: 56px minmax(120px, 220px) 1fr;
+}
+.cluster-event-when {
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.cluster-events li.warning .cluster-event-when {
+  color: var(--danger);
+  font-weight: 600;
+}
+.cluster-event-object {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cluster-event-object code {
+  font-size: 12px;
+}
+.cluster-event-object button.link {
+  display: inline;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cluster-event-object button.link:hover {
+  text-decoration: underline;
+  background: transparent;
+}
+.cluster-event-what {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cluster-event-what small {
+  color: var(--muted);
+}
+/* The panel is narrow: the event's time sits above its text. */
+.workspace-panel .cluster-events li {
+  grid-template-columns: 1fr;
+  gap: 1px;
+}
+.workspace-panel .cluster-events .cluster-event-when {
+  font-size: 12px;
+}
+.workspace-subhead {
+  margin: 10px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.workspace-startup {
+  margin: 0 0 8px;
+}
+.workspace-startup > strong {
+  display: block;
+  color: var(--accent-text);
+}
+.workspace-startup > p {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+.cluster-actions {
+  white-space: nowrap;
+}
+.cluster-actions .status-dot {
+  margin-left: 2px;
+}
+.cluster-events-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  scroll-margin-top: 12px;
+}
+.cluster-events-head .muted {
+  font-weight: 400;
+}
+.cluster-events-head button.ghost {
+  height: 26px;
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 500;
 }
 .cluster-logs {
   margin: 12px 0;

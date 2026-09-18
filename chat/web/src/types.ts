@@ -168,6 +168,23 @@ export type PodInfo = {
   requests: Amounts;
   limits: Amounts;
   usage: Amounts | null;
+  /* The pod's recent events, newest first. */
+  events: ClusterEvent[];
+};
+/* One Kubernetes event: what the scheduler, the autoscaler or the kubelet
+   said about an object, with the owner's-words hint for the ones that
+   decide a start. */
+export type ClusterEvent = {
+  at: string;
+  type: "Normal" | "Warning" | string;
+  reason: string;
+  message: string;
+  hint?: string;
+  count: number;
+  kind: string;
+  namespace: string;
+  name: string;
+  source?: string;
 };
 export type NodeInfo = {
   name: string;
@@ -199,6 +216,9 @@ export type Cluster = {
   sandboxPods: PodInfo[];
   servicePods: PodInfo[];
   servicePodsError?: string;
+  /* The newest events of the sandbox and service namespaces. */
+  events: ClusterEvent[];
+  eventsError?: string;
   workspaces: Record<string, string>;
 };
 export type PodLogs = {

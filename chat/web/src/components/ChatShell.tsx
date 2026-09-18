@@ -723,6 +723,10 @@ export function ChatShell({
                 requests={requests}
                 find={find}
                 onExport={() => setExporting(true)}
+                onOpenWorkspace={() => {
+                  setPreviewOpen(false);
+                  setWorkspaceOpen(true);
+                }}
                 onModel={(next) =>
                   api(`chats/${chat.id}/agent`, {
                     provider: chat.provider || "codex",

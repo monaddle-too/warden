@@ -125,6 +125,7 @@ export function Conversation({
   find,
   onModel,
   onExport,
+  onOpenWorkspace,
 }: {
   chat: Chat;
   live: boolean;
@@ -136,6 +137,9 @@ export function Conversation({
   onModel: (model: string) => Promise<unknown>;
   /* The /export command; the chat menu's dialog lives in the shell. */
   onExport?: () => void;
+  /* Opens the workspace panel: the startup line is a way there, where
+     the start is explained in full. */
+  onOpenWorkspace?: () => void;
 }) {
   const key = "warden-draft:" + location.origin + ":" + chat.id;
   const [text, setText] = useState(() => draft(key));
@@ -963,16 +967,25 @@ export function Conversation({
               <span
                 className={`status-dot ${chat.startup && running ? "starting" : chat.status}`}
               />
-              <span
-                className={chat.startup && running ? "composer-startup" : ""}
-                title={chat.startup?.detail}
-              >
-                {chat.startup && running
-                  ? startupLine(chat.startup, clock)
-                  : chat.archived && !running
+              {chat.startup && running ? (
+                // The whole detail, wrapped, and a way to the workspace
+                // panel where the start is explained with the pod's events.
+                <button
+                  type="button"
+                  className="composer-startup"
+                  title="Open the workspace panel"
+                  onClick={onOpenWorkspace}
+                  disabled={!onOpenWorkspace}
+                >
+                  {startupLine(chat.startup, clock)}
+                </button>
+              ) : (
+                <span>
+                  {chat.archived && !running
                     ? "Archived"
                     : chatStatusLabel(chat)}
-              </span>
+                </span>
+              )}
             </span>
             <div>
               <input
