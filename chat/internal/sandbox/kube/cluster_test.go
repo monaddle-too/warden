@@ -209,6 +209,7 @@ func TestEventHint(t *testing.T) {
 	cases := []struct{ reason, message, want string }{
 		{"TriggeredScaleUp", "pod triggered scale-up: [{gk3-pool 0->1 (max: 1000)}]", "a node is being added"},
 		{"NotTriggerScaleUp", "pod didn't trigger scale-up: 1 max node group size reached", "no node can be added: 1 max node group size reached"},
+		{"FailedScaleUp", "Node scale up in zones us-central1-a associated with this pod failed: GCE quota exceeded. Pod is at risk of not being scheduled.", "adding a node failed: GCE quota exceeded"},
 		{"FailedScheduling", "0/2 nodes are available: 2 Insufficient cpu. preemption: not eligible.", "no node fits yet: 0/2 nodes are available: 2 Insufficient cpu"},
 		{"Scheduled", "Successfully assigned warden-sandboxes/wc-one to gk3-node-1", "placed on node gk3-node-1"},
 		{"Pulling", "Pulling image \"ghcr.io/x/guest:1\"", "pulling the container image"},

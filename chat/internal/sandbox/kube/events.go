@@ -80,6 +80,13 @@ func EventHint(reason, message string) string {
 	switch reason {
 	case "TriggeredScaleUp":
 		return "a node is being added"
+	case "FailedScaleUp":
+		// "Node scale up in zones us-central1-a associated with this pod
+		// failed: GCE quota exceeded. Pod is at risk of not being scheduled."
+		if _, why, ok := strings.Cut(first, "failed: "); ok && why != "" {
+			return "adding a node failed: " + why
+		}
+		return "adding a node failed: " + first
 	case "NotTriggerScaleUp":
 		if _, why, ok := strings.Cut(first, ": "); ok && why != "" {
 			return "no node can be added: " + why
