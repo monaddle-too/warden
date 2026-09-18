@@ -208,6 +208,11 @@ Compose file uses.
 {{- $_ = set $auth "google" $google -}}
 {{- end -}}
 {{- $_ = set $cfg "auth" $auth -}}
+{{- $_ = set $cfg "edge" (dict "bugReports" (dict
+      "enabled" (eq (toString .Values.edge.bugReports.enabled) "true")
+      "retentionDays" (int .Values.edge.bugReports.retentionDays)
+      "maxPerHour" (int .Values.edge.bugReports.maxPerHour)
+      "maxPerDay" (int .Values.edge.bugReports.maxPerDay))) -}}
 {{- $providers := dict -}}
 {{- if .Values.providers.codex.enabled -}}
 {{- $_ = set $providers "codex" (dict "secret" .Values.secrets.codex) -}}

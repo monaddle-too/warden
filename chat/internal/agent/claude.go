@@ -265,6 +265,15 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						req["last_seen_user_message_uuid"] = last
 					}
 					_ = cliWrite(map[string]any{"type": "control_request", "request_id": id, "request": req})
+				case "models/list":
+					// The account's model catalog (list_models): the rows
+					// the CLI offers, each with its effort levels and
+					// whether it has adaptive thinking and fast mode. The
+					// CLI's answer ({models: […]}) is the command's reply
+					// (docs/claude-parity.md, R2.3).
+					id := "warden-models-" + claudeID()
+					awaiting[id] = f.ID
+					_ = cliWrite(map[string]any{"type": "control_request", "request_id": id, "request": map[string]any{"subtype": "list_models"}})
 				case "turn/interrupt":
 					// Claude Code's SDK interrupt: the query aborts where it is
 					// (mid-thought, mid-tool) and reports a result; the process

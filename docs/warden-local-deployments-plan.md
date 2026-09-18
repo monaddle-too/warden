@@ -838,6 +838,10 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   scrolling, follow-until-idle and submit semantics against a fake chat
   service, and the launcher subcommands against a fake endpoint.
   Native Codex remote-TUI relay and subagent nesting remain future work.
+- 2026-09-18: approval popups default to `none`: a question asked in the
+  terminal client opened the browser although the client showed and could
+  answer it; approvals now wait in whichever client is open (`--popups
+  notify|browser|auto` opt back in).
 - 2026-09-16: approval popups. The launcher watches the event stream and
   surfaces each newly pending approval once (desktop notification; browser
   opened on the chat in `--popups browser`, the default when detached); the

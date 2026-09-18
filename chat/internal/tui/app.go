@@ -85,6 +85,7 @@ type App struct {
 	// so /memory N can name a file by number.
 	editing     *editing
 	memoryFiles map[string][]MemoryFile
+	ruleRefs    []ruleRef               // the last /rules listing's numbers (rules.go)
 	attachments map[string][]Attachment // uploads waiting for the next message, per chat
 	histories   map[string][]string     // in-memory history per chat when HistoryDir is empty
 	historyChat string                  // chat whose history the editor holds
@@ -151,6 +152,8 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /find TEXT /copy /expand /verbose /clear /quit
            /instructions [edit|clear] your standing instructions, given to the agent in every chat
            /memory [FILE] [edit FILE] the workspace's CLAUDE.md, rules and auto-memory files
+           /rules (list) /rules add allow|deny|ask PATTERN · /rules rm N — permission rules of the workspace
+           /permissions how this chat's tool asks were decided and by whom · /allow [chat] answers the first ask always
            /compact [what to keep] asks Claude to replace the history with a summary
 composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
            a long paste becomes [Pasted text #N — M lines] and is sent in full
@@ -162,7 +165,7 @@ composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste ke
            Esc Esc (empty draft, agent idle) edits your last message: the conversation rewinds to before it
            Ctrl+A/E line start/end · Ctrl+U/K delete to line start/end · Ctrl+W a word
 keys       y / n answer the first pending approval; typed text answers a question
-           tool asks: y allow · a allow always · n [message] deny
+           tool asks: y allow · a allow always (this chat) · A allow always (this workspace) · n [message] deny
            plans: y approve (auto) · a approve, ask before edits · n [feedback] keep planning
            Shift+Tab cycles a Claude chat's permission mode (auto → ask → plan)
            Esc interrupts the agent · Ctrl+C clears the draft (twice quits) · Ctrl+D quits
@@ -694,6 +697,21 @@ func (a *App) refreshMenu(ctx context.Context) {
 		}
 	case "chat":
 		m.Items = chatItems(a.sortedChats(), t.Query)
+	case "model":
+		provider := a.Provider
+		if c != nil {
+			provider = c.Provider
+		}
+		if provider == "" {
+			provider = "codex"
+		}
+		m.Items = modelItems(provider, a.agentOptions(), t.Query)
+	case "effort":
+		if c == nil || c.Provider != "claude" {
+			a.menu = nil
+			return
+		}
+		m.Items = effortItems(c, a.agentOptions(), t.Query)
 	}
 	if len(m.Items) == 0 && m.Note == "" {
 		a.menu = nil
@@ -870,12 +888,17 @@ func (a *App) shell(ctx context.Context, chatID, command string) {
 }
 
 // answerPermission reads a typed answer to a tool ask: y allows, a allows
-// always, n denies with the rest of the line as the message to the model;
-// for a plan, y approves into auto, a approves into ask, n keeps planning
-// with the rest of the line as feedback. Other text is not an answer.
+// always for the chat, A allows always for the whole workspace, n denies
+// with the rest of the line as the message to the model; for a plan, y
+// approves into auto, a approves into ask, n keeps planning with the rest
+// of the line as feedback. Other text is not an answer.
 func (a *App) answerPermission(ctx context.Context, chatID string, ap Approval, p *Permission, text string) bool {
 	word, rest, _ := strings.Cut(strings.TrimSpace(text), " ")
 	rest = strings.TrimSpace(rest)
+	if (word == "A" || strings.EqualFold(word, "workspace")) && !p.IsPlan() {
+		a.answerAlways(ctx, chatID, ap, p, "workspace")
+		return true
+	}
 	var allow, always bool
 	message, mode, said := "", "", ""
 	switch strings.ToLower(word) {
@@ -891,7 +914,7 @@ func (a *App) answerPermission(ctx context.Context, chatID string, ap Approval, 
 		if p.IsPlan() {
 			mode, said = "ask", "plan approved; mode ask"
 		} else {
-			always, said = true, "allowed always: "+p.Always
+			always, said = true, "allowed always for this chat: "+p.Always
 		}
 	case "n", "no", "deny", "decline":
 		message = rest
@@ -906,7 +929,7 @@ func (a *App) answerPermission(ctx context.Context, chatID string, ap Approval, 
 	default:
 		return false
 	}
-	if err := a.Client.Answer(ctx, chatID, ap.ID, allow, always, message, mode); err != nil {
+	if err := a.Client.Answer(ctx, chatID, ap.ID, allow, always, "chat", message, mode); err != nil {
 		a.setNotice(err.Error())
 	} else {
 		a.setNotice(said)
@@ -971,15 +994,24 @@ func (a *App) setSetting(ctx context.Context, c *Chat, name, arg string) {
 		}
 		change["thinking"] = v
 	case "effort":
+		levels := EffortsFor(c, a.agentOptions())
 		if arg == "" {
-			a.setNotice("effort " + orDefault(c.Effort) + " · /effort " + strings.Join(chats.Efforts, "|") + "|default")
+			if len(levels) == 0 {
+				a.setNotice("effort " + orDefault(c.Effort) + " · this model takes no effort level")
+			} else {
+				a.setNotice("effort " + orDefault(c.Effort) + " · /effort " + strings.Join(levels, "|") + "|default")
+			}
 			return
 		}
 		if arg == "default" {
 			arg = ""
 		}
-		if !chats.ValidEffort(arg) {
-			a.setNotice("/effort " + strings.Join(chats.Efforts, "|") + "|default")
+		if !chats.ValidEffort(arg) || (arg != "" && len(levels) == 0) {
+			if len(levels) == 0 {
+				a.setNotice("this model takes no effort level (/effort default)")
+			} else {
+				a.setNotice("/effort " + strings.Join(levels, "|") + "|default")
+			}
 			return
 		}
 		change["effort"] = arg
@@ -1068,6 +1100,14 @@ func (a *App) resolve(ctx context.Context, chatID string, ap Approval, allow boo
 
 // sortedChats lists non-archived chats, most recently created last, as the
 // web sidebar does (the store keeps creation order).
+// agentOptions is what the service allows and offers (the catalog).
+func (a *App) agentOptions() AgentOptions {
+	if a.state == nil {
+		return AgentOptions{}
+	}
+	return a.state.AgentOptions
+}
+
 func (a *App) sortedChats() []*Chat {
 	if a.state == nil {
 		return nil
@@ -1160,10 +1200,8 @@ func (a *App) command(ctx context.Context, line string) {
 		a.selectChat(chats[n-1].ID)
 		a.setNotice("switched to " + sanitize(chats[n-1].Title))
 	case "new":
+		// No title: the service names the chat from its first exchange.
 		title := arg
-		if title == "" {
-			title = "Terminal chat " + a.now().Format("Jan 2 15:04")
-		}
 		provider := a.Provider
 		if c != nil && provider == "" {
 			provider = c.Provider
@@ -1178,7 +1216,11 @@ func (a *App) command(ctx context.Context, line string) {
 		}
 		a.refreshState(ctx)
 		a.selectChat(id)
-		a.setNotice("new chat " + sanitize(title) + " (" + provider + ")")
+		if title == "" {
+			a.setNotice("new chat (" + provider + ") · named after its first reply; /rename TITLE to choose")
+		} else {
+			a.setNotice("new chat " + sanitize(title) + " (" + provider + ")")
+		}
 	case "rename":
 		if c == nil {
 			a.setNotice("no chat selected")
@@ -1266,6 +1308,9 @@ func (a *App) command(ctx context.Context, line string) {
 		provider, model := c.Provider, c.Model
 		if name == "model" {
 			model = arg
+			if model == "default" {
+				model = "" // the menu's row for the provider default
+			}
 		} else {
 			provider = arg
 		}
@@ -1360,6 +1405,12 @@ func (a *App) command(ctx context.Context, line string) {
 		a.btw(ctx, c, arg)
 	case "cost":
 		a.cost(c)
+	case "rules":
+		a.rules(ctx, c, arg)
+	case "permissions":
+		a.permissions(ctx, c)
+	case "allow":
+		a.allowAlways(ctx, c, arg)
 	case "style":
 		a.style(ctx, c, arg)
 	case "bell":

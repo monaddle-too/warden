@@ -63,6 +63,15 @@ export async function api<T = unknown>(
   return response.json();
 }
 
+/* DELETE one resource; the answer has no body. */
+export async function apiDelete(path: string): Promise<void> {
+  const response = await fetch("/api/" + path, {
+    method: "DELETE",
+    headers: credentials(),
+  });
+  if (!response.ok) throw await failure(response);
+}
+
 /* One file for the composer: multipart, answered with the stored record
    whose ID the message then names. */
 export async function uploadAttachment(

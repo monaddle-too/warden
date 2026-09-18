@@ -190,3 +190,24 @@ func TestEdgeListenerByKind(t *testing.T) {
 		}
 	}
 }
+
+// edge.bugReports in warden.json reaches the edge as the receiver's
+// settings, with its files under <state>/edge/bug-reports; off, the edge
+// is not told about it at all (docs/bug-reporting-plan.md).
+func TestEdgeBugReportsConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "warden.json")
+	os.WriteFile(path, []byte(`{"version":1,"paths":{"state":"/tmp/w"},"edge":{"bugReports":{"enabled":true,"retentionDays":30}}}`), 0600)
+	c, err := loadEdgeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &edge.BugReportsConfig{Enabled: true, Dir: "/tmp/w/edge/bug-reports", RetentionDays: 30, MaxPerHour: 30, MaxPerDay: 500}
+	if c.BugReports == nil || *c.BugReports != *want {
+		t.Fatalf("%+v", c.BugReports)
+	}
+	os.WriteFile(path, []byte(`{"version":1,"paths":{"state":"/tmp/w"},"edge":{"bugReports":{"retentionDays":30}}}`), 0600)
+	if c, err = loadEdgeConfig(path); err != nil || c.BugReports != nil {
+		t.Fatalf("disabled receiver passed on: %+v %v", c.BugReports, err)
+	}
+}

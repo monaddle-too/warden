@@ -274,18 +274,17 @@ func todoDone(e Entry) bool {
 // entryFinal reports an entry the service will not change any more: not
 // streaming, not a running tool (a background command counts as running
 // until its notification lands), not a message still queued or being
-// delivered (the engine marks it "failed" until the agent acknowledges
-// it), not a compaction or an aside under way, and not a subagent's card
-// while any entry under it is still one of these. A todo list is final
-// after every write although the next write replaces it in place; the
-// painter notices the change and reprints.
+// handed over ("sending" until the agent confirms the turn), not a
+// compaction or an aside under way, and not a subagent's card while any
+// entry under it is still one of these. The todo list never reaches
+// here (RenderBlocks keeps it live).
 func entryFinal(c *Chat, e Entry, children map[string][]Entry) bool {
 	if e.IsStreaming {
 		return false
 	}
 	switch e.Role {
 	case "user":
-		if e.Delivery == "queued" || (e.Delivery == "failed" && c.Running()) {
+		if e.Delivery == "queued" || e.Delivery == "sending" {
 			return false
 		}
 	case "activity":
@@ -344,20 +343,21 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 		case "user":
 			label := senderLabel(e)
 			out = append(out, wrap(text, width, bold+cyan+label+" › "+reset, strings.Repeat(" ", len(label)+3))...)
-			switch {
-			case e.Delivery == "queued":
+			switch e.Delivery {
+			case "queued":
 				// Held by Warden until the agent's turn ends (queue.go).
 				out = append(out, yellow+"      ("+queueMarker(c)+")"+reset)
-			case e.Delivery == "failed" && !c.Running():
-				// Not delivered (the web says the same); while the chat
-				// runs, "failed" is the engine's "unconfirmed" between the
-				// attempt and the agent's acknowledgement, not a failure.
-				detail := sanitize(strings.TrimSpace(e.Detail))
-				if detail == "" {
-					detail = "not delivered"
+			case "failed":
+				// Never reached the agent, or the run ended before the
+				// agent confirmed it; the detail says which.
+				msg := "not delivered"
+				if d := strings.TrimSpace(e.Detail); d != "" {
+					msg += ": " + sanitize(d)
 				}
-				out = append(out, wrap(detail, width, red+"      ! "+reset, "        ")...)
+				out = append(out, wrap(red+msg+reset, width, red+"      ! "+reset, "        ")...)
 			}
+			// "sending" (handed over, the turn not yet confirmed) and "sent"
+			// need no mark: the status line shows the hand-over.
 		case "assistant":
 			name := label
 			if name == "" {
@@ -883,7 +883,7 @@ func renderPermission(a Approval, p *Permission, width int, later bool) []string
 		if p.Always != "" {
 			hint += " (" + p.Always + ")"
 		}
-		hint += " · n [message] = deny"
+		hint += " · A = for the workspace · n [message] = deny"
 	}
 	if later {
 		hint = "answered after the one above"

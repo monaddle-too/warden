@@ -47,6 +47,9 @@ type fakeWorker struct {
 	// threadGate, when set, holds the thread/start reply until it is
 	// closed: the agent is live but has no turn yet.
 	threadGate chan struct{}
+	// turnGate, when set, holds the turn/start reply until it is closed:
+	// the message is handed over but the turn is not confirmed.
+	turnGate chan struct{}
 	// ignoreInterrupt answers turn/interrupt without ending the turn, as an
 	// agent that hangs would.
 	ignoreInterrupt bool
@@ -184,7 +187,11 @@ func (f *fakeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWriteC
 				f.turns++
 				f.inputs = append(f.inputs, agent.Array(frame.Params["input"]))
 				turnID := f.turnID
+				gate := f.turnGate
 				f.mu.Unlock()
+				if gate != nil {
+					<-gate
+				}
 				if turnID == "" {
 					turnID = "turn-one"
 				}
@@ -322,11 +329,13 @@ func TestFailClosedAndRecovery(t *testing.T) {
 	if c.Status != "failed" || c.Conversation.Entries[0].Delivery != "failed" || len(w.methods) > 0 {
 		t.Fatalf("not fail closed: %+v", c)
 	}
+	// A restart catches a message handed over but not yet confirmed: it is
+	// failed as unconfirmed, never replayed.
 	_ = s.update(func(st *State) error {
 		c := st.chat(id)
 		c.Status = "running"
-		c.Conversation.Entries[0].Delivery = "failed"
-		c.Conversation.Entries[0].Detail = "Delivery unconfirmed"
+		c.Conversation.Entries[0].Delivery = "sending"
+		c.Conversation.Entries[0].Detail = ""
 		return nil
 	})
 	root := filepath.Dir(s.path)
@@ -337,8 +346,8 @@ func TestFailClosedAndRecovery(t *testing.T) {
 	}
 	defer s.Close()
 	c = s.Snapshot().chat(id)
-	if c.Status != "interrupted" || c.Conversation.Entries[0].Delivery != "failed" {
-		t.Fatal("replayed unconfirmed delivery")
+	if c.Status != "interrupted" || c.Conversation.Entries[0].Delivery != "failed" || c.Conversation.Entries[0].Detail != "Interrupted before confirmed delivery" {
+		t.Fatalf("replayed unconfirmed delivery: %+v", c.Conversation.Entries[0])
 	}
 	info, _ := os.Stat(s.path)
 	if info.Mode().Perm() != 0600 {
@@ -1026,5 +1035,58 @@ func TestSessionCommandsInStateAndCompactionNote(t *testing.T) {
 	}
 	if c := e.Store.Snapshot().chat(fresh); len(c.Commands) != 0 || c.Session != nil {
 		t.Fatalf("commands survived the provider change: %+v", c)
+	}
+}
+
+// A message handed to the agent reads "sending" until the turn confirms
+// it, and "sent" after; it is never marked failed on the way (that mark
+// used to flash under every first message while the agent started).
+func TestHandOverIsSendingUntilConfirmed(t *testing.T) {
+	e, w, _ := setup(t)
+	id, err := e.Create("Test", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := make(chan struct{})
+	w.mu.Lock()
+	w.turnGate = gate
+	w.mu.Unlock()
+	if err = e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return startupOf(e, id).Stage == stageSending })
+	if v := e.View().chat(id).Conversation.Entries[0]; v.Delivery != "sending" || v.Detail != "" {
+		t.Fatalf("in flight: %+v", v)
+	}
+	close(gate)
+	until(t, func() bool { return e.View().chat(id).Conversation.Entries[0].Delivery == "sent" })
+	if v := e.View().chat(id).Conversation.Entries[0]; v.Detail != "" || v.TurnID == nil {
+		t.Fatalf("confirmed: %+v", v)
+	}
+}
+
+// A run that ends while a message is in flight leaves it failed as
+// unconfirmed: the agent may or may not have read it.
+func TestHandOverUnconfirmedWhenTheRunEnds(t *testing.T) {
+	e, w, _ := setup(t)
+	id, err := e.Create("Test", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := make(chan struct{})
+	defer close(gate)
+	w.mu.Lock()
+	w.turnGate = gate
+	w.mu.Unlock()
+	if err = e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return startupOf(e, id).Stage == stageSending })
+	if err = e.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return e.View().chat(id).Conversation.Entries[0].Delivery == "failed" })
+	if v := e.View().chat(id).Conversation.Entries[0]; v.Detail != deliveryUnconfirmed {
+		t.Fatalf("unconfirmed: %+v", v)
 	}
 }

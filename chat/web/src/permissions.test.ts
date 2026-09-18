@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   PERMISSION_METHOD,
+  alwaysHint,
   alwaysLabel,
   askedCommand,
   isPlan,
@@ -49,7 +50,15 @@ describe("permission asks", () => {
     };
     expect(permissionTitle(command)).toBe("Run a command");
     expect(askedCommand(command)).toBe("touch x");
-    expect(alwaysLabel(command)).toBe("Allow always: `touch` commands");
+    expect(alwaysLabel(command)).toBe(
+      "Always allow `touch` commands in this chat",
+    );
+    expect(alwaysLabel(command, "workspace")).toBe(
+      "Always allow `touch` commands in this workspace",
+    );
+    expect(alwaysHint({ ...command, rule: "Bash(touch *)" }, "workspace")).toBe(
+      "Allow `touch` commands without asking in every chat of this workspace, present and future — the rule Bash(touch *)",
+    );
     const edit = {
       tool: "Write",
       entry: entry({
@@ -64,7 +73,10 @@ describe("permission asks", () => {
     };
     expect(permissionTitle(edit)).toBe("Write notes.md");
     expect(askedCommand(edit)).toBe("");
-    expect(alwaysLabel(edit)).toBe("Allow always");
+    expect(alwaysLabel(edit)).toBe("Allow always in this chat");
+    expect(alwaysHint(edit)).toBe(
+      "Allow this without asking in the rest of this chat",
+    );
     const plan = { tool: "ExitPlanMode", plan: "# Plan" };
     expect(isPlan(plan)).toBe(true);
     expect(permissionTitle(plan)).toBe("Claude has a plan");

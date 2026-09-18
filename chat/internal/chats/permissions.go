@@ -46,24 +46,6 @@ func ValidMode(mode string) bool {
 	return false
 }
 
-// PermissionRule is one "allow always" answer remembered on the chat: the
-// tool it covers and, for Bash, the command prefix. Tool is a tool name as
-// the CLI gives it, or "edit" for any of its file tools (Edit, Write,
-// MultiEdit, NotebookEdit).
-type PermissionRule struct {
-	Tool    string `json:"tool"`
-	Command string `json:"command,omitempty"`
-}
-
-// ruleTool is the name a rule records for a tool: the file tools are one.
-func ruleTool(tool string) string {
-	switch tool {
-	case "Edit", "Write", "MultiEdit", "NotebookEdit":
-		return "edit"
-	}
-	return tool
-}
-
 // multiWordPrograms are the programs whose first argument is the command
 // the person means when allowing "these" always: `git commit`, not `git`.
 var multiWordPrograms = map[string]bool{"git": true, "npm": true, "pnpm": true, "yarn": true, "go": true, "cargo": true, "docker": true, "kubectl": true, "gh": true, "pip": true, "pip3": true, "make": true, "bundle": true, "poetry": true, "uv": true, "brew": true, "apt": true, "apt-get": true, "systemctl": true, "helm": true, "gcloud": true, "aws": true}
@@ -72,88 +54,57 @@ var multiWordPrograms = map[string]bool{"git": true, "npm": true, "pnpm": true, 
 // piping, substitution. Such a command is remembered whole.
 var shellControl = []string{"&&", "||", ";", "|", "\n", "$(", "`", ">", "<"}
 
-// RuleFor is the allow-always rule an answer to the given tool call
-// records: a Bash command's program (with its subcommand for the programs
-// that have one, or the whole command when it chains), any file tool as
-// "edit", every other tool by name.
-func RuleFor(tool string, input map[string]any) PermissionRule {
-	r := PermissionRule{Tool: ruleTool(tool)}
+// RuleFor is the allow rule an "Allow always" answer to the given tool
+// call records, as a pattern in the rules' syntax (rules.go): a Bash
+// command's program with its subcommand for the programs that have one
+// (`Bash(git commit *)`), the whole command when it chains, any file tool
+// as `Edit` (which covers them all), every other tool by name.
+func RuleFor(tool string, input map[string]any) string {
+	if fileTools[tool] {
+		return "Edit"
+	}
 	if tool != "Bash" {
-		return r
+		return tool
 	}
 	command := strings.TrimSpace(agent.String(input["command"]))
 	for _, c := range shellControl {
 		if strings.Contains(command, c) {
-			r.Command = command
-			return r
+			return "Bash(" + command + ")"
 		}
 	}
 	words := strings.Fields(command)
 	if len(words) == 0 {
-		return r
+		return "Bash"
 	}
 	// A leading assignment (FOO=1 make) is not the program.
 	for len(words) > 1 && strings.Contains(words[0], "=") && !strings.HasPrefix(words[0], "=") {
 		words = words[1:]
 	}
-	r.Command = words[0]
+	prefix := words[0]
 	if multiWordPrograms[words[0]] && len(words) > 1 && !strings.HasPrefix(words[1], "-") {
-		r.Command = words[0] + " " + words[1]
+		prefix = words[0] + " " + words[1]
 	}
-	return r
+	return "Bash(" + prefix + " *)"
 }
 
-// Matches reports whether the rule answers a call of tool with input: the
-// tool's rule name is the rule's and, for Bash, the command is the rule's
-// or starts with it as a program does (`git commit -m x` under `git
-// commit`, not `gitk` under `git`).
-func (r PermissionRule) Matches(tool string, input map[string]any) bool {
-	if r.Tool != ruleTool(tool) {
-		return false
+// RuleLabel says what a rule pattern covers, for the card's button: "`git
+// commit` commands", "file edits", "WebFetch calls".
+func RuleLabel(pattern string) string {
+	tool, spec, err := splitPattern(pattern)
+	if err != nil {
+		return pattern
 	}
-	if tool != "Bash" {
-		return true
-	}
-	command := strings.TrimSpace(agent.String(input["command"]))
-	if r.Command == "" {
-		return true
-	}
-	if command == r.Command {
-		return true
-	}
-	if strings.HasPrefix(command, r.Command+" ") {
-		// A chained command is never covered by a program prefix.
-		for _, c := range shellControl {
-			if strings.Contains(command, c) {
-				return false
-			}
-		}
-		return true
-	}
-	return false
-}
-
-// Label says what allowing the rule always means, for the card's button.
-func (r PermissionRule) Label() string {
 	switch {
-	case r.Tool == "edit":
+	case tool == "Edit" && spec == "":
 		return "file edits"
-	case r.Tool == "Bash" && r.Command != "":
-		return "`" + r.Command + "` commands"
-	case r.Tool == "Bash":
+	case tool == "Bash" && spec == "":
 		return "commands"
+	case tool == "Bash":
+		return "`" + strings.TrimSuffix(strings.TrimSuffix(spec, " *"), ":*") + "` commands"
+	case spec != "":
+		return tool + " " + spec
 	}
-	return r.Tool + " calls"
-}
-
-// Allows reports whether one of the chat's rules answers the call.
-func (c *Chat) Allows(tool string, input map[string]any) bool {
-	for _, r := range c.Allowed {
-		if r.Matches(tool, input) {
-			return true
-		}
-	}
-	return false
+	return tool + " calls"
 }
 
 // mode is the chat's permission mode, auto when unset (chats from before
@@ -234,17 +185,43 @@ func (c *Chat) applyMode(cliMode string) {
 	}
 }
 
-// decide answers a permission ask from the chat's mode and rules: "accept"
-// when it needs no one, "" when it is the owner's (an approval card). A
-// plan (ExitPlanMode) is always the owner's.
-func (c *Chat) decide(tool string, input map[string]any) string {
+// Verdict is how a permission ask was answered without a card: the
+// decision ("accept" or "decline"), the message a decline carries to the
+// model, and the rule behind it (nil for the mode). Nil means a card.
+type Verdict struct {
+	Decision string
+	Message  string
+	Rule     *Decision
+}
+
+// decide answers a permission ask from the chat's rules, its workspace's
+// and its mode: a deny rule declines in every mode, an ask rule makes it
+// a card in every mode, an allow rule accepts, else auto accepts and ask
+// and plan make it a card. A plan (ExitPlanMode) is always the owner's.
+func (st *State) decide(c *Chat, tool string, input map[string]any) *Verdict {
 	if tool == "ExitPlanMode" {
-		return ""
+		return nil
 	}
-	if c.mode() == ModeAuto || c.Allows(tool, input) {
-		return "accept"
+	if d := st.decideByRule(c, tool, input); d != nil {
+		switch d.Rule.Kind {
+		case RuleDeny:
+			return &Verdict{Decision: "decline", Message: denialFor(d), Rule: d}
+		case RuleAsk:
+			return nil
+		}
+		return &Verdict{Decision: "accept", Rule: d}
 	}
-	return ""
+	if c.mode() == ModeAuto {
+		return &Verdict{Decision: "accept"}
+	}
+	return nil
+}
+
+// denialFor is what the model reads when a deny rule answers: the rule
+// and where it lives, inside the CLI's own rejection wording (the adapter
+// adds that).
+func denialFor(d *Decision) string {
+	return "a permission rule of this " + d.Scope + " denies it (deny " + d.Rule.Pattern + "); do not retry it, find another way or ask"
 }
 
 // permissionEntry is the asked call as a transcript entry (the item-1
