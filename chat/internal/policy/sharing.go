@@ -334,8 +334,18 @@ func (g *GoogleConnection) Document(id string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if status != 200 || len(raw) > docResponseLimit {
-		return nil, errors.New("Google document unavailable; check access to it and Google before retrying")
+	if len(raw) > docResponseLimit {
+		return nil, errors.New("Google document unavailable: the document is larger than Warden reads")
+	}
+	if status != 200 {
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		message, _ := body["error"].(map[string]any)
+		s := "Google returned HTTP " + strconv.Itoa(status) + " for the document"
+		if text := stringField(message, "message"); text != "" {
+			s += ": " + text
+		}
+		return nil, errors.New(s)
 	}
 	var data map[string]any
 	if err = json.Unmarshal(raw, &data); err != nil {

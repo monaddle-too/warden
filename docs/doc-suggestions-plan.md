@@ -84,7 +84,12 @@ round-trip); this is the Google Docs version, owned by Warden.
 - `propose_google_document_edit({document_id, summary, ops, revises?})` →
   waits for the owner like `request_pull_request`; resolves to
   `{status: applied|rejected|returned|failed, feedback?, changes?, comments?,
-  draft?}`. `ops` are `{type: replace, start, end, paragraphs, reason?}`,
+  draft?, error?, detail?}` (a `failed` outcome carries `error`, the
+  owner's wording of why — Google's refusal with its message, the
+  workspace's share ended, the document unreadable — and `detail`, the
+  underlying error when `error` is the generic headline; the review page
+  shows both under the badge on every tab, and the policy log records
+  them; a failed proposal is closed, the agent proposes again). `ops` are `{type: replace, start, end, paragraphs, reason?}`,
   `{type: insert, after, paragraphs, reason?}`, `{type: delete, start, end,
   reason?}` against paragraph numbers of the read (or of the returned draft
   when `revises` names a returned proposal). Limits: 200 ops, 256 KiB of

@@ -2,6 +2,8 @@ package policy
 
 import (
 	"encoding/json"
+	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -313,31 +315,43 @@ func TestStaleDocumentIsRebasedOrHandedBack(t *testing.T) {
 	}
 	f.google.batchStatus, f.google.batchResponse = 500, map[string]any{}
 	f.dispatch("doc_resolve", map[string]any{"id": id3, "allow": true})
-	if failed := f.waitStatus(id3, "applied", "failed", "stale"); failed["status"] != "failed" || !strings.Contains(failed["error"].(string), "Writing to Google failed") {
+	if failed := f.waitStatus(id3, "applied", "failed", "stale"); failed["status"] != "failed" || failed["error"] != "Google rejected the write (HTTP 500). The agent is told and can propose the edit again." {
 		t.Fatalf("server failure: %v", failed)
 	}
 }
 
-func TestInterruptedWriteReopensForReview(t *testing.T) {
+// A failed write tells the owner what happened, in their terms, and what
+// follows (the proposal is closed; the agent is told): Google refused
+// with its own message and the usual cause, the document could not be
+// read (the detail kept), the workspace's share expired.
+func TestFailedWriteSaysWhy(t *testing.T) {
 	f := newSharingFixture(t)
 	f.google.document = docFixture("r1", docBase()...)
 	f.grant()
-	id := f.dispatch("doc_submit", docSubmission(nil))["request_id"].(string)
-	f.s.mu.Lock()
-	if _, err := f.s.DB.Exec("UPDATE document_proposals SET status='applying' WHERE id=?", id); err != nil {
-		t.Fatal(err)
+	n := 0
+	approve := func(between func()) map[string]any {
+		n++
+		id := f.dispatch("doc_submit", docSubmission(map[string]any{"callID": "call-" + strconv.Itoa(n)}))["request_id"].(string)
+		if between != nil {
+			between()
+		}
+		f.dispatch("doc_resolve", map[string]any{"id": id, "allow": true})
+		return f.waitStatus(id, "applied", "failed", "stale", "pending")
 	}
-	f.s.mu.Unlock()
-	f.s.Close()
-	f.s = f.open()
-	r := f.dispatch("doc_preview", map[string]any{"id": id})
-	if r["status"] != "pending" || !strings.Contains(r["error"].(string), "interrupted") {
-		t.Fatalf("restart: %v", r)
+	f.google.batchStatus, f.google.batchResponse = 403, map[string]any{"error": map[string]any{"message": "The caller does not have permission"}}
+	if r := approve(nil); r["status"] != "failed" || r["error"] != "Google rejected the write (HTTP 403): The caller does not have permission — the connected Google account may not edit this document, or Warden's Google access lacks the Docs write scope. The agent is told and can propose the edit again." || r["detail"] != nil {
+		t.Fatalf("refusal: %v", r)
 	}
-	if _, err := f.s.Dispatch("doc_resolve", map[string]any{"id": id, "allow": true}); err != nil {
-		t.Fatal(err)
+	f.google.batchStatus, f.google.batchResponse = 200, map[string]any{"writeControl": map[string]any{"requiredRevisionId": "r2"}}
+	unreadable := func() {
+		f.google.documentErr = errors.New("Google returned HTTP 404 for the document: Requested entity was not found")
 	}
-	if done := f.waitStatus(id, "applied", "failed", "stale", "pending"); done["status"] != "applied" {
-		t.Fatalf("after restart: %v", done)
+	if r := approve(unreadable); r["status"] != "failed" || r["error"] != "Writing to Google failed. The agent is told and can propose the edit again." || r["detail"] != "could not read the document from Google: Google returned HTTP 404 for the document: Requested entity was not found" {
+		t.Fatalf("read failure: %v", r)
+	}
+	f.google.documentErr = nil
+	expire := func() { f.clock.now += 901 }
+	if r := approve(expire); r["status"] != "failed" || r["error"] != "The workspace's access to this document has ended (the share expired or was revoked). Share it with the workspace again. The agent is told and can propose the edit again." || r["detail"] != nil {
+		t.Fatalf("expired share: %v", r)
 	}
 }
