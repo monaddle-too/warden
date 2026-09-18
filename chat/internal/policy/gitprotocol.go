@@ -2,8 +2,10 @@ package policy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/hex"
 	"errors"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
@@ -116,6 +118,43 @@ func GitPush(data []byte) (GitUpdate, []byte, error) {
 		return GitUpdate{}, nil, errors.New("invalid Git pack")
 	}
 	return update, pack, nil
+}
+
+// GitDecodeBody undoes the transfer compression git applies to any RPC
+// body over 1 KiB (a clone of a repository with a few dozen refs already
+// crosses it): a gzip body is inflated, to at most limit bytes, and the
+// Content-Encoding header dropped so the inspected, forwarded request is
+// the identity form GitHub accepts equally. Other encodings are left for
+// GitInspect to refuse.
+func GitDecodeBody(headers [][]string, body []byte, limit int) ([][]string, []byte, error) {
+	encoding := ""
+	for _, pair := range headers {
+		if len(pair) == 2 && strings.EqualFold(pair[0], "content-encoding") {
+			encoding = strings.ToLower(strings.TrimSpace(pair[1]))
+		}
+	}
+	if encoding != "gzip" && encoding != "x-gzip" {
+		return headers, body, nil
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, errors.New("invalid compressed Git request")
+	}
+	inflated, err := io.ReadAll(io.LimitReader(reader, int64(limit)+1))
+	if err != nil {
+		return nil, nil, errors.New("invalid compressed Git request")
+	}
+	if len(inflated) > limit {
+		return nil, nil, errors.New("request exceeds inspection limit")
+	}
+	kept := make([][]string, 0, len(headers))
+	for _, pair := range headers {
+		if len(pair) == 2 && strings.EqualFold(pair[0], "content-encoding") {
+			continue
+		}
+		kept = append(kept, pair)
+	}
+	return kept, inflated, nil
 }
 
 // GitInspection is the result of validating a smart HTTP request.
