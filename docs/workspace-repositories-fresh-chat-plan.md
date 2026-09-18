@@ -42,4 +42,10 @@ some other action changes the chat); the share itself succeeded.
 
 ## Progress log
 
-- 2026-09-18: opened.
+- 2026-09-18: opened; steps 1–3 done. `Environments` asks `github_list`
+  for every live workspace (deleted ones excepted) with its first chat as
+  the identifier; `save()` dispatches `warden-refresh-state`;
+  `TestEnvironmentsListRepositoriesBeforeTheFirstTurn` in
+  `chats/grants_test.go` (fails on main: the fresh chat's listing has no
+  repositories). `go test ./internal/chats/` and `tsc --noEmit` pass. Not
+  live-tested in a browser; not deployed.
