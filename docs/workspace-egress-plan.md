@@ -121,8 +121,25 @@ choice of its own, and says how many workspaces override it.
 3. Overrides live in the policy service keyed by sandbox ID, not in the
    engine's per-binding directory, so a regenerated sandbox keeps its mode.
 
+4. Only the owner chooses, end to end. The edge forwards `X-Warden-Role:
+   admin` on the owner's requests (stripped from clients like the other
+   identity headers) because `POST chats` cannot be gated by path; the
+   chat service refuses `network` on `POST chats` and the
+   `environments/{id}/network` route from anyone else (an edge-less
+   request is the owner's), and the edge also reserves the route.
+5. Wire values are the console's (`restricted` / `open`, `""` to follow);
+   the engine's `public` stays internal to the policy package.
+
 ## Progress log
 
 - 2026-09-18: worktree opened; first commit 4ed41a5 (console failure
-  messages, from the debugging of a click lost to a redeploy). Plan
-  written; steps 1–7 remain.
+  messages, from the debugging of a click lost to a redeploy).
+- 2026-09-18: steps 1–6 done. Policy 638e7be (`SetSandboxEgress`,
+  `egress-overrides.json`, scoped `egress`/`egress_set`; registry and
+  sharing tests). Chat service + edge dae64db (`Chat.Network`,
+  `network.go`, creation / route / fork copy / shared-workspace
+  inheritance; owner gate; `network_test.go`, edge tests). Web 2d094ac
+  (`network.ts`, `NetworkSelect`, New chat fieldset, panel section,
+  console override count). CLI 18a4070 (`--network`). Docs in this
+  commit. Full Go, web and CLI suites pass. Step 7 (live test on a cloned
+  home and on GKE) remains.
