@@ -174,37 +174,288 @@ func TestRenderApprovalsAndStatus(t *testing.T) {
 	}
 }
 
-func TestFrameShowsTailAndScrolls(t *testing.T) {
+// composed is the body compose lays out, without the final count.
+func composed(app *App, width int) []string {
+	body, _ := app.compose(width)
+	return body
+}
+
+// paints splits what the app wrote into one string per draw (each starts
+// by hiding the cursor).
+func paints(out string) []string {
+	parts := strings.Split(out, "\x1b[?25l")
+	return parts[1:]
+}
+
+func TestFrameSplitsCommittedFromLiveTail(t *testing.T) {
 	app := &App{Now: func() time.Time { return time.Unix(0, 0) }}
 	c := sampleChat()
-	for i := 0; i < 40; i++ {
-		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: fmt.Sprint("e", i), Role: "assistant", Text: fmt.Sprintf("line %d", i)})
-	}
 	app.state = &State{Chats: []*Chat{c}}
 	app.ChatID = "chat1"
 	app.live = true
-	f := app.frame(80, 12)
-	if len(f.Lines) != 10 || len(f.PromptLines) != 1 {
-		t.Fatalf("viewport rows %d prompt lines %d", len(f.Lines), len(f.PromptLines))
+	f := app.frame(80, 24)
+	// The user message and the completed command are final; the streaming
+	// reply and the pending approval are live.
+	committed := plain(strings.Join(f.Commit, "\n"))
+	live := plain(strings.Join(f.Lines, "\n"))
+	if !strings.Contains(committed, "Create a counter page") || !strings.Contains(committed, "line two") || strings.Contains(committed, "Done.") {
+		t.Fatalf("committed:\n%s", committed)
 	}
-	joined := plain(strings.Join(f.Lines, "\n"))
-	if !strings.Contains(joined, "bind sandbox port 8000") || !strings.Contains(joined, "line 39") {
-		t.Fatalf("tail not shown:\n%s", joined)
+	if !strings.Contains(live, "Done.") || !strings.Contains(live, "bind sandbox port 8000") || strings.Contains(live, "counter page") {
+		t.Fatalf("live:\n%s", live)
 	}
-	app.scroll = 20
-	joined = plain(strings.Join(app.frame(80, 12).Lines, "\n"))
-	if strings.Contains(joined, "line 39") || !strings.Contains(joined, "line 2") {
-		t.Fatalf("scroll not applied:\n%s", joined)
+	if f.Redraw || len(f.PromptLines) != 1 || len(f.Status) == 0 {
+		t.Fatalf("frame: redraw %v prompt %q status %q", f.Redraw, f.PromptLines, f.Status)
 	}
-	app.scroll = 10000
-	app.frame(80, 12)
-	if app.scroll > 200 {
-		t.Fatal("scroll not clamped")
-	}
+	// Nothing is final without a chat: the listing is all tail.
 	app.ChatID = "missing"
-	joined = plain(strings.Join(app.frame(80, 12).Lines, "\n"))
-	if !strings.Contains(joined, "no chat selected") || !strings.Contains(joined, "Local preview test") {
+	f = app.frame(80, 24)
+	joined := plain(strings.Join(f.Lines, "\n"))
+	if len(f.Commit) != 0 || !strings.Contains(joined, "no chat selected") || !strings.Contains(joined, "Local preview test") {
 		t.Fatalf("chat list when no chat selected:\n%s", joined)
+	}
+}
+
+func TestEntryFinality(t *testing.T) {
+	kids := map[string][]Entry{"task": {{ID: "k1", Role: "activity", Tool: &Tool{Kind: "command", Status: "running"}}}}
+	running := &Chat{Status: "running"}
+	idle := &Chat{Status: "idle"}
+	cases := []struct {
+		name  string
+		e     Entry
+		final bool
+	}{
+		{"user", Entry{Role: "user", Text: "hi", Delivery: "sent"}, true},
+		{"queued", Entry{Role: "user", Text: "hi", Delivery: "queued"}, false},
+		{"being handed over", Entry{Role: "user", Text: "hi", Delivery: "sending"}, false},
+		{"not delivered", Entry{Role: "user", Text: "hi", Delivery: "failed"}, true},
+		{"streaming", Entry{Role: "assistant", IsStreaming: true}, false},
+		{"reply", Entry{Role: "assistant", Text: "ok"}, true},
+		{"running tool", Entry{Role: "activity", Tool: &Tool{Kind: "command", Status: "running"}}, false},
+		{"background running", Entry{Role: "activity", Tool: &Tool{Kind: "command", Status: "running", Background: true}}, false},
+		{"done tool", Entry{Role: "activity", Tool: &Tool{Kind: "command", Status: "completed"}}, true},
+		{"failed tool", Entry{Role: "activity", Tool: &Tool{Kind: "command", Status: "failed"}}, true},
+		{"task with a running child", Entry{ID: "task", Role: "activity", Tool: &Tool{Kind: "task", Status: "completed"}}, false},
+		{"task alone", Entry{ID: "other", Role: "activity", Tool: &Tool{Kind: "task", Status: "completed"}}, true},
+		{"compacting", Entry{Role: "compaction", Compaction: &Compaction{Status: "running"}}, false},
+		{"compacted", Entry{Role: "compaction", Compaction: &Compaction{Status: "completed"}}, true},
+		{"aside running", Entry{Role: "aside", Aside: &Aside{Status: "running"}}, false},
+		{"thinking done", Entry{Role: "thinking", EndedAt: 2, CreatedAt: 1}, true},
+	}
+	for _, tc := range cases {
+		if got := entryFinal(running, tc.e, kids); got != tc.final {
+			t.Errorf("%s: final %v, want %v", tc.name, got, tc.final)
+		}
+	}
+	// "failed" is a real failure, final on an idle chat too; a message
+	// being handed over is live until the agent confirms it.
+	failed := Entry{ID: "u", Role: "user", Text: "hi", Delivery: "failed", Detail: "Delivery unconfirmed."}
+	if !entryFinal(idle, failed, nil) {
+		t.Fatal("a failed message on an idle chat is not final")
+	}
+	if entryFinal(idle, Entry{ID: "u", Role: "user", Text: "hi", Delivery: "sending"}, nil) {
+		t.Fatal("a message being handed over is final")
+	}
+}
+
+// TestPaintCommitsOnceAndRewritesTheTail feeds a sequence of chat states
+// through draw and checks the byte stream: no alternate screen or mouse
+// modes, a committed line written exactly once, the tail rewritten by
+// moving up the rows it took and clearing below, and a structural change
+// (a rewind) clearing the screen and reprinting once.
+func TestPaintCommitsOnceAndRewritesTheTail(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Unix(1_700_000_000, 0)
+	app := &App{Now: func() time.Time { return now }, Output: &out, Size: func() (int, int) { return 80, 24 }}
+	c := &Chat{ID: "c", Title: "Paint", Provider: "claude", Status: "running"}
+	c.Conversation.Entries = []Entry{
+		{ID: "u1", Role: "user", Text: "first question", Delivery: "sent"},
+		{ID: "m1", Role: "assistant", Text: "streaming answer", IsStreaming: true},
+	}
+	app.state = &State{Chats: []*Chat{c}}
+	app.ChatID = "c"
+	app.live = true
+	app.draw()
+	first := out.String()
+	for _, mode := range []string{"\x1b[?1049h", "\x1b[?1000h", "\x1b[?1006h", "\x1b[2J"} {
+		if strings.Contains(first, mode) {
+			t.Fatalf("first paint uses %q:\n%q", mode, first)
+		}
+	}
+	if !strings.Contains(first, "first question") || !strings.Contains(first, "streaming answer") || !strings.HasSuffix(first, "\x1b[?25h") {
+		t.Fatalf("first paint:\n%q", first)
+	}
+	if strings.Count(first, "\x1b[") > 0 && strings.Contains(first, "A\r") {
+		t.Fatalf("first paint moved the cursor up:\n%q", first)
+	}
+	// The reply grows: the user message is not written again, the tail is
+	// rewritten from its top (cursor up by the rows it took, clear below).
+	out.Reset()
+	c.Conversation.Entries[1].Text = "streaming answer, longer"
+	app.draw()
+	second := out.String()
+	if strings.Contains(second, "first question") || !strings.Contains(second, "answer, longer") {
+		t.Fatalf("second paint:\n%q", second)
+	}
+	up := app.screen.cursorLine
+	if up <= 0 || !strings.HasPrefix(second, fmt.Sprintf("\x1b[?25l\x1b[%dA\r\x1b[J", up)) {
+		t.Fatalf("second paint does not go up %d rows and clear:\n%q", up, second)
+	}
+	// The same state again writes nothing.
+	out.Reset()
+	app.draw()
+	if out.Len() != 0 {
+		t.Fatalf("an unchanged tail was written again:\n%q", out.String())
+	}
+	// The reply completes and a tool runs: the reply is committed (written
+	// once more, for good), the tool card is live.
+	out.Reset()
+	c.Conversation.Entries[1].IsStreaming = false
+	c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "t1", Role: "activity", Text: "go test ./...", Tool: &Tool{Kind: "command", Status: "running"}})
+	app.draw()
+	third := out.String()
+	if strings.Count(third, "answer, longer") != 1 || !strings.Contains(third, "go test") || strings.Contains(third, "\x1b[2J") {
+		t.Fatalf("third paint:\n%q", third)
+	}
+	if got := plain(strings.Join(app.screen.committed, "\n")); !strings.Contains(got, "answer, longer") || strings.Contains(got, "go test") {
+		t.Fatalf("committed after the reply ended:\n%s", got)
+	}
+	// A line committed by the first paint was never written again (the
+	// reply was rewritten while it streamed, then written once for good).
+	if n := strings.Count(first+second+third, "first question"); n != 1 {
+		t.Fatalf("a committed line was written %d times", n)
+	}
+	// A rewind takes the reply and the tool back: the committed prefix no
+	// longer matches, so the screen is cleared and the transcript printed
+	// again, once.
+	out.Reset()
+	c.Conversation.Entries = c.Conversation.Entries[:1]
+	c.Status = "idle"
+	app.draw()
+	fourth := out.String()
+	if strings.Count(fourth, "\x1b[2J\x1b[H") != 1 || strings.Count(fourth, "first question") != 1 || strings.Contains(fourth, "answer") {
+		t.Fatalf("rewind paint:\n%q", fourth)
+	}
+	if strings.Contains(fourth, "\x1b[3J") {
+		t.Fatal("the terminal's history was cleared")
+	}
+	// Ctrl+L clears and reprints too; the next paint is incremental again.
+	out.Reset()
+	app.handleKey(context.Background(), Key{Kind: KeyCtrlL})
+	app.draw()
+	if strings.Count(out.String(), "\x1b[2J") != 1 || app.redraw {
+		t.Fatalf("ctrl-l:\n%q", out.String())
+	}
+	out.Reset()
+	c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "u2", Role: "user", Text: "second question", Delivery: "sent"})
+	app.draw()
+	if strings.Contains(out.String(), "\x1b[2J") || strings.Count(out.String(), "second question") != 1 || strings.Contains(out.String(), "first question") {
+		t.Fatalf("after ctrl-l:\n%q", out.String())
+	}
+	// Exit leaves the cursor on a fresh line below the tail, the cursor
+	// shown, bracketed paste off, the title popped.
+	out.Reset()
+	app.finish()
+	if !strings.HasSuffix(out.String(), "\r\n\x1b[?2004l\x1b[?25h\x1b[23;0t") {
+		t.Fatalf("finish:\n%q", out.String())
+	}
+}
+
+// TestPaintCommitsEarlyWhenTheTailOutgrowsTheScreen streams a long reply
+// on a short terminal: the tail never exceeds the rows less one, the
+// cursor never moves up more than that, and the reply's earlier
+// paragraphs are written once although it is still streaming.
+func TestPaintCommitsEarlyWhenTheTailOutgrowsTheScreen(t *testing.T) {
+	var out bytes.Buffer
+	rows := 12
+	app := &App{Now: func() time.Time { return time.Unix(0, 0) }, Output: &out, Size: func() (int, int) { return 60, rows }}
+	c := &Chat{ID: "c", Title: "Long", Provider: "claude", Status: "running"}
+	c.Conversation.Entries = []Entry{{ID: "u1", Role: "user", Text: "tell me a story", Delivery: "sent"}, {ID: "m1", Role: "assistant", IsStreaming: true}}
+	app.state = &State{Chats: []*Chat{c}}
+	app.ChatID = "c"
+	app.live = true
+	var text strings.Builder
+	maxUp := 0
+	var writes []string          // what each paint wrote
+	committedAt := map[int]int{} // paragraph → the paint after which it was in the scrollback
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&text, "Paragraph %d of the story, with enough words to wrap at sixty columns once or twice.\n\n", i)
+		c.Conversation.Entries[1].Text = text.String()
+		out.Reset()
+		app.draw()
+		writes = append(writes, out.String())
+		if app.screen.tail > rows-1 {
+			t.Fatalf("paint %d: tail %d rows on a %d-row screen", i, app.screen.tail, rows)
+		}
+		maxUp = max(maxUp, app.screen.cursorLine)
+		committed := plain(strings.Join(app.screen.committed, "\n"))
+		for p := 0; p <= i; p++ {
+			if _, done := committedAt[p]; !done && strings.Contains(committed, fmt.Sprintf("Paragraph %d of", p)) {
+				committedAt[p] = i
+			}
+		}
+	}
+	if maxUp >= rows-1 {
+		t.Fatalf("cursor moved up %d rows", maxUp)
+	}
+	all := strings.Join(writes, "")
+	if strings.Contains(all, "\x1b[2J") {
+		t.Fatalf("a streaming reply caused a reprint:\n%q", all)
+	}
+	// Once in the scrollback, a paragraph was never written again.
+	for p := 0; p < 25; p++ {
+		at, ok := committedAt[p]
+		if !ok {
+			t.Fatalf("paragraph %d was never committed early", p)
+		}
+		for i := at + 1; i < len(writes); i++ {
+			if strings.Contains(writes[i], fmt.Sprintf("Paragraph %d of", p)) {
+				t.Fatalf("paragraph %d (committed by paint %d) written again by paint %d", p, at, i)
+			}
+		}
+	}
+	if committedAt[0] > 8 {
+		t.Fatalf("paragraph 0 was committed only at paint %d", committedAt[0])
+	}
+	// The reply ends: what was committed early stays, the rest is written
+	// once, and nothing was cleared.
+	out.Reset()
+	c.Conversation.Entries[1].IsStreaming = false
+	c.Status = "idle"
+	app.draw()
+	if strings.Contains(out.String(), "\x1b[2J") || strings.Contains(out.String(), "Paragraph 0 of") || !strings.Contains(out.String(), "Paragraph 29 of") {
+		t.Fatalf("end of the reply:\n%q", out.String())
+	}
+}
+
+func TestMultiLineNoticesArePrintedOnce(t *testing.T) {
+	var out bytes.Buffer
+	app := &App{Now: func() time.Time { return time.Unix(0, 0) }, Output: &out, Size: func() (int, int) { return 80, 24 }}
+	c := &Chat{ID: "c", Title: "Notices", Provider: "claude", Status: "idle", Conversation: Conversation{Entries: []Entry{{ID: "u1", Role: "user", Text: "hi", Delivery: "sent"}}}}
+	app.state = &State{Chats: []*Chat{c}}
+	app.ChatID = "c"
+	app.draw()
+	out.Reset()
+	app.setNotice("one line")
+	app.draw()
+	if !strings.Contains(plain(out.String()), "› one line") || len(app.prints) != 0 {
+		t.Fatalf("one-line notice:\n%q", out.String())
+	}
+	app.setNotice("first\nsecond")
+	if len(app.prints) != 1 {
+		t.Fatal("a multi-line notice was not queued to print")
+	}
+	out.Reset()
+	app.draw()
+	printed := plain(out.String())
+	if !strings.Contains(printed, "› first\r\n› second\r\n") || strings.Contains(printed, "one line") || len(app.prints) != 0 {
+		t.Fatalf("printed notice:\n%q", printed)
+	}
+	out.Reset()
+	c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "u2", Role: "user", Text: "again", Delivery: "sent"})
+	app.draw()
+	if strings.Contains(out.String(), "first") {
+		t.Fatalf("the printed notice was written again:\n%q", out.String())
 	}
 }
 
@@ -1027,44 +1278,41 @@ func TestPopupURLAndSummaries(t *testing.T) {
 	}
 }
 
-func TestScrollKeysAndWheel(t *testing.T) {
+func TestScrollKeysAreTheTerminals(t *testing.T) {
+	// A stray mouse report (a terminal left in mouse mode) is decoded and
+	// dropped rather than typed; the app asks for no mouse reports.
 	keys, rest := DecodeKeys([]byte("\x1b[<64;10;5M\x1b[<65;10;5M\x1b[<0;3;4m\x10\x0e"))
 	if len(rest) != 0 || len(keys) != 4 || keys[0].Kind != KeyWheelUp || keys[1].Kind != KeyWheelDown || keys[2].Kind != KeyCtrlP || keys[3].Kind != KeyCtrlN {
 		t.Fatalf("keys %+v rest %q", keys, rest)
 	}
 	app := &App{Now: func() time.Time { return time.Unix(0, 0) }, Output: io.Discard}
 	c := sampleChat()
-	for i := 0; i < 60; i++ {
-		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: fmt.Sprint("e", i), Role: "assistant", Text: fmt.Sprintf("line %d", i)})
-	}
 	app.state = &State{Chats: []*Chat{c}}
 	app.ChatID = "chat1"
-	app.frame(80, 22) // sets rows
 	ctx := context.Background()
-	app.handleKey(ctx, Key{Kind: KeyWheelUp})
-	app.handleKey(ctx, Key{Kind: KeyUp}) // Up recalls history (none yet), never scrolls
-	if app.scroll != 3 {
-		t.Fatalf("wheel+up scrolled %d", app.scroll)
-	}
-	app.handleKey(ctx, Key{Kind: KeyPageUp})
-	if app.scroll != 3+app.page() || app.page() != 18 {
-		t.Fatalf("page: %d (page %d)", app.scroll, app.page())
-	}
-	f := app.frame(80, 22)
-	if !strings.Contains(plain(strings.Join(f.Status, "\n")), "lines below") {
-		t.Fatalf("status lacks scroll indicator: %q", f.Status)
-	}
-	app.handleKey(ctx, Key{Kind: KeyEnd})
-	if app.scroll != 0 {
-		t.Fatal("End did not return to the tail")
-	}
-	// With text in the composer, Up recalls history instead of scrolling.
 	app.editor.Set("draft")
 	app.editor.Submit()
-	app.editor.Set("x")
+	for _, k := range []KeyKind{KeyWheelUp, KeyWheelDown, KeyPageUp, KeyPageDown} {
+		app.handleKey(ctx, Key{Kind: k})
+	}
+	if app.editor.Text() != "" || app.notice != "" {
+		t.Fatalf("scroll keys did something: %q %q", app.editor.Text(), app.notice)
+	}
+	// Up recalls history; Home and End move within the draft.
 	app.handleKey(ctx, Key{Kind: KeyUp})
-	if app.scroll != 0 || app.editor.Text() != "draft" {
-		t.Fatalf("history with text: scroll %d text %q", app.scroll, app.editor.Text())
+	if app.editor.Text() != "draft" {
+		t.Fatalf("up: %q", app.editor.Text())
+	}
+	app.handleKey(ctx, Key{Kind: KeyHome})
+	if app.editor.Cursor() != 0 {
+		t.Fatalf("home: cursor %d", app.editor.Cursor())
+	}
+	app.handleKey(ctx, Key{Kind: KeyEnd})
+	if app.editor.Cursor() != 5 {
+		t.Fatalf("end: cursor %d", app.editor.Cursor())
+	}
+	if !strings.Contains(helpText, "terminal's") || strings.Contains(helpText, "PgUp") {
+		t.Fatal("help still describes in-app scrolling")
 	}
 }
 
@@ -1137,14 +1385,12 @@ func TestMultilineComposerAndPaste(t *testing.T) {
 	if len(f.PromptLines) != 4 || f.CursorRow != 3 || f.CursorCol != 5 || !strings.HasPrefix(f.PromptLines[0], "› a") || !strings.HasPrefix(f.PromptLines[1], "  b") {
 		t.Fatalf("prompt %q row %d col %d", f.PromptLines, f.CursorRow, f.CursorCol)
 	}
-	if len(f.Lines)+1+len(f.PromptLines) != 24 {
-		t.Fatalf("frame does not fill the screen: %d lines", len(f.Lines))
-	}
 }
 
 // /find reaches what the rendered transcript hides: a subagent's entries
 // under its collapsed card, a person's command output past the fold, and
-// steps Ctrl+O hid, by expanding (Tab) or showing the steps first.
+// steps Ctrl+O hid, by expanding (Tab) or showing the steps first, then
+// prints the matching lines as it does for any match.
 func TestFindReachesNestedAndFoldedEntries(t *testing.T) {
 	c := sampleChat()
 	c.Status = "idle"
@@ -1158,7 +1404,6 @@ func TestFindReachesNestedAndFoldedEntries(t *testing.T) {
 			Email       string `json:"email"`
 			Name        string `json:"name"`
 		}{PrincipalID: "owner"}, Tool: &Tool{Kind: "command", Name: "Bash", Status: "completed"}},
-		Entry{ID: "tail", Role: "assistant", Text: strings.Repeat("filler line\n\n", 40)},
 	)
 	f := newFakeServer(t, State{Chats: []*Chat{c}})
 	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Size: func() (int, int) { return 80, 30 }}
@@ -1168,44 +1413,42 @@ func TestFindReachesNestedAndFoldedEntries(t *testing.T) {
 	app.frame(80, 30)
 	// The subagent's message, collapsed behind the card's count line.
 	app.submit(ctx, "/find lexer heading")
-	if !app.expanded || !strings.Contains(app.notice, "found") || !strings.Contains(app.notice, "output expanded") || app.scroll == 0 {
-		t.Fatalf("nested find: expanded %v scroll %d notice %q", app.expanded, app.scroll, app.notice)
+	if !app.expanded || !strings.HasPrefix(app.notice, `1 line(s) contain "lexer heading" (output expanded)`) || !strings.Contains(app.notice, "Explore › The tokenizer is in lex.go") {
+		t.Fatalf("nested find: expanded %v notice %q", app.expanded, app.notice)
 	}
 	// The person's command output past the fold (a command shows its last
 	// lines; the marker is on its first).
 	app.expanded = false
-	app.scroll = 0
 	app.submit(ctx, "/find scratch-marker")
-	if !app.expanded || !strings.Contains(app.notice, "found") {
+	if !app.expanded || !strings.Contains(app.notice, "(output expanded)") || !strings.Contains(app.notice, "?? scratch-marker.txt") {
 		t.Fatalf("folded find: expanded %v notice %q", app.expanded, app.notice)
 	}
 	// A step hidden by Ctrl+O.
-	app.expanded, app.quiet, app.scroll = false, true, 0
+	app.expanded, app.quiet = false, true
 	app.submit(ctx, "/find func tokenizer")
-	if app.quiet || !app.expanded || !strings.Contains(app.notice, "steps shown") {
+	if app.quiet || !app.expanded || !strings.Contains(app.notice, "(steps shown, output expanded)") {
 		t.Fatalf("quiet find: quiet %v expanded %v notice %q", app.quiet, app.expanded, app.notice)
 	}
 	// Still nothing for a term the chat does not have; nothing expands.
-	app.expanded, app.scroll = false, 0
+	app.expanded = false
 	app.submit(ctx, "/find zzzz-not-there")
-	if app.expanded || !strings.Contains(app.notice, "not found") {
+	if app.expanded || app.notice != `"zzzz-not-there" is not in the transcript` {
 		t.Fatalf("missing: expanded %v notice %q", app.expanded, app.notice)
 	}
 }
 
 // /search lists the hits of every chat as a numbered menu (Enter or
-// /search N opens one), and a jump opens the chat and scrolls to the
-// entry, expanding the transcript for an entry inside a subagent's card.
+// /search N opens one); a jump opens the chat and prints the entry's
+// lines — its card's for a subagent's entry, expanding the transcript.
 func TestSearchAcrossChatsListsAndJumps(t *testing.T) {
 	first := sampleChat()
 	first.Status, first.Conversation.Entries[2].IsStreaming = "idle", false
-	first.Conversation.Entries = append(first.Conversation.Entries, Entry{ID: "tail1", Role: "assistant", Text: strings.Repeat("filler\n\n", 40), CreatedAt: 5})
 	second := &Chat{ID: "chat2", Title: "Second chat", Provider: "claude", Status: "idle"}
 	second.Conversation.Entries = []Entry{
-		{ID: "u2", Role: "user", Text: "Find the tokenizer", CreatedAt: 1},
+		{ID: "u2", Role: "user", Text: "Find the tokenizer", CreatedAt: 1, Delivery: "sent"},
 		{ID: "agent", Role: "activity", Text: "Agent: look (Explore)", Detail: "lex.go", CreatedAt: 2, Tool: &Tool{Kind: "task", Name: "Agent", Status: "completed", Input: map[string]any{"subagent_type": "Explore"}}},
 		{ID: "child", Role: "assistant", Text: "The tokenizer-marker is in lex.go.", ParentID: "agent", CreatedAt: 3},
-		{ID: "tail2", Role: "assistant", Text: strings.Repeat("filler\n\n", 40), CreatedAt: 4},
+		{ID: "tail2", Role: "assistant", Text: "later", CreatedAt: 4},
 	}
 	f := newFakeServer(t, State{Chats: []*Chat{first, second}})
 	app := &App{Client: f.client(), ChatID: "chat1", Output: io.Discard, Size: func() (int, int) { return 80, 30 }}
@@ -1230,29 +1473,18 @@ func TestSearchAcrossChatsListsAndJumps(t *testing.T) {
 	if it := app.menu.Items[1]; !strings.Contains(it.Hint, "you ·") {
 		t.Fatalf("second row: %+v", it)
 	}
-	// Down, then Enter: the second hit (the user's message) opens chat 2.
+	// Down, then Enter: the second hit (the user's message) opens chat 2
+	// and prints the message.
 	app.handleKey(ctx, Key{Kind: KeyDown})
 	app.handleKey(ctx, Key{Kind: KeyEnter})
-	if app.ChatID != "chat2" || app.menu != nil || app.expanded || !strings.Contains(app.notice, "Second chat · you") {
+	if app.ChatID != "chat2" || app.menu != nil || app.expanded || !strings.HasPrefix(app.notice, "Second chat · you · ") || !strings.Contains(app.notice, "\nyou › Find the tokenizer") {
 		t.Fatalf("jump: chat %s expanded %v notice %q", app.ChatID, app.expanded, app.notice)
 	}
-	if app.scroll == 0 {
-		t.Fatalf("not scrolled to the message: %d", app.scroll)
-	}
-	// /search N: the subagent's message needs the transcript expanded.
-	app.scroll = 0
+	// /search N: the subagent's message needs the transcript expanded;
+	// its card is printed with the message under it.
 	app.submit(ctx, "/search 1")
-	if !app.expanded || !strings.Contains(app.notice, "output expanded") || app.scroll == 0 {
-		t.Fatalf("nested jump: expanded %v scroll %d notice %q", app.expanded, app.scroll, app.notice)
-	}
-	// The next frame shows the card at the top of the view, with the
-	// notice above the status line rather than under the tail.
-	fr := app.frame(80, 30)
-	if !strings.Contains(plainText(fr.Lines[0]), "Agent: look") {
-		t.Fatalf("card not at the top: %q", plainText(fr.Lines[0]))
-	}
-	if !strings.Contains(plainText(strings.Join(fr.Extra, "\n")), "Second chat · claude ·") {
-		t.Fatalf("jump notice not on screen:\n%s\n%s", strings.Join(fr.Lines, "\n"), strings.Join(fr.Extra, "\n"))
+	if !app.expanded || !strings.Contains(app.notice, "(output expanded):\n") || !strings.Contains(app.notice, "Agent: look (Explore)") || !strings.Contains(app.notice, "Explore › The tokenizer-marker is in lex.go.") {
+		t.Fatalf("nested jump: expanded %v notice %q", app.expanded, app.notice)
 	}
 	app.submit(ctx, "/search 9")
 	if !strings.Contains(app.notice, "N from the last search") {
@@ -1262,48 +1494,36 @@ func TestSearchAcrossChatsListsAndJumps(t *testing.T) {
 	if app.menu != nil || !strings.Contains(app.notice, "no chat mentions") {
 		t.Fatalf("no hits: %q", app.notice)
 	}
-	// A title hit opens the chat at its end.
+	// A title hit just opens the chat.
 	app.submit(ctx, "/search preview")
 	app.handleKey(ctx, Key{Kind: KeyEnter})
-	if app.ChatID != "chat1" || app.scroll != 0 || !strings.Contains(app.notice, "opened Local preview test") {
-		t.Fatalf("title jump: chat %s scroll %d notice %q", app.ChatID, app.scroll, app.notice)
+	if app.ChatID != "chat1" || !strings.Contains(app.notice, "opened Local preview test") {
+		t.Fatalf("title jump: chat %s notice %q", app.ChatID, app.notice)
 	}
 }
 
-// entryOffset is where an entry starts in the rendered transcript: the
-// lines of everything before it, a subagent's entries counted under
-// their card, queued messages last.
-func TestEntryOffset(t *testing.T) {
+// entryLines is an entry as the transcript renders it: a subagent's entry
+// comes with its card; a long block is cut around the match.
+func TestEntryLines(t *testing.T) {
 	c := &Chat{ID: "c", Provider: "claude"}
 	c.Conversation.Entries = []Entry{
 		{ID: "u", Role: "user", Text: "one\ntwo"},
 		{ID: "agent", Role: "activity", Text: "Agent: look", Tool: &Tool{Kind: "task", Status: "completed"}},
 		{ID: "child", Role: "assistant", Text: "inside", ParentID: "agent"},
-		{ID: "r", Role: "assistant", Text: "after"},
+		{ID: "r", Role: "assistant", Text: strings.Repeat("filler\n\n", 30) + "needle here\n\n" + strings.Repeat("after\n\n", 10)},
 	}
-	lines := RenderTranscript(c, 80, true)
-	find := func(s string) int {
-		for i, l := range lines {
-			if strings.Contains(plainText(l), s) {
-				return i
-			}
-		}
-		return -1
+	if got := entryLines(c, 80, true, "u", ""); len(got) != 2 || !strings.Contains(got[0], "you › one") {
+		t.Fatalf("first: %q", got)
 	}
-	if got := entryOffset(c, 80, true, "u"); got != 0 {
-		t.Fatalf("first: %d", got)
+	if got := entryLines(c, 80, true, "child", ""); len(got) < 2 || !strings.Contains(got[0], "Agent: look") || !strings.Contains(strings.Join(got, "\n"), "inside") {
+		t.Fatalf("nested: %q", got)
 	}
-	if got := entryOffset(c, 80, true, "agent"); got != find("Agent: look") {
-		t.Fatalf("card: %d, want %d", got, find("Agent: look"))
+	got := entryLines(c, 80, true, "r", "needle")
+	if len(got) > findLimit+2 || !strings.Contains(got[0], "…") || !strings.Contains(strings.Join(got, "\n"), "needle here") || !strings.Contains(got[len(got)-1], "more lines") {
+		t.Fatalf("long: %q", got)
 	}
-	if got := entryOffset(c, 80, true, "child"); got != find("Agent: look") {
-		t.Fatalf("nested: %d, want the card's %d", got, find("Agent: look"))
-	}
-	if got := entryOffset(c, 80, true, "r"); got != find("after") {
-		t.Fatalf("last: %d, want %d", got, find("after"))
-	}
-	if got := entryOffset(c, 80, true, "nope"); got != len(lines) {
-		t.Fatalf("unknown: %d", got)
+	if got := entryLines(c, 80, true, "nope", ""); got != nil {
+		t.Fatalf("unknown: %q", got)
 	}
 }
 
@@ -1316,28 +1536,29 @@ func TestTabExpandsFindAndCopy(t *testing.T) {
 	ctx := context.Background()
 	s, _ := app.Client.State(ctx)
 	app.state = s
-	before := len(app.compose(80))
+	before := len(composed(app, 80))
 	app.handleKey(ctx, Key{Kind: KeyTab})
-	after := len(app.compose(80))
+	after := len(composed(app, 80))
 	if !app.expanded || after <= before {
 		t.Fatalf("Tab did not expand: %d -> %d", before, after)
 	}
-	app.frame(80, 30)
+	// /find prints the matching lines as they show (the terminal's own
+	// search jumps to them).
 	app.submit(ctx, "/find counter page")
-	if app.scroll == 0 || !strings.Contains(app.notice, "found") {
-		t.Fatalf("find: scroll %d notice %q", app.scroll, app.notice)
+	if !strings.Contains(app.notice, `1 line(s) contain "counter page"`) || !strings.Contains(app.notice, "you › Create a counter page") || len(app.prints) != 1 {
+		t.Fatalf("find: %q", app.notice)
 	}
-	// The found line heads the next frame, the notice above the status.
-	if fr := app.frame(80, 30); !strings.Contains(plainText(fr.Lines[0]), "counter page") || !strings.Contains(plainText(strings.Join(fr.Extra, "\n")), "found \"counter page\"") {
-		t.Fatalf("find frame:\n%s\n%s", fr.Lines[0], strings.Join(fr.Extra, "\n"))
+	app.submit(ctx, "/find output line")
+	if !strings.HasPrefix(app.notice, `20 line(s) contain "output line"`) || strings.Count(app.notice, "\n") != 20 {
+		t.Fatalf("find many: %q", app.notice)
 	}
-	app.submit(ctx, "/find Done.")
-	if !strings.Contains(app.notice, "on screen") && !strings.Contains(app.notice, "found") {
-		t.Fatalf("find visible: %q", app.notice)
+	app.submit(ctx, "/find line")
+	if !strings.HasPrefix(app.notice, `21 lines contain "line"; the first 20`) || strings.Count(app.notice, "\n") != 20 {
+		t.Fatalf("find more than the limit: %q", app.notice)
 	}
-	app.submit(ctx, "/find zzzz-not-there")
-	if !strings.Contains(app.notice, "not found") {
-		t.Fatalf("find missing: %q", app.notice)
+	app.submit(ctx, "/find nowhere-to-be-found")
+	if app.notice != `"nowhere-to-be-found" is not in the transcript` {
+		t.Fatalf("find none: %q", app.notice)
 	}
 	app.submit(ctx, "/copy")
 	if !strings.HasPrefix(copied, "Done.") || !strings.Contains(app.notice, "copied") {
@@ -1488,9 +1709,6 @@ func TestSlashMenuCompletesAndRuns(t *testing.T) {
 	fr := app.frame(80, 24)
 	if len(fr.Extra) != 2 || !strings.Contains(plain(fr.Extra[0]), "/switch N") || !strings.Contains(plain(fr.Extra[0]), "open chat N") {
 		t.Fatalf("menu rows: %q", fr.Extra)
-	}
-	if len(fr.Lines)+len(fr.Extra)+1+len(fr.PromptLines) != 24 {
-		t.Fatal("frame with a menu does not fill the screen")
 	}
 	app.handleKey(ctx, Key{Kind: KeyTab})
 	if app.editor.Text() != "/switch " || app.editor.Cursor() != 8 {
@@ -2065,9 +2283,9 @@ func TestKeyboardSet(t *testing.T) {
 	// Ctrl+O hides tool steps and thinking, and says so in the status.
 	c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: "th", Role: "thinking", Text: "hmm"})
 	app.state = &State{Chats: []*Chat{c}}
-	before := plain(strings.Join(app.compose(80), "\n"))
+	before := plain(strings.Join(composed(app, 80), "\n"))
 	app.handleKey(ctx, Key{Kind: KeyCtrlO})
-	after := plain(strings.Join(app.compose(80), "\n"))
+	after := plain(strings.Join(composed(app, 80), "\n"))
 	if !app.quiet || !strings.Contains(before, "http.server") || strings.Contains(after, "http.server") || strings.Contains(after, "Thought") || !strings.Contains(after, "Create a counter page") {
 		t.Fatalf("ctrl-o:\n%s", after)
 	}
@@ -2078,13 +2296,15 @@ func TestKeyboardSet(t *testing.T) {
 	if app.quiet {
 		t.Fatal("/verbose did not toggle back")
 	}
-	// Ctrl+L repaints from a cleared screen.
+	// Ctrl+L clears the screen and prints the transcript again.
 	var out bytes.Buffer
 	app.Output = &out
+	app.draw()
+	out.Reset()
 	app.handleKey(ctx, Key{Kind: KeyCtrlL})
 	app.draw()
-	if !strings.Contains(out.String(), "\x1b[2J") || app.redraw {
-		t.Fatal("ctrl-l did not clear the screen")
+	if !strings.Contains(out.String(), "\x1b[2J") || app.redraw || !strings.Contains(out.String(), "Create a counter page") {
+		t.Fatalf("ctrl-l did not clear the screen and reprint:\n%q", out.String())
 	}
 	out.Reset()
 	app.draw()
@@ -2120,21 +2340,11 @@ func TestKeyboardSet(t *testing.T) {
 	if app.search != nil || app.editor.Text() != "git status" {
 		t.Fatalf("esc restores the draft: %q", app.editor.Text())
 	}
-	// Up with an empty draft recalls the last prompt; Home/End scroll.
+	// Up with an empty draft recalls the last prompt.
 	app.editor.Clear()
 	app.handleKey(ctx, Key{Kind: KeyUp})
 	if app.editor.Text() != "git push" {
 		t.Fatalf("up: %q", app.editor.Text())
-	}
-	app.editor.Clear()
-	app.frame(80, 24)
-	app.handleKey(ctx, Key{Kind: KeyHome})
-	if app.scroll == 0 {
-		t.Fatal("home did not scroll to the top")
-	}
-	app.handleKey(ctx, Key{Kind: KeyEnd})
-	if app.scroll != 0 {
-		t.Fatal("end did not follow")
 	}
 }
 
@@ -2340,7 +2550,7 @@ func TestRenderToolEntries(t *testing.T) {
 			t.Fatalf("missing %q in:\n%s", want, collapsed)
 		}
 	}
-	for _, unwanted := range []string{"│ line 1\n", "diff --git", "+++ b/notes.txt", "--- a/notes.txt", "│ 1\talpha", "│ Found 3 files", "port: 3000"} {
+	for _, unwanted := range []string{"│ line 1\n", "diff --git", "+++ b/notes.txt", "--- a/notes.txt", "│ 1    alpha", "│ Found 3 files", "port: 3000"} {
 		if strings.Contains(collapsed, unwanted) {
 			t.Fatalf("unexpected %q in:\n%s", unwanted, collapsed)
 		}
@@ -2350,7 +2560,7 @@ func TestRenderToolEntries(t *testing.T) {
 		t.Fatalf("diff colours:\n%s", styled)
 	}
 	expanded := plain(strings.Join(RenderTranscript(c, 60, true), "\n"))
-	for _, want := range []string{"│ line 1\n", "│ line 20", "│ 1\talpha", "│ Found 3 files", "│ c\n", "│ port: 3000", "│ title: Preview"} {
+	for _, want := range []string{"│ line 1\n", "│ line 20", "│ 1    alpha", "│ Found 3 files", "│ c\n", "│ port: 3000", "│ title: Preview"} {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("missing %q when expanded in:\n%s", want, expanded)
 		}
@@ -2700,7 +2910,7 @@ func TestDiffCommandShowsChangesFoldedAndExpanded(t *testing.T) {
 	if app.diff == nil || app.notice != "2 changed file(s); Tab expands the hunks, /diff hides them" {
 		t.Fatalf("diff: %v %q", app.diff != nil, app.notice)
 	}
-	folded := plain(strings.Join(app.compose(100), "\n"))
+	folded := plain(strings.Join(composed(app, 100), "\n"))
 	for _, want := range []string{"Changes since this chat began: 2 file(s), +2 −1", "src/app.go  +2 −1", "logo.png  binary", "Tab expands the hunks"} {
 		if !strings.Contains(folded, want) {
 			t.Fatalf("folded lacks %q:\n%s", want, folded)
@@ -2710,7 +2920,7 @@ func TestDiffCommandShowsChangesFoldedAndExpanded(t *testing.T) {
 		t.Fatal("folded view shows hunks")
 	}
 	app.handleKey(ctx, Key{Kind: KeyTab})
-	expanded := plain(strings.Join(app.compose(100), "\n"))
+	expanded := plain(strings.Join(composed(app, 100), "\n"))
 	for _, want := range []string{"@@ -1,2 +1,3 @@", "-old", "+new", "+more", "(not in the diff)"} {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expanded lacks %q:\n%s", want, expanded)
@@ -3943,15 +4153,15 @@ func TestFrameBudgetsStatusRows(t *testing.T) {
 	app.ChatID = "chat1"
 	app.live = true
 	wide := app.frame(200, 24)
-	if len(wide.Status) != 1 || len(wide.Lines) != 24-1-len(wide.PromptLines) {
-		t.Fatalf("wide frame: %d status rows, %d lines", len(wide.Status), len(wide.Lines))
+	if len(wide.Status) != 1 || !strings.Contains(plain(strings.Join(wide.Lines, "\n")), "bind sandbox port") || len(wide.Lines)+len(wide.Status)+len(wide.PromptLines) > 23 {
+		t.Fatalf("wide frame: %d status rows, live lines %q", len(wide.Status), wide.Lines)
 	}
 	narrow := app.frame(50, 24)
 	if len(narrow.Status) < 2 || len(narrow.Status) > StatusMaxRows {
 		t.Fatalf("narrow frame: %d status rows: %q", len(narrow.Status), narrow.Status)
 	}
-	if len(narrow.Lines)+len(narrow.Status)+len(narrow.PromptLines)+len(narrow.Extra) != 24 {
-		t.Fatalf("narrow frame does not fill the screen: %d lines, %d status, %d prompt, %d extra", len(narrow.Lines), len(narrow.Status), len(narrow.PromptLines), len(narrow.Extra))
+	if tail := len(narrow.Lines) + len(narrow.Notice) + len(narrow.Status) + len(narrow.PromptLines) + len(narrow.Extra); tail > 23 {
+		t.Fatalf("narrow frame's tail is taller than the screen: %d lines, %d status, %d prompt, %d extra", len(narrow.Lines), len(narrow.Status), len(narrow.PromptLines), len(narrow.Extra))
 	}
 	joined := plain(strings.Join(narrow.Status, "\n"))
 	for _, want := range []string{"Local preview test", "codex", "12k tokens", "$0.20", "ctx 46k/200k (23%)", "1 approval", "/help"} {
@@ -3968,12 +4178,6 @@ func TestFrameBudgetsStatusRows(t *testing.T) {
 	short := app.frame(30, 8)
 	if len(short.Status) != 2 {
 		t.Fatalf("short screen: %d status rows: %q", len(short.Status), short.Status)
-	}
-	// The scroll hint is a part too; it goes away once the scroll is clamped.
-	app.scroll = 10000
-	f := app.frame(50, 24)
-	if strings.Contains(plain(strings.Join(f.Status, "\n")), "lines below") == (app.scroll == 0) {
-		t.Fatalf("scroll hint disagrees with scroll %d: %q", app.scroll, f.Status)
 	}
 }
 
@@ -4008,6 +4212,161 @@ func TestWrapMeasuresVisibleWidth(t *testing.T) {
 	if len(cut) != 2 || plain(cut[0]) != strings.Repeat("x", 20) || plain(cut[1]) != strings.Repeat("x", 20) {
 		t.Fatalf("over-long token: %q", cut)
 	}
+}
+
+// Widths are columns, not runes: wide East Asian text and emoji take two,
+// combining marks and variation selectors none, a tab is expanded, so a
+// line the painter counts as one row is one row on the terminal.
+func TestColumnWidths(t *testing.T) {
+	cases := map[string]int{
+		"abc":         3,
+		"日本語":         6,
+		"é":          1, // e + combining acute
+		"👍":           2,
+		"👍🏽":          2, // skin tone modifier
+		"⚠":           1, // a symbol without VS16
+		"⚠️":          2, // with VS16: the emoji picture
+		"✓ ok":        4,
+		"a‍b":         2, // zero-width joiner
+		"\x1b[31mred": 3,
+	}
+	for s, want := range cases {
+		if got := visibleWidth(s); got != want {
+			t.Errorf("width(%q) = %d, want %d", s, got, want)
+		}
+	}
+	if got := sanitize("1\talpha"); got != "1    alpha" {
+		t.Errorf("tab: %q", got)
+	}
+	// wrap breaks by columns; clip cuts by columns and keeps a wide rune whole.
+	lines := wrap("日本語 日本語 日本語", 13, "", "")
+	if len(lines) != 2 || lines[0] != "日本語 日本語" {
+		t.Errorf("wrap wide: %q", lines)
+	}
+	if got := plain(clip("ab日本語", 4)); got != "ab日" {
+		t.Errorf("clip wide: %q", got)
+	}
+	if got := plain(clip("abcdef", 3)); got != "abc" {
+		t.Errorf("clip: %q", got)
+	}
+}
+
+// The todo list is a live panel at the bottom of the transcript, never
+// committed, above the queued messages; it goes away once the chat is
+// idle with every item done.
+func TestTodoListIsALivePanel(t *testing.T) {
+	c := &Chat{ID: "c", Title: "Todo", Provider: "claude", Status: "running"}
+	c.Conversation.Entries = []Entry{
+		{ID: "u1", Role: "user", Text: "plan it", Delivery: "sent"},
+		{ID: "todo", Role: "activity", Text: "Todo list · 1 of 2 done", Detail: "[x] Parse\n[>] Test\n", Tool: &Tool{Kind: "todo", Status: "completed"}},
+		{ID: "a1", Role: "activity", Text: "go test", Detail: "ok", Tool: &Tool{Kind: "command", Status: "completed"}},
+		{ID: "u2", Role: "user", Text: "later", Delivery: "queued"},
+	}
+	blocks := RenderBlocks(c, 80, false)
+	if len(blocks) != 4 || !blocks[0].Final || !blocks[1].Final || blocks[2].Final || blocks[3].Final {
+		t.Fatalf("blocks: %+v", blocks)
+	}
+	if got := plain(strings.Join(blocks[2].Lines, "\n")); !strings.Contains(got, "Todo list") || !strings.Contains(got, "▸ Test") {
+		t.Fatalf("todo panel:\n%s", got)
+	}
+	if got := plain(strings.Join(blocks[3].Lines, "\n")); !strings.Contains(got, "you › later") {
+		t.Fatalf("queued last:\n%s", got)
+	}
+	// Every write replaces the entry in place without a reprint: the
+	// committed prefix (the message and the command) is unchanged.
+	app := &App{Now: func() time.Time { return time.Unix(0, 0) }, Output: io.Discard, Size: func() (int, int) { return 80, 24 }}
+	app.state = &State{Chats: []*Chat{c}}
+	app.ChatID = "c"
+	app.draw()
+	var out bytes.Buffer
+	app.Output = &out
+	c.Conversation.Entries[1].Detail = "[x] Parse\n[x] Test\n"
+	c.Conversation.Entries[1].Text = "Todo list · 2 of 2 done"
+	app.draw()
+	if strings.Contains(out.String(), "\x1b[2J") || !strings.Contains(plain(out.String()), "2 of 2 done") {
+		t.Fatalf("todo write:\n%q", out.String())
+	}
+	// Idle with everything done: the panel goes, nothing is reprinted.
+	out.Reset()
+	c.Status = "idle"
+	c.Conversation.Entries = c.Conversation.Entries[:3]
+	app.draw()
+	if strings.Contains(out.String(), "\x1b[2J") || strings.Contains(plain(out.String()), "Todo list") {
+		t.Fatalf("idle and done:\n%q", out.String())
+	}
+	if !todoDone(c.Conversation.Entries[1]) || todoDone(Entry{Detail: "[ ] one\n"}) {
+		t.Fatal("todoDone")
+	}
+}
+
+// A burst of resize events (a window being dragged) reprints the
+// transcript once, after it settles, and only when the size changed.
+func TestResizeBurstReprintsOnce(t *testing.T) {
+	c := sampleChat()
+	c.Status = "idle"
+	c.Conversation.Entries[2].IsStreaming = false
+	f := newFakeServer(t, State{Chats: []*Chat{c}})
+	var mu sync.Mutex
+	var out bytes.Buffer
+	w, h := 100, 30
+	size := func() (int, int) { mu.Lock(); defer mu.Unlock(); return w, h }
+	setSize := func(nw, nh int) { mu.Lock(); w, h = nw, nh; mu.Unlock() }
+	pr, pw := io.Pipe()
+	resize := make(chan struct{}, 1)
+	app := &App{Client: f.client(), ChatID: "chat1", Input: pr, Output: &syncWriter{w: &out, mu: &mu}, Size: size, Resize: resize, Now: time.Now}
+	old := resizeSettle
+	resizeSettle = 30 * time.Millisecond
+	defer func() { resizeSettle = old }()
+	done := make(chan error, 1)
+	go func() { done <- app.Run(context.Background()) }()
+	time.Sleep(150 * time.Millisecond)
+	count := func() int { mu.Lock(); defer mu.Unlock(); return strings.Count(out.String(), "\x1b[2J") }
+	if count() != 0 {
+		t.Fatal("the first paint cleared the screen")
+	}
+	setSize(80, 24)
+	for i := 0; i < 3; i++ {
+		resize <- struct{}{}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if n := count(); n != 1 {
+		t.Fatalf("a resize burst reprinted %d times", n)
+	}
+	resize <- struct{}{} // the same size again: nothing to reprint
+	time.Sleep(100 * time.Millisecond)
+	if n := count(); n != 1 {
+		t.Fatalf("an unchanged size reprinted: %d", n)
+	}
+	pw.Write([]byte{0x04}) // Ctrl+D quits
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	mu.Lock()
+	final := out.String()
+	mu.Unlock()
+	for _, mode := range []string{"\x1b[?1049", "\x1b[?1000", "\x1b[?1006", "\x1b[3J"} {
+		if strings.Contains(final, mode) {
+			t.Fatalf("Run wrote %q", mode)
+		}
+	}
+	if !strings.HasSuffix(final, "\x1b[?2004l\x1b[?25h\x1b[23;0t") || !strings.HasPrefix(final, "\x1b[?2004h\x1b[22;0t") {
+		t.Fatalf("Run's modes:\n%q", final)
+	}
+}
+
+// syncWriter serialises writes to a buffer read by the test.
+type syncWriter struct {
+	w  *bytes.Buffer
+	mu *sync.Mutex
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }
 
 // A message's delivery shows only when there is something to say: the

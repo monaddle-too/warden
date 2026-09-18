@@ -13,8 +13,9 @@ import (
 // subagent's nested entries and the person's own commands included) and
 // lists the hits, numbered, with the chat's title, where the match is
 // and when; /search N, or Enter on a listed hit, opens that chat and
-// scrolls to the entry, expanding the transcript when the entry sits
-// inside a subagent's card or past a fold.
+// prints the entry (the transcript is in the terminal's scrollback),
+// expanding the transcript when the entry sits inside a subagent's card
+// or past a fold.
 
 // SearchHit mirrors chats.SearchHit: one match of a search across chats.
 type SearchHit struct {
@@ -131,9 +132,12 @@ func (a *App) searchCommand(ctx context.Context, arg string) {
 	a.setNotice(fmt.Sprintf("%d hits for %q%s", len(res.Hits), arg, more))
 }
 
-// jumpToHit opens the hit's chat and scrolls to its entry, showing what
-// hides it first: the steps (Ctrl+O) and the full transcript (Tab) for
-// an entry in a subagent's card or past a fold.
+// jumpToHit opens the hit's chat and prints the entry — its rendered
+// lines, or its card's for a subagent's entry — under a line saying
+// where it is, the way /find prints its matches: the transcript is in
+// the terminal's scrollback, so that is where the person then finds it.
+// What hides the entry is shown first: the steps (Ctrl+O) and the full
+// transcript (Tab) for an entry in a subagent's card or past a fold.
 func (a *App) jumpToHit(h SearchHit) {
 	if a.ChatID != h.ChatID {
 		a.selectChat(h.ChatID)
@@ -145,7 +149,6 @@ func (a *App) jumpToHit(h SearchHit) {
 	}
 	title := sanitize(c.Title)
 	if h.EntryID == "" {
-		a.scroll = 0
 		a.setNotice("opened " + title)
 		return
 	}
@@ -158,58 +161,24 @@ func (a *App) jumpToHit(h SearchHit) {
 		a.expanded = true
 		opened = append(opened, "output expanded")
 	}
-	notice := fmt.Sprintf("%s · %s · %s", title, hitWhere(h), LocalTime(h.CreatedAt))
+	head := fmt.Sprintf("%s · %s · %s", title, hitWhere(h), LocalTime(h.CreatedAt))
 	if len(opened) > 0 {
-		notice += " (" + strings.Join(opened, ", ") + ")"
+		head += " (" + strings.Join(opened, ", ") + ")"
 	}
-	a.setNotice(notice)
-	width, _ := a.viewSize()
-	body := a.layout(width, false)
-	a.scrollTo(body, entryOffset(a.visible(c), width, a.expanded, h.EntryID))
+	width, _ := a.size()
+	lines := entryLines(a.visible(c), width, a.expanded, h.EntryID, h.Snippet.Match)
+	if len(lines) == 0 {
+		a.setNotice(head + " — the entry is not shown (hidden by Ctrl+O?)")
+		return
+	}
+	a.setNotice(head + ":\n" + strings.Join(lines, "\n"))
 }
 
-// scrollTo scrolls so that line i of body (the transcript as layout lays
-// it out without the notice) is the first line of the next frame, with
-// the notice just set counted among the lines above the status line.
-func (a *App) scrollTo(body []string, i int) {
-	_, rows := a.viewSize()
-	a.scroll = max(1, len(body)-rows-i)
-}
-
-// viewSize is the width and the transcript rows the next frame will
-// have: the terminal's size less the status bar's rows, the composer and
-// what sits between them (the notice while scrolled; the menu is closed
-// by then), as frame computes them.
-func (a *App) viewSize() (width, rows int) {
-	width, height := 100, 0
-	if a.Size != nil {
-		if w, h := a.Size(); w > 0 {
-			width, height = w, h
-		}
-	}
-	if height < 8 {
-		rows = a.rows
-		if rows <= 0 {
-			rows = 20
-		}
-		return width, rows
-	}
-	a.scroll = 1 // as it will be: the notice among the extra lines
-	extra := a.extraLines(width)
-	if len(extra) > height/2 {
-		extra = extra[:height/2]
-	}
-	prompt, _, _ := a.promptLines(width, min(6, height/3))
-	status := a.statusRows(width, height)
-	return width, max(1, height-len(status)-len(prompt)-len(extra))
-}
-
-// entryOffset is the line at which entry id starts in the rendered
-// transcript (RenderTranscript with the same width and expansion) — for
-// a subagent's entry, where its card starts, since its lines sit under
-// the card; the end of the transcript when the entry is unknown.
-func entryOffset(c *Chat, width int, expanded bool, id string) int {
-	top, _ := nestEntries(c.Conversation.Entries)
+// entryLines is entry id as the transcript renders it — a subagent's
+// entry with its card, since its lines sit under the card — cut to
+// findLimit lines around the first line containing match (the whole
+// head of the block when none does); nil when the entry is not shown.
+func entryLines(c *Chat, width int, expanded bool, id, match string) []string {
 	byID := map[string]Entry{}
 	for _, e := range c.Conversation.Entries {
 		byID[e.ID] = e
@@ -228,37 +197,35 @@ func entryOffset(c *Chat, width int, expanded bool, id string) int {
 		seen[anchor] = true
 		anchor = e.ParentID
 	}
-	// The transcript up to the anchor: the cards before it in the order
-	// the transcript shows them, with the entries nested under them.
-	before := map[string]bool{}
-	found := false
-	for _, e := range queuedLast(top) {
-		if e.ID == anchor {
-			found = true
-			break
-		}
-		before[e.ID] = true
+	e, ok := byID[anchor]
+	if !ok {
+		return nil
 	}
-	if !found {
-		return len(RenderTranscript(c, width, expanded))
+	_, children := nestEntries(c.Conversation.Entries)
+	var lines []string
+	for _, l := range renderEntry(c, e, width, expanded, children, "") {
+		lines = append(lines, truncate(strings.TrimRight(plainText(l), " "), max(20, width-4)))
 	}
-	prefix := *c
-	prefix.Conversation.Entries = nil
-	for _, e := range c.Conversation.Entries {
-		root := e.ID
-		for depth := 0; depth < 64; depth++ {
-			p, ok := byID[root]
-			if !ok || p.ParentID == "" {
+	if len(lines) <= findLimit {
+		return lines
+	}
+	// Around the match: from a few lines above it.
+	from := 0
+	if needle := strings.ToLower(strings.TrimSpace(match)); needle != "" {
+		for i, l := range lines {
+			if strings.Contains(strings.ToLower(l), needle) {
+				from = max(0, i-3)
 				break
 			}
-			if _, ok := byID[p.ParentID]; !ok {
-				break
-			}
-			root = p.ParentID
-		}
-		if before[root] {
-			prefix.Conversation.Entries = append(prefix.Conversation.Entries, e)
 		}
 	}
-	return len(RenderTranscript(&prefix, width, expanded))
+	to := min(len(lines), from+findLimit)
+	out := append([]string{}, lines[from:to]...)
+	if from > 0 {
+		out = append([]string{dim + "…" + reset}, out...)
+	}
+	if to < len(lines) {
+		out = append(out, dim+fmt.Sprintf("… %d more lines (your terminal's search finds them)", len(lines)-to)+reset)
+	}
+	return out
 }

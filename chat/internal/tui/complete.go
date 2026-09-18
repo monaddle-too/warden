@@ -65,7 +65,7 @@ var Commands = []Command{
 	{"style", "[default|Explanatory|Learning]", "Claude's output style for the next session"},
 	{"bell", "[on|off]", "ring the terminal bell when the agent finishes, asks or fails"},
 	{"copy", "", "put the agent's last reply on the clipboard"},
-	{"find", "TEXT", "scroll to the previous line containing TEXT (a subagent's steps and folded output too)"},
+	{"find", "TEXT", "print the transcript lines containing TEXT, a subagent's steps and folded output too (your terminal's search jumps to them)"},
 	{"search", "TEXT | N", "search every chat's title and transcript; N opens a listed hit"},
 	{"expand", "", "toggle full tool output and diffs (Tab)"},
 	{"verbose", "", "show or hide tool steps and thinking (Ctrl+O)"},

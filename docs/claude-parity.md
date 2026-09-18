@@ -109,6 +109,11 @@ Most important first. Each item lands on both surfaces unless marked.
 15. **Long tail.** Fork a session, `/btw`, prompt suggestions, output
     styles, status line and terminal title, desktop notifications, `/cost`
     and `/context` breakdowns, share links (see the chat-sharing plan).
+16. **Scrollback rendering** (TUI only). Render as Claude Code's TUI
+    does: into the terminal's normal buffer, final entries written once
+    and left in the scrollback, only a live tail redrawn in place; no
+    alternate screen, no mouse tracking, so the terminal's own scrolling,
+    search and text selection work on the whole conversation.
 
 Out of scope: `/login`, `/logout`, `/upgrade`, `/doctor`, `/config`,
 `/theme`, `/terminal-setup`, `/bug`, `/release-notes`, the auto-updater,
@@ -442,6 +447,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
 - [x] 13 Per-user instructions and memory — merged to main a5012c0 (2026-09-18); verified as the Item 13 section says.
 - [ ] 14 Project MCP, OAuth, plugins.
+- [x] 16 Scrollback rendering (Claude-style TUI) — merged to main 2445764 (2026-09-18); verified as the Item 16 section says. Not deployed to `~/.warden`.
 - [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
 
 ### Round 2 C: live activity, nesting-aware search and export, TUI search across chats
@@ -505,9 +511,11 @@ Decisions:
    unknown fields survive); a card left out (no steps) takes its subagent
    with it; a `!` card is "### Command by You — cmd" and stays in the
    messages-only export (it is the person's, not the agent's working).
-5. TUI `/find` searches the rendered lines as before; when they lack the
-   term but the entries have it, it shows the steps (Ctrl+O) and/or
-   expands the transcript (Tab), says so in the notice, and scrolls.
+5. TUI `/find` prints the rendered lines that hold the term (item 16's
+   form; the terminal's own search jumps to them); when they lack it but
+   the entries have it, it shows the steps (Ctrl+O) and/or expands the
+   transcript (Tab) first — which reprints the transcript — and says so
+   in the notice ("(output expanded)").
 6. **R2.9** `GET chats/search?q=&limit=` (`chats/search.go`) searches the
    store: every chat (archived too), titles first then entries newest
    chat and newest entry first, one hit per entry, case-insensitive with
@@ -516,14 +524,16 @@ Decisions:
    `more`; hits carry the entry's role, sender, `parentID` and a snippet
    (`before`/`match`/`after`, as `search.ts`'s). The TUI's `/search TEXT`
    lists the hits as a numbered menu (`Insert: /search N`, Enter runs
-   it); `/search N` opens the chat and scrolls to the entry's card
-   (`entryOffset` renders the transcript up to it), expanding when the
-   entry is nested or the match is in a fold.
-7. While the view is scrolled the TUI's notice goes above the status line
-   (`extraLines`) instead of under the transcript's tail, where `/find`
-   and `/search` jumps used to hide their own message; `find` and the
-   jumps measure the transcript without the notice (`layout`) and size
-   the scroll by the next frame's rows (`viewSize`, `scrollTo`).
+   it); `/search N` opens the chat and prints the entry as the transcript
+   renders it — its card with its steps for a subagent's entry, cut to
+   `findLimit` lines around the match (`entryLines`) — under a line
+   saying where it is, expanding the transcript first when the entry is
+   nested or the match is in a fold. This bundle was built on the
+   alternate-screen TUI (a jump scrolled the entry to the top, and the
+   notice moved above the status line while scrolled); item 16 landed
+   in the meantime and put the transcript into the terminal's scrollback,
+   which the app cannot scroll, so a jump prints instead — the same
+   thing `/find` does, and what Claude Code's local commands do.
 
 Verified: `go vet`, `gofmt -l`, `go test ./...`, `pnpm build`, `pnpm test`
 (228 tests); live on `~/.warden-p15` with a Claude chat: a turn running
@@ -542,14 +552,20 @@ transcripts and the prompts) opened the three Explore cards that held it
 and left the fourth closed, 16 matches, match 5 the nested grep step;
 ⌘F "axolotl" (only past a `!` card's fold) unfolded that card alone; ⌘K
 "zebrafish" listed "Agent step · in Explore agent" rows and opening one
-landed on it (14 of 16). TUI in a pty: `/find quokka` found it 107 lines
-up, `/find grep exit` (a subagent's child only) reported "(output
-expanded)" with the child's line heading the view; `/export md all`
-wrote the Agent cards with their steps quoted under them and two
-"### Command by You" cards; `/search zebrafish` listed 9 numbered hits
-("agent step in a subagent · 06:26 · grep -r …"), ↓ Enter put the card
-at the top with the notice above the status, `/search first message fix`
-then `/search 1` opened the other chat.
+landed on it (14 of 16). TUI in a pty (on the alternate-screen TUI, before
+item 16 landed): `/find quokka` found it 107 lines up, `/find grep exit`
+(a subagent's child only) reported "(output expanded)" with the child's
+line heading the view; `/export md all` wrote the Agent cards with their
+steps quoted under them and two "### Command by You" cards; `/search
+zebrafish` listed 9 numbered hits ("agent step in a subagent · 06:26 ·
+grep -r …"), ↓ Enter put the card at the top, `/search first message
+fix` then `/search 1` opened the other chat. After merging item 16 the
+TUI parts were re-based on the scrollback model (decisions 5 and 6) and
+re-verified by their unit tests (`TestFindReachesNestedAndFoldedEntries`,
+`TestSearchAcrossChatsListsAndJumps`, `TestEntryLines`) and one more pty
+run on the merged build: `/find grep exit` printed the child's line with
+"(output expanded)", `/search zebrafish` then ↓ Enter printed the Agent
+card with its steps under the "tool output · … (output expanded)" line.
 
 Left: the web's ⌘K palette still searches the browser's state rather
 than the new route (it has every transcript and folds accents; a
@@ -560,6 +576,151 @@ the fence); `activity` shows nothing for a streaming reply beyond
 
 Progress: started 2026-09-18; implemented and live-verified 2026-09-18
 (c661a58); merge sha recorded under "## Round 2" once landed.
+### Item 16: scrollback rendering (Claude-style TUI)
+
+Branch `feat/parity-16-scrollback-tui`, worktree
+`.local/warden-parity-16-scrollback-tui`, from main 31ecf8d (2026-09-18).
+TUI only (`chat/internal/tui`); `warden chat send --wait`'s `Follow`
+printing is untouched.
+
+Why: the owner wants to select text in the TUI. The client entered the
+alternate screen (`?1049h`) and asked for mouse reports (`?1000h`,
+`?1006h`) so the wheel could scroll its own viewport; mouse reporting is
+what takes the mouse away from the terminal's selection. Mouse off on the
+alternate screen does not work either: terminals then send wheel ticks as
+↑/↓, which collide with ↑ = prompt recall. Claude Code (Ink) avoids all
+of it by printing the transcript into the normal buffer and redrawing
+only a live tail; the instruction was "make it work like in Claude".
+
+How it works (`app.go`, `render.go`):
+
+- **Terminal modes.** Raw mode, bracketed paste (`?2004h`) and the title
+  stack (`22;0t` / `23;0t`) as before; no `?1049`, no `?1000`/`?1006`.
+  The cursor is hidden only while a draw writes. At exit (`finish`) the
+  cursor goes below the last tail, bracketed paste is turned off and the
+  title popped; the transcript and the last status/composer stay on the
+  screen, as Claude Code leaves them.
+- **Committed and live.** Every draw renders the whole body — the
+  transcript as `RenderBlocks` (one `Block` per entry with `Final`), the
+  pending approvals, the session diff — at the terminal's width. An entry
+  is final when nothing about it will change: not streaming, not a
+  running tool (a background card until its notification), not a queued
+  message, not a compaction or an aside under way, and not a subagent's
+  card while an entry under it is still one of these. The leading run of
+  final entries is the committed prefix: written to the scrollback once
+  (`Frame.Commit`) and never rewritten. Everything after it is the live
+  tail — streaming entries, queued cards, approvals, the one-line notice,
+  the `/`/`@` menu, attachments, a confirmation, the status rows and the
+  composer — and a draw rewrites it in place: cursor up by the row the
+  cursor was on (`screen.cursorLine`), `\r`, `ESC[J`, the new lines.
+  Lines are clipped to the width so each takes exactly one row, which is
+  what makes the cursor-up count right. An unchanged tail is not written.
+- **Structural changes.** The body is compared with what the scrollback
+  holds (`hasPrefix`): while it still begins with the committed lines the
+  draw is incremental; otherwise the screen is cleared (`ESC[2J ESC[H`,
+  never `3J`: the person's earlier terminal history survives) and the
+  transcript is printed again from its first entry, then the tail. That
+  covers a rewind (the prefix is longer than the body), the service
+  reordering entries, a todo list rewritten in place, Tab / `/expand` /
+  Ctrl-O / `/verbose` when they change a card that is already printed
+  (when they only change the tail, no reprint), and a background card
+  committed early that then settles. A chat switch (`/switch`, `/new`,
+  `/fork`), a terminal resize and Ctrl-L set `redraw` and reprint
+  unconditionally. Claude Code does the same clear-and-rerender on Ctrl-L,
+  resize and rewind; on `/resume` it prints the other session afresh.
+  `/clear` keeps its Warden meaning (the draft and its attachments), it
+  is not Claude's history clear.
+- **Tail budget.** The tail is kept to at most rows − 1 so the cursor
+  never has to move up past the top of the screen. A taller tail has its
+  top committed early (`earlyCommit`): at least the excess, rounded up to
+  the next blank line (a paragraph's or an entry's end), never the last
+  two lines (the ones still changing). Greedy wrapping and per-line
+  inline styling make a streaming reply's earlier lines stable, so a long
+  answer goes out a paragraph at a time; a committed line that does
+  change later (a folded card whose window slid) costs one reprint. If
+  the chrome alone does not fit (a very small terminal) the notice, then
+  the extras, are cut from the top.
+- **Notices.** A notice of several lines (`/help`, `/chats`, `/memory`,
+  `/rewind`, `/cost`, `/find`…) is printed into the scrollback once, like
+  Claude Code's local command output, and is not reprinted by a
+  structural redraw (it is above, in the terminal's history). A one-line
+  notice stays under the transcript for 20 s as before.
+- **What is never committed.** Found live: the engine marks a queued
+  message `failed` ("delivery unconfirmed") while it attempts delivery
+  and `sent` once the agent acknowledges it, so a user message is final
+  only when sent (or failed on an idle chat, shown red as not delivered;
+  the dim `(sent)` line the TUI used to print is gone, the web shows
+  none either). The todo list is one entry the adapter rewrites in place
+  with every write, this turn and the next (`todoID` is per session), so
+  it is a live panel at the bottom of the transcript above the queued
+  messages — as Claude Code keeps its todo list above the composer,
+  never in the static transcript — and goes away once the chat is idle
+  with every item done (the web and an export keep it in place).
+- **Resize.** `TIOCSWINSZ` itself raises SIGWINCH and a window drag
+  sends one per step, each a full reprint in the first live run;
+  resize events now settle for 150 ms (`resizeSettle`) and reprint only
+  when the size the last draw painted for changed.
+- **Scrolling and search.** PgUp/PgDn/Home/End/wheel no longer scroll
+  anything in the app (the terminal has them; Home/End move within the
+  draft); the scroll hint left the status bar. `/find TEXT` prints the
+  matching lines as they show on the screen (up to 20, with the count)
+  so the person sees where the text occurs; the terminal's own search
+  jumps to it. Kept rather than dropped because round 2 bundle C builds
+  on `/find`. ↑/↓ keep items 6/10/12's meanings.
+- **Widths are columns.** In the alternate screen a miscounted line only
+  shifted a row until the next full repaint; in the normal buffer a line
+  the terminal wraps because a rune took two columns leaves a stale row
+  behind at every draw. `visibleWidth`, `wrap`, `cutVisible` and `clip`
+  now measure columns (`width.go`: East Asian wide and fullwidth forms
+  and Emoji_Presentation runes take two, combining marks, joiners and
+  variation selectors none, U+FE0F after a symbol makes it wide), and
+  `sanitize` expands a tab to four spaces. Doubtful runes count as wide:
+  an over-estimate wraps early, an under-estimate corrupts the screen.
+- Everything else is unchanged: the menus, paste placeholders, `!`/`#`,
+  approvals, Shift-Tab, Esc, Esc-Esc, Ctrl-C/D/R, the status line's
+  content (now the bottom of the tail rather than the screen's last
+  row), the bell and the title.
+
+Tests (`tui_test.go`): `TestPaintCommitsOnceAndRewritesTheTail` feeds
+states through `draw` and checks the bytes (no `?1049`/`?1000`/`?1006`,
+a committed line written once, the tail rewritten with the right
+cursor-up and `ESC[J`, an unchanged tail not written, a rewind and
+Ctrl-L clearing and reprinting once without `3J`, the exit sequence);
+`TestPaintCommitsEarlyWhenTheTailOutgrowsTheScreen` streams thirty
+paragraphs on a 12-row terminal (tail ≤ rows − 1, no reprint, every
+paragraph written once after it is committed);
+`TestMultiLineNoticesArePrintedOnce`; `TestEntryFinality`;
+`TestFrameSplitsCommittedFromLiveTail`; `TestTodoListIsALivePanel`;
+`TestResizeBurstReprintsOnce` (the Run loop under a fake server: one
+reprint for a burst, none for an unchanged size, the start and exit
+sequences); `TestColumnWidths`; the key, find and status tests adapted.
+
+Verified live (2026-09-18, build 4d693d9 on a cloned home
+`~/.warden-p17`): the real `warden chat` driven under a pty from Python
+(`pty.fork`, `TIOCSWINSZ` + SIGWINCH, keys with delays, the raw byte
+stream recorded and replayed through a small VT emulator with a
+scrollback) on a Claude chat: a turn with `ls -la`, a `Write` and a
+`cat` card and a reply; `/find beta-p16` (four matching lines printed
+once); `/help` (printed once); Tab expand and collapse (no reprint — no
+card was folded, the notice went to the tail); Ctrl-L (one clear and
+reprint); a second turn; a resize to 60×24 (one clear and reprint after
+the fix above); then a 20-paragraph story streamed on the 24-row screen
+and Ctrl-C twice. From the stream: no `?1049`, `?1000` or `?1006`, no
+`3J`, exactly two `2J` (Ctrl-L, resize), the largest cursor-up 11 rows
+on 30 rows and 22 on 24, every paragraph of the streamed story in the
+emulated scrollback exactly once (committed early, never rewritten
+after), every committed entry once per segment between clears, the
+transcript and the last status/composer left on the screen at exit
+with `\r\n ?2004l ?25h 23;0t`. The pinned CLI offered Claude no todo
+tool in this environment, so the todo panel is covered by its unit
+test only.
+
+Progress: started 2026-09-18; implemented, unit-tested and live-verified
+the same day; merged to main 2445764 (2026-09-18) after merging round 2
+A, B and D in (main's "sending" delivery state replaced this branch's
+running-chat rule for "failed": a message is live until sent). Not
+deployed to `~/.warden`.
+
 ### Round 2 B: permission rules
 
 Branch `feat/parity-r2-b-rules`, worktree `.local/warden-parity-r2-b-rules`,
