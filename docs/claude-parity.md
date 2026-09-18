@@ -371,8 +371,8 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] Design discussion, inventory and priority order (this document).
 - [x] 1 Typed tool cards and diffs — merged to main 5715a02 (2026-09-17); verified as the Item 1 section says.
 - [x] 2 Subagents and background tasks — merged to main 38daa78 (2026-09-17); verified as the Item 2 section says.
-- [ ] 3 Permission model.
-- [ ] 4 Plan mode.
+- [x] 3 Permission model — merged to main 5f38f23 (2026-09-17); verified as the Items 3 and 4 section says.
+- [x] 4 Plan mode — merged to main 5f38f23 (2026-09-17); verified as the Items 3 and 4 section says.
 - [x] 5 Slash-command pass-through — merged to main 32138ea (2026-09-17); verified as the Item 5 section says; TUI `/` menu from `chat.commands` left for a follow-up.
 - [x] 6 TUI catch-up — merged to main c60d938 (2026-09-17); verified as the Item 6 section says.
 - [x] 7 Workspace `.claude/` loading — verified on CLI 2.1.272, merged to main 32138ea (2026-09-17); the launch-flag change (`--setting-sources=project` + `disableAllHooks`) is recommended under "Decisions needed", not made.
@@ -770,6 +770,11 @@ everyone with chat access sets any mode; (b) collaborators may only
 tighten (auto → ask → plan) and answer asks, the owner alone loosens
 and answers "allow always"; (c) modes and permission answers are
 owner-only, collaborators only send messages.
+
+Progress: implemented and live-verified 2026-09-17 (b928bad); merged to
+main 5f38f23 (2026-09-17) after merging items 2, 5, 6 and 7 in. Left:
+the collaborator policy above; workspace-wide (cross-chat) allow-always
+rules; a rules editor.
 
 Verified (2026-09-17): `gofmt -l`, `go vet ./...`, `go test ./...`
 (`agent/claude_test.go`: ask forwarded and typed, deny wording, plan
