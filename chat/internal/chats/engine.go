@@ -52,6 +52,11 @@ type activeRun struct {
 	// them.
 	usage, usageBase cv.Usage
 	usageTurn        string
+	// instructed is, by principal, the instructions text this session was
+	// given (in its system prompt, or as a message prefix), so a person's
+	// block is delivered once and again only when it changes. Only the
+	// run's goroutine touches it.
+	instructed map[string]string
 }
 type Engine struct {
 	// PolicyAddress is the policy service's control endpoint (a unix:// or
@@ -275,6 +280,15 @@ func (e *Engine) Limits(ctx context.Context) *sandbox.ResourceLimits {
 // Create starts a chat: on a fresh workspace of the given size (nil is the
 // runner's default), or sharing an existing one, whose size is settled.
 func (e *Engine) Create(title, shared, repository string, resources *sandbox.Resources, selection ...string) (string, error) {
+	return e.CreateFrom(cv.Actor{PrincipalID: "owner"}, title, shared, repository, resources, selection...)
+}
+
+// CreateFrom creates a chat by actor (the requester the edge identified,
+// or the owner), recorded as its creator.
+func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, resources *sandbox.Resources, selection ...string) (string, error) {
+	if actor.PrincipalID == "" {
+		actor.PrincipalID = "owner"
+	}
 	provider, model := "codex", ""
 	if len(selection) > 0 {
 		provider = selection[0]
@@ -333,7 +347,8 @@ func (e *Engine) Create(title, shared, repository string, resources *sandbox.Res
 				return errors.New("unknown workspace")
 			}
 		}
-		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, SandboxID: sbxID, Repository: repository, Resources: resources, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
+		creator := actor
+		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, SandboxID: sbxID, Repository: repository, Resources: resources, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
 		return nil
 	})
 	return id, err
@@ -464,9 +479,11 @@ func (e *Engine) View() View {
 	return View{State: e.state(), Sandboxes: e.Limits(context.Background())}
 }
 
-// state is the store with typing indicators filled in.
+// state is the store with typing indicators filled in and the people's
+// instructions left out (each person reads their own, me/instructions).
 func (e *Engine) state() State {
 	st := e.Store.Snapshot()
+	st.Instructions = nil
 	now := float64(e.now().UnixNano()) / 1e9
 	for _, c := range st.Chats {
 		if c.Status == "queued" || c.Status == "running" {
@@ -910,8 +927,15 @@ func (e *Engine) run(parent context.Context, id string) {
 		return
 	}
 	e.setStartup(id, stageLaunching, "starting the agent in the sandbox")
+	// The participants' standing instructions go with the launch (Claude:
+	// the appended system prompt; Codex: developerInstructions below).
+	var instructions string
+	if snapshot := e.Store.Snapshot(); snapshot.chat(id) != nil {
+		instructions, a.instructed = sessionInstructions(&snapshot, snapshot.chat(id))
+	}
 	r = request(&current, "stream")
 	r.Directory = prep.Directory
+	r.Instructions = instructions
 	var stream io.ReadWriteCloser
 	stream, _, err = e.Worker.Open(ctx, r)
 	if err != nil {
@@ -941,6 +965,9 @@ func (e *Engine) run(parent context.Context, id string) {
 	e.mu.Unlock()
 	params := map[string]any{"cwd": prep.Directory, "approvalPolicy": "on-request", "sandbox": "danger-full-access", "developerInstructions": "You are an agent in a Warden-managed sandbox. The files, shared documents and shared repositories belong to this workspace and are visible to every chat in it; preserve other chats' files. Warden controls external access. Do not request or expose host credentials. GitHub repositories are reached through Warden's repository sharing: list_shared_repositories shows what this workspace can clone and read; to clone or read one that is not listed, ask with request_repository_access (contents), never with request_network_access for github.com: a refused git clone means the repository is not shared, not that the network is blocked. To show a web preview, start the server as a detached process on 0.0.0.0 inside this sandbox (for example subprocess.Popen with start_new_session=True and stdio redirected to files), then call preview_attach with port, path beginning /, and title. The controller chooses the URL.", "ephemeral": false, "historyMode": "legacy"}
 	params["modelProvider"] = "warden"
+	if instructions != "" {
+		params["developerInstructions"] = params["developerInstructions"].(string) + "\n\n" + instructions
+	}
 	if current.Model != "" {
 		params["model"] = current.Model
 	}
@@ -1001,6 +1028,7 @@ func (e *Engine) run(parent context.Context, id string) {
 	if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 		return
 	}
+	items = e.instruct(a, *message, items)
 	e.applyMode(ctx, id, &current, client)
 	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 	if err != nil {
@@ -1048,6 +1076,7 @@ func (e *Engine) run(parent context.Context, id string) {
 		if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 			return
 		}
+		items = e.instruct(a, *message, items)
 		e.applyMode(ctx, id, &current, client)
 		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 		if err != nil {
@@ -1067,6 +1096,17 @@ func (e *Engine) run(parent context.Context, id string) {
 		}
 		e.setStartup(id, stageFirstResponse, "waiting for the model's first reply")
 	}
+}
+
+// instruct prefixes the message with its sender's instructions when the
+// session has not been given them (a late joiner, or text changed since
+// the launch), and records that it now has.
+func (e *Engine) instruct(a *activeRun, m cv.Entry, items []any) []any {
+	if a.instructed == nil {
+		a.instructed = map[string]string{}
+	}
+	st := e.Store.Snapshot()
+	return withInstructions(items, messageInstructions(&st, m, a.instructed))
 }
 
 // turn drives one agent turn to completion. It returns nil once the turn

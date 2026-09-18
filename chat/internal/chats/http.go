@@ -114,7 +114,18 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.clusterHTTP(w, r, path)
 		return
 	}
+	if path == "me/instructions" {
+		// A person's own standing instructions (instructions.go); the
+		// requester is whoever the edge identified, or the owner.
+		h.instructionsHTTP(w, r)
+		return
+	}
 	parts := strings.Split(path, "/")
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "memory" {
+		view, err := h.Engine.Memory(r.Context(), parts[1])
+		respond(w, view, err)
+		return
+	}
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "runtime" {
 		res, err := h.Engine.Runtime(r.Context(), parts[1], "status")
 		respond(w, res, err)
@@ -186,8 +197,14 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Resources *sandbox.Resources `json:"resources"`
 		// Attachments are upload IDs a message sends along.
 		Attachments []string `json:"attachments"`
+		// Scope and Path name the memory file a chats/{id}/memory/write
+		// replaces with Text (memory.go).
+		Scope string `json:"scope"`
+		Path  string `json:"path"`
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
+	// Room for a memory file (1 MiB of text, JSON-escaped); every other
+	// body is bounded far below by its own validation.
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
 		http.Error(w, "invalid request", 400)
@@ -214,7 +231,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = h.Engine.ResizeEnvironment(r.Context(), parts[1], body.Resources)
 	case path == "chats":
 		var id string
-		id, err = h.Engine.Create(body.Title, body.SandboxID, body.Repository, body.Resources, body.Provider, body.Model)
+		id, err = h.Engine.CreateFrom(requester(r), body.Title, body.SandboxID, body.Repository, body.Resources, body.Provider, body.Model)
 		result = map[string]string{"id": id}
 	case len(parts) == 3 && parts[0] == "chats":
 		switch parts[2] {
@@ -246,11 +263,40 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = h.Engine.Answer(parts[1], parts[3], Answer{Allow: body.Allow, Answers: body.Answers, Always: body.Always, Message: body.Message, Mode: body.Mode}, requester(r))
 	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "attachments" && parts[4] == "remove":
 		err = h.Engine.removeAttachment(parts[1], parts[3])
+	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "memory" && parts[3] == "write":
+		err = h.Engine.WriteMemory(r.Context(), parts[1], body.Scope, body.Path, body.Text, requester(r))
 	default:
 		http.Error(w, "not found", 404)
 		return
 	}
 	respond(w, result, err)
+}
+
+// instructionsHTTP answers me/instructions: GET reads the requester's own
+// text, POST {"text"} replaces it (blank removes it).
+func (h *HTTP) instructionsHTTP(w http.ResponseWriter, r *http.Request) {
+	actor := requester(r)
+	switch r.Method {
+	case http.MethodGet:
+		json.NewEncoder(w).Encode(h.Engine.Instructions(actor))
+	case http.MethodPost:
+		var body struct {
+			Text string `json:"text"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil || dec.Decode(&struct{}{}) != io.EOF {
+			http.Error(w, "invalid request", 400)
+			return
+		}
+		if err := h.Engine.SetInstructions(actor, body.Text); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		json.NewEncoder(w).Encode(h.Engine.Instructions(actor))
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
 }
 
 // requester is the person behind a request as the edge identified them

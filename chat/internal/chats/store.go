@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"warden/chat/internal/conversation"
 	"warden/chat/internal/sandbox"
@@ -52,6 +53,10 @@ type Chat struct {
 	// model it resolved, its permission mode and output style. Nil for
 	// Codex.
 	Session *Session `json:"session,omitempty"`
+	// Creator is who created the chat (the requester the edge identified,
+	// or the owner); their standing instructions reach the agent with the
+	// senders' (instructions.go). Nil on a chat from before it was kept.
+	Creator *conversation.Actor `json:"creator,omitempty"`
 	// Typing is who is composing a message right now. It is filled in for
 	// clients by Engine.View and never stored.
 	Typing []Typist `json:"typing,omitempty"`
@@ -66,11 +71,14 @@ type Command struct {
 	Description string `json:"description,omitempty"`
 }
 
-// Session is the agent's own report of its session settings.
+// Session is the agent's own report of its session settings. AutoMemory
+// is the auto-memory directory the agent's CLI reported for the workspace
+// (`memory_paths.auto`), which the memory view lists; "" when not reported.
 type Session struct {
 	Model          string `json:"model,omitempty"`
 	PermissionMode string `json:"permissionMode,omitempty"`
 	OutputStyle    string `json:"outputStyle,omitempty"`
+	AutoMemory     string `json:"autoMemory,omitempty"`
 }
 
 // sessionStarted records what the agent sent with `thread/started`: the
@@ -93,8 +101,12 @@ func (c *Chat) sessionStarted(thread map[string]any) {
 	model, _ := thread["model"].(string)
 	mode, _ := thread["permissionMode"].(string)
 	style, _ := thread["outputStyle"].(string)
-	if model != "" || mode != "" || style != "" {
-		c.Session = &Session{Model: model, PermissionMode: mode, OutputStyle: style}
+	auto, _ := thread["autoMemory"].(string)
+	if len(auto) > 1024 || strings.ContainsAny(auto, "\x00\n\r") {
+		auto = ""
+	}
+	if model != "" || mode != "" || style != "" || auto != "" {
+		c.Session = &Session{Model: model, PermissionMode: mode, OutputStyle: style, AutoMemory: auto}
 	}
 }
 
@@ -109,6 +121,10 @@ type State struct {
 	Chats            []*Chat       `json:"chats"`
 	Ports            []PortBinding `json:"ports"`
 	DeletedSandboxes []string      `json:"deletedSandboxes,omitempty"`
+	// Instructions are each person's standing instructions for the agent,
+	// by principal (instructions.go). Never sent to clients as part of the
+	// state: a person reads their own through me/instructions.
+	Instructions map[string]*Instructions `json:"instructions,omitempty"`
 }
 type Store struct {
 	mu     sync.Mutex

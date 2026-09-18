@@ -1307,7 +1307,8 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 		}
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s",
 			"slash_commands": []any{"code-review", "compact", "init", "doctor", "__remote-workflow", "probe-cmd"}, "terminal_slash_commands": []any{"doctor"},
-			"model": "claude-opus-5[1m]", "permissionMode": "default", "output_style": "default", "mcp_servers": []any{map[string]any{"name": "warden", "status": "connected"}}})
+			"model": "claude-opus-5[1m]", "permissionMode": "default", "output_style": "default", "mcp_servers": []any{map[string]any{"name": "warden", "status": "connected"}},
+			"memory_paths": map[string]any{"auto": "/home/agent/.claude/projects/-home-agent-workspace/memory"}})
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "status", "status": "compacting", "session_id": "s"})
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s", "slash_commands": []any{"compact"}})
 		_ = e.Encode(map[string]any{"type": "system", "subtype": "compact_boundary", "session_id": "s", "compact_metadata": map[string]any{"trigger": "manual", "pre_tokens": 27230.0, "post_tokens": 1850.0, "duration_ms": 28060.0}})
@@ -1359,7 +1360,7 @@ func TestClaudeInitCommandsAndCompaction(t *testing.T) {
 				for _, v := range Array(first["commands"]) {
 					names = append(names, String(Map(v)["name"]))
 				}
-				if first["id"] != "s" || fmt.Sprint(names) != "[code-review compact init probe-cmd]" || first["model"] != "claude-opus-5[1m]" || first["permissionMode"] != "default" || first["outputStyle"] != "default" {
+				if first["id"] != "s" || fmt.Sprint(names) != "[code-review compact init probe-cmd]" || first["model"] != "claude-opus-5[1m]" || first["permissionMode"] != "default" || first["outputStyle"] != "default" || first["autoMemory"] != "/home/agent/.claude/projects/-home-agent-workspace/memory" {
 					t.Fatalf("thread %+v", first)
 				}
 				if compacted == nil || compacted["trigger"] != "manual" || compacted["preTokens"] != 27230.0 || compacted["postTokens"] != 1850.0 || compacted["status"] != "completed" {

@@ -36,6 +36,10 @@ type fakeWorker struct {
 	paths       []string // what a "paths" completion answers
 	// exec is what an "exec" answers (nil: a plain success with no output).
 	exec *sandbox.ExecResult
+	// memory is what a "memory-list" answers (nil: an empty listing).
+	memory *sandbox.MemoryListing
+	// developer is the developerInstructions of the last thread/start.
+	developer string
 	// prepareGate, when set, holds prepare until it is closed; progress is
 	// what the progress operation answers meanwhile (startup_test.go).
 	prepareGate chan struct{}
@@ -87,6 +91,16 @@ func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 	if r.Operation == "memory-append" {
 		return sandbox.Response{Version: 2, Directory: "CLAUDE.md"}, nil
 	}
+	if r.Operation == "memory-list" {
+		listing := f.memory
+		if listing == nil {
+			listing = &sandbox.MemoryListing{Root: "/home/agent/workspace", Files: []sandbox.MemoryFile{}}
+		}
+		return sandbox.Response{Version: 2, Memory: listing}, nil
+	}
+	if r.Operation == "memory-write" {
+		return sandbox.Response{Version: 2, Directory: r.Directory}, nil
+	}
 	return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: id, ProjectID: r.ProjectID}}, nil
 }
 func (f *fakeWorker) send(v any) {
@@ -127,6 +141,7 @@ func (f *fakeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWriteC
 			case "thread/start", "thread/resume":
 				f.mu.Lock()
 				gate := f.threadGate
+				f.developer = agent.String(frame.Params["developerInstructions"])
 				f.mu.Unlock()
 				if gate != nil {
 					<-gate

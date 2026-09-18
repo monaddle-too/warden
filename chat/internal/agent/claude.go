@@ -700,7 +700,8 @@ func claudePermissionMode(mode string) string {
 // skills (whatever the launch's setting sources load); the terminal-only
 // ones (`terminal_slash_commands`) and internal `__` names are left out.
 // A message "/name args" sent as text is expanded by the CLI itself, so
-// the list is all a client needs.
+// the list is all a client needs. `memory_paths.auto` is the auto-memory
+// directory the CLI keeps for the workspace, which the memory view lists.
 func claudeThread(id string, init map[string]any) map[string]any {
 	terminal := map[string]bool{}
 	for _, v := range Array(init["terminal_slash_commands"]) {
@@ -714,7 +715,7 @@ func claudeThread(id string, init map[string]any) map[string]any {
 		}
 		commands = append(commands, map[string]any{"name": name})
 	}
-	return map[string]any{"id": id, "commands": commands, "model": String(init["model"]), "permissionMode": String(init["permissionMode"]), "outputStyle": String(init["output_style"])}
+	return map[string]any{"id": id, "commands": commands, "model": String(init["model"]), "permissionMode": String(init["permissionMode"]), "outputStyle": String(init["output_style"]), "autoMemory": String(Map(init["memory_paths"])["auto"])}
 }
 
 func claudeResultError(v map[string]any) string {
