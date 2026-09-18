@@ -129,3 +129,7 @@ session release not counting.
 - Remaining: step 5, the live check on GKE (build from this branch,
   deploy, restart the runner, confirm the pod survives and the next
   message resumes at once).
+- 2026-09-18: merged to main as 9893368 (by the workspace-egress session at
+  the owner's request; main merged in twice, no conflicts; full Go suite,
+  web and chart checks pass — `sandbox/kube` hit the package timeout once
+  under the full parallel run and passed alone). GKE deploy of main follows.
