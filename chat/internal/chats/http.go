@@ -213,9 +213,11 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Effort   *string `json:"effort"`
 		Fast     *bool   `json:"fast"`
 		// TurnID and What are a rewind's target and scope (rewind.go);
-		// TurnID is also where a fork cuts (fork.go).
+		// TurnID is also where a fork cuts (fork.go). Code asks an
+		// undo-rewind to restore the workspace too.
 		TurnID string `json:"turnID"`
 		What   string `json:"what"`
+		Code   bool   `json:"code"`
 		// Scope and Path name the memory file a chats/{id}/memory/write
 		// replaces with Text (memory.go).
 		Scope string `json:"scope"`
@@ -286,6 +288,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			result, err = h.Engine.Withdraw(parts[1], body.ID, requester(r))
 		case "send-queued":
 			err = h.Engine.SendQueued(parts[1])
+		case "undo-rewind":
+			// The last conversation rewind's removed transcript back in
+			// place (rewind.go); ID names its marker.
+			result, err = h.Engine.UndoRewind(r.Context(), parts[1], body.ID, body.Code, requester(r))
 		case "fork":
 			// A sibling chat copied from this one up to a message (fork.go).
 			result, err = h.Engine.Fork(r.Context(), parts[1], body.TurnID, requester(r))
@@ -304,6 +310,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = h.Engine.removeAttachment(parts[1], parts[3])
 	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "memory" && parts[3] == "write":
 		err = h.Engine.WriteMemory(r.Context(), parts[1], body.Scope, body.Path, body.Text, requester(r))
+	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "queued" && parts[4] == "edit":
+		// A queued message's text and attachments replaced in place
+		// (queue.go); the edited entry comes back.
+		result, err = h.Engine.EditQueued(parts[1], parts[3], body.Text, body.Attachments, requester(r))
 	default:
 		http.Error(w, "not found", 404)
 		return

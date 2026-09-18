@@ -96,7 +96,15 @@ func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 		for _, cp := range f.checkpoints {
 			if cp.ID == r.CallID {
 				if r.Operation == "restore" {
-					return sandbox.Response{Version: 2, Restore: &sandbox.WorkspaceRestore{Checkpoint: cp, Restored: []string{"a.txt"}, Removed: []string{"b.txt"}}}, nil
+					restore := &sandbox.WorkspaceRestore{Checkpoint: cp, Restored: []string{"a.txt"}, Removed: []string{"b.txt"}}
+					if r.Before != "" {
+						// The workspace as it was, recorded under Before
+						// (sandbox/checkpoint.go) for an undo.
+						before := sandbox.Checkpoint{ID: r.Before, ChatID: r.ChatID, Commit: "commit-" + r.Before[:4], Tree: "tree-" + r.Before[:4], Store: "repository", Changed: true}
+						f.checkpoints = append(f.checkpoints, before)
+						restore.Before = &before
+					}
+					return sandbox.Response{Version: 2, Restore: restore}, nil
 				}
 				return sandbox.Response{Version: 2, Changes: &sandbox.WorkspaceChanges{Base: cp.ID, Files: []sandbox.ReviewFile{{Path: "a.txt", Added: 1}}, Diff: "diff --git a/a.txt b/a.txt\n--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1 @@\n+hello\n"}}, nil
 			}

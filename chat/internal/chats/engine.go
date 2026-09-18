@@ -498,7 +498,8 @@ func (e *Engine) View() View {
 }
 
 // state is the store with typing indicators filled in and the people's
-// instructions left out (each person reads their own, me/instructions).
+// instructions left out (each person reads their own, me/instructions);
+// a kept rewind tail becomes the marker it can undo (rewind.go).
 func (e *Engine) state() State {
 	st := e.Store.Snapshot()
 	st.Instructions = nil
@@ -506,6 +507,10 @@ func (e *Engine) state() State {
 	for _, c := range st.Chats {
 		if c.Status == "queued" || c.Status == "running" {
 			c.Startup = e.startupOf(c.ID)
+		}
+		if c.RewoundTail != nil {
+			c.UndoRewind = c.RewoundTail.MarkerID
+			c.RewoundTail = nil
 		}
 	}
 	e.typingMu.Lock()
@@ -1325,6 +1330,7 @@ func (e *Engine) beginAgentTurn(id, turn string) error {
 		c.Status = "running"
 		c.Error = ""
 		c.Conversation.Begin(turn, e.at())
+		dropRewoundTail(c) // a turn started: the last rewind is final (rewind.go)
 		return nil
 	})
 }
@@ -1359,6 +1365,7 @@ func (e *Engine) resume(id string) (*cv.Entry, error) {
 		}
 		c.Status = "running"
 		c.Error = ""
+		dropRewoundTail(c) // a turn starts: the last rewind is final (rewind.go)
 		return nil
 	})
 	return message, err
@@ -1382,6 +1389,9 @@ func (e *Engine) attempt(id, turn string) (*cv.Entry, error) {
 				message = &copy
 				break
 			}
+		}
+		if message != nil {
+			dropRewoundTail(c) // a turn starts: the last rewind is final (rewind.go)
 		}
 		return nil
 	})

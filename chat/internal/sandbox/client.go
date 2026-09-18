@@ -96,6 +96,11 @@ type Request struct {
 	Bytes []byte `json:"bytes,omitempty"`
 	// Command is the shell command line an exec runs in the workspace.
 	Command string `json:"command,omitempty"`
+	// Before, on a restore, is the checkpoint ID the workspace as it is
+	// now is recorded under before the checkpoint CallID names is written
+	// back, so the restore itself can be undone (chats/rewind.go); ""
+	// records nothing.
+	Before string `json:"before,omitempty"`
 	// Instructions is the participants' standing instructions a stream
 	// appends to the agent's system prompt (memory.go: one block per
 	// person, assembled by the chat service); "" appends nothing.

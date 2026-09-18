@@ -81,6 +81,12 @@ type Chat struct {
 	Rewind     *PendingRewind `json:"rewind,omitempty"`
 	Recap      string         `json:"recap,omitempty"`
 	NewSession bool           `json:"newSession,omitempty"`
+	// RewoundTail is what the last conversation rewind removed, kept so
+	// the rewind can be undone until the next turn starts (rewind.go);
+	// never sent to clients, which get UndoRewind, the marker whose
+	// rewind can be undone, filled in by Engine.View and never stored.
+	RewoundTail *RewoundTail `json:"rewoundTail,omitempty"`
+	UndoRewind  string       `json:"undoRewind,omitempty"`
 	// ForkSession marks a chat forked from another whose session (the
 	// ThreadID it carries) its first run resumes as a copy; cleared once
 	// the agent reports the copy's own session (fork.go).

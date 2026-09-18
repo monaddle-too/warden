@@ -143,6 +143,26 @@ type Entry struct {
 	// Sender) answered from a copy of the agent's session (Detail is the
 	// answer), what it cost, and never sent to the session.
 	Aside *Aside `json:"aside,omitempty"`
+	// Rewind is what a rewind marker records: the message the chat went
+	// back to before, the scope, how the agent's session followed and
+	// the checkpoint of the workspace as it was before a code rewind.
+	Rewind *Rewind `json:"rewind,omitempty"`
+}
+
+// Rewind is a rewind marker's record (chats/rewind.go): MessageID the
+// user message the chat went back to before, What "code", "conversation"
+// or "both", Conversation how the session followed a conversation rewind
+// ("rewound", "pending", "fresh"; "" for code only), and Before the ID of
+// the checkpoint the runner took of the workspace as it was before a
+// code rewind restored the message's ("" when none was recorded), which
+// undoing the rewind can restore. Whether the rewind can still be undone
+// is the chat's undoRewind, not the marker's: the kept tail is dropped
+// when the next turn starts.
+type Rewind struct {
+	MessageID    string `json:"messageID"`
+	What         string `json:"what"`
+	Conversation string `json:"conversation,omitempty"`
+	Before       string `json:"before,omitempty"`
 }
 
 // Fork names the chat a forked chat was copied from and, when the copy

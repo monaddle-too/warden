@@ -104,6 +104,99 @@ func (a *App) rewind(ctx context.Context, c *Chat, arg string) {
 	}
 }
 
+// undoHint is the line under a rewind marker while the rewind can still
+// be undone: how, and what the workspace does.
+func undoHint(e Entry) string {
+	hint := "/undo-rewind puts the removed messages back (until the next turn)"
+	if e.Rewind != nil && e.Rewind.What == "both" {
+		if e.Rewind.Before != "" {
+			hint += "; /undo-rewind code restores the workspace as it was before the rewind too"
+		} else {
+			hint += "; the workspace stays as it is"
+		}
+	}
+	return hint
+}
+
+// undoRewind is /undo-rewind [code]: what the last conversation rewind
+// removed goes back in place, after confirmation; `code` asks for the
+// workspace as it was before the rewind too (a both-rewind's).
+func (a *App) undoRewind(ctx context.Context, c *Chat, arg string) {
+	if c == nil {
+		a.setNotice("no chat selected")
+		return
+	}
+	if c.UndoRewind == "" {
+		a.setNotice("nothing to undo: no rewind since the last turn")
+		return
+	}
+	code := false
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "":
+	case "code", "files", "both", "all":
+		code = true
+	default:
+		a.setNotice("/undo-rewind [code]")
+		return
+	}
+	if c.Running() {
+		a.setNotice("stop the agent first (Esc)")
+		return
+	}
+	var marker Entry
+	for _, e := range c.Conversation.Entries {
+		if e.ID == c.UndoRewind {
+			marker = e
+			break
+		}
+	}
+	if code && (marker.Rewind == nil || marker.Rewind.Before == "") {
+		a.setNotice("no checkpoint of the workspace before the rewind was recorded; /undo-rewind restores the conversation and leaves the workspace as it is")
+		return
+	}
+	scope := "the conversation"
+	if code {
+		scope = "the conversation and the workspace"
+	}
+	id, markerID := c.ID, c.UndoRewind
+	a.confirm = &confirmation{
+		prompt: fmt.Sprintf("Undo the rewind %q and put %s back? Type y and Enter to confirm; anything else cancels", truncate(excerptOf(marker.Text), 70), scope),
+		run: func(ctx context.Context) {
+			result, err := a.Client.UndoRewind(ctx, id, markerID, code)
+			if err != nil {
+				a.setNotice(err.Error())
+				return
+			}
+			a.diff = nil
+			a.refreshState(ctx)
+			a.setNotice(undoNotice(result))
+		},
+	}
+}
+
+// undoNotice says what an undo did, as its transcript line does.
+func undoNotice(r UndoResult) string {
+	parts := []string{fmt.Sprintf("rewind undone: %d entries restored", r.Entries)}
+	if r.Requeued > 0 {
+		parts = append(parts, fmt.Sprintf("%d message(s) queued again and held", r.Requeued))
+	}
+	switch r.Session {
+	case "cancelled":
+		parts = append(parts, "the agent's session never saw the rewind")
+	case "resumed":
+		parts = append(parts, "the agent's session continues where it was")
+	case "fresh":
+		parts = append(parts, "the agent's session cannot take the messages back; the next message starts a new one with the conversation so far as context")
+	}
+	switch r.Code {
+	case "restored":
+		parts = append(parts, fmt.Sprintf("the workspace is back as it was before the rewind (%d file(s) restored, %d removed)", len(r.Restored), len(r.Removed)))
+	case "kept":
+		parts = append(parts, "the workspace stays as the rewind left it")
+	}
+	return strings.Join(parts, "; ")
+}
+
 // rewindNotice says what a rewind did, as the marker's second line does.
 func rewindNotice(r RewindResult, n int, label string) string {
 	parts := []string{fmt.Sprintf("rewound to before message %d (%s)", n, label)}
