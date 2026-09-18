@@ -913,7 +913,7 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 		w.streamManaged(parent, c, reader, r, send)
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, w.operationTimeout(r.Operation))
 	defer cancel()
 	res, err := w.dispatch(ctx, r)
 	if err != nil {
@@ -926,6 +926,20 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	}
 	send(res)
 }
+// operationTimeout bounds one operation. The ones that create or boot a
+// sandbox (a fresh chat's prepare, a resume, a fork's copy, a resize that
+// restarts) take PrepareTimeout, since on Kubernetes the pod may wait for
+// a node to be provisioned first; everything else gets two minutes.
+func (w *Worker) operationTimeout(op string) time.Duration {
+	switch op {
+	case "prepare", "start", "clone", "resize":
+		if w.PrepareTimeout > 0 {
+			return w.PrepareTimeout
+		}
+	}
+	return 2 * time.Minute
+}
+
 func (w *Worker) streamManaged(parent context.Context, conn net.Conn, reader *bufio.Reader, r Request, send func(Response)) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -1559,7 +1573,7 @@ func (w *Worker) maintainSpares(ctx context.Context) {
 	w.mu.Unlock()
 	name := "wc-spare-" + randomID()[:16]
 	go func() {
-		createCtx, done := context.WithTimeout(ctx, 2*time.Minute)
+		createCtx, done := context.WithTimeout(ctx, w.operationTimeout("prepare"))
 		defer done()
 		var residency io.Closer
 		spec := RuntimeSpec{Name: name, Directory: "/home/agent/workspace", Spare: true, Resources: w.Limits.Default}
