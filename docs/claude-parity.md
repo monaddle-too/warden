@@ -354,6 +354,89 @@ was exhausted; the `fileChange` mapping is unit-tested).
 - [ ] 2 Subagents and background tasks.
 - [ ] 3 Permission model.
 - [ ] 4 Plan mode.
+
+### Items 3 and 4: permission modes and plan mode
+
+Branch `feat/parity-3-permission-modes`, worktree
+`.local/warden-parity-3-permission-modes`, from main 8f0b720 (2026-09-17).
+
+What the pinned CLI (2.1.272) does, probed inside a sandbox with a second
+CLI driven over stream-json (the resident one's env and argv):
+
+- `set_permission_mode` is a control request `{"subtype":
+  "set_permission_mode","mode":…}` answered with `{"subtype":"success",
+  "response":{"mode":…}}`; accepted between turns and mid-turn (even with a
+  `can_use_tool` pending), followed by a `system`/`status` frame carrying
+  `permissionMode`. Modes: `default`, `acceptEdits`, `plan`, `dontAsk`,
+  `auto`, `bypassPermissions` — the last refused ("not launched with
+  --dangerously-skip-permissions"), an unknown mode refused with the list.
+- In `default` mode the CLI asks (`can_use_tool`) for Write/Edit, for
+  Bash commands that write (`touch`, with `blocked_path`) or are not in
+  its read-only set (`python3 -c`, `curl`), and not for `echo`, `ls`,
+  `git status`. The request carries `tool_name`, `input`, `description`
+  (Bash's own, or the file name), `permission_suggestions` (the CLI's own
+  rule ideas: `addRules` with the *exact* command, `addDirectories`,
+  `setMode acceptEdits`), sometimes `decision_reason`.
+- A `{"behavior":"deny","message":…}` answer becomes the tool's error
+  result (`is_error`, the message verbatim); the model reads it and reacts
+  (it asked a follow-up question in the probe).
+- `updatedPermissions` on an allow answer is honoured: `addRules … destination
+  session` stopped later asks for that rule; `setMode` switches the CLI's
+  mode (status frame follows).
+- Plan mode: the CLI writes the plan file itself (`~/.claude/plans/*.md`, no
+  ask), then `ExitPlanMode` arrives as `can_use_tool` with `input.plan`
+  (markdown) and `input.planFilePath`, `requires_user_interaction`. A deny
+  with a message makes the model revise and call it again; an allow with
+  `updatedPermissions: [{type: setMode, mode: acceptEdits}]` switches the
+  CLI and the tool result tells the model the plan is approved.
+- `EnterPlanMode` is a tool the CLI allows itself (no `can_use_tool`); the
+  only sign is the `system`/`status` frame with `permissionMode: plan`.
+
+Design (as implemented):
+
+1. Warden's modes are per chat, on the chat record (`Chat.Mode`: `auto`
+   the default, `ask`, `plan`), owner-settable at any time through
+   `chats/{id}/mode`, the web selector beside the model, `/mode` on both
+   surfaces, Shift-Tab in the TUI. Claude chats only; Codex keeps its
+   approval policy (`on-request` with the sandbox as the boundary) and the
+   selector is hidden — mapping onto Codex's approval policy was not
+   trivial enough to do blind with the account's Codex usage exhausted.
+2. The adapter forwards every `can_use_tool` except AskUserQuestion to the
+   engine as `item/tool/requestPermission` (the tool, its input, the item-1
+   typed item, the CLI's description, the plan for ExitPlanMode); the
+   engine decides under the chat record: `auto` accepts at once, a
+   matching allow-always rule accepts, otherwise an approval card. The
+   engine's reply `{decision, message, mode}` becomes the CLI's
+   `behavior`/`message`, with `updatedPermissions: [setMode]` when the
+   answer moves the mode (plan approval). Rules stay Warden's (persisted,
+   survive a session restart); the CLI's session rules are not used.
+3. CLI mode = `plan` for Warden's `plan`, `default` otherwise (`auto` is
+   Warden allowing everything; nothing changes on the CLI side). The
+   adapter sends `set_permission_mode` on the engine's `permissions/set`
+   only when the CLI mode differs from the last it set or saw; the engine
+   pushes the mode after `thread/start` and before every `turn/start` (so a
+   new session takes the chat's mode) and live from `SetMode` when a
+   session is up; a refused live push leaves the stored mode, re-applied at
+   the next turn.
+4. `system`/`status` frames with `permissionMode` reach the engine as
+   `permissions/modeChanged`: the CLI entering plan mode by itself
+   (EnterPlanMode) flips the chat to `plan` with a transcript marker;
+   leaving it without Warden's approval falls back to `ask`.
+5. Allow-always rules (`Chat.Allowed`): `{tool, command}` — a Bash rule is
+   the command's program (its first two words for `git`, `npm`, `go`,
+   `docker`, `kubectl`, `gh`, `cargo`, `pip`, `make`…; the exact command
+   when it chains with `&&`, `|`, `;` or substitutes), any of the file tools
+   is one rule `edit`, every other tool its name. The card says what
+   "Allow always" would remember.
+6. Transcript markers are `notice` entries (a new role rendered like a
+   system line, dim on the TUI, quoted in an export).
+7. Plan card answers: approve with `auto`, approve with `ask`, or keep
+   planning with feedback (a deny whose message is the feedback).
+
+Decision left to the owner: which modes a collaborator (non-owner) may
+set — see the report.
+
+Progress: implementation below; verification recorded when done.
 - [ ] 5 Slash-command pass-through.
 - [ ] 6 TUI catch-up.
 - [ ] 7 Workspace `.claude/` loading and policy.
