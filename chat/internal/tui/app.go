@@ -1756,7 +1756,7 @@ func (a *App) ports() []Port {
 type Frame struct {
 	Lines       []string // transcript viewport, exactly the rows available
 	Extra       []string // completion menu, waiting attachments, a confirmation: between the transcript and the status
-	Status      string
+	Status      []string // the status bar, laid out over the rows it needs (StatusMaxRows at most)
 	PromptLines []string // the composer, one screen line each
 	CursorRow   int      // cursor position within PromptLines
 	CursorCol   int      // in runes, including the prompt marker
@@ -1921,35 +1921,58 @@ func (a *App) frame(width, height int) Frame {
 		extra = extra[:height/2]
 	}
 	prompt, cursorRow, cursorCol := a.promptLines(width, min(6, height/3))
-	rows := height - 1 - len(prompt) - len(extra) // status + composer
-	if rows < 1 {
-		rows = 1
-	}
-	a.rows = rows
-	if a.scroll > len(body)-rows {
+	// The status bar takes the rows its parts need at this width, and the
+	// transcript gets the rest. The scroll hint is one of its parts, so
+	// the bar is laid out again once the scroll is clamped to the rows
+	// that leaves; a hint that goes away can only free a row.
+	var status []string
+	rows := 0
+	for pass := 0; pass < 2; pass++ {
+		status = a.statusRows(width, height)
+		rows = height - len(status) - len(prompt) - len(extra)
+		if rows < 1 {
+			rows = 1
+		}
+		if a.scroll <= len(body)-rows {
+			break
+		}
 		a.scroll = max(0, len(body)-rows)
 	}
+	a.rows = rows
 	end := len(body) - a.scroll
 	start := max(0, end-rows)
 	view := body[start:end]
 	for len(view) < rows {
 		view = append(view, "")
 	}
-	status := ""
-	c := a.chat()
-	if c != nil {
-		status = StatusLine(c, a.stateports(), a.live, a.now())
-		if a.quiet {
-			status += "  " + dim + "steps hidden" + reset
-		}
-		if a.scroll > 0 {
-			status += fmt.Sprintf("  %s↑ %d lines below · End to follow%s", yellow, a.scroll, reset)
-		}
-		status += "  " + dim + "/help" + reset
-	} else if a.state != nil {
-		status = dim + "Warden · no chat selected · /help" + reset
-	}
 	return Frame{Lines: view, Extra: extra, Status: status, PromptLines: prompt, CursorRow: cursorRow, CursorCol: cursorCol}
+}
+
+// statusRows is the status bar for the screen: the chat's parts plus the
+// screen's own — the scroll position right after what the agent is doing
+// (a reader must know the view is not following), steps hidden and the
+// help hint last — laid out over the rows they need at this width, at
+// most StatusMaxRows and never more than a quarter of the screen.
+func (a *App) statusRows(width, height int) []string {
+	var parts []string
+	c := a.chat()
+	switch {
+	case c != nil:
+		parts = StatusParts(c, a.stateports(), a.live, a.now())
+		if a.scroll > 0 {
+			hint := fmt.Sprintf("%s↑ %d lines below · End to follow%s", yellow, a.scroll, reset)
+			parts = append(parts[:3], append([]string{hint}, parts[3:]...)...)
+		}
+		if a.quiet {
+			parts = append(parts, dim+"steps hidden"+reset)
+		}
+		parts = append(parts, dim+"/help"+reset)
+	case a.state != nil:
+		parts = []string{dim + "Warden · no chat selected · /help" + reset}
+	default:
+		return []string{""}
+	}
+	return LayoutStatus(parts, width, max(1, min(StatusMaxRows, height/4)))
 }
 
 func (a *App) stateports() []Port {
@@ -1983,7 +2006,9 @@ func (a *App) draw() {
 	for _, l := range f.Extra {
 		b.WriteString(clip(l, width) + "\x1b[K\r\n")
 	}
-	b.WriteString(clip(f.Status, width) + "\x1b[K\r\n")
+	for _, l := range f.Status {
+		b.WriteString(clip(l, width) + "\x1b[K\r\n")
+	}
 	for i, l := range f.PromptLines {
 		b.WriteString(clip(l, width) + "\x1b[K")
 		if i < len(f.PromptLines)-1 {
@@ -1992,7 +2017,7 @@ func (a *App) draw() {
 	}
 	b.WriteString("\x1b[J") // clear anything left below a shrinking composer
 	// Place the cursor inside the composer (rows are 1-based).
-	row := len(f.Lines) + len(f.Extra) + 1 + f.CursorRow + 1
+	row := len(f.Lines) + len(f.Extra) + len(f.Status) + f.CursorRow + 1
 	b.WriteString(fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", row, f.CursorCol+1))
 	io.WriteString(a.Output, b.String())
 }

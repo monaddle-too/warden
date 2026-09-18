@@ -1111,6 +1111,24 @@ cloned home (a `!` against the stopped sandbox gives the clean refusal
 card; Ctrl-R finds the pasted prompt; the mode selector sits beside the
 composer's).
 
+### Item 6 follow-up: the status bar wraps (2026-09-18)
+
+The status line was one row clipped at the right edge, so on a narrow
+terminal the turn's tokens and cost, the context and `/help` fell off
+first. `StatusParts` now returns the bar's parts in order of importance
+(title, agent, state, then the scroll hint, approvals, error, stats,
+context, previews, steps hidden, `/help`) and `LayoutStatus` packs them
+into rows no wider than the screen without splitting a part; the frame
+budgets those rows (at most `StatusMaxRows` = 4 and a quarter of the
+screen; what does not fit by then is dropped, least important last) and
+the cursor follows. `Frame.Status` is the rows. Found on the way: `wrap`
+measured styled text by raw runes, so escape sequences counted as columns
+and a 26-column tool head (`Write hello.txt  +1 −0`) broke at 50 columns;
+it now measures visible width, cuts over-long tokens by visible runes and
+carries an open style across a break. Tests `TestStatusWrapsToRows`,
+`TestFrameBudgetsStatusRows`, `TestWrapMeasuresVisibleWidth`; checked in a
+pty at 30, 50 and 110 columns against the deployed local Warden.
+
 ### Item 8: compaction and context
 
 Branch `feat/parity-8-compaction`, worktree `.local/warden-parity-8-compaction`,

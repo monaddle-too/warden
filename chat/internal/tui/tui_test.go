@@ -754,8 +754,8 @@ func TestScrollKeysAndWheel(t *testing.T) {
 		t.Fatalf("page: %d (page %d)", app.scroll, app.page())
 	}
 	f := app.frame(80, 22)
-	if !strings.Contains(plain(f.Status), "lines below") {
-		t.Fatalf("status lacks scroll indicator: %q", plain(f.Status))
+	if !strings.Contains(plain(strings.Join(f.Status, "\n")), "lines below") {
+		t.Fatalf("status lacks scroll indicator: %q", f.Status)
 	}
 	app.handleKey(ctx, Key{Kind: KeyEnd})
 	if app.scroll != 0 {
@@ -1519,7 +1519,7 @@ func TestKeyboardSet(t *testing.T) {
 	if !app.quiet || !strings.Contains(before, "http.server") || strings.Contains(after, "http.server") || strings.Contains(after, "Thought") || !strings.Contains(after, "Create a counter page") {
 		t.Fatalf("ctrl-o:\n%s", after)
 	}
-	if !strings.Contains(plain(app.frame(80, 24).Status), "steps hidden") {
+	if !strings.Contains(plain(strings.Join(app.frame(80, 24).Status, "\n")), "steps hidden") {
 		t.Fatal("status lacks the hidden marker")
 	}
 	app.submit(ctx, "/verbose")
@@ -2973,13 +2973,128 @@ func TestTitleAndBellEvents(t *testing.T) {
 	}
 }
 
+// The status bar keeps every part on a narrow terminal by taking more
+// rows, never splitting a part, and the transcript gives those rows up.
+func TestStatusWrapsToRows(t *testing.T) {
+	parts := []string{"● " + bold + "title" + reset, "claude · opus · auto", yellow + "running" + reset, "3.3s · 12k tokens (12k in, 226 out) · $0.20", "ctx 46k/200k (23%)", dim + "/help" + reset}
+	one := LayoutStatus(parts, 200, StatusMaxRows)
+	if len(one) != 1 || plain(one[0]) != strings.Join([]string{"● title", "claude · opus · auto", "running", "3.3s · 12k tokens (12k in, 226 out) · $0.20", "ctx 46k/200k (23%)", "/help"}, "  ") {
+		t.Fatalf("wide layout: %q", one)
+	}
+	rows := LayoutStatus(parts, 48, StatusMaxRows)
+	if len(rows) != 3 {
+		t.Fatalf("48 columns: want 3 rows, got %d: %q", len(rows), rows)
+	}
+	for i, r := range rows {
+		if w := visibleWidth(r); w > 48 {
+			t.Fatalf("row %d is %d wide: %q", i, w, plain(r))
+		}
+	}
+	joined := plain(strings.Join(rows, "\n"))
+	for _, part := range parts {
+		if !strings.Contains(joined, plain(part)) {
+			t.Fatalf("part %q lost:\n%s", plain(part), joined)
+		}
+	}
+	// A part wider than the row stands alone; the cap drops the tail.
+	capped := LayoutStatus(parts, 20, 2)
+	if len(capped) != 2 || plain(capped[0]) != "● title" || plain(capped[1]) != "claude · opus · auto" {
+		t.Fatalf("capped layout: %q", capped)
+	}
+	if got := LayoutStatus(nil, 40, 2); len(got) != 1 || got[0] != "" {
+		t.Fatalf("empty layout: %q", got)
+	}
+}
+
+func TestFrameBudgetsStatusRows(t *testing.T) {
+	app := &App{Now: func() time.Time { return time.Unix(100, 0) }}
+	c := sampleChat()
+	c.Status = "idle"
+	c.Conversation.Turns = []Turn{{ID: "t1", StartedAt: 90, EndedAt: 93.3, Usage: &Usage{Input: 12000, Output: 226, Total: 12226, CostUSD: 0.1975}}}
+	c.Conversation.Context = &Context{Used: 46449, Window: 200000, Threshold: 167000, Model: "claude-sonnet-5"}
+	for i := 0; i < 40; i++ {
+		c.Conversation.Entries = append(c.Conversation.Entries, Entry{ID: fmt.Sprint("e", i), Role: "assistant", Text: fmt.Sprintf("line %d", i), TurnID: ptr("t1")})
+	}
+	app.state = &State{Chats: []*Chat{c}}
+	app.ChatID = "chat1"
+	app.live = true
+	wide := app.frame(200, 24)
+	if len(wide.Status) != 1 || len(wide.Lines) != 24-1-len(wide.PromptLines) {
+		t.Fatalf("wide frame: %d status rows, %d lines", len(wide.Status), len(wide.Lines))
+	}
+	narrow := app.frame(50, 24)
+	if len(narrow.Status) < 2 || len(narrow.Status) > StatusMaxRows {
+		t.Fatalf("narrow frame: %d status rows: %q", len(narrow.Status), narrow.Status)
+	}
+	if len(narrow.Lines)+len(narrow.Status)+len(narrow.PromptLines)+len(narrow.Extra) != 24 {
+		t.Fatalf("narrow frame does not fill the screen: %d lines, %d status, %d prompt, %d extra", len(narrow.Lines), len(narrow.Status), len(narrow.PromptLines), len(narrow.Extra))
+	}
+	joined := plain(strings.Join(narrow.Status, "\n"))
+	for _, want := range []string{"Local preview test", "codex", "12k tokens", "$0.20", "ctx 46k/200k (23%)", "1 approval", "/help"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("narrow status lost %q:\n%s", want, joined)
+		}
+	}
+	for i, r := range narrow.Status {
+		if w := visibleWidth(r); w > 50 {
+			t.Fatalf("status row %d is %d wide: %q", i, w, plain(r))
+		}
+	}
+	// A short screen caps the bar at a quarter of its rows.
+	short := app.frame(30, 8)
+	if len(short.Status) != 2 {
+		t.Fatalf("short screen: %d status rows: %q", len(short.Status), short.Status)
+	}
+	// The scroll hint is a part too; it goes away once the scroll is clamped.
+	app.scroll = 10000
+	f := app.frame(50, 24)
+	if strings.Contains(plain(strings.Join(f.Status, "\n")), "lines below") == (app.scroll == 0) {
+		t.Fatalf("scroll hint disagrees with scroll %d: %q", app.scroll, f.Status)
+	}
+}
+
+// Styling takes no columns: a styled line wraps where its plain text
+// would, and a style that is open at a break carries onto the next line.
+func TestWrapMeasuresVisibleWidth(t *testing.T) {
+	head := "Write hello.txt  " + green + "+1" + reset + " " + red + "−0" + reset
+	got := wrap(head, 50, dim+"  · "+reset, "    ")
+	if len(got) != 1 || plain(got[0]) != "  · Write hello.txt  +1 −0" {
+		t.Fatalf("styled head wrapped: %q", got)
+	}
+	plainWords := strings.Repeat("word ", 20)
+	styledWords := yellow + plainWords + reset
+	p, s := wrap(strings.TrimSpace(plainWords), 30, "  ", "  "), wrap(strings.TrimSpace(styledWords), 30, "  ", "  ")
+	if len(p) != len(s) {
+		t.Fatalf("styled text wraps differently: %d vs %d lines\n%q\n%q", len(p), len(s), p, s)
+	}
+	for i := range p {
+		if plain(s[i]) != p[i] {
+			t.Fatalf("line %d differs: %q vs %q", i, plain(s[i]), p[i])
+		}
+		if w := visibleWidth(s[i]); w > 30 {
+			t.Fatalf("line %d is %d wide", i, w)
+		}
+	}
+	if !strings.HasPrefix(s[1], "  "+yellow) || !strings.HasSuffix(s[0], reset) {
+		t.Fatalf("style not carried across the break: %q", s)
+	}
+	// A single over-long styled token is cut by visible runes.
+	long := cyan + strings.Repeat("x", 40) + reset
+	cut := wrap(long, 20, "", "")
+	if len(cut) != 2 || plain(cut[0]) != strings.Repeat("x", 20) || plain(cut[1]) != strings.Repeat("x", 20) {
+		t.Fatalf("over-long token: %q", cut)
+	}
+}
+
 // A message's delivery shows only when there is something to say: the
 // queue marker while held, a red not-delivered line with the reason when
 // it failed, nothing while it is being handed over or once it is sent.
 func TestDeliveryMarks(t *testing.T) {
 	c := &Chat{Provider: "claude", Status: "running"}
+	// Lines are joined with single spaces so the check does not depend on
+	// where the width wraps the detail.
 	render := func(delivery, detail string) string {
-		return plain(strings.Join(renderEntry(c, Entry{ID: "u", Role: "user", Text: "hi", Delivery: delivery, Detail: detail}, 80, false, nil, ""), "\n"))
+		return strings.Join(strings.Fields(plain(strings.Join(renderEntry(c, Entry{ID: "u", Role: "user", Text: "hi", Delivery: delivery, Detail: detail}, 80, false, nil, ""), "\n"))), " ")
 	}
 	for _, d := range []string{"", "sending", "sent"} {
 		if got := render(d, ""); got != "you › hi" {
@@ -2989,10 +3104,10 @@ func TestDeliveryMarks(t *testing.T) {
 	if got := render("queued", ""); !strings.Contains(got, "queued") {
 		t.Fatalf("queued: %q", got)
 	}
-	if got := render("failed", "Delivery unconfirmed. Check the agent response before retrying."); got != "you › hi\n      ! not delivered: Delivery unconfirmed. Check the agent\n        response before retrying." {
+	if got := render("failed", "Delivery unconfirmed. Check the agent response before retrying."); got != "you › hi ! not delivered: Delivery unconfirmed. Check the agent response before retrying." {
 		t.Fatalf("failed: %q", got)
 	}
-	if got := render("failed", ""); got != "you › hi\n      ! not delivered" {
+	if got := render("failed", ""); got != "you › hi ! not delivered" {
 		t.Fatalf("failed without detail: %q", got)
 	}
 }
