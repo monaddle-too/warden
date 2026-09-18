@@ -392,7 +392,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
 - [x] 13 Per-user instructions and memory — merged to main a5012c0 (2026-09-18); verified as the Item 13 section says.
 - [ ] 14 Project MCP, OAuth, plugins.
-- [ ] 15 Long tail.
+- [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
 
 ### Item 15: the long tail
 
@@ -527,6 +527,12 @@ pty: `/cost`, `/bell`, `/style`, `/fork` listing, `/btw` answered
 ($0.03) with the aside card, `/fork 2` switching to the fork, the title
 `Warden · probe · idle` → `running` → `idle` around a turn with one bell,
 the title pushed at start and popped at exit.
+
+Progress: started 2026-09-18; implemented and live-verified 2026-09-18
+(8ea4897); merged to main 572d873 (2026-09-18) after merging items 9,
+10 and 13 in (append-append seams in the runner, the engine, the TUI,
+the web composer and components, the docs; the merged build smoke-tested
+on the cloned home: a turn, a side question, the launch flags).
 
 Left: a side question needs the resident session up (the gateway's
 credential is per run), so after the idle release the person sends a
