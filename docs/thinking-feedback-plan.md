@@ -51,7 +51,7 @@ step (Codex, since 5fd3805 / d96889e):
   thinking"; Codex on GPT-5.5 shows "Working · 7.0s", then the summary
   headers streaming under "Thinking", folding to "Thought for 9.4s". The
   default Codex model produced no reasoning items on an easy task.
-- [ ] Merged to main.
+- [x] Merged to `origin/main` as 74e7fa5 (2026-09-17).
 
 ## Decisions
 
@@ -75,4 +75,7 @@ step (Codex, since 5fd3805 / d96889e):
 
 ## Remaining
 
-- Merge, remove the worktree, update `AGENTS.md` in the workspace root.
+- Nothing. Possible follow-ups: show Claude's thinking text if a later
+  Claude Code streams it again (the disclosure path is already there);
+  a "Working" elapsed count for Codex could also count the whole turn in
+  the turn line the way the Codex app's "Worked for" does.
