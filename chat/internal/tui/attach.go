@@ -16,9 +16,10 @@ import (
 // draft — @./path, @../path or @~/path, a file on this machine rather
 // than the workspace's — is uploaded when the message is sent and the
 // mention rewritten to the file's workspace path; /paste N shows a
-// collapsed paste (paste.go) in the pager, Ctrl+P on its placeholder
-// previews it and cycles to the next, and the pastes are listed above
-// the status bar while the draft holds them.
+// collapsed paste (paste.go) in full into the scrollback, Ctrl+P on its
+// placeholder previews its first lines above the status bar and cycles
+// to the next, and the pastes are listed there while the draft holds
+// them.
 
 // localMention matches a mention of a local file in the draft: "@" then a
 // path that starts with ./, ../ or ~/ (a workspace mention has no such
@@ -197,34 +198,24 @@ func (a *App) attachMentions(ctx context.Context, c *Chat, text string) (string,
 	return text, nil
 }
 
-// The pager: a text shown in place of the transcript until Esc, a send
-// or a switch closes it.
+// The preview: a collapsed paste's first lines above the status bar,
+// opened by Ctrl+P on its placeholder, until Esc, a send or a switch
+// closes it; /paste N prints the whole paste into the scrollback, where
+// the terminal's own scrolling and search reach it.
 
-type pagerView struct {
-	title string
-	lines []string
-	paste int // the paste it shows, from 1; 0 for another text
+type pasteView struct {
+	paste int // the paste shown, from 1
 }
 
-// closePager takes the transcript back.
-func (a *App) closePager() {
-	if a.pager == nil {
-		return
-	}
-	a.pager = nil
-	a.scroll = 0
-}
+// previewRows is how many lines of a paste the preview shows.
+const previewRows = 8
 
-// showPaste opens the pager on paste n of the draft.
+// showPaste opens the preview on paste n of the draft.
 func (a *App) showPaste(n int) bool {
-	pastes := a.editor.Pastes()
-	if n < 1 || n > len(pastes) {
+	if n < 1 || n > len(a.editor.Pastes()) {
 		return false
 	}
-	text := strings.TrimRight(pastes[n-1], "\n")
-	lines := strings.Split(text, "\n")
-	a.pager = &pagerView{title: fmt.Sprintf("Pasted text #%d — %d %s, %s · Esc closes · Ctrl+P on the placeholder cycles", n, len(lines), plural2(len(lines), "line"), FormatSize(int64(len(pastes[n-1])))), lines: lines, paste: n}
-	a.scroll = 1 << 30 // the top; clamped by the frame
+	a.preview = &pasteView{paste: n}
 	return true
 }
 
@@ -235,15 +226,45 @@ func plural2(n int, word string) string {
 	return word + "s"
 }
 
-// pagerLines lays the pager out.
-func (a *App) pagerLines(width int) []string {
-	p := a.pager
-	out := []string{bold + cyan + p.title + reset, ""}
-	for i, l := range p.lines {
-		num := fmt.Sprintf("%s%4d %s", dim, i+1, reset)
-		out = append(out, wrap(sanitize(l), width, num, "     ")...)
+// pasteLines is a paste's text as lines, without a trailing newline.
+func pasteLines(text string) []string {
+	return strings.Split(strings.TrimRight(text, "\n"), "\n")
+}
+
+// previewLines lays the preview out: a title, the first previewRows
+// lines numbered, and how many more there are.
+func (a *App) previewLines(width int) []string {
+	p := a.preview
+	if p == nil {
+		return nil
+	}
+	pastes := a.editor.Pastes()
+	if p.paste < 1 || p.paste > len(pastes) {
+		a.preview = nil
+		return nil
+	}
+	text := pastes[p.paste-1]
+	lines := pasteLines(text)
+	out := []string{fmt.Sprintf("%s%sPasted text #%d — %d %s, %s%s%s · Esc closes · Ctrl+P on the placeholder cycles · /paste %d prints all of it%s", bold, cyan, p.paste, len(lines), plural2(len(lines), "line"), FormatSize(int64(len(text))), reset, dim, p.paste, reset)}
+	for i, l := range lines[:min(previewRows, len(lines))] {
+		out = append(out, truncate(fmt.Sprintf("%s%4d %s%s", dim, i+1, reset, sanitize(l)), max(20, width)))
+	}
+	if len(lines) > previewRows {
+		out = append(out, fmt.Sprintf("%s     … %d more %s%s", dim, len(lines)-previewRows, plural2(len(lines)-previewRows, "line"), reset))
 	}
 	return out
+}
+
+// PasteText lays a paste out for printing: a title, then every line
+// numbered.
+func PasteText(n int, text string) string {
+	lines := pasteLines(text)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Pasted text #%d — %d %s, %s", n, len(lines), plural2(len(lines), "line"), FormatSize(int64(len(text))))
+	for i, l := range lines {
+		fmt.Fprintf(&b, "\n%4d %s", i+1, l)
+	}
+	return b.String()
 }
 
 // PasteListing describes the draft's pastes, one line each.
@@ -258,8 +279,8 @@ func PasteListing(pastes []string) []string {
 	return out
 }
 
-// pasteCommand: /paste lists the draft's pastes, /paste N shows one,
-// /paste close puts the transcript back.
+// pasteCommand: /paste lists the draft's pastes, /paste N prints one in
+// full into the scrollback, /paste close takes the preview away.
 func (a *App) pasteCommand(arg string) {
 	pastes := a.editor.Pastes()
 	switch strings.ToLower(arg) {
@@ -268,14 +289,16 @@ func (a *App) pasteCommand(arg string) {
 			a.setNotice("no collapsed paste in the draft; a paste over 8 lines or 1000 characters becomes [Pasted text #N — M lines]")
 			return
 		}
-		a.setNotice(strings.Join(append(PasteListing(pastes), "/paste N shows one in full; Ctrl+P on its placeholder previews it"), "\n"))
+		a.setNotice(strings.Join(append(PasteListing(pastes), "/paste N prints one in full; Ctrl+P on its placeholder previews it"), "\n"))
 	case "close", "off":
-		a.closePager()
+		a.preview = nil
 	default:
 		n, err := strconv.Atoi(arg)
-		if err != nil || !a.showPaste(n) {
+		if err != nil || n < 1 || n > len(pastes) {
 			a.setNotice("/paste N with N from /paste (the draft holds " + strconv.Itoa(len(pastes)) + ")")
+			return
 		}
+		a.setNotice(PasteText(n, pastes[n-1]))
 	}
 }
 
@@ -294,8 +317,8 @@ func placeholderAt(text string, cursor int) int {
 	return 0
 }
 
-// pastePreview is Ctrl+P on a placeholder: it opens the pager on that
-// paste; while the pager is open it moves to the draft's next
+// pastePreview is Ctrl+P on a placeholder: it opens the preview on that
+// paste; while a preview is open it moves to the draft's next
 // placeholder, and closes after the last. False when the cursor is not
 // on a placeholder (Ctrl+P is then the history's).
 func (a *App) pastePreview() bool {
@@ -304,7 +327,7 @@ func (a *App) pastePreview() bool {
 	if n == 0 {
 		return false
 	}
-	if a.pager == nil {
+	if a.preview == nil {
 		if !a.showPaste(n) {
 			a.setNotice("placeholder #" + strconv.Itoa(n) + " names no paste of this draft")
 		}
@@ -317,7 +340,7 @@ func (a *App) pastePreview() bool {
 		order = append(order, k)
 	}
 	for i, k := range order {
-		if k == a.pager.paste {
+		if k == a.preview.paste {
 			for _, next := range order[i+1:] {
 				if next != k && a.showPaste(next) {
 					return true
@@ -326,7 +349,7 @@ func (a *App) pastePreview() bool {
 			break
 		}
 	}
-	a.closePager()
+	a.preview = nil
 	return true
 }
 
@@ -341,5 +364,5 @@ func pasteChip(pastes []string, width int) []string {
 		lines := strings.Count(strings.TrimRight(p, "\n"), "\n") + 1
 		parts = append(parts, fmt.Sprintf("#%d %d %s (%s)", i+1, lines, plural2(lines, "line"), FormatSize(int64(len(p)))))
 	}
-	return wrap(strings.Join(parts, " · ")+dim+" · /paste N or Ctrl+P on the placeholder previews"+reset, width, cyan+"pasted: "+reset, "        ")
+	return wrap(strings.Join(parts, " · ")+dim+" · Ctrl+P on the placeholder previews, /paste N prints"+reset, width, cyan+"pasted: "+reset, "        ")
 }

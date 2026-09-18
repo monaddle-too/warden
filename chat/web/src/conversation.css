@@ -262,6 +262,90 @@
   gap: 5px;
   color: var(--accent-text);
 }
+/* A queued message edited on its card: the editor takes the bubble's
+   place, its bar under it. */
+.queued-editor {
+  width: min(600px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px dashed var(--accent);
+  border-radius: 14px 14px 4px 14px;
+  background: var(--surface);
+}
+.queued-editor textarea {
+  width: 100%;
+  min-height: 40px;
+  max-height: 320px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  resize: vertical;
+  outline: none;
+}
+.queued-editor textarea:focus {
+  border-color: var(--accent);
+}
+.queued-editor-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 13px;
+}
+.queued-editor-files li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.queued-editor-files button {
+  width: 20px;
+  height: 20px;
+}
+.queued-editor-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.queued-editor-bar > span:last-child {
+  display: flex;
+  gap: 6px;
+}
+.queued-editor-bar button {
+  height: 26px;
+  padding: 0 10px;
+}
+/* Undo under a rewind marker while the removed transcript is kept. */
+.rewind-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+}
+.rewind-actions button {
+  height: 26px;
+  padding: 0 10px;
+  gap: 5px;
+  color: var(--accent-text);
+}
+.rewind-actions small {
+  flex-basis: 100%;
+  text-align: center;
+  color: var(--muted);
+}
 @media (hover: none) {
   .message-actions {
     opacity: 1;

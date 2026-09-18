@@ -11,13 +11,14 @@ import (
 // Unread entries and the jump to the bottom (docs/claude-parity.md,
 // R2.18; the web's transcript.ts keeps the same mark in localStorage).
 // The last entry the reader had in view is remembered per chat, in
-// SeenFile (<state>/tui/seen.json), and advances while the view follows
-// the selected chat's tail. Against it, /chats and the /switch menu mark
-// a chat with new entries, the status bar counts them across the other
-// chats, and switching into a chat puts a "── new ──" divider before
-// the first unseen entry, opening the view there when the stretch is
-// longer than the screen. G (vim, empty draft), End and /bottom go back
-// to the tail.
+// SeenFile (<state>/tui/seen.json), and advances with every frame of the
+// selected chat (the transcript is the terminal's, which follows what is
+// printed). Against it, /chats and the /switch menu mark a chat with new
+// entries, the status bar counts them across the other chats, and
+// switching into a chat prints a "── new ──" divider before the first
+// unseen entry, with a notice saying how many are new. G (vim, empty
+// draft), End and /bottom reprint the chat so the terminal's view is at
+// its end.
 
 // Seen is the mark: the entry's ID, and when it was made, so a
 // transcript the service replaced (a rewind) still divides by time.
@@ -148,26 +149,35 @@ func (a *App) unreadElsewhere(current *Chat) int {
 }
 
 // markUnread fixes where the selected chat's divider goes, from its mark
-// as it is now (the web does the same when a chat opens), and asks the
-// next frame to open the view there.
-func (a *App) markUnread() {
-	a.unreadID, a.toUnread = "", false
+// as it is now (the web does the same when a chat opens), and returns a
+// note saying how many messages are new ("" for none).
+func (a *App) markUnread() string {
+	a.unreadID = ""
 	c := a.chat()
 	if c == nil {
-		return
+		return ""
 	}
 	a.loadSeen()
 	mark, ok := a.seen[c.ID]
-	if i := UnreadStart(c.Conversation.Entries, mark, ok); i >= 0 {
-		a.unreadID = c.Conversation.Entries[i].ID
-		a.toUnread = true
+	i := UnreadStart(c.Conversation.Entries, mark, ok)
+	if i < 0 {
+		return ""
 	}
+	a.unreadID = c.Conversation.Entries[i].ID
+	if n := UnreadCount(c.Conversation.Entries, mark, ok); n > 0 {
+		return fmt.Sprintf("%d new %s since you were here; %s marks the first", n, plural2(n, "message"), UnreadDivider)
+	}
+	return ""
 }
 
-// markSeen advances the selected chat's mark to its last entry while the
-// view follows the tail.
+// unreadDividerLine is the divider as printed, across the width.
+func unreadDividerLine(width int) string {
+	return cyan + UnreadDivider + strings.Repeat("─", max(0, width-len([]rune(UnreadDivider))-1)) + reset
+}
+
+// markSeen advances the selected chat's mark to its last entry.
 func (a *App) markSeen(c *Chat) {
-	if c == nil || a.scroll > 0 || len(c.Conversation.Entries) == 0 {
+	if c == nil || len(c.Conversation.Entries) == 0 {
 		return
 	}
 	a.loadSeen()
@@ -187,22 +197,5 @@ func (a *App) flushSeen() {
 	a.seenDirty = false
 	if a.SeenFile != "" {
 		_ = SaveSeen(a.SeenFile, a.seen)
-	}
-}
-
-// scrollToUnread opens the view at the divider when the unread stretch
-// is longer than the view; body is the composed transcript.
-func (a *App) scrollToUnread(body []string, rows int) {
-	if !a.toUnread {
-		return
-	}
-	a.toUnread = false
-	for i := len(body) - 1; i >= 0; i-- {
-		if strings.Contains(body[i], UnreadDivider) {
-			if len(body)-i > rows {
-				a.scroll = len(body) - rows - i
-			}
-			return
-		}
 	}
 }

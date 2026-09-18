@@ -59,14 +59,18 @@ type App struct {
 	editor   Editor
 	notice   string
 	noticeAt time.Time
-	scroll   int  // lines scrolled up from the tail
-	rows     int  // transcript rows in the last frame
-	expanded bool // show tool output and diffs in full
-	quiet    bool // hide tool steps and thinking (Ctrl+O)
+	// prints are notices of several lines (listings, /help, a file) still
+	// to be written into the scrollback, where they stay like Claude Code's
+	// command output; a one-line notice shows under the transcript for a
+	// while instead.
+	prints   []string
+	screen   screen // what the terminal shows (draw)
+	expanded bool   // show tool output and diffs in full
+	quiet    bool   // hide tool steps and thinking (Ctrl+O)
 	// diff is the session diff /diff fetched, shown under the transcript
 	// (one line per file; Tab expands the hunks) until /diff again.
 	diff    *WorkspaceChanges
-	redraw  bool // clear the screen on the next draw (Ctrl+L)
+	redraw  bool // clear the screen and reprint the transcript on the next draw (Ctrl+L, a resize, a chat switch)
 	quit    bool
 	ctrlC   time.Time // last Ctrl+C; a second within ctrlCQuit quits
 	lastEsc time.Time // last Esc on an idle chat; a second within doubleEscape edits the last message
@@ -81,6 +85,9 @@ type App struct {
 	later   chan func(context.Context)
 	search  *searchState
 	confirm *confirmation
+	// searchHits are the last /search's hits, for /search N (search.go).
+	searchHits  []SearchHit
+	searchQuery string
 	// editing is set while the composer holds a file or the person's
 	// instructions (/memory edit, /instructions edit): Enter saves it
 	// through save, Esc cancels. memoryFiles is the last listing per chat,
@@ -92,15 +99,15 @@ type App struct {
 	histories   map[string][]string     // in-memory history per chat when HistoryDir is empty
 	historyChat string                  // chat whose history the editor holds
 
-	vim       Vim             // the composer's vim mode (vim.go)
-	vimRead   bool            // VimFile has been read
-	cursorSt  string          // the cursor shape last set (DECSCUSR)
-	pager     *pagerView      // a text shown in place of the transcript (attach.go)
-	seen      map[string]Seen // the last entry seen per chat (unread.go)
-	seenRead  bool            // SeenFile has been read
-	seenDirty bool            // seen has changes not yet written
-	unreadID  string          // the entry the "new" divider goes before in the selected chat
-	toUnread  bool            // scroll to the divider at the next frame
+	vim        Vim             // the composer's vim mode (vim.go)
+	vimRead    bool            // VimFile has been read
+	cursorSt   string          // the cursor shape last set (DECSCUSR)
+	preview    *pasteView      // the paste previewed above the status bar (attach.go)
+	seen       map[string]Seen // the last entry seen per chat (unread.go)
+	seenRead   bool            // SeenFile has been read
+	seenDirty  bool            // seen has changes not yet written
+	unreadID   string          // the entry the "new" divider goes before in the selected chat
+	unreadNote string          // what selectChat found new, for the switch's notice
 }
 
 const ctrlCQuit = 2 * time.Second
@@ -152,14 +159,6 @@ type editing struct {
 	save  func(context.Context, string) error
 }
 
-// page is how far PgUp/PgDn move: a screen minus two lines of context.
-func (a *App) page() int {
-	if a.rows > 4 {
-		return a.rows - 2
-	}
-	return 10
-}
-
 const helpText = `commands   type / for the menu (Tab or Enter completes); /help lists them
            /new [title] /chats /switch N · /rename TITLE /archive /restore /delete
            /attach PATH… (globs) /attachments /detach N · /paste [N] · /export [md|json] [all] [FILE]
@@ -169,18 +168,19 @@ const helpText = `commands   type / for the menu (Tab or Enter completes); /help
            /fork (list) /fork N|all copies the chat into a sibling · /cost totals so far
            /btw QUESTION asks a copy of the session (never sent to the agent)
            /style [default|Explanatory|Learning] · /bell [on|off]
-           /find TEXT /bottom /copy /expand /verbose /clear /quit · /vim [on|off]
+           /find TEXT (this chat) · /search TEXT (every chat; /search N opens hit N)
+           /copy /expand /verbose /clear /quit · /bottom · /vim [on|off]
            /instructions [edit|clear] your standing instructions, given to the agent in every chat
            /memory [FILE] [edit FILE] the workspace's CLAUDE.md, rules and auto-memory files
            /rules (list) /rules add allow|deny|ask PATTERN · /rules rm N — permission rules of the workspace
            /permissions how this chat's tool asks were decided and by whom · /allow [chat] answers the first ask always
            /compact [what to keep] asks Claude to replace the history with a summary
 composer   Enter sends · Alt+Enter (or Ctrl+J) inserts a line break · paste keeps newlines
-           a long paste becomes [Pasted text #N — M lines] and is sent in full; Ctrl+P on it previews (/paste N)
+           a long paste becomes [Pasted text #N — M lines] and is sent in full; Ctrl+P on it previews, /paste N prints it
            !cmd runs a shell command in the workspace as you (not the agent)
            #note appends a bullet to the workspace's CLAUDE.md
            @path completes a workspace path (Tab or Enter accepts) · @./file or @~/file attaches a local file when sent
-           /chats and /switch mark chats with unread messages (• N); switching shows ── new ── before them
+           /chats and /switch mark chats with unread messages (• N); switching prints ── new ── before them
            Up/Down recall prompts (or move between lines) · Ctrl+R searches them
            a message sent while the agent runs is queued: ↑ (empty draft) edits the last one
            Esc Esc (empty draft, agent idle) edits your last message: the conversation rewinds to before it
@@ -191,10 +191,11 @@ keys       y / n answer the first pending approval; typed text answers a questio
            Shift+Tab cycles a Claude chat's permission mode (auto → ask → plan)
            Esc interrupts the agent · Ctrl+C clears the draft (twice quits) · Ctrl+D quits
            Ctrl+O shows or hides tool steps and thinking · Tab (empty draft) expands output
-           Ctrl+L redraws · scroll: mouse wheel, PgUp/PgDn, Home/End with an empty draft (End or /bottom follows again)
+           Ctrl+L clears the screen and reprints the chat · /bottom (End on an empty draft) does the same, to its end
+           the transcript is your terminal's: scroll, search and select text as you always do
 vim        /vim on: Esc enters normal mode (-- NORMAL --), i a I A o O insert · h j k l w b e 0 $ ^ gg G with counts
            d c y over a motion, dd cc yy x X p P · u undoes, Ctrl+R redoes, . repeats · Enter or :w sends
-           :q quits · :wq · :set novim · /TEXT searches the transcript (n again) · G on an empty draft follows`
+           :q quits · :wq · :set novim · /TEXT searches the transcript (n again) · G on an empty draft reprints to the end`
 
 // NewMessageID is a fresh client message id (retries reuse it).
 func NewMessageID() string {
@@ -210,8 +211,14 @@ func (a *App) now() time.Time {
 	return time.Now()
 }
 
+// setNotice shows s under the transcript: a line for a while, or, when it
+// has several lines, printed into the scrollback for good on the next
+// draw (a listing is worth keeping; it is what the person asked for).
 func (a *App) setNotice(s string) {
 	a.notice, a.noticeAt = s, a.now()
+	if strings.Contains(s, "\n") {
+		a.prints = append(a.prints, s)
+	}
 }
 
 func (a *App) chat() *Chat {
@@ -279,8 +286,14 @@ func (a *App) readKeys(ctx context.Context, keys chan<- Key) {
 }
 
 // Run drives the terminal until the person quits or ctx ends. The caller
-// puts the terminal in raw mode and restores it; Run owns the alternate
-// screen.
+// puts the terminal in raw mode and restores it; Run owns what is on the
+// screen. The transcript is printed into the terminal's normal buffer, as
+// Claude Code prints its own: entries that are final are written once and
+// stay in the scrollback, and only the live tail below them — what is
+// still streaming, the queue, approvals, the menus, the status and the
+// composer — is redrawn in place. No alternate screen and no mouse
+// tracking, so the terminal's own scrolling, search and text selection
+// work on the whole conversation, and it stays there at exit.
 func (a *App) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -316,14 +329,14 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	a.loadHistory()
 	a.vimOn()
-	a.markUnread()
-	// Alternate screen, cursor hidden while painting, and mouse wheel
-	// reporting (SGR encoding) so the wheel scrolls the transcript. Text
-	// selection then needs the terminal's modifier (Option or Shift).
-	// The terminal's title is pushed (xterm's title stack) and popped at
-	// exit, so the person gets theirs back; setTitle keeps it current.
-	fmt.Fprint(a.Output, "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[22;0t")
-	defer fmt.Fprint(a.Output, "\x1b[0 q\x1b[?2004l\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[23;0t")
+	if note := a.markUnread(); note != "" {
+		a.setNotice(note)
+	}
+	// Bracketed paste, and the terminal's title pushed (xterm's title
+	// stack) and popped at exit so the person gets theirs back; setTitle
+	// keeps it current. The cursor is hidden only while a draw writes.
+	fmt.Fprint(a.Output, "\x1b[?2004h\x1b[22;0t")
+	defer a.finish()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	a.draw()
@@ -353,6 +366,13 @@ func (a *App) Run(ctx context.Context) error {
 			f(ctx)
 			a.draw()
 		case <-a.Resize:
+			// The terminal has reflowed what it shows; print it afresh —
+			// once the burst a window drag sends is over, and only when
+			// the size did change.
+			a.settleResize()
+			if w, h := a.size(); w != a.screen.width || h != a.screen.height {
+				a.redraw = true
+			}
 			a.draw()
 		case <-ticker.C:
 			a.draw() // clock, spinner, notices ageing
@@ -361,20 +381,43 @@ func (a *App) Run(ctx context.Context) error {
 	return nil
 }
 
-// selectChat makes id the current chat: the view goes to the tail, menus
-// close and the editor takes that chat's prompt history.
+// resizeSettle is how long a resize waits for the next one before the
+// screen is reprinted: a window being dragged sends a signal per step.
+var resizeSettle = 150 * time.Millisecond
+
+// settleResize waits until resizeSettle has passed without another
+// resize event.
+func (a *App) settleResize() {
+	if resizeSettle <= 0 {
+		return
+	}
+	timer := time.NewTimer(resizeSettle)
+	defer timer.Stop()
+	for {
+		select {
+		case <-a.Resize:
+			timer.Reset(resizeSettle)
+		case <-timer.C:
+			return
+		}
+	}
+}
+
+// selectChat makes id the current chat: the screen is cleared and its
+// transcript printed on the next draw, menus close and the editor takes
+// that chat's prompt history.
 func (a *App) selectChat(id string) {
 	a.diff = nil
 	if a.ChatID != id {
 		a.saveHistory()
 		a.lastSeen = nil
+		a.redraw = true
 	}
 	a.ChatID = id
-	a.scroll = 0
 	a.menu, a.confirm, a.search = nil, nil, nil
-	a.closePager()
+	a.preview = nil
 	a.loadHistory()
-	a.markUnread()
+	a.unreadNote = a.markUnread()
 }
 
 // loadHistory gives the editor the current chat's prompts.
@@ -406,12 +449,16 @@ func (a *App) saveHistory() {
 func (a *App) send(ctx context.Context) {
 	var text string
 	if ed := a.editing; ed != nil {
-		// The composer holds a file: Enter saves it as typed (no trimming,
-		// no history), and the draft stays if the save fails.
+		// The composer holds a file or a queued message: Enter saves it as
+		// typed (no trimming, no history), and the draft stays if the save
+		// fails; a queued message the agent got meanwhile ends the edit
+		// with the draft kept, to send as a new message.
 		text = a.editor.Text()
 		a.menu = nil
-		a.scroll = 0
 		if err := ed.save(ctx, text); err != nil {
+			if strings.Contains(err.Error(), "before the edit was saved") {
+				a.editing = nil
+			}
 			a.setNotice(err.Error())
 			return
 		}
@@ -433,8 +480,7 @@ func (a *App) send(ctx context.Context) {
 	}
 	a.vim.Reset()
 	a.menu = nil
-	a.scroll = 0
-	a.closePager()
+	a.preview = nil
 	if text == "" {
 		return
 	}
@@ -449,7 +495,7 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 	if a.menu != nil && a.menuKey(ctx, k) {
 		return
 	}
-	if a.vimOn() && !(k.Kind == KeyEscape && (a.confirm != nil || a.pager != nil)) && a.vimKey(ctx, k) {
+	if a.vimOn() && !(k.Kind == KeyEscape && (a.confirm != nil || a.preview != nil)) && a.vimKey(ctx, k) {
 		return
 	}
 	if k.Kind == KeyCtrlP && a.pastePreview() {
@@ -481,6 +527,7 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 		if a.editor.Text() != "" || a.menu != nil {
 			a.editor.Clear()
 			a.vim.Reset()
+			a.preview = nil
 			a.menu = nil
 			a.ctrlC = now
 			a.setNotice("draft cleared · Ctrl+C again to quit")
@@ -509,23 +556,16 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 		}
 	case KeyCtrlR:
 		a.search = &searchState{index: -1}
-	case KeyPageUp:
-		a.scroll += a.page()
-	case KeyPageDown:
-		a.scroll = max(0, a.scroll-a.page())
-	case KeyWheelUp:
-		a.scroll += 3
-	case KeyWheelDown:
-		a.scroll = max(0, a.scroll-3)
-	case KeyHome, KeyEnd:
-		// With nothing typed these go to the top and bottom of the
-		// transcript; while composing they move the cursor.
+	case KeyPageUp, KeyPageDown, KeyWheelUp, KeyWheelDown:
+		// The transcript is the terminal's: it scrolls it (these keys
+		// reach the terminal, not the app, when nothing asks for mouse
+		// reports; a stray report is dropped here rather than typed).
+	case KeyEnd:
+		// With nothing typed, End goes back to the transcript's end (the
+		// reprint lands the terminal there); while composing it moves the
+		// cursor.
 		if a.editor.Text() == "" {
-			if k.Kind == KeyHome {
-				a.scroll = 1 << 30 // clamped to the top by frame
-			} else {
-				a.scroll = 0
-			}
+			a.bottom()
 			return
 		}
 		a.editor.Handle(k)
@@ -566,16 +606,15 @@ func (a *App) handleKey(ctx context.Context, k Key) {
 
 // escape is the Escape key's own work (vim's normal mode hands it over
 // when nothing is pending): a confirmation or an edit is cancelled, a
-// preview closed, a running agent interrupted; on an idle chat with an
-// empty draft a second Escape edits the last message, and otherwise the
-// view goes back to the bottom.
+// paste preview closed, a running agent interrupted; on an idle chat
+// with an empty draft a second Escape edits the last message.
 func (a *App) escape(ctx context.Context, c *Chat) {
 	switch {
 	case a.confirm != nil:
 		a.confirm = nil
 		a.setNotice("cancelled")
-	case a.pager != nil:
-		a.closePager()
+	case a.preview != nil:
+		a.preview = nil
 	case a.editing != nil:
 		label := a.editing.label
 		a.editing = nil
@@ -597,8 +636,16 @@ func (a *App) escape(ctx context.Context, c *Chat) {
 		a.editLast(ctx, c)
 	default:
 		a.lastEsc = a.now()
-		a.scroll = 0
 	}
+}
+
+// bottom takes the terminal back to the transcript's end: the screen is
+// cleared and the chat printed again, which lands the terminal's view on
+// the last lines (Ctrl-L's reprint; End on an empty draft, /bottom, vim's
+// G).
+func (a *App) bottom() {
+	a.redraw = true
+	a.setNotice("reprinted; the terminal's view is at the end of the chat")
 }
 
 // vimKey routes a key through vim mode (vim.go) and acts on the outcome;
@@ -629,10 +676,10 @@ func (a *App) vimKey(ctx context.Context, k Key) bool {
 	case VimFind:
 		a.find(r.Text)
 	case VimScroll:
-		if r.Text == "top" {
-			a.scroll = 1 << 30
+		if r.Text == "bottom" {
+			a.bottom()
 		} else {
-			a.scroll = 0
+			a.setNotice("the transcript is your terminal's: scroll up to its start")
 		}
 	case VimEscape:
 		a.escape(ctx, a.chat())
@@ -948,7 +995,7 @@ func (a *App) submit(ctx context.Context, text string) {
 			a.editor.Set(text)
 			return
 		}
-		a.setNotice("added to CLAUDE.md")
+		a.setNotice("added to CLAUDE.md" + heldNote(c))
 		return
 	}
 	pending := c.Pending()
@@ -1004,19 +1051,20 @@ func (a *App) sendMessage(ctx context.Context, c *Chat, text string) {
 // reports how it ended when it does; the command card itself arrives with
 // the state stream (running, then with its output).
 func (a *App) shell(ctx context.Context, chatID, command string) {
-	a.setNotice("running in the workspace: " + truncate(command, 60))
+	a.setNotice("running in the workspace: " + truncate(command, 60) + heldNote(a.chat()))
 	go func() {
 		result, err := a.Client.Exec(ctx, chatID, command)
 		report := func(context.Context) {
+			held := heldNote(a.chat())
 			switch {
 			case err != nil:
 				a.setNotice(err.Error())
 			case result.TimedOut:
-				a.setNotice("command timed out after 60s")
+				a.setNotice("command timed out after 60s" + held)
 			case result.ExitCode != 0:
-				a.setNotice(fmt.Sprintf("command exited %d", result.ExitCode))
+				a.setNotice(fmt.Sprintf("command exited %d", result.ExitCode) + held)
 			default:
-				a.setNotice("command finished")
+				a.setNotice("command finished" + held)
 			}
 		}
 		select {
@@ -1341,7 +1389,11 @@ func (a *App) command(ctx context.Context, line string) {
 			return
 		}
 		a.selectChat(chats[n-1].ID)
-		a.setNotice("switched to " + sanitize(chats[n-1].Title))
+		note := "switched to " + sanitize(chats[n-1].Title)
+		if a.unreadNote != "" {
+			note += " · " + a.unreadNote
+		}
+		a.setNotice(note)
 	case "new":
 		// No title: the service names the chat from its first exchange.
 		title := arg
@@ -1519,8 +1571,8 @@ func (a *App) command(ctx context.Context, line string) {
 	case "clear":
 		a.editor.Clear()
 		a.vim.Reset()
+		a.preview = nil
 		a.menu = nil
-		a.closePager()
 		if c != nil {
 			for _, at := range a.attachments[c.ID] {
 				a.Client.RemoveAttachment(ctx, c.ID, at.ID)
@@ -1538,6 +1590,8 @@ func (a *App) command(ctx context.Context, line string) {
 		a.withdraw(ctx, c, arg)
 	case "edit":
 		a.edit(ctx, c, arg)
+	case "undo-rewind", "undo":
+		a.undoRewind(ctx, c, arg)
 	case "diff":
 		a.showDiff(ctx, c, arg)
 	case "instructions":
@@ -1565,8 +1619,7 @@ func (a *App) command(ctx context.Context, line string) {
 	case "paste":
 		a.pasteCommand(arg)
 	case "bottom":
-		a.scroll = 0
-		a.setNotice("following the transcript")
+		a.bottom()
 	case "verbose":
 		a.handleKey(ctx, Key{Kind: KeyCtrlO})
 	case "open":
@@ -1588,6 +1641,8 @@ func (a *App) command(ctx context.Context, line string) {
 			return
 		}
 		a.find(arg)
+	case "search":
+		a.searchCommand(ctx, arg)
 	case "copy":
 		if c == nil {
 			a.setNotice("no chat selected")
@@ -1890,12 +1945,7 @@ named:
 		a.setNotice(err.Error())
 		return
 	}
-	n := 0
-	for _, e := range c.Conversation.Entries {
-		if exportable(e.Role, all) {
-			n++
-		}
-	}
+	n := exportCount(exportTree(c, all))
 	what := "messages"
 	if all {
 		what = "entries (tool steps included)"
@@ -1925,14 +1975,47 @@ func (a *App) ports() []Port {
 	return out
 }
 
-// Frame is what one redraw shows; exposed for tests.
+// Frame is what one draw writes; exposed for tests. The body — the
+// transcript, the pending approvals, the session diff — is rendered in
+// full at the terminal's width; the part of it that is final is written
+// to the scrollback once (Commit holds what this draw adds) and the rest
+// is the live tail, redrawn in place: Lines, then the notice, the extras
+// (menu, attachments, a confirmation), the status rows and the composer.
 type Frame struct {
-	Lines       []string // transcript viewport, exactly the rows available
-	Extra       []string // completion menu, waiting attachments, a confirmation: between the transcript and the status
+	Redraw      bool     // the screen is cleared and the transcript printed again before the tail
+	Commit      []string // body lines written to the scrollback by this draw, never rewritten
+	Printed     []string // notices of several lines written after them, for good
+	Lines       []string // the body's live part: streaming entries, queued messages, approvals
+	Notice      []string // a one-line notice, for a while
+	Extra       []string // completion menu, waiting attachments, a confirmation
 	Status      []string // the status bar, laid out over the rows it needs (StatusMaxRows at most)
 	PromptLines []string // the composer, one screen line each
 	CursorRow   int      // cursor position within PromptLines
-	CursorCol   int      // in runes, including the prompt marker
+	CursorCol   int      // in columns, including the prompt marker
+	committed   []string // the scrollback's body lines after this draw
+}
+
+// tail is the live part of the frame in the order it is written.
+func (f Frame) tail() []string {
+	var out []string
+	out = append(out, f.Lines...)
+	out = append(out, f.Notice...)
+	out = append(out, f.Extra...)
+	out = append(out, f.Status...)
+	out = append(out, f.PromptLines...)
+	return out
+}
+
+// screen is the painter's memory of the terminal: the body lines already
+// in the scrollback, the rows the live tail took at the last draw and the
+// cursor's row within it (draw moves up that far to rewrite the tail).
+type screen struct {
+	committed     []string
+	tail          int
+	cursorLine    int
+	last          string // the tail's bytes as last written; an identical tail is not written again
+	painted       bool
+	width, height int // the size the last draw painted for
 }
 
 // visible is the chat as the transcript shows it: without tool steps and
@@ -1951,13 +2034,14 @@ func (a *App) visible(c *Chat) *Chat {
 	return &v
 }
 
-// compose lays out everything above the status line for the given width.
-func (a *App) compose(width int) []string {
-	var body []string
+// compose lays out the body for the given width: the transcript, the
+// pending approvals and the session diff. final is how many leading lines
+// belong to entries that are final (render.go's Block) — what the painter
+// may write to the scrollback and never touch again; approvals and the
+// diff are never final.
+func (a *App) compose(width int) (body []string, final int) {
 	c := a.chat()
 	switch {
-	case a.pager != nil:
-		body = a.pagerLines(width)
 	case c == nil && a.state == nil:
 		body = []string{dim + "connecting to Warden…" + reset}
 	case c == nil:
@@ -1967,21 +2051,48 @@ func (a *App) compose(width int) []string {
 		}
 		body = append(body, "", dim+"/switch N or /new [title]"+reset)
 	default:
-		body = RenderTranscriptFrom(a.visible(c), width, a.expanded, a.unreadID)
+		allFinal := true
+		for _, b := range RenderBlocks(a.visible(c), width, a.expanded) {
+			if a.unreadID != "" && b.ID == a.unreadID {
+				body = append(body, unreadDividerLine(width))
+			}
+			body = append(body, b.Lines...)
+			if allFinal && b.Final {
+				final = len(body)
+			} else {
+				allFinal = false
+			}
+		}
 		body = append(body, RenderApprovals(c, width)...)
 		if a.diff != nil {
 			body = append(body, "")
 			body = append(body, RenderChanges(a.diff, width, a.expanded)...)
 		}
 	}
-	// Notices sit under the transcript for a while.
-	if a.notice != "" && a.now().Sub(a.noticeAt) < 20*time.Second {
-		body = append(body, "")
-		for _, l := range strings.Split(a.notice, "\n") {
-			body = append(body, wrap(l, width, blue+"› "+reset, "  ")...)
-		}
+	return body, final
+}
+
+// noticeLines is the one-line notice under the transcript while it is
+// fresh; a notice of several lines is printed instead (setNotice).
+func (a *App) noticeLines(width int) []string {
+	if a.notice == "" || strings.Contains(a.notice, "\n") || a.now().Sub(a.noticeAt) >= 20*time.Second {
+		return nil
 	}
-	return body
+	return append([]string{""}, wrap(sanitize(a.notice), width, blue+"› "+reset, "  ")...)
+}
+
+// printedLines lays out the notices waiting to be written into the
+// scrollback, each under a blank line.
+func (a *App) printedLines(width int) []string {
+	var out []string
+	for _, p := range a.prints {
+		out = append(out, "")
+		for _, l := range strings.Split(sanitize(p), "\n") {
+			out = append(out, wrap(l, width, blue+"› "+reset, "  ")...)
+		}
+		out = append(out, "")
+	}
+	return out
 }
 
 // menuRows is how many suggestions the menu shows at once.
@@ -2034,6 +2145,7 @@ func (a *App) extraLines(width int) []string {
 		out = append(out, wrap(strings.Join(names, " · "), width, cyan+"attached: "+reset, "          ")...)
 	}
 	out = append(out, pasteChip(a.editor.Pastes(), width)...)
+	out = append(out, a.previewLines(width)...)
 	if q := a.confirm; q != nil {
 		out = append(out, wrap(q.prompt, width, bold+yellow+"? "+reset, "  ")...)
 	}
@@ -2058,7 +2170,7 @@ func (a *App) promptLines(width, maxLines int) (lines []string, row, col int) {
 		return []string{line}, 0, min(width-1, utf8.RuneCountInString("(reverse-i-search)'"+s.query+"': "))
 	}
 	if line := a.vim.Line(); line != "" {
-		return []string{line}, 0, min(width-1, utf8.RuneCountInString(line))
+		return []string{line}, 0, min(width-1, visibleWidth(line))
 	}
 	raw, r, c := a.editor.Lines()
 	for i, l := range raw {
@@ -2086,7 +2198,16 @@ func (a *App) promptLines(width, maxLines int) (lines []string, row, col int) {
 	return lines, r, col
 }
 
-// frame composes the screen for the given size.
+// frame composes what draw writes for the given size. The body is
+// compared with what the scrollback holds: while it still begins with
+// the committed lines, the draw adds the newly final ones and rewrites
+// the tail; otherwise — a rewind took entries back, the service reordered
+// them, Tab or Ctrl+O changed a printed card, the chat was switched, the
+// terminal was resized, Ctrl+L — the screen is cleared and the transcript
+// printed from its first entry. The tail is kept under the screen's
+// height less one, so the cursor never has to move up past the top: a
+// tail that would be taller has its top committed early, a paragraph at
+// a time (earlyCommit).
 func (a *App) frame(width, height int) Frame {
 	if width < 20 {
 		width = 20
@@ -2094,53 +2215,87 @@ func (a *App) frame(width, height int) Frame {
 	if height < 8 {
 		height = 8
 	}
-	body := a.compose(width)
-	extra := a.extraLines(width)
-	if len(extra) > height/2 {
-		extra = extra[:height/2]
+	body, final := a.compose(width)
+	f := Frame{}
+	committed := a.screen.committed
+	if a.redraw || !hasPrefix(body, committed) {
+		f.Redraw = a.screen.painted
+		committed = nil
 	}
-	prompt, cursorRow, cursorCol := a.promptLines(width, min(6, height/3))
-	// The status bar takes the rows its parts need at this width, and the
-	// transcript gets the rest. The scroll hint is one of its parts, so
-	// the bar is laid out again once the scroll is clamped to the rows
-	// that leaves; a hint that goes away can only free a row.
-	var status []string
-	rows := 0
-	for pass := 0; pass < 3; pass++ {
-		status = a.statusRows(width, height)
-		rows = height - len(status) - len(prompt) - len(extra)
-		if rows < 1 {
-			rows = 1
+	commit := max(final, len(committed))
+	f.Printed = a.printedLines(width)
+	f.Notice = a.noticeLines(width)
+	f.Extra = a.extraLines(width)
+	if len(f.Extra) > height/2 {
+		f.Extra = f.Extra[:height/2]
+	}
+	f.PromptLines, f.CursorRow, f.CursorCol = a.promptLines(width, min(6, height/3))
+	f.Status = a.statusRows(width, height)
+	budget := height - 1
+	chrome := len(f.Notice) + len(f.Extra) + len(f.Status) + len(f.PromptLines)
+	if over := len(body) - commit + chrome - budget; over > 0 {
+		commit += earlyCommit(body[commit:], over)
+	}
+	if over := len(body) - commit + chrome - budget; over > 0 {
+		// Even with the whole body in the scrollback the rest does not
+		// fit: the screen is very small. Commit everything and let the
+		// notice, then the extras, go before the status and the composer.
+		commit = len(body)
+		over = chrome - budget
+		for over > 0 && len(f.Notice) > 0 {
+			f.Notice = f.Notice[1:]
+			over--
 		}
-		if a.toUnread {
-			// The view opens at the "new" divider (unread.go); the bar
-			// is laid out again with the scroll hint that brings.
-			a.scrollToUnread(body, rows)
-			continue
+		for over > 0 && len(f.Extra) > 0 {
+			f.Extra = f.Extra[1:]
+			over--
 		}
-		if a.scroll <= len(body)-rows {
-			break
+	}
+	f.Commit = body[len(committed):commit]
+	f.Lines = body[commit:]
+	f.committed = body[:commit]
+	a.markSeen(a.chat())
+	return f
+}
+
+// hasPrefix reports whether lines begins with prefix.
+func hasPrefix(lines, prefix []string) bool {
+	if len(prefix) > len(lines) {
+		return false
+	}
+	for i, l := range prefix {
+		if lines[i] != l {
+			return false
 		}
-		a.scroll = max(0, len(body)-rows)
 	}
-	a.rows = rows
-	end := len(body) - a.scroll
-	start := max(0, end-rows)
-	view := body[start:end]
-	for len(view) < rows {
-		view = append(view, "")
+	return true
+}
+
+// earlyCommit is how many lines of the body's live part to write to the
+// scrollback before their entries are final, because the tail would not
+// fit on the screen otherwise: at least over, rounded up to the next
+// blank line (a paragraph's or an entry's end) so a streaming reply goes
+// out a paragraph at a time, and never the last two lines, which are the
+// ones still changing. A committed line that does change later makes the
+// next frame reprint the transcript.
+func earlyCommit(tail []string, over int) int {
+	limit := len(tail) - 2
+	if limit <= 0 {
+		return 0
 	}
-	if a.pager == nil {
-		a.markSeen(a.chat())
+	n := min(over, limit)
+	for j := n - 1; j < limit; j++ {
+		if tail[j] == "" {
+			return j + 1
+		}
 	}
-	return Frame{Lines: view, Extra: extra, Status: status, PromptLines: prompt, CursorRow: cursorRow, CursorCol: cursorCol}
+	return n
 }
 
 // statusRows is the status bar for the screen: the chat's parts plus the
-// screen's own — the scroll position right after what the agent is doing
-// (a reader must know the view is not following), steps hidden and the
-// help hint last — laid out over the rows they need at this width, at
-// most StatusMaxRows and never more than a quarter of the screen.
+// screen's own — steps hidden and the help hint last — laid out over the
+// rows they need at this width, at most StatusMaxRows and never more
+// than a quarter of the screen.
 func (a *App) statusRows(width, height int) []string {
 	var parts []string
 	c := a.chat()
@@ -2149,10 +2304,6 @@ func (a *App) statusRows(width, height int) []string {
 		parts = StatusParts(c, a.stateports(), a.live, a.now())
 		if a.vimOn() {
 			parts = append(parts[:3], append([]string{bold + "-- " + a.vim.Mode.String() + " --" + reset}, parts[3:]...)...)
-		}
-		if a.scroll > 0 {
-			hint := fmt.Sprintf("%s↑ %d lines below · End to follow%s", yellow, a.scroll, reset)
-			parts = append(parts[:3], append([]string{hint}, parts[3:]...)...)
 		}
 		if a.quiet {
 			parts = append(parts, dim+"steps hidden"+reset)
@@ -2176,20 +2327,29 @@ func (a *App) stateports() []Port {
 	return a.state.Ports
 }
 
-// draw paints the frame. It always repaints fully; snapshots are small and
-// the terminal is local.
-func (a *App) draw() {
-	width, height := 100, 30
+// size is the terminal's columns and rows.
+func (a *App) size() (int, int) {
 	if a.Size != nil {
 		if w, h := a.Size(); w > 0 && h > 0 {
-			width, height = w, h
+			return w, h
 		}
 	}
+	return 100, 30
+}
+
+// draw writes the frame: the cursor goes up to the top of the previous
+// tail and the screen is cleared from there (or cleared whole for a
+// reprint), the newly committed lines and the printed notices go out,
+// then the tail, and the cursor lands in the composer. Every line is
+// clipped to the width so it takes one row, which is what lets the next
+// draw find the tail's top again by counting. Nothing is written when
+// the tail is what it was.
+func (a *App) draw() {
+	width, height := a.size()
 	f := a.frame(width, height)
 	a.setTitle()
 	a.flushSeen()
-	var b strings.Builder
-	b.WriteString("\x1b[?25l")
+	s := &a.screen
 	// A block cursor in vim's normal mode, the terminal's own otherwise.
 	shape := "\x1b[0 q"
 	if a.vim.Enabled && a.vim.Mode != VimInsert {
@@ -2197,97 +2357,151 @@ func (a *App) draw() {
 	}
 	if shape != a.cursorSt {
 		a.cursorSt = shape
-		b.WriteString(shape)
+		io.WriteString(a.Output, shape)
 	}
-	if a.redraw {
-		b.WriteString("\x1b[2J")
-		a.redraw = false
-	}
-	b.WriteString("\x1b[H")
-	for _, l := range f.Lines {
-		b.WriteString(clip(l, width) + "\x1b[K\r\n")
-	}
-	for _, l := range f.Extra {
-		b.WriteString(clip(l, width) + "\x1b[K\r\n")
-	}
-	for _, l := range f.Status {
-		b.WriteString(clip(l, width) + "\x1b[K\r\n")
-	}
-	for i, l := range f.PromptLines {
-		b.WriteString(clip(l, width) + "\x1b[K")
-		if i < len(f.PromptLines)-1 {
-			b.WriteString("\r\n")
+	tail := f.tail()
+	var t strings.Builder
+	for i, l := range tail {
+		t.WriteString(clip(l, width))
+		if i < len(tail)-1 {
+			t.WriteString("\r\n")
 		}
 	}
-	b.WriteString("\x1b[J") // clear anything left below a shrinking composer
-	// Place the cursor inside the composer (rows are 1-based).
-	row := len(f.Lines) + len(f.Extra) + len(f.Status) + f.CursorRow + 1
-	b.WriteString(fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", row, f.CursorCol+1))
+	if !f.Redraw && len(f.Commit) == 0 && len(f.Printed) == 0 && s.painted && t.String() == s.last {
+		return
+	}
+	var b strings.Builder
+	b.WriteString("\x1b[?25l")
+	switch {
+	case f.Redraw:
+		b.WriteString("\x1b[2J\x1b[H")
+	case s.cursorLine > 0:
+		b.WriteString(fmt.Sprintf("\x1b[%dA", s.cursorLine))
+	}
+	b.WriteString("\r\x1b[J")
+	for _, l := range f.Commit {
+		b.WriteString(clip(l, width) + "\r\n")
+	}
+	for _, l := range f.Printed {
+		b.WriteString(clip(l, width) + "\r\n")
+	}
+	b.WriteString(t.String())
+	// Place the cursor inside the composer.
+	if up := len(f.PromptLines) - 1 - f.CursorRow; up > 0 {
+		b.WriteString(fmt.Sprintf("\x1b[%dA", up))
+	}
+	b.WriteString(fmt.Sprintf("\r\x1b[%dG\x1b[?25h", f.CursorCol+1))
+	io.WriteString(a.Output, b.String())
+	s.committed = f.committed
+	s.tail = len(tail)
+	s.cursorLine = len(tail) - len(f.PromptLines) + f.CursorRow
+	s.last = t.String()
+	s.painted = true
+	s.width, s.height = width, height
+	a.prints = nil
+	a.redraw = false
+}
+
+// finish leaves the terminal as Claude Code does at exit: the transcript
+// and the last tail stay on the screen, the cursor on a fresh line below
+// them, bracketed paste off and the title the person had back.
+func (a *App) finish() {
+	s := &a.screen
+	var b strings.Builder
+	if down := s.tail - 1 - s.cursorLine; s.painted && down > 0 {
+		b.WriteString(fmt.Sprintf("\x1b[%dB", down))
+	}
+	if s.painted {
+		b.WriteString("\r\n")
+	}
+	if a.cursorSt != "" && a.cursorSt != "\x1b[0 q" {
+		b.WriteString("\x1b[0 q") // the block cursor of vim's normal mode
+	}
+	b.WriteString("\x1b[?2004l\x1b[?25h\x1b[23;0t")
 	io.WriteString(a.Output, b.String())
 }
 
-// clip cuts a styled line to width visible runes, ignoring escape sequences.
+// clip cuts a styled line to width columns, ignoring escape sequences,
+// and closes its styling.
 func clip(s string, width int) string {
-	var b strings.Builder
-	visible := 0
-	inEscape := false
-	for _, r := range s {
-		switch {
-		case inEscape:
-			b.WriteRune(r)
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEscape = false
-			}
-		case r == 0x1b:
-			inEscape = true
-			b.WriteRune(r)
-		default:
-			if visible >= width {
-				continue
-			}
-			b.WriteRune(r)
-			visible++
-		}
-	}
-	return b.String() + reset
+	head, _ := cutVisible(s, width)
+	return head + reset
 }
 
-// find scrolls so the nearest earlier line containing term (case-insensitive)
-// is at the top of the view, searching upward from what is visible.
+// find prints the transcript lines containing term (case-insensitive) as
+// they show on the screen, so the person sees where it occurs; the
+// terminal's own search is what jumps to them. A match the rendered lines
+// hide — inside a subagent's collapsed card, past a card's folded output,
+// in a step Ctrl+O hides — is reached by showing the steps and expanding
+// the transcript first (which reprints it), when the chat's entries
+// themselves contain the term.
 func (a *App) find(term string) {
-	width := 100
-	if a.Size != nil {
-		if w, _ := a.Size(); w > 0 {
-			width = w
-		}
-	}
-	body := a.compose(width)
-	rows := a.rows
-	if rows <= 0 {
-		rows = 20
-	}
-	top := len(body) - a.scroll - rows // index of the first visible line
+	width, _ := a.size()
 	needle := strings.ToLower(term)
-	for i := min(top-1, len(body)-1); i >= 0; i-- {
-		if strings.Contains(strings.ToLower(plainText(body[i])), needle) {
-			a.scroll = len(body) - rows - i
-			if a.scroll < 0 {
-				a.scroll = 0
+	hits, total := findLines(a, width, needle)
+	opened := ""
+	if total == 0 {
+		if c := a.chat(); c != nil && entriesContain(c.Conversation.Entries, needle) {
+			var changes []string
+			if a.quiet {
+				a.quiet = false
+				changes = append(changes, "steps shown")
 			}
-			a.setNotice(fmt.Sprintf("found %q %d lines up; /find again for the previous one", term, len(body)-i))
-			return
+			if !a.expanded {
+				a.expanded = true
+				changes = append(changes, "output expanded")
+			}
+			if len(changes) > 0 {
+				hits, total = findLines(a, width, needle)
+				opened = " (" + strings.Join(changes, ", ") + ")"
+			}
 		}
 	}
-	// Nothing above: say whether it is on screen, so a search that "fails"
-	// on a visible match is not confusing.
-	for i := max(top, 0); i < len(body); i++ {
-		if strings.Contains(strings.ToLower(plainText(body[i])), needle) {
-			a.setNotice(fmt.Sprintf("%q is on screen; nothing earlier matches", term))
-			return
-		}
+	switch {
+	case total == 0:
+		a.setNotice(fmt.Sprintf("%q is not in the transcript", term))
+	case total > len(hits):
+		a.setNotice(fmt.Sprintf("%d lines contain %q%s; the first %d (your terminal's search finds them all):\n%s", total, term, opened, len(hits), strings.Join(hits, "\n")))
+	default:
+		a.setNotice(fmt.Sprintf("%d line(s) contain %q%s (your terminal's search jumps to them):\n%s", total, term, opened, strings.Join(hits, "\n")))
 	}
-	a.setNotice(fmt.Sprintf("%q not found; End then /find searches from the bottom", term))
 }
+
+// findLines is the rendered transcript's lines containing needle
+// (lower-cased), the first findLimit of them, and how many there are.
+func findLines(a *App, width int, needle string) (hits []string, total int) {
+	body, _ := a.compose(width)
+	for _, l := range body {
+		p := plainText(l)
+		if !strings.Contains(strings.ToLower(p), needle) {
+			continue
+		}
+		total++
+		if len(hits) < findLimit {
+			hits = append(hits, truncate(strings.TrimRight(p, " "), max(20, width-4)))
+		}
+	}
+	return hits, total
+}
+
+// entriesContain says whether any entry's text or detail (a step's
+// output, a side question's answer) contains needle, a subagent's nested
+// entries and the person's own commands included — what /find can reach
+// once the transcript shows everything.
+func entriesContain(entries []Entry, needle string) bool {
+	for _, e := range entries {
+		if strings.Contains(strings.ToLower(e.Text), needle) {
+			return true
+		}
+		if (e.Role == "activity" || e.Role == "aside") && strings.Contains(strings.ToLower(e.Detail), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// findLimit is how many matching lines /find prints.
+const findLimit = 20
 
 // plainText strips styling for searching.
 func plainText(s string) string {

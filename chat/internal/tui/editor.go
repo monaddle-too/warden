@@ -103,8 +103,10 @@ func DecodeKeys(buf []byte) (keys []Key, rest []byte) {
 				}
 				seq := string(buf[2 : end+1])
 				buf = buf[end+1:]
-				// SGR mouse report: ESC [ < button ; col ; row M|m. Only the
-				// wheel is used; presses are ignored.
+				// SGR mouse report: ESC [ < button ; col ; row M|m. The app
+				// asks for none (the terminal keeps the mouse for scrolling
+				// and selecting text); a report from a terminal left in
+				// mouse mode is decoded so it is dropped rather than typed.
 				if strings.HasPrefix(seq, "<") {
 					fields := strings.Split(strings.TrimRight(seq[1:], "Mm"), ";")
 					if len(fields) == 3 && strings.HasSuffix(seq, "M") {
