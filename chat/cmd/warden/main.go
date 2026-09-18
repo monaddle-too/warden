@@ -8,6 +8,7 @@
 //	warden login   codex|claude|github
 //	warden start   [--config PATH]
 //	warden open    [--config PATH]
+//	warden bugs    status | on | off | send "text" | test | pending
 package main
 
 import (
@@ -28,12 +29,31 @@ import (
 // (release.Revision, set at link time by the release workflow).
 var revision = release.Revision
 
-// cli carries the standard streams so subcommands are testable.
+// cli carries the standard streams so subcommands are testable, and the
+// two ways of reaching the person besides them (nil is the host's own).
 type cli struct {
 	stdin    io.Reader
 	stdout   io.Writer
 	stderr   io.Writer
 	terminal bool // stdin is an interactive terminal
+	openFn   func(url string) error
+	notifyFn func(title, body string) error
+}
+
+// openURL opens the browser on url.
+func (c *cli) openURL(url string) error {
+	if c.openFn != nil {
+		return c.openFn(url)
+	}
+	return openBrowser(url)
+}
+
+// notifyDesktop shows a desktop notification.
+func (c *cli) notifyDesktop(title, body string) error {
+	if c.notifyFn != nil {
+		return c.notifyFn(title, body)
+	}
+	return desktopNotify(title, body)
 }
 
 func main() {
@@ -52,6 +72,7 @@ const usageText = `usage: warden COMMAND [flags]
   stop      stop a detached Warden (see start --detach)
   status    show whether Warden is running and its versions
   uninstall stop Warden, delete its sandboxes, stop its private sbx daemon and remove the state
+  bugs      bug reports: status | on | off | send "text" | test | pending (you review every report before it is sent)
   tls       bootstrap: write a deployment CA and the four service certificates for tls:// transport
   version   print the build revision and protocol number
 
@@ -86,6 +107,8 @@ func (c *cli) run(args []string) int {
 		err = c.status(args[1:])
 	case "uninstall":
 		err = c.uninstall(args[1:])
+	case "bugs":
+		err = c.bugs(args[1:])
 	case "tls":
 		err = c.tls(args[1:])
 	case "policy":

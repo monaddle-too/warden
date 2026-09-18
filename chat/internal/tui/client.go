@@ -782,3 +782,27 @@ func (c *Client) Diff(ctx context.Context, chatID string) (*WorkspaceChanges, er
 	}
 	return &out, nil
 }
+
+// BugResult is what the bug routes answer (docs/bug-reporting-plan.md):
+// whether a draft was written, its id, and the line to show the person.
+type BugResult struct {
+	Drafted bool   `json:"drafted"`
+	ID      string `json:"id,omitempty"`
+	Notice  string `json:"notice"`
+}
+
+// Bug drafts a user bug report from the chat (the composer's /bug); the
+// launcher presents it for review.
+func (c *Client) Bug(ctx context.Context, chatID, text string) (BugResult, error) {
+	var out BugResult
+	err := c.do(ctx, "POST", "chats/"+url.PathEscape(chatID)+"/bug", map[string]string{"text": text}, &out)
+	return out, err
+}
+
+// BugTest raises the test exception in the chat service (/test
+// bugreporting), which drafts a report through its own recovery.
+func (c *Client) BugTest(ctx context.Context) (BugResult, error) {
+	var out BugResult
+	err := c.do(ctx, "POST", "bug-test", map[string]string{}, &out)
+	return out, err
+}
