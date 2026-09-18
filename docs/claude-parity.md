@@ -393,6 +393,100 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
 
+### Item 15: the long tail
+
+Branch `feat/parity-15-long-tail`, worktree `.local/warden-parity-15-long-tail`,
+from main bd753d4 (2026-09-17). Fork a chat, `/btw`, `/cost`, notifications,
+output style, the TUI's terminal title. Share links have their own plan and
+are not here; prompt suggestions and `/context` breakdowns are left.
+
+What the pinned CLI (2.1.272) does, probed 2026-09-18 on a cloned home
+(`~/.warden-p12`) inside a chat's sandbox with the resident CLI's
+environment (item 7's method):
+
+- **`--resume <session> --fork-session`** works in `-p` mode, both
+  one-shot and under Warden's `--input-format stream-json` launch:
+  `system/init` reports a new `session_id`, the new session knows the
+  source's history (it answered with the source's codeword) and its own
+  new messages, a later `--resume <new>` continues it, and the source
+  session file is untouched (a second fork of the source knew only the
+  source's codeword). The CLI writes the fork as a new
+  `~/.claude/projects/<cwd>/<new>.jsonl` beside the source's.
+  (`fork_conversation`, the control request, still answers `unsupported`.)
+- **Output style.** There is no `--output-style` flag; the settings key
+  `outputStyle` passed as `--settings '{"outputStyle":"Explanatory"}'`
+  applies in `-p` mode: `system/init.output_style` says `Explanatory` and
+  the model answered in that style (`★ Insight` blocks). An unknown name
+  is echoed in `system/init` but the model runs with the default. The
+  binary's built-in styles are `default`, `Explanatory` and `Learning`.
+- **A one-shot side question**: `claude -p --resume <session>
+  --fork-session --output-format stream-json --verbose --tools ""` with the
+  question on stdin answers from the session's context in ~3 s for
+  $0.03, with `system/init.tools` empty (the model cannot act, only
+  answer), and leaves the resident session untouched. Without stdin
+  redirected the CLI waits 3 s for it. The gateway injects the provider
+  credential only for a live run, so the side question needs the chat's
+  resident session up (idle is fine).
+
+Design (as implemented):
+
+1. **Fork** (`POST chats/{id}/fork {turnID?}` → `{id}`): a sibling chat on
+   the same workspace (provider, model, mode, allow-always rules, size
+   and repository copied) whose transcript is the source's up to and
+   excluding the chosen user message (everything when none), turn
+   records and attachments included, entry IDs kept (they are the CLI's
+   message uuids), closed by a `fork` marker entry (`Entry.Fork` names the
+   source chat and message; "Forked from “<chat>”[ at “<message>”]"). The
+   source must be idle. A Claude chat with a session forks it: the fork
+   carries the source's `ThreadID` and `Chat.ForkSession`; its first run
+   sends both to the runner (`Request.ForkSession` on `prepare`, which
+   drops the binding's thread instead of recording the source's, and on
+   `stream`, which resumes the source with `--fork-session`); the CLI's
+   `system/init` then names the new session, which `thread/started`
+   records, clearing the flag. A fork cut at an earlier message gets a
+   `PendingRewind` to that message, applied by item 11's
+   `applyPendingRewind` right after the forked session starts (fresh
+   session with the kept transcript as recap when it cannot). Codex, or
+   a chat without a session, forks as a fresh session with the copied
+   transcript re-sent as a recap (item 11's fallback, the preamble saying
+   the chat was forked). Web: "Fork…" in the chat menu and on a user
+   message's hover bar (`ForkDialog.tsx`, the message chooser like
+   rewind's); `/fork`. TUI: `/fork` lists the messages, `/fork N` forks
+   before message N, `/fork all` the whole chat.
+2. **`/btw <question>`** (`POST chats/{id}/aside {text}`): a Claude chat
+   whose resident session is up and idle (refused with a notice while a
+   turn runs, when the session was released, and for Codex); the engine
+   records an `aside` entry (the question as `Text`, `Sender` set,
+   streaming) and asks the runner (op `aside`, the active run's broker
+   config reused, a guest Python script feeding the question on stdin to
+   the one-shot command above with the chat's model and output style,
+   3 min timeout, output capped); the runner parses the stream-json
+   (`sandbox/aside.go`: the `result`'s text, cost, usage, duration, error)
+   and the entry completes with the answer as `Detail` and `Entry.Aside`
+   {cost, tokens, duration, error}. Never sent to the session: the recap
+   and the history skip asides. One aside at a time per chat.
+3. **`/cost`**: local on both surfaces from `conversation.turns` (turns,
+   tokens by kind, cost, wall time of the turns), a dismissable card on
+   the web (`cost.ts`), a notice block on the TUI (`tui/cost.go`); Codex
+   shows tokens without cost.
+4. **Notifications.** Web (`notify.ts`, `favicon.ts`): with the tab hidden,
+   a browser Notification on a turn's end, an approval or permission
+   request, or a failure — from the state diff, so every chat is covered
+   — deep-linking to the chat (`?chat=`); permission asked from the chat
+   menu's "Desktop notifications" toggle, the choice in `localStorage`
+   (`warden-notify`); a favicon badge counts what arrived while hidden
+   and clears when the tab is seen. TUI: the bell on the same events
+   (`/bell on|off`, kept in `<state>/tui/bell`), the terminal title
+   `Warden · <chat> · running|idle|approval` (OSC 0, pushed at start and
+   popped at exit with xterm's title stack).
+5. **Output style** (`POST chats/{id}/style {style}` → `Chat.OutputStyle`,
+   Claude chats; `default`, `Explanatory`, `Learning`): a launch setting
+   (`--settings {"outputStyle":…}` through `BrokerConfig.OutputStyle`),
+   so the chat's idle session is released and the next message starts
+   the process with it; the selector beside the model says so, and
+   `chat.session.outputStyle` shows what the running session has. TUI
+   `/style [name]`.
+
 ### Item 11: checkpoints, rewind and the session diff
 
 Branch `feat/parity-11-rewind`, worktree `.local/warden-parity-11-rewind`,
