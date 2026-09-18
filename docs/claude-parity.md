@@ -447,7 +447,7 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [x] 12 Composer polish — merged to main 981ef68 (2026-09-17); verified as the Item 12 section says.
 - [x] 13 Per-user instructions and memory — merged to main a5012c0 (2026-09-18); verified as the Item 13 section says.
 - [ ] 14 Project MCP, OAuth, plugins.
-- [ ] 16 Scrollback rendering (Claude-style TUI) — in progress on `feat/parity-16-scrollback-tui` (2026-09-18); see the Item 16 section.
+- [x] 16 Scrollback rendering (Claude-style TUI) — merged to main 2445764 (2026-09-18); verified as the Item 16 section says. Not deployed to `~/.warden`.
 - [x] 15 Long tail — fork, `/btw`, `/cost`, notifications, output style, the TUI title: merged to main 572d873 (2026-09-18); verified as the Item 15 section says. Prompt suggestions and the `/context` breakdown are left; share links have their own plan.
 
 ### Item 16: scrollback rendering (Claude-style TUI)
@@ -590,7 +590,10 @@ tool in this environment, so the todo panel is covered by its unit
 test only.
 
 Progress: started 2026-09-18; implemented, unit-tested and live-verified
-the same day. Left: merge to main; not deployed to `~/.warden`.
+the same day; merged to main 2445764 (2026-09-18) after merging round 2
+A, B and D in (main's "sending" delivery state replaced this branch's
+running-chat rule for "failed": a message is live until sent). Not
+deployed to `~/.warden`.
 
 ### Round 2 B: permission rules
 
