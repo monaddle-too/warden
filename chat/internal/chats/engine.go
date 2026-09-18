@@ -115,6 +115,11 @@ type Engine struct {
 	limitsMu sync.Mutex
 	limits   *sandbox.ResourceLimits
 	limitsAt time.Time
+	// capacity is the runner's last capacity answer (capacity.go), kept
+	// for capacityTTL so an open size picker's polling shares one read.
+	capacityMu sync.Mutex
+	capacity   *sandbox.Capacity
+	capacityAt time.Time
 	// resizing: workspace id -> the resize in flight or its outcome
 	// (resources.go).
 	resizingMu sync.Mutex

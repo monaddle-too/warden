@@ -192,3 +192,31 @@ func TestRunnerSelectsDriverByRuntimeKind(t *testing.T) {
 		t.Fatalf("in-cluster outside a cluster: %v", err)
 	}
 }
+
+// The SBX size offer: an unset ceiling is the host's (75 % of its memory,
+// all its cores), a set one is honoured in whole CPUs, and neither goes
+// below the default or above what a sandbox may ever have.
+func TestResourceLimitsDeriveTheCeilingFromTheHost(t *testing.T) {
+	host := resourceLimits(config.Sandboxes{CPUs: 1}, 2048, 49152, 14)
+	if host.Default != (sandbox.Resources{CPUMilli: 1000, MemoryMB: 2048}) {
+		t.Fatalf("default %+v", host.Default)
+	}
+	if host.Max != (sandbox.Resources{CPUMilli: 14000, MemoryMB: 36864}) {
+		t.Fatalf("host ceiling %+v", host.Max)
+	}
+	if host.CPUStepMilli != 1000 || !host.Restart {
+		t.Fatalf("%+v", host)
+	}
+	set := resourceLimits(config.Sandboxes{CPUs: 1.5, MaxCPUs: 4, MaxMemoryMB: 8192}, 2048, 49152, 14)
+	if set.Default.CPUMilli != 2000 || set.Max != (sandbox.Resources{CPUMilli: 4000, MemoryMB: 8192}) {
+		t.Fatalf("configured ceiling %+v", set)
+	}
+	unknown := resourceLimits(config.Sandboxes{}, 1536, 0, 0)
+	if unknown.Default != (sandbox.Resources{CPUMilli: 1000, MemoryMB: 1536}) || unknown.Max != unknown.Default {
+		t.Fatalf("unknown host %+v", unknown)
+	}
+	huge := resourceLimits(config.Sandboxes{}, 1536, 1<<20, 128)
+	if huge.Max != (sandbox.Resources{CPUMilli: sandbox.MaxCPUMilli, MemoryMB: sandbox.MaxMemoryMB}) {
+		t.Fatalf("clamped ceiling %+v", huge.Max)
+	}
+}

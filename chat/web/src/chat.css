@@ -1702,6 +1702,14 @@ button.danger:hover {
   flex: 1;
   margin: 0;
 }
+.size-capacity {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.size-capacity.warning {
+  color: var(--danger);
+}
 .size-fieldset {
   border: 1px solid var(--line);
   border-radius: 8px;

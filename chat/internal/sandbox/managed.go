@@ -830,7 +830,7 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	defer bugreport.Recover("runner op " + r.Operation)
 	_ = c.SetReadDeadline(time.Time{})
 	slots := w.ordinarySlots
-	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" {
+	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" || r.Operation == "capacity" {
 		slots = w.controlSlots
 	}
 	if r.Operation == "exec" {
@@ -853,6 +853,12 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 		limits := w.Limits
 		w.mu.Unlock()
 		send(Response{Output: "sbx protocol 2; execution requires verified Warden readiness", Revision: w.Revision, Limits: &limits})
+		return
+	}
+	if r.Operation == "capacity" {
+		ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+		defer cancel()
+		send(w.capacity(ctx))
 		return
 	}
 	if r.Operation == "stats" {

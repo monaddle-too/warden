@@ -124,6 +124,13 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.clusterHTTP(w, r, path)
 		return
 	}
+	if r.Method == "GET" && path == "capacity" {
+		// The host's live capacity for the size picker (capacity.go);
+		// anyone who may create a chat may see it.
+		result, err := h.Engine.Capacity(r.Context())
+		respond(w, result, err)
+		return
+	}
 	if r.Method == "GET" && path == "spend" {
 		// The admin console's spend totals (spend.go); owner-only at the
 		// edge (ownerOnly lists api/spend).
