@@ -275,6 +275,20 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 - `system/init` contents (`slash_commands`, `mcp_servers`, `agents`).
 - What `/compact` returns in stream-json mode.
 
+## Working method
+
+- One worktree per item from `origin/main` (`feat/parity-<n>-<topic>`),
+  landed with the merge-to-main procedure (fast-forward only, full Go and
+  web verification on the merged tree). Items whose files do not overlap
+  run in parallel; the adapter's `tool_use` handling (item 1) lands before
+  the items that build on it.
+- Live testing never shares `~/.warden`: each item runs its own cloned
+  Warden home (`~/.warden-p<n>`, own SBX namespace and daemon, own ports;
+  the workspace's `.local/clone-warden-home.sh`), deployed with
+  `WARDEN_HOME=<home>/release scripts/deploy-local.sh --no-restart`.
+- Each item ticks its box below with the merge sha and a line on how it
+  was verified.
+
 ## Progress
 
 - [x] Design discussion, inventory and priority order (this document).
