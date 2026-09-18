@@ -463,13 +463,13 @@ func TestReportingDefaultsOptInAndURL(t *testing.T) {
 	}
 	for url, ok := range map[string]bool{
 		"https://cloud.warden.monaddle.com/api/bug-reports": true,
-		"http://127.0.0.1:9999/api/bug-reports":            true,
-		"http://[::1]:9999/api/bug-reports":                true,
-		"http://example.com/api/bug-reports":               false,
-		"http://localhost:9999/x":                          false,
-		"ftp://127.0.0.1/x":                                false,
-		"cloud.warden.monaddle.com/api/bug-reports":        false,
-		"":                                                 false,
+		"http://127.0.0.1:9999/api/bug-reports":             true,
+		"http://[::1]:9999/api/bug-reports":                 true,
+		"http://example.com/api/bug-reports":                false,
+		"http://localhost:9999/x":                           false,
+		"ftp://127.0.0.1/x":                                 false,
+		"cloud.warden.monaddle.com/api/bug-reports":         false,
+		"": false,
 	} {
 		c := Defaults("/tmp/w")
 		c.Reporting.URL = url
