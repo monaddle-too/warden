@@ -269,9 +269,9 @@ E–G after.
 - [x] R2.3 **Model catalog from the CLI**: the picker's rows, effort levels and fast/1M availability come from `list_models` (per session, cached per provider), and disallowed costlier options show a hint instead of vanishing (item 9's leftover). Merged to main fe1deaa (2026-09-18); verified as the Round 2 A section says.
 
 ### B. Permission rules (`feat/parity-r2-b-rules`)
-- [ ] R2.4 **Workspace-wide allow-always**: the "Allow always" answer offers this chat / this workspace; workspace rules apply to every chat of the environment.
-- [ ] R2.5 **Rules editor**: allow / deny / ask rules by tool pattern (Claude's `Bash(git *)`, `Edit(src/**)` syntax) per workspace, in the workspace panel and TUI `/rules`; deny rules answer without asking in every mode, ask rules force a card even in `auto`.
-- [ ] R2.6 **Permission history**: what was allowed, denied or auto-answered in a chat and by whom, from the chat menu and TUI `/permissions`.
+- [x] R2.4 **Workspace-wide allow-always**: the "Allow always" answer offers this chat / this workspace; workspace rules apply to every chat of the environment. Merged to main 72aee03 (2026-09-18); verified as the Round 2 B section says.
+- [x] R2.5 **Rules editor**: allow / deny / ask rules by tool pattern (Claude's `Bash(git *)`, `Edit(src/**)` syntax) per workspace, in the workspace panel and TUI `/rules`; deny rules answer without asking in every mode, ask rules force a card even in `auto`. Merged to main 72aee03 (2026-09-18); verified as the Round 2 B section says.
+- [x] R2.6 **Permission history**: what was allowed, denied or auto-answered in a chat and by whom, from the chat menu and TUI `/permissions`. Merged to main 72aee03 (2026-09-18); verified as the Round 2 B section says.
 
 ### C. Live activity, search, export (`feat/parity-r2-c-activity-search`)
 - [ ] R2.7 **Live activity status**: the chat status line and sidebar dot say what the agent is doing ("Running go test…", "Editing engine.go", "Explore: 3 tool calls"), `task_progress` while a subagent runs (item 2's leftover).
@@ -535,6 +535,9 @@ on a `mkdir` card ("allowed always for this workspace: `mkdir`
 commands", the rule on the workspace). Seen: `warden start --detach`
 opens the browser on every pending card (popups), which answered one
 card before the API did — `--popups none` for scripted runs.
+
+Progress: merged to main 72aee03 (2026-09-18) after merging round 2 A
+in. Not deployed to `~/.warden`.
 
 Left: rules for what the CLI never asks about would need the CLI's own
 rule channel (`updatedPermissions` per session or its settings), which
