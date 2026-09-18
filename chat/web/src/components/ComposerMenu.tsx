@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import { STYLES, THINKING, thinkingLabel } from "../composer";
+import { isKey } from "../shortcuts";
 import {
   chatEffort,
   chatModel,
@@ -52,7 +53,7 @@ export function ComposerMenu({
         setOpen(false);
     };
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (isKey(e, "dialog-close")) setOpen(false);
     };
     document.addEventListener("mousedown", away);
     document.addEventListener("keydown", key);
