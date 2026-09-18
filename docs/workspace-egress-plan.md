@@ -153,3 +153,5 @@ choice of its own, and says how many workspaces override it.
   403 back. New chat form fieldset, panel section and the console's
   override sentence checked in the browser. `GET sharing/egress` now
   passes `sandboxID` through. Not tested on GKE; not deployed.
+- 2026-09-18: merged to main as e8426c1 (main merged in twice on the way,
+  no conflicts). Deploying to `~/.warden/release` and GKE next.
