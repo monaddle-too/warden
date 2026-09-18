@@ -82,6 +82,7 @@ function StepBody({ entry, ctx }: { entry: Entry; ctx: StepContext }) {
     <ToolBody
       entry={entry}
       onFile={ctx.onFile}
+      chatID={ctx.chatID}
       nested={
         entry.tool.kind === "task" && children?.length ? (
           <SubagentTranscript parent={entry} entries={children} ctx={ctx} />
@@ -681,12 +682,12 @@ export const EntryView = memo(function EntryView({
           <GitFork size={13} aria-hidden="true" />{" "}
           {entry.fork?.chatID ? (
             <>
-              Forked from{" "}
+              {entry.fork.into ? "Forked into " : "Forked from "}
               <a href={"?chat=" + encodeURIComponent(entry.fork.chatID)}>
                 {entry.fork.title || "another chat"}
               </a>
-              {entry.fork.messageID
-                ? entry.text.replace(/^Forked from “[^”]*”/, "")
+              {entry.fork.messageID || entry.fork.workspace
+                ? entry.text.replace(/^Forked (from|into) “[^”]*”/, "")
                 : ""}
             </>
           ) : (

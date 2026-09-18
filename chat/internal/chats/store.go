@@ -114,6 +114,21 @@ type Chat struct {
 	// Spend is what the chat's turns took so far (spend.go), filled in for
 	// clients by Engine.View and never stored.
 	Spend *Spend `json:"spend,omitempty"`
+	// Origin, on the first chat of a workspace created as a copy of
+	// another (fork.go, a fork with copyWorkspace), says which workspace
+	// it was copied from and when; the workspace panel shows it.
+	Origin *WorkspaceOrigin `json:"origin,omitempty"`
+}
+
+// WorkspaceOrigin records that a workspace was created as a copy of
+// another: the source workspace (its sandbox and the name it had then),
+// the chat the copy was forked from, and when the copy was taken (unix
+// seconds).
+type WorkspaceOrigin struct {
+	SandboxID string  `json:"sandboxID"`
+	Name      string  `json:"name"`
+	ChatID    string  `json:"chatID"`
+	At        float64 `json:"at"`
 }
 
 // Command is one slash command the agent's session offers.

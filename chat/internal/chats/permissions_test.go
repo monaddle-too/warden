@@ -52,6 +52,8 @@ type claudeWorker struct {
 	listed  int // list_models requests received
 	// oneshotGate, when set, holds a "oneshot" answer until it is closed.
 	oneshotGate chan struct{}
+	// cloneErr is what a "clone" call answers when set (fork_test.go).
+	cloneErr error
 }
 
 // initModel is the model the scripted CLI reports in its system/init: the
@@ -79,6 +81,15 @@ func (w *claudeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Res
 	w.mu.Unlock()
 	if r.Operation == "oneshot" && gate != nil {
 		<-gate
+	}
+	if r.Operation == "clone" {
+		w.mu.Lock()
+		err := w.cloneErr
+		w.mu.Unlock()
+		if err != nil {
+			return sandbox.Response{}, err
+		}
+		return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID, State: "stopped"}}, nil
 	}
 	if r.Operation == "aside" {
 		if aside == nil {

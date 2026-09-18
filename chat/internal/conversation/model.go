@@ -166,11 +166,16 @@ type Rewind struct {
 }
 
 // Fork names the chat a forked chat was copied from and, when the copy
-// was cut before one of its messages, that message.
+// was cut before one of its messages, that message. Workspace says the
+// fork took a copy of the workspace too (its own sandbox, cloned from the
+// source's); Into marks the marker left on the source, where ChatID and
+// Title name the fork instead.
 type Fork struct {
 	ChatID    string `json:"chatID"`
 	Title     string `json:"title,omitempty"`
 	MessageID string `json:"messageID,omitempty"`
+	Workspace bool   `json:"workspace,omitempty"`
+	Into      bool   `json:"into,omitempty"`
 }
 
 // Aside is what a side question came to: Status running, completed or
@@ -223,7 +228,10 @@ type Tool struct {
 	Query       string         `json:"query,omitempty"`
 	Input       map[string]any `json:"input,omitempty"`
 	Background  bool           `json:"background,omitempty"`
-	Progress    *Progress      `json:"progress,omitempty"`
+	// Read is what a read of something other than text carried (an
+	// image, a PDF, a notebook); nil for a text read.
+	Read     *Read     `json:"read,omitempty"`
+	Progress *Progress `json:"progress,omitempty"`
 }
 
 // Progress is what a running subagent has done so far, as its agent
@@ -255,6 +263,51 @@ func ProgressFrom(m map[string]any) *Progress {
 	}
 	return &p
 }
+
+// Read describes a file read that returned no text: Kind "image" (Image
+// the stored copy's id, served at chats/{id}/images/{image}, "" when it
+// could not be stored; Width and Height its pixels), "pdf" (Pages as
+// counted from the bytes, 0 when unknown) or "notebook" (Cells, first
+// line each); Bytes the file's size when reported.
+type Read struct {
+	Kind   string     `json:"kind"`
+	Image  string     `json:"image,omitempty"`
+	Width  int        `json:"width,omitempty"`
+	Height int        `json:"height,omitempty"`
+	Bytes  int64      `json:"bytes,omitempty"`
+	Pages  int        `json:"pages,omitempty"`
+	Cells  []ReadCell `json:"cells,omitempty"`
+}
+
+// ReadCell is one notebook cell: its type (code, markdown, raw), the
+// code cell's language, and its first line.
+type ReadCell struct {
+	Type     string `json:"type"`
+	Language string `json:"language,omitempty"`
+	Text     string `json:"text"`
+}
+
+// ReadFrom reads an item's `read` object (the Claude adapter's) into a
+// Read; nil when there is none.
+func ReadFrom(m map[string]any) *Read {
+	if m == nil {
+		return nil
+	}
+	n := func(k string) int { f, _ := m[k].(float64); return int(f) }
+	r := &Read{Kind: stringOf(m["kind"]), Image: stringOf(m["image"]), Width: n("width"), Height: n("height"), Bytes: int64(n("bytes")), Pages: n("pages")}
+	if r.Kind == "" {
+		return nil
+	}
+	if cells, ok := m["cells"].([]any); ok {
+		for _, v := range cells {
+			c, _ := v.(map[string]any)
+			r.Cells = append(r.Cells, ReadCell{Type: stringOf(c["type"]), Language: stringOf(c["language"]), Text: stringOf(c["text"])})
+		}
+	}
+	return r
+}
+
+func stringOf(v any) string { s, _ := v.(string); return s }
 
 // Attachment is one file sent with a user message. Kind is "image" for a
 // PNG/JPEG (stored and delivered as an imageguard-normalised PNG) and

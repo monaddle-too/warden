@@ -104,6 +104,9 @@ type Engine struct {
 	Bugs *bugreport.Capturer
 	// Now is the clock (tests replace it); nil means time.Now.
 	Now func() time.Time
+	// NormalizeImage replaces the imageguard subprocess (images.go) in
+	// tests; nil runs it.
+	NormalizeImage func(context.Context, []byte) ([]byte, error)
 	// limits is the runner's size offer, asked for on demand and kept for
 	// limitsTTL: the form and validation need it before any chat exists.
 	limitsMu sync.Mutex
@@ -1214,7 +1217,7 @@ func (e *Engine) turn(ctx context.Context, id string, current *Chat, a *activeRu
 			if len(f.ID) > 0 {
 				err = e.request(ctx, current, client, f)
 			} else {
-				err = e.notification(id, f)
+				err = e.notification(ctx, id, f)
 			}
 			if err != nil {
 				return err
@@ -1336,7 +1339,7 @@ func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *
 				_ = e.request(ctx, current, client, f)
 				continue
 			}
-			_ = e.notification(id, f)
+			_ = e.notification(ctx, id, f)
 			if f.Method == "turn/started" {
 				if turn := agent.String(agent.Map(f.Params["turn"])["id"]); turn != "" {
 					if err := e.beginAgentTurn(id, turn); err != nil {
@@ -1515,13 +1518,18 @@ func (e *Engine) turnUsage(id string, p map[string]any) (string, *cv.Usage) {
 	usage := total.Sub(a.usageBase)
 	return turn, &usage
 }
-func (e *Engine) notification(id string, f agent.Frame) error {
+func (e *Engine) notification(ctx context.Context, id string, f agent.Frame) error {
 	// Looked up before the store is locked: the engine lock is taken around
 	// store updates elsewhere, never inside one.
 	var usage *cv.Usage
 	var usageTurn string
 	if f.Method == "thread/tokenUsage/updated" {
 		usageTurn, usage = e.turnUsage(id, f.Params)
+	}
+	if f.Method == "item/completed" {
+		// An image a Read returned is stored before the entry records it
+		// (images.go keepReadImage): the store keeps an id, never bytes.
+		e.keepReadImage(ctx, id, agent.Map(f.Params["item"]))
 	}
 	return e.Store.update(func(st *State) error {
 		chat := st.chat(id)

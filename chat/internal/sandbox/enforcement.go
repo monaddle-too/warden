@@ -20,6 +20,10 @@ type GrantContext struct {
 	ChatID      string `json:"chatID"`
 	RunID       string `json:"runID"`
 	PrincipalID string `json:"principalID"`
+	// ImageDigest is the image of a sandbox the runner derived from a
+	// snapshot of a verified guest (a copy, a regeneration), for the
+	// policy service's image pin; "" for the pinned guest image.
+	ImageDigest string `json:"imageDigest,omitempty"`
 }
 
 type Enforcement interface {

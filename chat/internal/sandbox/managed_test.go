@@ -25,6 +25,8 @@ type testGate struct {
 	calls   []string
 	deny    bool
 	endHook func(context.Context, GrantContext) error
+	// grants are every context registered or checked, in order.
+	grants []GrantContext
 }
 
 func (g *testGate) record(s string) error {
@@ -37,9 +39,15 @@ func (g *testGate) record(s string) error {
 	return nil
 }
 func (g *testGate) Register(_ context.Context, c GrantContext) error {
+	g.mu.Lock()
+	g.grants = append(g.grants, c)
+	g.mu.Unlock()
 	return g.record("register:" + c.SandboxID)
 }
-func (g *testGate) Check(_ context.Context, _ GrantContext, phase string) error {
+func (g *testGate) Check(_ context.Context, c GrantContext, phase string) error {
+	g.mu.Lock()
+	g.grants = append(g.grants, c)
+	g.mu.Unlock()
 	return g.record("check:" + phase)
 }
 func (g *testGate) Begin(_ context.Context, _ GrantContext) (BrokerConfig, error) {
@@ -67,6 +75,9 @@ type testRuntime struct {
 	resizeErr     error     // Resize's answer when set
 	runs          []RunSpec // every Stream launch, in order
 	requestURI    string    // the last request the fake guest service saw
+	// digests is what ImageDigest answers per runtime name (a snapshot's
+	// digest for a copy or a regeneration); a name without one errors.
+	digests map[string]string
 }
 
 func (d *testRuntime) record(s string) {
@@ -79,6 +90,9 @@ func (d *testRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 	if !s.Resources.IsZero() {
 		d.record("size:" + s.Name + ":" + s.Resources.String())
 	}
+	if s.Source != "" {
+		d.record("source:" + s.Name + ":" + s.Source)
+	}
 	Report(ctx, "creating the VM")
 	if d.createStarted != nil {
 		close(d.createStarted)
@@ -88,6 +102,15 @@ func (d *testRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 		return ctx.Err()
 	}
 	return nil
+}
+func (d *testRuntime) ImageDigest(_ context.Context, name string) (string, error) {
+	d.record("image:" + name)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if digest, ok := d.digests[name]; ok {
+		return digest, nil
+	}
+	return "", errors.New("no digest for " + name)
 }
 func (d *testRuntime) Exec(_ context.Context, name, dir string, args ...string) (string, error) {
 	d.record("exec:" + name + ":" + strings.Join(args, " "))

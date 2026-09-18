@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -364,7 +367,19 @@ func claudeToolItem(id string, t claudeTool, result map[string]any, structured a
 		return mark(map[string]any{"id": id, "type": "webSearch", "tool": t.name, "query": String(in["query"]), "status": status, "output": output})
 	}
 	kind, title, paths, query := claudeToolTitle(t)
+	var read map[string]any
+	if t.name == "Read" && result != nil && status == "completed" {
+		if read = claudeRead(result, structured); read != nil {
+			if summary := String(read["summary"]); summary != "" {
+				output = summary
+			}
+			delete(read, "summary")
+		}
+	}
 	item := mark(map[string]any{"id": id, "type": "toolCall", "tool": t.name, "kind": kind, "title": title, "status": status, "output": output, "input": claudeToolInput(in)})
+	if read != nil {
+		item["read"] = read
+	}
 	if t.progress != nil {
 		item["progress"] = t.progress
 	}
@@ -623,6 +638,153 @@ func claudeUnifiedDiff(path, kind string, hunks []claudeHunk) string {
 		}
 	}
 	return claudeCut(b.String(), claudeDiffCap)
+}
+
+// claudeRead is what a Read of something other than text carried, from
+// the CLI's tool_use_result (probed on the pinned CLI, docs/claude-parity.md
+// Round 2 E: `{type: image, file: {base64, type, originalSize,
+// dimensions}}`, `{type: pdf, file: {filePath, base64, originalSize}}`,
+// `{type: notebook, file: {filePath, cells: [{cellType, source, language,
+// cell_id}]}}`) and the tool_result's blocks (an `image` block with the
+// base64 and media type; a PDF's `document` block): an image's bytes and
+// pixel size (the chat service stores the bytes and keeps the stored
+// image's id), a PDF's size and page count (counted from its bytes — the
+// CLI hands the model the document and reports nothing per page), a
+// notebook's cells (type, language, first line) with a listing as the
+// output. nil for a text read or anything unrecognised.
+func claudeRead(result map[string]any, structured any) map[string]any {
+	file := Map(Map(structured)["file"])
+	switch String(Map(structured)["type"]) {
+	case "image":
+		data, media := "", ""
+		for _, v := range Array(result["content"]) {
+			if b := Map(v); String(b["type"]) == "image" {
+				source := Map(b["source"])
+				data, media = String(source["data"]), String(source["media_type"])
+			}
+		}
+		if data == "" {
+			data, media = String(file["base64"]), String(file["type"])
+		}
+		if data == "" {
+			return nil
+		}
+		dims := Map(file["dimensions"])
+		read := map[string]any{"kind": "image", "data": data, "mediaType": media, "width": claudeInt(dims["originalWidth"]), "height": claudeInt(dims["originalHeight"]), "bytes": claudeInt(file["originalSize"])}
+		read["summary"] = claudeImageSummary(read)
+		return read
+	case "pdf":
+		data := String(file["base64"])
+		for _, v := range Array(result["content"]) {
+			if b := Map(v); String(b["type"]) == "document" {
+				if d := String(Map(b["source"])["data"]); d != "" {
+					data = d
+				}
+			}
+		}
+		pages := claudePDFPages(data)
+		size := claudeInt(file["originalSize"])
+		if size == 0 {
+			size = base64.StdEncoding.DecodedLen(len(data))
+		}
+		summary := fmt.Sprintf("PDF, %s", claudeSize(size))
+		if pages > 0 {
+			summary += fmt.Sprintf(", %d page%s", pages, claudePlural(pages))
+		}
+		summary += "; the model reads the document itself (the CLI returns no text per page)"
+		return map[string]any{"kind": "pdf", "bytes": size, "pages": pages, "summary": summary}
+	case "notebook":
+		cells := []any{}
+		var lines []string
+		for i, v := range Array(file["cells"]) {
+			c := Map(v)
+			kind := String(c["cellType"])
+			if kind == "" {
+				kind = "code"
+			}
+			first := claudeCut(strings.TrimSpace(strings.SplitN(String(c["source"]), "\n", 2)[0]), 120)
+			cell := map[string]any{"type": kind, "text": first}
+			label := kind
+			if lang := String(c["language"]); lang != "" {
+				cell["language"] = lang
+				if kind == "code" {
+					label += " (" + lang + ")"
+				}
+			}
+			cells = append(cells, cell)
+			lines = append(lines, fmt.Sprintf("%d %s: %s", i+1, label, first))
+		}
+		if len(cells) == 0 {
+			return nil
+		}
+		return map[string]any{"kind": "notebook", "cells": cells, "summary": strings.Join(lines, "\n")}
+	}
+	return nil
+}
+
+// claudeImageSummary is the text an image read shows in place of its
+// bytes: the format and pixel size.
+func claudeImageSummary(read map[string]any) string {
+	media := strings.TrimPrefix(String(read["mediaType"]), "image/")
+	if media == "" {
+		media = "image"
+	}
+	summary := strings.ToUpper(media) + " image"
+	if w, h := claudeInt(read["width"]), claudeInt(read["height"]); w > 0 && h > 0 {
+		summary += fmt.Sprintf(", %d×%d", w, h)
+	}
+	if n := claudeInt(read["bytes"]); n > 0 {
+		summary += ", " + claudeSize(n)
+	}
+	return summary
+}
+
+// claudePDFPagePattern finds page objects in an uncompressed PDF body;
+// claudePDFCountPattern the page tree's count. Pages inside compressed
+// object streams escape both, and the count is then 0 (not shown).
+var (
+	claudePDFPagePattern  = regexp.MustCompile(`/Type\s*/Page\b[^s]`)
+	claudePDFCountPattern = regexp.MustCompile(`/Type\s*/Pages\b[^>]*?/Count\s+(\d+)`)
+)
+
+// claudePDFPages counts a PDF's pages from its base64 bytes, 0 when it
+// cannot tell. At most 32 MiB is looked at.
+func claudePDFPages(data string) int {
+	if len(data) == 0 || len(data) > 32<<20*4/3 {
+		return 0
+	}
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return 0
+	}
+	best := 0
+	for _, m := range claudePDFCountPattern.FindAllSubmatch(raw, -1) {
+		if n, err := strconv.Atoi(string(m[1])); err == nil && n > best {
+			best = n
+		}
+	}
+	if best > 0 {
+		return best
+	}
+	return len(claudePDFPagePattern.FindAllIndex(raw, -1))
+}
+
+// claudeSize is a byte count in the transcript's units.
+func claudeSize(n int) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0f KiB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d bytes", n)
+}
+
+func claudePlural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // claudeResultText is a tool_result's content as text: the string, or the

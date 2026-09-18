@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -1815,5 +1816,73 @@ func TestClaudeConversationRewind(t *testing.T) {
 	}
 	if result["rewound"] != false || result["reason"] != "target_not_found" {
 		t.Fatalf("refused rewind answer: %v", result)
+	}
+}
+
+// A Read of an image, a PDF or a notebook (fixtures as the pinned CLI
+// returned them, docs/claude-parity.md Round 2 E): the item's `read`
+// carries an image's bytes and size, a PDF's size and page count, a
+// notebook's cells, and the output is a summary in place of the bytes;
+// a text read carries no `read`.
+func TestClaudeReadOfImagePDFAndNotebook(t *testing.T) {
+	tool := claudeTool{name: "Read", input: map[string]any{"file_path": "/home/agent/workspace/img.png"}}
+	png := "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAUklEQVR42u3YwQkAAAwCMfdful2iUIQcLpCvmfICAAAAAAAAAAAAAAAAAPABSG4GAAAAAAAAAAAAAAAAAAAAANAF8MwBAAAAAAAAAAAAAAAA9LZBylcGAx5/OwAAAABJRU5ErkJggg=="
+	result := map[string]any{"type": "tool_result", "content": []any{map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": png}}}}
+	structured := map[string]any{"type": "image", "file": map[string]any{"base64": png, "type": "image/png", "originalSize": 139.0, "dimensions": map[string]any{"originalWidth": 64.0, "originalHeight": 64.0, "displayWidth": 64.0, "displayHeight": 64.0}}}
+	item := claudeToolItem("r1", tool, result, structured)
+	read := Map(item["read"])
+	if item["kind"] != "read" || item["output"] != "PNG image, 64×64, 139 bytes" || read["kind"] != "image" || read["data"] != png || read["mediaType"] != "image/png" || read["width"] != 64 || read["height"] != 64 || read["bytes"] != 139 || read["summary"] != nil {
+		t.Fatalf("image read: %v", item)
+	}
+	// The image block alone (no structured result) still carries the bytes.
+	item = claudeToolItem("r1", tool, result, map[string]any{"type": "image"})
+	if read := Map(item["read"]); read["data"] != png || item["output"] != "PNG image" {
+		t.Fatalf("image without dimensions: %v", item)
+	}
+
+	pdf := "%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R >> endobj\n4 0 obj << /Type /Page /Parent 2 0 R >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n"
+	data := base64.StdEncoding.EncodeToString([]byte(pdf))
+	tool.input["file_path"] = "/home/agent/workspace/doc.pdf"
+	result = map[string]any{"type": "tool_result", "content": []any{map[string]any{"type": "text", "text": "PDF file read: /home/agent/workspace/doc.pdf (854 bytes)"}, map[string]any{"type": "document", "source": map[string]any{"type": "base64", "media_type": "application/pdf", "data": data}}}}
+	structured = map[string]any{"type": "pdf", "file": map[string]any{"filePath": "/home/agent/workspace/doc.pdf", "base64": data, "originalSize": 854.0}}
+	item = claudeToolItem("r2", tool, result, structured)
+	read = Map(item["read"])
+	if read["kind"] != "pdf" || read["pages"] != 2 || read["bytes"] != 854 || read["data"] != nil || !strings.HasPrefix(String(item["output"]), "PDF, 854 bytes, 2 pages;") {
+		t.Fatalf("pdf read: %v", item)
+	}
+	if n := claudePDFPages(base64.StdEncoding.EncodeToString([]byte("%PDF-1.7\n<< /Type /Page >>\n<< /Type /Page >>\n<< /Type /Page >>"))); n != 3 {
+		t.Fatalf("page objects counted %d", n)
+	}
+	if n := claudePDFPages("not base64!"); n != 0 {
+		t.Fatal("garbage counted", n)
+	}
+
+	tool.input["file_path"] = "/home/agent/workspace/nb.ipynb"
+	result = map[string]any{"type": "tool_result", "content": []any{map[string]any{"type": "text", "text": "<cell id=\"cell-0\">print('hello')</cell id=\"cell-0\">\n<cell id=\"cell-1\">x = 1 + 1</cell id=\"cell-1\">\n<cell id=\"cell-2\"><cell_type>markdown</cell_type># Title</cell id=\"cell-2\">"}}}
+	structured = map[string]any{"type": "notebook", "file": map[string]any{"filePath": "/home/agent/workspace/nb.ipynb", "cells": []any{
+		map[string]any{"cellType": "code", "source": "print('hello')", "cell_id": "cell-0", "language": "python"},
+		map[string]any{"cellType": "code", "source": "x = 1 + 1\ny = 2", "cell_id": "cell-1", "language": "python"},
+		map[string]any{"cellType": "markdown", "source": "# Title", "cell_id": "cell-2"},
+	}}}
+	item = claudeToolItem("r3", tool, result, structured)
+	read = Map(item["read"])
+	cells := Array(read["cells"])
+	if read["kind"] != "notebook" || len(cells) != 3 || Map(cells[1])["text"] != "x = 1 + 1" || Map(cells[1])["language"] != "python" || Map(cells[2])["type"] != "markdown" || item["output"] != "1 code (python): print('hello')\n2 code (python): x = 1 + 1\n3 markdown: # Title" {
+		t.Fatalf("notebook read: %v", item)
+	}
+
+	// A text read, a failed read and a read of another tool's image stay
+	// as they were.
+	item = claudeToolItem("r4", tool, map[string]any{"type": "tool_result", "content": "1\talpha"}, map[string]any{"type": "text", "file": map[string]any{"content": "alpha", "numLines": 1.0}})
+	if item["read"] != nil || item["output"] != "1\talpha" {
+		t.Fatalf("text read: %v", item)
+	}
+	item = claudeToolItem("r5", tool, map[string]any{"type": "tool_result", "is_error": true, "content": "<tool_use_error>File does not exist.</tool_use_error>"}, nil)
+	if item["read"] != nil || item["output"] != "File does not exist." {
+		t.Fatalf("failed read: %v", item)
+	}
+	item = claudeToolItem("r6", claudeTool{name: "Agent", input: map[string]any{"prompt": "look"}}, result, structured)
+	if item["read"] != nil {
+		t.Fatalf("another tool's read: %v", item)
 	}
 }

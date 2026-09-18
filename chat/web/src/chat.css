@@ -1822,6 +1822,47 @@ button.danger:hover {
   color: inherit;
   font-weight: 600;
 }
+/* A read of an image, a PDF or a notebook (ToolCard ReadBody). */
+.tool-read-image .image-attachment {
+  margin: 4px 0 0;
+}
+.tool-read-image .image-attachment img {
+  max-width: min(100%, 360px);
+  max-height: 240px;
+}
+.tool-read-cells {
+  margin: 4px 0 0;
+  padding-left: 1.6em;
+  font-size: 0.9em;
+}
+.tool-read-cells li {
+  overflow-wrap: anywhere;
+}
+/* The fork dialog's "copy the workspace" choice. */
+.fork-copy {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 12px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.fork-copy input {
+  margin-top: 3px;
+}
+.fork-copy > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.fork-copy small {
+  color: var(--muted);
+}
+.workspace-origin a {
+  color: inherit;
+  font-weight: 600;
+}
 .composer-style select.style-pending {
   border-color: var(--accent);
 }

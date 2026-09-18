@@ -24,6 +24,8 @@ export function ForkDialog({
   const openFork = useRef(false);
   // "" is the whole chat.
   const [selected, setSelected] = useState(initial || "");
+  // A copy of the workspace too: a new workspace cloned from this one.
+  const [copy, setCopy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<ForkResult>();
@@ -42,7 +44,7 @@ export function ForkDialog({
     setBusy(true);
     setError("");
     try {
-      setResult(await forkChat(chat.id, target?.entry.id));
+      setResult(await forkChat(chat.id, target?.entry.id, copy));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -68,9 +70,20 @@ export function ForkDialog({
           <h2 id="fork-title">Forked</h2>
           <p>
             “{result.title}” continues from{" "}
-            {target ? `before “${excerpt(target.entry.text)}”` : "here"}.
+            {target ? `before “${excerpt(target.entry.text)}”` : "here"}
+            {result.workspace === "copied"
+              ? " on a copy of this workspace"
+              : ""}
+            .
           </p>
           <p className="muted">{forkOutcome(result)}</p>
+          {result.workspace === "copied" && (
+            <p className="muted">
+              The copy has this workspace's files as they were just now.
+              Shared documents, repositories and network access stay with
+              this workspace; share them with the copy from its panel.
+            </p>
+          )}
           <div className="button-row">
             <button type="button" onClick={close}>
               Stay here
@@ -137,6 +150,22 @@ export function ForkDialog({
               </li>
             ))}
           </ul>
+          <label className="fork-copy">
+            <input
+              type="checkbox"
+              checked={copy}
+              onChange={(event) => setCopy(event.target.checked)}
+            />
+            <span>
+              Copy the workspace
+              <small>
+                The fork gets its own workspace, cloned from this one's files
+                as they are now (a stopped workspace is fine; a running one
+                pauses briefly). Shared documents, repositories and network
+                access are not copied.
+              </small>
+            </span>
+          </label>
           {!allowed && (
             <p className="muted">
               Wait for the agent to finish, or stop it, before forking.
@@ -152,7 +181,13 @@ export function ForkDialog({
               Cancel
             </button>
             <button className="primary" disabled={busy || !allowed}>
-              {busy ? "Forking…" : "Fork"}
+              {busy
+                ? copy
+                  ? "Copying the workspace…"
+                  : "Forking…"
+                : copy
+                  ? "Fork with a copy"
+                  : "Fork"}
             </button>
           </div>
         </form>
