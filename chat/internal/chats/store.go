@@ -95,6 +95,14 @@ type Chat struct {
 	// OutputStyle is the Claude output style the chat's process launches
 	// with; "" is the CLI's default (style.go).
 	OutputStyle string `json:"outputStyle,omitempty"`
+	// Titled says how the chat got its title: "" while it still has the
+	// default one and waits to be named from its first exchange, "auto"
+	// once it was, "manual" once a person gave or changed the title, which
+	// ends the naming (title.go).
+	Titled string `json:"titled,omitempty"`
+	// Spend is what the chat's turns took so far (spend.go), filled in for
+	// clients by Engine.View and never stored.
+	Spend *Spend `json:"spend,omitempty"`
 }
 
 // Command is one slash command the agent's session offers.
@@ -165,6 +173,9 @@ type State struct {
 	// Environments is what is kept per workspace beyond its chats, by
 	// sandbox id: its permission rules (rules.go).
 	Environments map[string]*EnvironmentRecord `json:"environments,omitempty"`
+	// Catalog is each provider's model catalog as its CLI last reported
+	// it (catalog.go); clients get it as agentOptions.models.
+	Catalog map[string]*Catalog `json:"catalog,omitempty"`
 }
 type Store struct {
 	mu     sync.Mutex

@@ -30,6 +30,13 @@ const (
 	asideOutputLimit = 4 << 20
 )
 
+// A one-shot (the runner op "oneshot"; docs/claude-parity.md, R2.1): a
+// fresh, tool-less CLI on a named model answering one prompt, with
+// nothing resumed, nothing persisted and one model call at most — what a
+// chat's automatic title is made with. OneShotTimeout bounds it; the
+// prompt is bounded like a side question.
+const OneShotTimeout = time.Minute
+
 // AsideResult is what a side question came to: the answer, what the CLI
 // said it cost, the session id of the copy it answered from, or the
 // error when it could not answer.
@@ -80,6 +87,26 @@ func AsideCommand(run RunSpec, question string) []string {
 	return append(args, claudeSessionArgs(broker)...)
 }
 
+// OneShotCommand is the one-shot launch a "oneshot" request runs: the
+// brokered environment, then the guest script feeding the prompt to a
+// fresh CLI with every tool disabled by the script, one turn, no session
+// resumed or written (`--no-session-persistence`), the given system
+// prompt in place of the CLI's own (a few hundred tokens instead of its
+// default's thousands), on the run's model or the request's. Every value
+// is data.
+func OneShotCommand(run RunSpec, prompt, system string) []string {
+	broker := run.Broker
+	paths := run.Paths.orDefaults()
+	args := append(claudeEnvironment(broker), "python3", "-c", asideScript, prompt, strconv.Itoa(int(OneShotTimeout/time.Second)), strconv.Itoa(asideOutputLimit), paths.Claude, "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--strict-mcp-config", "--setting-sources=", "--max-turns", "1", "--no-session-persistence")
+	if system != "" {
+		args = append(args, "--system-prompt", system)
+	}
+	if broker.Model != "" {
+		args = append(args, "--model", broker.Model)
+	}
+	return args
+}
+
 // aside answers an "aside" request: the question in r.Command, asked of a
 // copy of the active run's session (r.ThreadID, the chat's recorded one)
 // with the run's brokered environment. The run must be streaming (a
@@ -94,6 +121,41 @@ func (w *Worker) aside(ctx context.Context, r Request) (Response, error) {
 	if !validIdentity(r.ThreadID) {
 		return Response{}, errors.New("the chat has no agent session to ask")
 	}
+	return w.oneShotRun(ctx, r, AsideTimeout, "side question", func(broker BrokerConfig) (BrokerConfig, func(RunSpec) []string) {
+		broker.ThreadID, broker.ForkSession = r.ThreadID, true
+		if ValidOutputStyle(r.OutputStyle) {
+			broker.OutputStyle = r.OutputStyle
+		}
+		return broker, func(run RunSpec) []string { return AsideCommand(run, question) }
+	})
+}
+
+// oneshot answers a "oneshot" request: the prompt in r.Command put to a
+// fresh, tool-less CLI on r.Model (the run's model when empty) with the
+// system prompt in r.Instructions, beside the active run and with its
+// brokered environment, like a side question but resuming nothing. The
+// chat's automatic title is one (chats/title.go).
+func (w *Worker) oneshot(ctx context.Context, r Request) (Response, error) {
+	prompt := r.Command
+	if strings.TrimSpace(prompt) == "" || len(prompt) > MaxAsideQuestion || strings.ContainsRune(prompt, 0) {
+		return Response{}, errors.New("invalid prompt")
+	}
+	system := r.Instructions
+	if len(system) > MaxAsideQuestion || strings.ContainsRune(system, 0) {
+		return Response{}, errors.New("invalid system prompt")
+	}
+	return w.oneShotRun(ctx, r, OneShotTimeout, "one-shot", func(broker BrokerConfig) (BrokerConfig, func(RunSpec) []string) {
+		broker.ThreadID, broker.ForkSession, broker.OutputStyle = "", false, ""
+		return broker, func(run RunSpec) []string { return OneShotCommand(run, prompt, system) }
+	})
+}
+
+// oneShotRun launches a second CLI beside the active run (a resident
+// Claude session, idle or not) with the run's brokered environment,
+// r.Model when it names a valid one, and the launch `shape` derives from
+// the broker; the guest script's report is parsed into the answer. The
+// run must be streaming: the gateway serves the credential only then.
+func (w *Worker) oneShotRun(ctx context.Context, r Request, timeout time.Duration, what string, shape func(BrokerConfig) (BrokerConfig, func(RunSpec) []string)) (Response, error) {
 	w.mu.Lock()
 	w.defaultsLocked()
 	s, _, err := w.runLocked(r)
@@ -108,25 +170,22 @@ func (w *Worker) aside(ctx context.Context, r Request) (Response, error) {
 		return Response{}, err
 	}
 	broker := s.Active.broker
-	broker.ThreadID, broker.ForkSession = r.ThreadID, true
 	if r.Model != "" && ValidateAgent("claude", r.Model) == nil {
 		broker.Model = r.Model
 	}
-	if ValidOutputStyle(r.OutputStyle) {
-		broker.OutputStyle = r.OutputStyle
-	}
+	broker, command := shape(broker)
 	run := RunSpec{Directory: s.Directory, Broker: broker, Paths: s.paths.orDefaults()}
 	name := s.RuntimeName
 	s.LastActivity = w.now()
 	w.mu.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, AsideTimeout+20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, timeout+20*time.Second)
 	defer cancel()
-	raw, err := w.Runtime.Exec(ctx, name, run.Directory, AsideCommand(run, question)...)
+	raw, err := w.Runtime.Exec(ctx, name, run.Directory, command(run)...)
 	if err != nil {
 		if ctx.Err() != nil {
-			return Response{}, errors.New("the side question did not finish in time")
+			return Response{}, errors.New("the " + what + " did not finish in time")
 		}
-		return Response{}, errors.New("could not ask the side question in the sandbox")
+		return Response{}, errors.New("could not run the " + what + " in the sandbox")
 	}
 	var report struct {
 		Output   string `json:"output"`
@@ -135,12 +194,12 @@ func (w *Worker) aside(ctx context.Context, r Request) (Response, error) {
 		TimedOut bool   `json:"timedOut"`
 	}
 	if err = json.Unmarshal([]byte(raw), &report); err != nil {
-		return Response{}, errors.New("invalid sandbox aside response")
+		return Response{}, errors.New("invalid sandbox " + what + " response")
 	}
 	result := ParseAsideOutput(report.Output)
 	switch {
 	case report.TimedOut:
-		result.Error = "the answer did not arrive within " + AsideTimeout.String()
+		result.Error = "the answer did not arrive within " + timeout.String()
 	case result.Text == "" && result.Error == "":
 		result.Error = asideFailure(report.ExitCode, report.Stderr)
 	}

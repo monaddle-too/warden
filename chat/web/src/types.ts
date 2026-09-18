@@ -262,8 +262,38 @@ export type Chat = {
   /* The chat was forked from another and its first run still has to copy
      the source's session. */
   forkSession?: boolean;
+  /* How the chat got its title: absent while it still has the default one
+     and waits to be named from its first exchange, "auto" once it was,
+     "manual" once a person named it (chats/title.go). */
+  titled?: string;
+  /* What the chat's turns took so far, summed by the service from its
+     turn records (spend.ts). */
+  spend?: Spend;
   typing?: { principalID: string; name: string; until: number }[];
   startup?: Startup;
+};
+/* The sum of some turns: how many, their tokens, the provider's cost
+   estimate where it gave one (priced says whether any turn did; Codex
+   reports none). */
+export type Spend = {
+  turns: number;
+  input: number;
+  output: number;
+  total: number;
+  costUSD: number;
+  priced: boolean;
+};
+/* The admin console's totals (GET spend): today, the last seven days and
+   all time, each the sum, by provider, and the chats that had a turn. */
+export type SpendPeriod = Spend & {
+  chats: number;
+  providers: Record<string, Spend>;
+};
+export type SpendReport = {
+  today: SpendPeriod;
+  week: SpendPeriod;
+  all: SpendPeriod;
+  at: number;
 };
 export type AgentCommand = { name: string; description?: string };
 /* Where a chat's start is while its message waits for the agent: the
@@ -277,9 +307,27 @@ export type SessionSettings = {
   effort?: string;
   fast?: boolean;
 };
+/* One row of a provider's model catalog as its CLI reported it
+   (chats/catalog.go): the value a chat's model is set to, what it
+   resolves to, its name and blurb, the effort levels it takes (none: no
+   effort setting), and whether it has adaptive thinking and fast mode. */
+export type CatalogModel = {
+  value: string;
+  resolved?: string;
+  label: string;
+  description?: string;
+  efforts?: string[];
+  adaptiveThinking?: boolean;
+  fastMode?: boolean;
+};
 /* The costlier Claude features this Warden allows (config
-   providers.claude.allowFastMode, allowLongContext). */
-export type AgentOptions = { fastMode: boolean; longContext: boolean };
+   providers.claude.allowFastMode, allowLongContext) and each provider's
+   model catalog, by provider (absent until its CLI reported one). */
+export type AgentOptions = {
+  fastMode: boolean;
+  longContext: boolean;
+  models?: Record<string, CatalogModel[]>;
+};
 export type State = {
   version: number;
   chats: Chat[];

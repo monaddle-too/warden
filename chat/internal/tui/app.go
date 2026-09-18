@@ -679,6 +679,21 @@ func (a *App) refreshMenu(ctx context.Context) {
 		}
 	case "chat":
 		m.Items = chatItems(a.sortedChats(), t.Query)
+	case "model":
+		provider := a.Provider
+		if c != nil {
+			provider = c.Provider
+		}
+		if provider == "" {
+			provider = "codex"
+		}
+		m.Items = modelItems(provider, a.agentOptions(), t.Query)
+	case "effort":
+		if c == nil || c.Provider != "claude" {
+			a.menu = nil
+			return
+		}
+		m.Items = effortItems(c, a.agentOptions(), t.Query)
 	}
 	if len(m.Items) == 0 && m.Note == "" {
 		a.menu = nil
@@ -961,15 +976,24 @@ func (a *App) setSetting(ctx context.Context, c *Chat, name, arg string) {
 		}
 		change["thinking"] = v
 	case "effort":
+		levels := EffortsFor(c, a.agentOptions())
 		if arg == "" {
-			a.setNotice("effort " + orDefault(c.Effort) + " · /effort " + strings.Join(chats.Efforts, "|") + "|default")
+			if len(levels) == 0 {
+				a.setNotice("effort " + orDefault(c.Effort) + " · this model takes no effort level")
+			} else {
+				a.setNotice("effort " + orDefault(c.Effort) + " · /effort " + strings.Join(levels, "|") + "|default")
+			}
 			return
 		}
 		if arg == "default" {
 			arg = ""
 		}
-		if !chats.ValidEffort(arg) {
-			a.setNotice("/effort " + strings.Join(chats.Efforts, "|") + "|default")
+		if !chats.ValidEffort(arg) || (arg != "" && len(levels) == 0) {
+			if len(levels) == 0 {
+				a.setNotice("this model takes no effort level (/effort default)")
+			} else {
+				a.setNotice("/effort " + strings.Join(levels, "|") + "|default")
+			}
 			return
 		}
 		change["effort"] = arg
@@ -1058,6 +1082,14 @@ func (a *App) resolve(ctx context.Context, chatID string, ap Approval, allow boo
 
 // sortedChats lists non-archived chats, most recently created last, as the
 // web sidebar does (the store keeps creation order).
+// agentOptions is what the service allows and offers (the catalog).
+func (a *App) agentOptions() AgentOptions {
+	if a.state == nil {
+		return AgentOptions{}
+	}
+	return a.state.AgentOptions
+}
+
 func (a *App) sortedChats() []*Chat {
 	if a.state == nil {
 		return nil
@@ -1150,10 +1182,8 @@ func (a *App) command(ctx context.Context, line string) {
 		a.selectChat(chats[n-1].ID)
 		a.setNotice("switched to " + sanitize(chats[n-1].Title))
 	case "new":
+		// No title: the service names the chat from its first exchange.
 		title := arg
-		if title == "" {
-			title = "Terminal chat " + a.now().Format("Jan 2 15:04")
-		}
 		provider := a.Provider
 		if c != nil && provider == "" {
 			provider = c.Provider
@@ -1168,7 +1198,11 @@ func (a *App) command(ctx context.Context, line string) {
 		}
 		a.refreshState(ctx)
 		a.selectChat(id)
-		a.setNotice("new chat " + sanitize(title) + " (" + provider + ")")
+		if title == "" {
+			a.setNotice("new chat (" + provider + ") · named after its first reply; /rename TITLE to choose")
+		} else {
+			a.setNotice("new chat " + sanitize(title) + " (" + provider + ")")
+		}
 	case "rename":
 		if c == nil {
 			a.setNotice("no chat selected")
@@ -1256,6 +1290,9 @@ func (a *App) command(ctx context.Context, line string) {
 		provider, model := c.Provider, c.Model
 		if name == "model" {
 			model = arg
+			if model == "default" {
+				model = "" // the menu's row for the provider default
+			}
 		} else {
 			provider = arg
 		}

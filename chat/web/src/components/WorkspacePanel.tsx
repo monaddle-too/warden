@@ -25,6 +25,7 @@ import { SizeSelect, sameSize } from "./SizeSelect";
 import type { DocumentProposal } from "./DocumentReview";
 import { MemorySection } from "./MemorySection";
 import { PermissionsSection } from "./PermissionsSection";
+import { chatSpend, spendLine, spendSummary, workspaceSpend } from "../spend";
 
 const remaining = (value: number | null) => {
   if (!value) return "";
@@ -234,6 +235,8 @@ export function WorkspacePanel({
       setHistoryError(String(e));
     }
   }
+  // The workspace's spend: this chat and its siblings (spend.ts).
+  const total = workspaceSpend([chat, ...siblings], chat.sandboxID);
   const chats = ws?.chats ?? [
     {
       id: chat.id,
@@ -508,6 +511,32 @@ export function WorkspacePanel({
             </li>
           ))}
         </ul>
+      </section>
+      <section className="workspace-section">
+        <h2>Spend</h2>
+        <dl className="workspace-facts">
+          <div>
+            <dt>Workspace</dt>
+            <dd
+              title={`${spendLine(total.spend)} · ${total.chats} chat${total.chats === 1 ? "" : "s"}`}
+            >
+              {spendSummary(total.spend)}
+              {total.chats > 1 ? ` · ${total.chats} chats` : ""}
+            </dd>
+          </div>
+          {total.chats > 1 && (
+            <div>
+              <dt>This chat</dt>
+              <dd title={spendLine(chatSpend(chat))}>
+                {spendSummary(chatSpend(chat))}
+              </dd>
+            </div>
+          )}
+        </dl>
+        <p className="muted">
+          Every chat of the workspace summed from the agent's turns, archived
+          ones included; Codex reports tokens and no cost.
+        </p>
       </section>
       {onChanges && !ws?.deleted && (
         <section className="workspace-section">

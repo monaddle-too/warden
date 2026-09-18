@@ -1356,6 +1356,13 @@ button.danger:hover {
   white-space: nowrap;
 }
 
+/* Admin console: the Spend section's table shares the cluster tables'
+   look; numbers line up. */
+.spend-table td {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* Admin console: the Cluster section. The admin body is capped at 920px;
    the tables scroll sideways below that. */
 .cluster-table {

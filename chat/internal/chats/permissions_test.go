@@ -44,6 +44,14 @@ type claudeWorker struct {
 	requests []sandbox.Request
 	rewinds  []map[string]any
 	aside    *sandbox.AsideResult
+	// oneshot is what a "oneshot" call answers (nil: a title); catalog
+	// is what list_models answers (nil: two rows; an empty list: a
+	// refusal).
+	oneshot *sandbox.AsideResult
+	catalog []map[string]any
+	listed  int // list_models requests received
+	// oneshotGate, when set, holds a "oneshot" answer until it is closed.
+	oneshotGate chan struct{}
 }
 
 // initModel is the model the scripted CLI reports in its system/init: the
@@ -67,13 +75,22 @@ func (w *claudeWorker) initModel() string {
 func (w *claudeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
 	w.mu.Lock()
 	w.requests = append(w.requests, r)
-	aside := w.aside
+	aside, oneshot, gate := w.aside, w.oneshot, w.oneshotGate
 	w.mu.Unlock()
+	if r.Operation == "oneshot" && gate != nil {
+		<-gate
+	}
 	if r.Operation == "aside" {
 		if aside == nil {
 			aside = &sandbox.AsideResult{Text: "the answer", CostUSD: 0.01, Input: 100, Output: 5}
 		}
 		return sandbox.Response{Version: 2, Aside: aside}, nil
+	}
+	if r.Operation == "oneshot" {
+		if oneshot == nil {
+			oneshot = &sandbox.AsideResult{Text: "\"Greeting the assistant.\"\n", CostUSD: 0.0004, Input: 60, Output: 4}
+		}
+		return sandbox.Response{Version: 2, Aside: oneshot}, nil
 	}
 	return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID}}, nil
 }
@@ -113,6 +130,28 @@ func (w *claudeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWrit
 				switch req["subtype"] {
 				case "initialize":
 					send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{}}})
+				case "list_models":
+					// The catalog (catalog.go): two rows unless the test
+					// scripted others; an empty script is a refusal.
+					w.mu.Lock()
+					catalog := w.catalog
+					w.listed++
+					w.mu.Unlock()
+					if catalog == nil {
+						catalog = []map[string]any{
+							{"value": "sonnet", "resolvedModel": "claude-sonnet-5", "displayName": "Sonnet", "description": "Sonnet 5 · Efficient", "supportsEffort": true, "supportedEffortLevels": []any{"low", "medium", "high"}, "supportsAdaptiveThinking": true},
+							{"value": "haiku", "resolvedModel": "claude-haiku-4-5", "displayName": "Haiku", "description": "Haiku 4.5 · Fastest"},
+						}
+					}
+					if len(catalog) == 0 {
+						send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": v["request_id"], "error": "list_models is not available"}})
+						continue
+					}
+					rows := []any{}
+					for _, row := range catalog {
+						rows = append(rows, row)
+					}
+					send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{"models": rows}}})
 				case "set_permission_mode":
 					w.mu.Lock()
 					w.controls = append(w.controls, req)

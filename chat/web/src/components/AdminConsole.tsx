@@ -11,6 +11,7 @@ import {
 import { api } from "../api";
 import { ClusterView } from "./ClusterView";
 import { GitHubSignIn } from "./GitHubSignIn";
+import { SpendView } from "./SpendView";
 
 type LoginRecord = {
   email: string;
@@ -520,6 +521,7 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
             )}
           </section>
         )}
+        <SpendView />
         <ClusterView />
         <section aria-labelledby="admin-blocked">
           <h2 id="admin-blocked">

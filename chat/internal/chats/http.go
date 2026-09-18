@@ -114,6 +114,12 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.clusterHTTP(w, r, path)
 		return
 	}
+	if r.Method == "GET" && path == "spend" {
+		// The admin console's spend totals (spend.go); owner-only at the
+		// edge (ownerOnly lists api/spend).
+		json.NewEncoder(w).Encode(h.Engine.Spend())
+		return
+	}
 	if path == "me/instructions" {
 		// A person's own standing instructions (instructions.go); the
 		// requester is whoever the edge identified, or the owner.
