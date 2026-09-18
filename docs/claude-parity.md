@@ -393,6 +393,87 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
 
+### Item 10: queueing and edit-and-resend
+
+Branch `feat/parity-10-queue`, worktree `.local/warden-parity-10-queue`,
+from main bd753d4 (2026-09-18). Started 2026-09-18.
+
+Today's behaviour, as found in the engine (`chats/engine.go`) and to be
+confirmed live:
+
+- **Claude.** A message sent while a turn runs is held by Warden, not by
+  the CLI: `MessageFrom` appends the user entry with `Delivery: queued`
+  and leaves the chat `running`; the turn loop's steering tick is
+  Codex-only ("Claude queues a separate turn"), so the CLI never sees a
+  second `user` frame during a turn and item 7's findings (the CLI's own
+  queue, the merge before the first API request, `interrupt_cancel_queued_v1`)
+  never come into play. After `turn/completed`, `settleTurn` marks the
+  chat `queued` and `awaitMessage`'s tick → `resume` hands the first
+  queued entry to a new `turn/start` on the same session; several queued
+  messages go in order, one turn each, attachments delivered with each.
+  The web shows "Queued" beside the sender and the hint "Queued for the
+  next turn"; `canResend` disables retry/edit on a queued entry; the TUI
+  prints `(queued)` under the message. Nothing edits or withdraws it.
+- **Codex.** The tick sends the queued entry into the running turn with
+  `turn/steer` (`expectedTurnId`); accepted, it is confirmed as part of
+  that turn; refused (the turn completed first), it stays queued for the
+  next.
+- **Stop** fails every queued entry ("Stopped before delivery") on all
+  three of its paths (off the queue, interrupt, cancel); a run that fails
+  marks them "Not delivered"; a restart "Interrupted before confirmed
+  delivery" (they were never handed over: `attempt`/`resume` mark the
+  entry before `turn/start`, `confirm` after).
+- **Rewind** refuses while the chat is `queued`; `truncate` keeps queued
+  user entries after the target.
+- **Edit-and-resend** (web) puts the message's text and uploads into the
+  composer; sending is a new message at the end, no rewind. "Retry" sends
+  the same text again as a new message.
+
+Design:
+
+1. **The queue is Warden's**, as it already is: the CLI's own queue
+   cannot be edited, merges messages that arrive before the first API
+   request, and is dropped by an interrupt. A queued entry stays a
+   transcript entry (`Delivery: queued`), so both surfaces already show
+   it in place and the SSE state carries it. Order is the transcript's.
+2. **Withdraw** (`POST chats/{id}/withdraw {id}`) removes a queued entry
+   and returns it; the sender or the owner may. **Edit** on either
+   surface is a withdraw whose text and attachments land in the
+   composer (Claude's ↑ pops the queued message into the input: nothing
+   is sent while it is being edited); sending it again appends it to
+   the queue. ↑ in an empty composer with a queued message edits the
+   last queued one, before the prompt history.
+3. **Stop holds the queue**: the interrupted turn ends, the chat is
+   `interrupted`, the queued entries stay queued and are not sent until
+   the person says so — `POST chats/{id}/send-queued` (the card's Send,
+   the TUI's `/queue send`) or any new message, which goes behind them.
+   A held entry says so on the card. A run that fails or a restart still
+   fail them (retry is the fix there).
+4. **Rewind withdraws the queue** for a conversation or both rewind
+   (the marker counts them; `RewindResult.Withdrawn`); a code-only
+   rewind leaves it. Since Warden never hands a message to the CLI
+   during a turn, the CLI's `commands_queued` refusal is never met.
+5. **Edit-and-resend** on a sent message: the composer enters an editing
+   state with the message's text and uploads and a bar saying that
+   sending rewinds the conversation to before it, with "also rewind the
+   code" (`what: both`); send = `chats/{id}/rewind` then
+   `chats/{id}/message`, by the editor (`Sender`). The pencil is enabled
+   only while a rewind would be (`canRewind`). Retry is unchanged.
+   Esc-Esc with an empty draft opens item 11's chooser on the last
+   message, and a conversation/both rewind from the chooser (any
+   rewind, not only Esc-Esc's) prefills the composer with the rewound
+   message — Claude's `prefillText` — when the draft is empty. TUI:
+   `/edit N` (N as `/rewind` lists) pops a queued message into the
+   editor, or confirms a conversation rewind (`/edit N both` with the
+   code) and prefills; Esc-Esc on an empty draft is `/edit` on the last
+   message.
+6. TUI: `(queued · sends when the agent finishes)` / `(queued · held)`
+   markers, `/queue` lists, `/withdraw N` (N from `/queue`), `/queue
+   send` releases a held queue, ↑ on an empty draft edits the last
+   queued message.
+
+Progress: started 2026-09-18.
+
 ### Item 11: checkpoints, rewind and the session diff
 
 Branch `feat/parity-11-rewind`, worktree `.local/warden-parity-11-rewind`,
