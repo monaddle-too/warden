@@ -385,6 +385,51 @@ Answered 2026-09-17 against CLI 2.1.272 (see "Item 7" below for how):
 - [ ] 14 Project MCP, OAuth, plugins.
 - [ ] 15 Long tail.
 
+### Item 12: composer polish
+
+Branch `feat/parity-12-composer`, worktree `.local/warden-parity-12-composer`,
+from main d74ac80 (2026-09-17). Started 2026-09-17.
+
+Steps:
+
+1. Web prompt history: Up/Down at the draft's first/last line recall this
+   chat's earlier prompts (the transcript's user entries by this
+   principal, newest first; the draft is kept), Ctrl-R searches them
+   (`history.ts`).
+2. Long paste: a paste over 8 lines or 1000 characters becomes a
+   `[Pasted text #N — M lines]` placeholder in the text and a chip above
+   it (hover previews, click opens, remove drops both); the message sends
+   with the full text; several per draft; persisted with the draft
+   (`paste.ts`, `drafts.ts`). TUI: the same placeholder from bracketed
+   paste, expanded on Enter.
+3. `!cmd`: the rest runs as a shell command in the workspace by the
+   person — `POST chats/{id}/exec` → runner op `exec` (both drivers,
+   cwd = workspace, 60 s, output capped at 30k) — recorded as a command
+   card with `Sender`, transcript-only, with "Send to agent". Web and TUI.
+4. `#note`: appended as a bullet to the workspace's `CLAUDE.md` — `POST
+   chats/{id}/memory` → runner op `memory-append` — with a system line
+   "Added to CLAUDE.md" and the item 7 hint. Web and TUI.
+5. Tests, feature map, live check on a cloned home, merge.
+
+Decisions:
+
+1. A `!` command's entry is transcript-only: the agent never sees it
+   unless the person quotes it into a message ("Send to agent" puts the
+   command and its output into the draft as a fenced block). Reason: the
+   command ran outside the agent's turn, by a person; feeding it to the
+   model silently would make the agent act on output it did not ask for,
+   and a resident session cannot take an out-of-band user message without
+   it becoming a turn.
+2. Attribution: the entry carries `Sender` (the requester the edge
+   identified, or the owner), the runner request carries the principal,
+   and the chat service logs who ran what with the exit code.
+3. The runner runs the command as the sandbox's agent user in a bash
+   process group, kills the group at the timeout, and returns stdout and
+   stderr merged with the exit code; the command is passed as data, never
+   through a host shell. It runs outside the registry lock and on its own
+   request slots, so a slow command blocks neither the turn nor the
+   workspace panel.
+
 ### Item 1: typed tool cards and diffs
 
 Branch `feat/parity-1-tool-cards`, worktree `.local/warden-parity-1-tool-cards`,
