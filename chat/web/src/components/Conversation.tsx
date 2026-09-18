@@ -54,6 +54,7 @@ import {
   unreadEntry,
   unreadIndex,
 } from "../transcript";
+import { canRewind, doubleEscape } from "../rewind";
 import { sameFooter, turnFooters, type TurnFooter } from "../turns";
 import type { Chat, Entry } from "../types";
 import { ComposerAttachments, type Pending } from "./Attachments";
@@ -126,6 +127,8 @@ export function Conversation({
   find,
   onModel,
   onExport,
+  onRewind,
+  onChanges,
 }: {
   chat: Chat;
   live: boolean;
@@ -137,6 +140,10 @@ export function Conversation({
   onModel: (model: string) => Promise<unknown>;
   /* The /export command; the chat menu's dialog lives in the shell. */
   onExport?: () => void;
+  /* The rewind chooser (a message's hover action, Esc-Esc, /rewind) and
+     the session diff (/diff); both dialogs live in the shell. */
+  onRewind?: (entryID?: string) => void;
+  onChanges?: () => void;
 }) {
   const key = "warden-draft:" + location.origin + ":" + chat.id;
   const [text, setText] = useState(() => draft(key));
@@ -362,6 +369,8 @@ export function Conversation({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [chat.id]);
+  // When Escape was last pressed in the composer, for Esc-Esc (rewind.ts).
+  const lastEscape = useRef(0);
   // The composer's current contents, for the transcript's edit action,
   // which is a stable callback and cannot close over state.
   const current = useRef({ text, pending });
@@ -634,6 +643,14 @@ export function Conversation({
         onExport?.();
         place({ text: rest, caret: 0 });
         break;
+      case "rewind":
+        onRewind?.();
+        place({ text: rest, caret: 0 });
+        break;
+      case "diff":
+        onChanges?.();
+        place({ text: rest, caret: 0 });
+        break;
       case "clear":
         for (const item of pending) forget(item);
         setPending([]);
@@ -788,7 +805,11 @@ export function Conversation({
                       onFile={onFile}
                       onEdit={edit}
                       onRetry={retry}
+                      onRewind={
+                        onRewind ? (entry) => onRewind(entry.id) : undefined
+                      }
                       actions={!busy && canResend(item.entry, chat, live)}
+                      rewindable={canRewind(chat)}
                       stats={inline ? footer : undefined}
                     />
                   )}
@@ -951,6 +972,18 @@ export function Conversation({
                   pick(items[selected]);
                   return;
                 }
+              } else if (e.key === "Escape") {
+                // Esc-Esc, Claude Code's rewind key: the chooser opens on
+                // the last message. One Esc is the interrupt (the Stop
+                // button) and stays as it is.
+                const now = Date.now();
+                if (doubleEscape(lastEscape.current, now)) {
+                  lastEscape.current = 0;
+                  e.preventDefault();
+                  onRewind?.();
+                  return;
+                }
+                lastEscape.current = now;
               }
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();

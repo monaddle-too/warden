@@ -23,6 +23,16 @@ export const COMMANDS: Command[] = [
   { name: "model", label: "Model", hint: "Choose the model for the next turn" },
   { name: "export", label: "Export…", hint: "Download this chat as a file" },
   {
+    name: "rewind",
+    label: "Rewind…",
+    hint: "Go back to before a message: code, conversation or both",
+  },
+  {
+    name: "diff",
+    label: "Changes…",
+    hint: "What changed in the workspace since this chat began",
+  },
+  {
     name: "clear",
     label: "Clear draft",
     hint: "Discard the draft and its attachments",
