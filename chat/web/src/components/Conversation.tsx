@@ -56,15 +56,21 @@ import {
   sendQueued,
   undoRewind,
   uploadAttachment,
+  attachLocal,
   withdrawMessage,
 } from "../api";
 import {
   agentCommandNamed,
   agentHint,
+  attachCommand,
+  attachInsert,
+  attachQuery,
   bugReport,
   commandItems,
   exactCommand,
   isBugTest,
+  isLocalPath,
+  localMentions,
   MODES,
   mentionFor,
   nextMode,
@@ -73,6 +79,7 @@ import {
   replaceTrigger,
   resourceItems,
   resourceQuery,
+  rewriteMentions,
   sideQuestion,
   triggerAt,
   withoutCommand,
@@ -99,6 +106,7 @@ import {
 import {
   attachmentError,
   hasFiles,
+  MAX_ATTACHMENTS,
   pastedName,
   transferFiles,
 } from "../attachments";
@@ -221,6 +229,8 @@ const commandIcon = (name: string) =>
     <FlaskConical size={15} />
   ) : name === "style" ? (
     <SlidersHorizontal size={15} />
+  ) : name === "attach" ? (
+    <Paperclip size={15} />
   ) : (
     <Eraser size={15} />
   );
@@ -736,15 +746,80 @@ const ASIDE_RELEASE_MS = 1500;
     [open, trigger, models, agentCommands],
   );
   const mentionOpen = open && trigger.kind === "path";
-  // A resource-only query (`@doc:…`) asks for no paths.
+  // Files from this computer (composer.ts, chats/localfiles.go): a local
+  // mention's prefix and an /attach word complete against this machine,
+  // on a local install; elsewhere the list says why they cannot.
+  const localFiles = !!agentOptions?.localFiles;
+  const localMention = mentionOpen && isLocalPath(trigger.query);
+  const attachArg = useMemo(
+    () =>
+      open && trigger.kind === "command"
+        ? attachQuery(text, caret)
+        : undefined,
+    [open, trigger, text, caret],
+  );
+  const localQuery = localMention
+    ? trigger.query
+    : attachArg
+      ? attachArg.query
+      : undefined;
+  const { paths: local, error: localError } = usePathCompletion(
+    chat.id,
+    localFiles ? localQuery : undefined,
+    "local",
+  );
+  // A resource-only query (`@doc:…`) asks for no paths, nor does a local
+  // mention.
   const { paths, error: pathError } = usePathCompletion(
     chat.id,
-    mentionOpen && !resourceQuery(trigger.query) ? trigger.query : undefined,
+    mentionOpen && !localMention && !resourceQuery(trigger.query)
+      ? trigger.query
+      : undefined,
   );
   const resources = useResourceCompletion(chat.id, mentionOpen);
   const resourceRows = useMemo(
     () => (mentionOpen ? resourceItems(resources, trigger.query) : []),
     [mentionOpen, resources, trigger],
+  );
+  // The rows and note of a local listing (an /attach word or a local
+  // mention); `sent` says what happens to a mention without a file.
+  const localRows = useCallback(
+    (kind: "attach" | "mention"): { items: Suggestion[]; note?: string } => {
+      const items: Suggestion[] = (local ?? []).map((path) => ({
+        id: "local:" + path,
+        label: path,
+        mono: true,
+        group: "This computer",
+        icon: path.endsWith("/") ? (
+          <Folder size={15} />
+        ) : (
+          <FileIcon size={15} />
+        ),
+      }));
+      if (!localFiles)
+        return {
+          items: [],
+          note:
+            kind === "attach"
+              ? `Typed paths need a local Warden install; a bare /attach (${modifierKey}Enter) opens the picker`
+              : "Files from this computer need a local Warden install; the mention is sent as written",
+        };
+      if (localError) return { items, note: localError };
+      if (!local) return { items, note: "Looking up files…" };
+      return {
+        items,
+        note: !items.length
+          ? kind === "attach" && !localQuery
+            ? `Type a path on this computer (~, globs; quote a space); ${modifierKey}Enter attaches the files`
+            : "No matching files on this computer"
+          : local.length >= PATH_LIMIT
+            ? "Keep typing to narrow the list"
+            : kind === "attach"
+              ? `Enter takes the highlighted path; ${modifierKey}Enter attaches the files`
+              : "The file is attached when the message is sent",
+      };
+    },
+    [local, localError, localFiles, localQuery],
   );
   const { items, note } = useMemo((): {
     items: Suggestion[];
@@ -752,6 +827,8 @@ const ASIDE_RELEASE_MS = 1500;
   } => {
     if (!open) return { items: [] };
     if (trigger.kind === "command") {
+      // "/attach …": the paths on this computer, as typed at the caret.
+      if (attachArg) return localRows("attach");
       const items = commands.map(
         (item): Suggestion =>
           item.kind === "command"
@@ -860,6 +937,8 @@ const ASIDE_RELEASE_MS = 1500;
       if (named) return { items, note: agentHint(named) || undefined };
       return { items, note: "No such command" };
     }
+    // A local mention (`@~/…`) lists this computer alone.
+    if (localMention) return localRows("mention");
     // The shared resources first (documents, repositories, previews),
     // then the workspace paths; a kind typed (`@doc:`) lists resources
     // alone.
@@ -919,6 +998,9 @@ const ASIDE_RELEASE_MS = 1500;
     commands,
     agentCommands,
     agentGroup,
+    attachArg,
+    localMention,
+    localRows,
     paths,
     pathError,
     resources,
@@ -1061,7 +1143,10 @@ const ASIDE_RELEASE_MS = 1500;
   }, [chat, requests.length, unread, entries, setFollow]);
   // A command picked from the list, or sent as exactly "/name": the
   // command line leaves the composer and `rest` of the draft stays.
-  function runCommand(item: CommandItem, rest: string) {
+  // `sent` when the command was typed in full and sent, not picked from
+  // the list: "/attach" alone then opens the picker, where a pick fills
+  // "/attach " in for paths to be typed (on a local install).
+  function runCommand(item: CommandItem, rest: string, sent = false) {
     if (item.kind === "mode") {
       setError(modes ? "" : "permission modes apply to Claude chats");
       if (modes) void onMode(item.mode.value).catch((e) => setError(String(e)));
@@ -1156,6 +1241,14 @@ const ASIDE_RELEASE_MS = 1500;
       case "style":
         place({ text: "/style " + rest, caret: 7 });
         break;
+      case "attach":
+        if (localFiles && !sent) {
+          place({ text: "/attach " + rest, caret: 8 });
+          break;
+        }
+        picker.current?.click();
+        place({ text: rest, caret: 0 });
+        break;
       case "clear":
         for (const item of pending) forget(item);
         setPending([]);
@@ -1175,9 +1268,24 @@ const ASIDE_RELEASE_MS = 1500;
         replaceTrigger(
           text,
           trigger,
-          row ? row.insert : mentionFor(item.id.slice(5)),
+          row
+            ? row.insert
+            : mentionFor(
+                item.id.startsWith("local:")
+                  ? item.id.slice(6)
+                  : item.id.slice(5),
+              ),
         ),
       );
+      return;
+    }
+    if (item.id.startsWith("local:") && attachArg) {
+      // A path on an "/attach" line: the word at the caret becomes it.
+      const insert = attachInsert(item.id.slice(6));
+      place({
+        text: text.slice(0, attachArg.start) + insert + text.slice(attachArg.end),
+        caret: attachArg.start + insert.length,
+      });
       return;
     }
     const chosen = commands.find(
@@ -1197,6 +1305,44 @@ const ASIDE_RELEASE_MS = 1500;
                     : "agent:" + c.command.name) === item.id,
     );
     if (chosen) runCommand(chosen, withoutCommand(text, trigger));
+  }
+  // "/attach PATH…": the files the paths name on this computer join the
+  // pending uploads and the command line goes (so a second send does not
+  // attach them again); what could not be attached is said by name, and
+  // a line that attached nothing stays for a correction.
+  async function attachTyped(paths: string[]) {
+    if (!localFiles) {
+      setError(
+        "Typed paths need a local Warden install; the paperclip, a paste or a drop attaches files here",
+      );
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const result = await attachLocal(
+        chat.id,
+        paths,
+        MAX_ATTACHMENTS - pending.length,
+      );
+      if (result.attached.length)
+        setPending((list) => [
+          ...list,
+          ...result.attached.map(
+            (attachment): Pending => ({
+              key: nextKey.current++,
+              status: "ready",
+              attachment,
+            }),
+          ),
+        ]);
+      setError(result.errors.join("\n"));
+      if (result.attached.length) place({ text: "", caret: 0 });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
   }
   // A "!" command: the draft clears at once and the card shows the
   // command running in the transcript (over the event stream); the
@@ -1316,7 +1462,12 @@ const ASIDE_RELEASE_MS = 1500;
     event.preventDefault();
     const command = exactCommand(text, models);
     if (command) {
-      runCommand(command, "");
+      runCommand(command, "", true);
+      return;
+    }
+    const typed = attachCommand(text);
+    if (typed !== undefined && !busy) {
+      void attachTyped(typed);
       return;
     }
     const asked = sideQuestion(expandPastes(text, pastes));
@@ -1344,9 +1495,37 @@ const ASIDE_RELEASE_MS = 1500;
     if ((!text.trim() && !attachments.length) || busy || uploading) return;
     setBusy(true);
     setError("");
+    // Local mentions (`@~/x`) attach their files now and are rewritten to
+    // the uploads' workspace paths; one naming no file is sent as
+    // written, any other failure keeps the draft.
+    let body = expandPastes(text, pastes).trim();
+    const mentions = localFiles ? localMentions(body) : [];
+    if (mentions.length) {
+      try {
+        const result = await attachLocal(
+          chat.id,
+          mentions,
+          MAX_ATTACHMENTS - attachments.length,
+        );
+        const failed = result.errors.filter(
+          (line) => !result.missing.some((m) => line.startsWith(m + ":")),
+        );
+        if (failed.length) {
+          setError(failed.join("\n"));
+          setBusy(false);
+          return;
+        }
+        body = rewriteMentions(body, result.attached);
+        attachments.push(...result.attached.map((a) => a.id));
+      } catch (e) {
+        setError(String(e));
+        setBusy(false);
+        return;
+      }
+    }
     const message = messageAttempt(
       attempted.current,
-      expandPastes(text, pastes).trim(),
+      body,
       newID,
       attachments,
     );

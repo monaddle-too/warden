@@ -794,6 +794,8 @@
 }
 .composer-wrap > .error {
   margin-bottom: 10px;
+  /* One line per file /attach could not attach. */
+  white-space: pre-line;
 }
 .composer {
   position: relative;
