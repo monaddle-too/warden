@@ -34,7 +34,7 @@ func TestForkCopiesTranscriptAndForksTheSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = e.Store.update(func(st *State) error {
-		st.chat(id).Allowed = []PermissionRule{{Tool: "Bash", Command: "git status"}}
+		st.chat(id).Rules = []Rule{{Kind: RuleAllow, Pattern: "Bash(git status *)"}}
 		st.chat(id).OutputStyle = "Learning"
 		return nil
 	})
@@ -47,7 +47,7 @@ func TestForkCopiesTranscriptAndForksTheSession(t *testing.T) {
 	}
 	st := e.Store.Snapshot()
 	source, fork := st.chat(id), st.chat(result.ID)
-	if fork == nil || fork.SandboxID != source.SandboxID || fork.Provider != "claude" || fork.Mode != ModeAsk || len(fork.Allowed) != 1 || fork.OutputStyle != "Learning" || fork.Status != "idle" {
+	if fork == nil || fork.SandboxID != source.SandboxID || fork.Provider != "claude" || fork.Mode != ModeAsk || len(fork.Rules) != 1 || fork.OutputStyle != "Learning" || fork.Status != "idle" {
 		t.Fatalf("fork: %+v", fork)
 	}
 	if fork.Conversation.ThreadID == nil || *fork.Conversation.ThreadID != "claude-session" || !fork.ForkSession || fork.Rewind != nil || fork.Recap != "" || fork.NewSession {

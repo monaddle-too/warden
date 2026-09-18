@@ -139,6 +139,17 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.pathsHTTP(w, r, parts[1])
 		return
 	}
+	if r.Method == "GET" && len(parts) == 3 && (parts[0] == "environments" || parts[0] == "chats") && parts[2] == "rules" {
+		// A workspace's permission rules and its chats' (rules.go).
+		view, err := h.Engine.Rules(parts[1])
+		respond(w, view, err)
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "permissions" {
+		events, err := h.Engine.Permissions(parts[1])
+		respond(w, map[string]any{"events": events}, err)
+		return
+	}
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "diff" {
 		changes, err := h.Engine.Diff(r.Context(), parts[1])
 		respond(w, changes, err)
@@ -217,11 +228,16 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		TurnID string `json:"turnID"`
 		What   string `json:"what"`
 		// Scope and Path name the memory file a chats/{id}/memory/write
-		// replaces with Text (memory.go).
+		// replaces with Text (memory.go); Scope is also where an "allow
+		// always" answer remembers its rule ("chat" or "workspace").
 		Scope string `json:"scope"`
 		Path  string `json:"path"`
 		// Style is the body of chats/{id}/style (style.go).
 		Style string `json:"style"`
+		// Kind and Pattern are a permission rule, the body of
+		// environments/{id}/rules and chats/{id}/rules (rules.go).
+		Kind    string `json:"kind"`
+		Pattern string `json:"pattern"`
 	}
 	// Room for a memory file (1 MiB of text, JSON-escaped); every other
 	// body is bounded far below by its own validation.
@@ -294,12 +310,20 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			result, err = h.Engine.Aside(r.Context(), parts[1], body.Text, requester(r))
 		case "style":
 			err = h.Engine.SetOutputStyle(r.Context(), parts[1], body.Style)
+		case "rules":
+			// A permission rule added to the chat (rules.go).
+			result, err = h.Engine.AddRule(parts[1], body.Kind, body.Pattern, requester(r))
 		default:
 			http.Error(w, "not found", 404)
 			return
 		}
 	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "approvals":
-		err = h.Engine.Answer(parts[1], parts[3], Answer{Allow: body.Allow, Answers: body.Answers, Always: body.Always, Message: body.Message, Mode: body.Mode}, requester(r))
+		err = h.Engine.Answer(parts[1], parts[3], Answer{Allow: body.Allow, Answers: body.Answers, Always: body.Always, Scope: body.Scope, Message: body.Message, Mode: body.Mode}, requester(r))
+	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "rules":
+		// A permission rule added to the workspace (rules.go).
+		result, err = h.Engine.AddRule(parts[1], body.Kind, body.Pattern, requester(r))
+	case len(parts) == 5 && (parts[0] == "environments" || parts[0] == "chats") && parts[2] == "rules" && parts[4] == "remove":
+		err = h.Engine.RemoveRule(parts[1], parts[3])
 	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "attachments" && parts[4] == "remove":
 		err = h.Engine.removeAttachment(parts[1], parts[3])
 	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "memory" && parts[3] == "write":
