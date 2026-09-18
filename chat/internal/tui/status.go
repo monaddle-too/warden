@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -137,11 +138,27 @@ func ContextIndicator(c *Chat) string {
 	return text
 }
 
-// StatusLine is the one-line status bar: the connection, the chat's title,
-// provider and model, what the agent is doing (with the startup stage or
-// the run's elapsed time), pending approvals, the turn's tokens and cost,
-// the context, previews and the chat's error.
+// StatusLine is the status bar as one line, the parts two spaces apart;
+// the screen lays the same parts out over several rows (LayoutStatus) so
+// none of them is lost on a narrow terminal.
 func StatusLine(c *Chat, ports []Port, live bool, now time.Time) string {
+	return strings.Join(StatusParts(c, ports, live, now), statusGap)
+}
+
+// statusGap separates the parts of the status bar.
+const statusGap = "  "
+
+// StatusMaxRows is the most rows the status bar takes; whatever still does
+// not fit on the last row is cut at the edge.
+const StatusMaxRows = 4
+
+// StatusParts are the pieces of the status bar in order of importance,
+// which is what a narrow screen keeps first: the connection and the
+// chat's title, provider and model, what the agent is doing (with the
+// startup stage or the run's elapsed time) — always these three — then
+// pending approvals, the chat's error, the turn's tokens and cost, the
+// context and previews. Each part is one styled string that is kept whole.
+func StatusParts(c *Chat, ports []Port, live bool, now time.Time) []string {
 	link := green + "●" + reset
 	if !live {
 		link = red + "○" + reset
@@ -196,6 +213,9 @@ func StatusLine(c *Chat, ports []Port, live bool, now time.Time) string {
 		}
 		parts = append(parts, fmt.Sprintf("%s⚠ %d %s%s", yellow, n, word, reset))
 	}
+	if c.Error != "" {
+		parts = append(parts, red+sanitize(c.Error)+reset)
+	}
 	if stats := TurnStats(c); stats != "" {
 		parts = append(parts, dim+stats+reset)
 	}
@@ -211,8 +231,47 @@ func StatusLine(c *Chat, ports []Port, live bool, now time.Time) string {
 	if published > 0 {
 		parts = append(parts, fmt.Sprintf("previews:%d", published))
 	}
-	if c.Error != "" {
-		parts = append(parts, red+sanitize(c.Error)+reset)
+	return parts
+}
+
+// LayoutStatus packs the status parts into rows no wider than width,
+// filling each row before starting the next and never splitting a part;
+// a part wider than the row stands alone and is cut by the screen. At
+// most maxRows rows: the parts that do not fit by then are dropped (they
+// are the least important, and a terminal that narrow shows the rest).
+func LayoutStatus(parts []string, width, maxRows int) []string {
+	if width < 8 {
+		width = 8
 	}
-	return strings.Join(parts, "  ")
+	if maxRows < 1 {
+		maxRows = 1
+	}
+	var rows []string
+	row, used := "", 0
+	for _, part := range parts {
+		w := visibleWidth(part)
+		switch {
+		case row == "":
+			row, used = part, w
+		case used+len(statusGap)+w <= width:
+			row += statusGap + part
+			used += len(statusGap) + w
+		default:
+			rows = append(rows, row)
+			if len(rows) == maxRows {
+				return rows
+			}
+			row, used = part, w
+		}
+	}
+	if row != "" || len(rows) == 0 {
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// visibleWidth counts the runes of s that reach the screen: the styling
+// (escape sequences) takes no columns.
+func visibleWidth(s string) int {
+	return utf8.RuneCountInString(plainText(s))
 }

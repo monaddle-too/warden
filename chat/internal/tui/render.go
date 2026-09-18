@@ -49,9 +49,12 @@ func sanitize(s string) string {
 	return b.String()
 }
 
-// wrap breaks text into lines no wider than width runes, keeping words
-// together where it can and honouring existing newlines. prefix is prepended
-// to the first line and indent to the rest.
+// wrap breaks text into lines no wider than width columns, keeping words
+// together where it can and honouring existing newlines. prefix is
+// prepended to the first line and indent to the rest. Widths are what
+// reaches the screen: escape sequences (styling) take no columns, so a
+// styled line wraps where a plain one would. A style that is open where
+// a line breaks is closed there and reopened on the next line.
 func wrap(text string, width int, prefix, indent string) []string {
 	if width < 8 {
 		width = 8
@@ -62,15 +65,12 @@ func wrap(text string, width int, prefix, indent string) []string {
 		if out != nil {
 			lead = indent
 		}
-		avail := width - utf8.RuneCountInString(lead)
-		if avail < 4 {
-			avail = 4
-		}
+		avail := max(4, width-visibleWidth(lead))
 		// A paragraph that fits keeps its spacing (aligned help text,
 		// command output); only over-long ones are re-flowed by word.
-		if utf8.RuneCountInString(paragraph) <= avail {
-			if strings.TrimSpace(paragraph) == "" {
-				out = append(out, strings.TrimRight(lead, " "))
+		if visibleWidth(paragraph) <= avail {
+			if strings.TrimSpace(plainText(paragraph)) == "" {
+				out = append(out, strings.TrimRight(lead, " ")+strings.TrimSpace(paragraph))
 			} else {
 				out = append(out, lead+strings.TrimRight(paragraph, " "))
 			}
@@ -81,43 +81,108 @@ func wrap(text string, width int, prefix, indent string) []string {
 			out = append(out, strings.TrimRight(lead, " "))
 			continue
 		}
-		line := ""
+		// style is the styling in force at the end of the pending line,
+		// carried onto the next one so a coloured phrase stays coloured.
+		line, style := "", ""
+		flush := func() {
+			out = append(out, lead+line+styleReset(style))
+			lead = indent
+			avail = max(4, width-visibleWidth(lead))
+			line = ""
+		}
 		for _, w := range words {
-			for utf8.RuneCountInString(w) > avail {
+			for visibleWidth(w) > avail {
 				// A single over-long token is cut hard. Flushing a pending
 				// line changes the indent and therefore avail, so re-check.
 				if line != "" {
-					out = append(out, lead+line)
-					lead, line = indent, ""
-					avail = width - utf8.RuneCountInString(lead)
-					if avail < 4 {
-						avail = 4
-					}
+					flush()
+					line = style
 					continue
 				}
-				runes := []rune(w)
-				out = append(out, lead+string(runes[:avail]))
-				w = string(runes[avail:])
-				lead = indent
-				avail = width - utf8.RuneCountInString(lead)
-				if avail < 4 {
-					avail = 4
-				}
+				head, tail := cutVisible(w, avail)
+				line += head
+				style = styleAfter(style, head)
+				flush()
+				line = style
+				w = tail
 			}
 			switch {
-			case line == "":
-				line = w
-			case utf8.RuneCountInString(line)+1+utf8.RuneCountInString(w) <= avail:
+			case plainText(line) == "" || plainText(w) == "":
+				// The first word, or a token that is only styling (a
+				// reset after a trailing space): no separating space.
+				line += w
+			case visibleWidth(line)+1+visibleWidth(w) <= avail:
 				line += " " + w
 			default:
-				out = append(out, lead+line)
-				lead, line = indent, w
-				avail = width - utf8.RuneCountInString(lead)
+				flush()
+				line = style + w
 			}
+			style = styleAfter(style, w)
 		}
 		out = append(out, lead+line)
 	}
 	return out
+}
+
+// cutVisible splits s after n visible runes, keeping every escape
+// sequence with the part it precedes.
+func cutVisible(s string, n int) (head, tail string) {
+	var b strings.Builder
+	seen := 0
+	inEscape := false
+	for i, r := range s {
+		if seen >= n && !inEscape && r != 0x1b {
+			return b.String(), s[i:]
+		}
+		b.WriteRune(r)
+		switch {
+		case inEscape:
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEscape = false
+			}
+		case r == 0x1b:
+			inEscape = true
+		default:
+			seen++
+		}
+	}
+	return b.String(), ""
+}
+
+// styleAfter is the styling in force after s has been written, given the
+// styling before it: the SGR sequences of s in order, cleared by a reset.
+func styleAfter(before, s string) string {
+	style := before
+	for i := 0; i < len(s); i++ {
+		if s[i] != 0x1b || i+1 >= len(s) || s[i+1] != '[' {
+			continue
+		}
+		j := i + 2
+		for j < len(s) && !((s[j] >= 'a' && s[j] <= 'z') || (s[j] >= 'A' && s[j] <= 'Z')) {
+			j++
+		}
+		if j >= len(s) {
+			break
+		}
+		seq := s[i : j+1]
+		if s[j] == 'm' {
+			if seq == reset || seq == "\x1b[m" {
+				style = ""
+			} else {
+				style += seq
+			}
+		}
+		i = j
+	}
+	return style
+}
+
+// styleReset closes an open style at a line's end.
+func styleReset(style string) string {
+	if style == "" {
+		return ""
+	}
+	return reset
 }
 
 // lastLines keeps the final n non-empty lines of text.
@@ -180,13 +245,21 @@ func renderEntry(c *Chat, e Entry, width int, expanded bool, children map[string
 		case "user":
 			label := senderLabel(e)
 			out = append(out, wrap(text, width, bold+cyan+label+" › "+reset, strings.Repeat(" ", len(label)+3))...)
-			switch {
-			case e.Delivery == "queued":
+			switch e.Delivery {
+			case "queued":
 				// Held by Warden until the agent's turn ends (queue.go).
 				out = append(out, yellow+"      ("+queueMarker(c)+")"+reset)
-			case e.Delivery != "" && e.Delivery != "delivered" && e.Delivery != "confirmed":
-				out = append(out, dim+"      ("+sanitize(e.Delivery)+")"+reset)
+			case "failed":
+				// Never reached the agent, or the run ended before the
+				// agent confirmed it; the detail says which.
+				msg := "not delivered"
+				if d := strings.TrimSpace(e.Detail); d != "" {
+					msg += ": " + sanitize(d)
+				}
+				out = append(out, wrap(red+msg+reset, width, red+"      ! "+reset, "        ")...)
 			}
+			// "sending" (handed over, the turn not yet confirmed) and "sent"
+			// need no mark: the status line shows the hand-over.
 		case "assistant":
 			name := label
 			if name == "" {
