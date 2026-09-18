@@ -29,13 +29,10 @@ export function useCapacity(enabled = true): Capacity | null {
   return capacity;
 }
 
-// Two selects for a workspace's size, offered within the runner's limits.
-// The choices are the sizes people reach for (fractions only where the
-// platform takes them, then 1, 1.5, 2, 3, 4, 6, 8 … CPUs; 512 MiB steps up
-// to 2 GiB, then 3, 4, 6, 8 … GiB) plus the current value, so a size set
-// elsewhere always shows. Under them, what the host has now and what the
-// other workspaces hold, and a warning when the choice exceeds what is
-// free (capacity.ts).
+// Two selects for a workspace's size, offered within the runner's limits
+// (the ladders in sizes.ts). Under them, what the host has now and what
+// the other workspaces hold, and a warning when the choice exceeds what
+// is free (capacity.ts).
 export function SizeSelect({
   limits,
   value,
