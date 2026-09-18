@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -684,5 +685,405 @@ func TestClaudeToolItemsThroughTheStream(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("translation timed out")
 		}
+	}
+}
+
+// claudeSession runs the adapter against a fake CLI: after the handshake
+// and the first turn's message, `script` writes the CLI's frames. Every
+// notification the adapter sends is collected until `until` frames of
+// `turn/completed` have arrived (or the context ends).
+func claudeSession(t *testing.T, script func(e *json.Encoder), until int) []Frame {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	raw, fake := net.Pipe()
+	defer fake.Close()
+	done := make(chan Frame, 200)
+	go func() {
+		d := json.NewDecoder(fake)
+		e := json.NewEncoder(fake)
+		var v map[string]any
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
+		if d.Decode(&v) != nil {
+			return
+		}
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
+		script(e)
+		// Keep the pipe open until the adapter is done reading.
+		<-ctx.Done()
+	}()
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(_ *Client, f Frame) { done <- f })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err = c.Call(ctx, "thread/start", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"input": []any{map[string]any{"text": "go"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var frames []Frame
+	completed := 0
+	for completed < until {
+		select {
+		case f := <-done:
+			frames = append(frames, f)
+			if f.Method == "turn/completed" {
+				completed++
+			}
+		case <-ctx.Done():
+			t.Fatalf("timed out after %d frames: %s", len(frames), claudeFrameLog(frames))
+		}
+	}
+	return frames
+}
+
+func claudeFrameLog(frames []Frame) string {
+	var b strings.Builder
+	for _, f := range frames {
+		item := Map(f.Params["item"])
+		fmt.Fprintf(&b, "\n%s %s %s %s turn=%s parent=%s", f.Method, String(item["type"]), String(item["id"]), String(item["status"]), String(f.Params["turnId"]), String(item["parentId"]))
+	}
+	return b.String()
+}
+
+// CLI frames, as the pinned CLI writes them.
+func claudeText(delta string) map[string]any {
+	return map[string]any{"type": "stream_event", "event": map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": delta}}}
+}
+func claudeToolUse(parent, id, name string, input map[string]any) map[string]any {
+	return map[string]any{"type": "assistant", "parent_tool_use_id": claudeNilable(parent), "message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "id": id, "name": name, "input": input}}}}
+}
+func claudeAssistantText(parent, text string) map[string]any {
+	return map[string]any{"type": "assistant", "parent_tool_use_id": claudeNilable(parent), "message": map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}}}
+}
+func claudeToolResult(parent, id string, content any, structured any) map[string]any {
+	return map[string]any{"type": "user", "parent_tool_use_id": claudeNilable(parent), "message": map[string]any{"content": []any{map[string]any{"type": "tool_result", "tool_use_id": id, "content": content}}}, "tool_use_result": structured}
+}
+func claudeResult(origin string) map[string]any {
+	v := map[string]any{"type": "result", "is_error": false, "result": "", "usage": map[string]any{"input_tokens": 1.0, "output_tokens": 1.0}}
+	if origin != "" {
+		v["origin"] = map[string]any{"kind": origin}
+	}
+	return v
+}
+func claudeNilable(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// A foreground subagent: its frames name the Agent call and nest under it,
+// its final text comes back as the call's result, and the parent's own
+// text stays its own.
+func TestClaudeForegroundSubagentNests(t *testing.T) {
+	frames := claudeSession(t, func(e *json.Encoder) {
+		_ = e.Encode(claudeText("Looking."))
+		_ = e.Encode(claudeToolUse("", "agent_1", "Agent", map[string]any{"description": "List files", "subagent_type": "Explore", "prompt": "List the files.", "run_in_background": false}))
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_started", "task_id": "a1", "tool_use_id": "agent_1", "description": "List files", "subagent_type": "Explore", "is_backgrounded": false, "task_type": "local_agent"})
+		_ = e.Encode(map[string]any{"type": "user", "parent_tool_use_id": "agent_1", "message": map[string]any{"content": []any{map[string]any{"type": "text", "text": "List the files."}}}})
+		_ = e.Encode(claudeToolUse("agent_1", "bash_1", "Bash", map[string]any{"command": "ls"}))
+		_ = e.Encode(claudeToolResult("agent_1", "bash_1", "a.txt\nb.txt", map[string]any{"stdout": "a.txt\nb.txt"}))
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_notification", "task_id": "a1", "tool_use_id": "agent_1", "status": "completed", "summary": "a.txt and b.txt"})
+		_ = e.Encode(claudeToolResult("", "agent_1", []any{map[string]any{"type": "text", "text": "a.txt and b.txt"}}, map[string]any{"status": "completed", "agentType": "Explore", "totalToolUseCount": 1.0, "totalDurationMs": 1200.0}))
+		_ = e.Encode(claudeText("Done."))
+		_ = e.Encode(claudeResult(""))
+	}, 1)
+	var seq []string
+	turn := ""
+	for _, f := range frames {
+		item := Map(f.Params["item"])
+		switch f.Method {
+		case "item/started", "item/completed":
+			seq = append(seq, f.Method[5:]+":"+String(item["type"])+":"+String(item["id"])+":"+String(item["parentId"]))
+			if turn == "" {
+				turn = String(f.Params["turnId"])
+			} else if String(f.Params["turnId"]) != turn {
+				t.Fatalf("every item belongs to the one turn: %s", claudeFrameLog(frames))
+			}
+			if String(item["id"]) == "agent_1" && f.Method == "item/completed" {
+				if item["kind"] != "task" || item["output"] != "a.txt and b.txt" || item["status"] != "completed" || item["background"] == true {
+					t.Fatalf("agent card: %v", item)
+				}
+			}
+			if String(item["id"]) == "bash_1" && f.Method == "item/completed" && (item["aggregatedOutput"] != "a.txt\nb.txt" || item["parentId"] != "agent_1") {
+				t.Fatalf("child command: %v", item)
+			}
+		}
+	}
+	want := []string{"started:agentMessage::", "completed:agentMessage::", "started:toolCall:agent_1:", "started:commandExecution:bash_1:agent_1", "completed:commandExecution:bash_1:agent_1", "completed:toolCall:agent_1:", "started:agentMessage::", "completed:agentMessage::"}
+	// Text item ids are random: compare shape only.
+	got := make([]string, len(seq))
+	for i, s := range seq {
+		if strings.HasPrefix(s, "started:agentMessage:") || strings.HasPrefix(s, "completed:agentMessage:") {
+			s = s[:strings.Index(s, ":agentMessage:")+len(":agentMessage:")] + ":"
+		}
+		got[i] = s
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("sequence:\n got %v\nwant %v%s", got, want, claudeFrameLog(frames))
+	}
+}
+
+// An async subagent: the Agent card stays running (background) past its
+// boilerplate result, the parent's text streams on while the child works,
+// the child's items keep the parent's turn after that turn ended, the
+// notification completes the card with the child's text, and the turn the
+// CLI then starts by itself is a turn of its own.
+func TestClaudeAsyncSubagentAndCLIStartedTurn(t *testing.T) {
+	frames := claudeSession(t, func(e *json.Encoder) {
+		_ = e.Encode(claudeText("Starting."))
+		_ = e.Encode(claudeToolUse("", "agent_1", "Agent", map[string]any{"description": "List files", "subagent_type": "Explore", "prompt": "List the files."}))
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_started", "task_id": "a1", "tool_use_id": "agent_1", "description": "List files", "is_backgrounded": true, "task_type": "local_agent"})
+		_ = e.Encode(claudeToolResult("", "agent_1", []any{map[string]any{"type": "text", "text": "Async agent launched successfully. agentId: a1"}}, map[string]any{"isAsync": true, "status": "async_launched", "agentId": "a1"}))
+		_ = e.Encode(claudeText("Meanwhile "))
+		_ = e.Encode(claudeToolUse("agent_1", "bash_1", "Bash", map[string]any{"command": "ls"}))
+		_ = e.Encode(claudeText("I wait."))
+		_ = e.Encode(claudeToolResult("agent_1", "bash_1", "a.txt", nil))
+		_ = e.Encode(claudeResult(""))
+		// The child goes on after the parent's turn ended.
+		_ = e.Encode(claudeAssistantText("agent_1", "The files: a.txt"))
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_notification", "task_id": "a1", "tool_use_id": "agent_1", "status": "completed", "summary": "The files: a.txt"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": "s"})
+		_ = e.Encode(claudeText("Reported: a.txt"))
+		_ = e.Encode(claudeResult("task-notification"))
+	}, 2)
+	turn1, turn2 := "", ""
+	agentStarts := 0
+	var agentDone, childText, reported map[string]any
+	var childTextTurn, reportedTurn string
+	for _, f := range frames {
+		item := Map(f.Params["item"])
+		switch f.Method {
+		case "item/started":
+			if turn1 == "" {
+				turn1 = String(f.Params["turnId"])
+			}
+			if String(item["id"]) == "agent_1" {
+				agentStarts++
+				if agentStarts == 2 && (item["background"] != true || item["status"] != "running" || item["output"] != "") {
+					t.Fatalf("async launch keeps the card running: %v", item)
+				}
+			}
+		case "item/completed":
+			switch {
+			case String(item["id"]) == "agent_1":
+				agentDone = item
+			case String(item["id"]) == "bash_1":
+				if String(f.Params["turnId"]) != turn1 || item["parentId"] != "agent_1" {
+					t.Fatalf("child command in the parent's turn: %v %s", f.Params, claudeFrameLog(frames))
+				}
+			case item["parentId"] == "agent_1" && item["type"] == "agentMessage":
+				childText, childTextTurn = item, String(f.Params["turnId"])
+			case item["type"] == "agentMessage" && String(item["text"]) == "Reported: a.txt":
+				reported, reportedTurn = item, String(f.Params["turnId"])
+			case item["type"] == "agentMessage" && String(item["text"]) == "Meanwhile I wait.":
+			case item["type"] == "agentMessage" && String(item["text"]) == "Starting.":
+			default:
+				t.Fatalf("unexpected item: %v", item)
+			}
+		case "turn/started":
+			turn2 = String(Map(f.Params["turn"])["id"])
+		case "turn/completed":
+			if id := String(Map(f.Params["turn"])["id"]); id != turn1 && id != turn2 {
+				t.Fatalf("turn/completed for an unknown turn %s: %s", id, claudeFrameLog(frames))
+			}
+		}
+	}
+	if agentStarts != 2 || agentDone == nil || agentDone["status"] != "completed" || agentDone["output"] != "The files: a.txt" || agentDone["background"] != true {
+		t.Fatalf("agent card: starts=%d done=%v%s", agentStarts, agentDone, claudeFrameLog(frames))
+	}
+	if childText == nil || childTextTurn != turn1 {
+		t.Fatalf("child text keeps the parent's turn: %v turn=%s (turn1 %s)%s", childText, childTextTurn, turn1, claudeFrameLog(frames))
+	}
+	if turn2 == "" || turn2 == turn1 || reported == nil || reportedTurn != turn2 || reported["parentId"] != nil {
+		t.Fatalf("the CLI-started turn: turn2=%s reported=%v in %s%s", turn2, reported, reportedTurn, claudeFrameLog(frames))
+	}
+}
+
+// A background command's card stays running until the task reports; the
+// output the model reads with TaskOutput lands on it; a task that fails
+// after the turn ended completes the card as failed with the CLI's summary.
+func TestClaudeBackgroundCommandCards(t *testing.T) {
+	frames := claudeSession(t, func(e *json.Encoder) {
+		_ = e.Encode(claudeToolUse("", "bash_1", "Bash", map[string]any{"command": "sleep 4; echo BG", "description": "Slow echo", "run_in_background": true}))
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_started", "task_id": "b1", "tool_use_id": "bash_1", "description": "Slow echo", "is_backgrounded": true, "task_type": "local_bash"})
+		_ = e.Encode(claudeToolResult("", "bash_1", "Command running in background with ID: b1. Output is being written to: /tmp/b1.output.", map[string]any{"stdout": "", "stderr": "", "backgroundTaskId": "b1"}))
+		_ = e.Encode(claudeToolUse("", "out_1", "TaskOutput", map[string]any{"task_id": "b1", "block": true}))
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_notification", "task_id": "b1", "tool_use_id": "bash_1", "status": "completed", "summary": "Background command \"Slow echo\" completed (exit code 0)"})
+		_ = e.Encode(claudeToolResult("", "out_1", "<retrieval_status>success</retrieval_status>\n<task_id>b1</task_id>\n<status>completed</status>\n<exit_code>0</exit_code>\n<output>\nBG\n\n[exited with code 0]\n</output>", map[string]any{"retrieval_status": "success", "task": map[string]any{"task_id": "b1", "task_type": "local_bash", "status": "completed", "description": "Slow echo", "output": "BG\n\n[exited with code 0]\n", "exitCode": 0.0}}))
+		_ = e.Encode(claudeToolUse("", "bash_2", "Bash", map[string]any{"command": "sleep 2; exit 3", "description": "Fail later", "run_in_background": true}))
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_started", "task_id": "b2", "tool_use_id": "bash_2", "description": "Fail later", "is_backgrounded": true, "task_type": "local_bash"})
+		_ = e.Encode(claudeToolResult("", "bash_2", "Command running in background with ID: b2.", map[string]any{"backgroundTaskId": "b2"}))
+		_ = e.Encode(claudeText("started"))
+		_ = e.Encode(claudeResult(""))
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_notification", "task_id": "b2", "tool_use_id": "bash_2", "status": "failed", "summary": "Background command \"Fail later\" failed with exit code 3"})
+		_ = e.Encode(claudeText("It failed."))
+		_ = e.Encode(claudeResult("task-notification"))
+	}, 2)
+	var bash1, bash2, out1 []map[string]any
+	turn1 := ""
+	for _, f := range frames {
+		item := Map(f.Params["item"])
+		if f.Method != "item/started" && f.Method != "item/completed" {
+			continue
+		}
+		if turn1 == "" {
+			turn1 = String(f.Params["turnId"])
+		}
+		item["_method"] = f.Method
+		item["_turn"] = String(f.Params["turnId"])
+		switch String(item["id"]) {
+		case "bash_1":
+			bash1 = append(bash1, item)
+		case "bash_2":
+			bash2 = append(bash2, item)
+		case "out_1":
+			out1 = append(out1, item)
+		}
+	}
+	// bash_1: started, started again (background, running) at the
+	// boilerplate result, completed with the summary at the notification,
+	// completed again with the real output from TaskOutput.
+	if len(bash1) != 4 || bash1[1]["_method"] != "item/started" || bash1[1]["background"] != true || bash1[1]["status"] != "running" || bash1[1]["aggregatedOutput"] != "" {
+		t.Fatalf("background launch: %v%s", bash1, claudeFrameLog(frames))
+	}
+	if bash1[2]["_method"] != "item/completed" || bash1[2]["status"] != "completed" || !strings.HasPrefix(String(bash1[2]["aggregatedOutput"]), "Background command") {
+		t.Fatalf("notification: %v", bash1[2])
+	}
+	if bash1[3]["_method"] != "item/completed" || bash1[3]["status"] != "completed" || bash1[3]["aggregatedOutput"] != "BG\n\n[exited with code 0]" || bash1[3]["background"] != true {
+		t.Fatalf("output read: %v", bash1[3])
+	}
+	if len(out1) != 2 || out1[0]["title"] != "Task output: Slow echo" || out1[1]["status"] != "completed" {
+		t.Fatalf("TaskOutput card: %v", out1)
+	}
+	if len(bash2) != 3 || bash2[2]["status"] != "failed" || bash2[2]["_turn"] != turn1 || !strings.Contains(String(bash2[2]["aggregatedOutput"]), "exit code 3") {
+		t.Fatalf("failed after the turn, on the turn's card: %v%s", bash2, claudeFrameLog(frames))
+	}
+}
+
+// A result that carries the model's answer to a background task's
+// notification while the turn Warden asked for still runs does not end
+// that turn: the answer is a message in it, the turn ends with its own
+// result.
+func TestClaudeNotificationResultDuringTurnKeepsItOpen(t *testing.T) {
+	frames := claudeSession(t, func(e *json.Encoder) {
+		_ = e.Encode(claudeToolUse("", "bash_1", "Bash", map[string]any{"command": "sleep 30"}))
+		_ = e.Encode(claudeText("The earlier task finished."))
+		_ = e.Encode(claudeResult("task-notification"))
+		_ = e.Encode(claudeToolResult("", "bash_1", "", map[string]any{"stdout": ""}))
+		_ = e.Encode(claudeText("Done."))
+		_ = e.Encode(claudeResult(""))
+	}, 1)
+	var texts []string
+	completed := 0
+	bashDone := false
+	for _, f := range frames {
+		item := Map(f.Params["item"])
+		switch f.Method {
+		case "item/completed":
+			if item["type"] == "agentMessage" {
+				texts = append(texts, String(item["text"]))
+			}
+			if String(item["id"]) == "bash_1" {
+				bashDone = true
+			}
+		case "turn/completed":
+			completed++
+		case "turn/started":
+			t.Fatalf("no turn of the CLI's own here: %s", claudeFrameLog(frames))
+		}
+	}
+	if completed != 1 || !bashDone || strings.Join(texts, "|") != "The earlier task finished.|Done." {
+		t.Fatalf("completed=%d bash=%v texts=%v%s", completed, bashDone, texts, claudeFrameLog(frames))
+	}
+}
+
+// The todo list is one item, replaced by every write; the writes get no
+// card of their own.
+func TestClaudeTodoListItem(t *testing.T) {
+	frames := claudeSession(t, func(e *json.Encoder) {
+		_ = e.Encode(claudeToolUse("", "c1", "TaskCreate", map[string]any{"subject": "Write the parser", "activeForm": "Writing the parser"}))
+		_ = e.Encode(claudeToolResult("", "c1", "Task #1 created successfully: Write the parser", map[string]any{"task": map[string]any{"id": "1", "subject": "Write the parser"}}))
+		_ = e.Encode(claudeToolUse("", "c2", "TaskCreate", map[string]any{"subject": "Add tests"}))
+		_ = e.Encode(claudeToolResult("", "c2", "Task #2 created successfully: Add tests", map[string]any{"task": map[string]any{"id": "2", "subject": "Add tests"}}))
+		_ = e.Encode(claudeToolUse("", "u1", "TaskUpdate", map[string]any{"taskId": "1", "status": "in_progress"}))
+		_ = e.Encode(claudeToolResult("", "u1", "Updated task #1 status", map[string]any{"success": true}))
+		_ = e.Encode(claudeToolUse("", "l1", "TaskList", map[string]any{}))
+		_ = e.Encode(claudeToolResult("", "l1", "#1 [in_progress] Write the parser\n#2 [pending] Add tests", map[string]any{"tasks": []any{map[string]any{"id": "1", "subject": "Write the parser", "status": "in_progress"}, map[string]any{"id": "2", "subject": "Add tests", "status": "pending"}}}))
+		_ = e.Encode(claudeToolUse("", "w1", "TodoWrite", map[string]any{"todos": []any{map[string]any{"content": "Ship", "status": "completed", "activeForm": "Shipping"}}}))
+		_ = e.Encode(claudeToolResult("", "w1", "Todos have been modified successfully.", nil))
+		_ = e.Encode(claudeText("ok"))
+		_ = e.Encode(claudeResult(""))
+	}, 1)
+	var lists []map[string]any
+	id := ""
+	for _, f := range frames {
+		item := Map(f.Params["item"])
+		if f.Method == "item/started" && item["type"] != "agentMessage" {
+			t.Fatalf("a todo write started a card: %v", item)
+		}
+		if f.Method != "item/completed" || item["type"] != "todoList" {
+			continue
+		}
+		if id == "" {
+			id = String(item["id"])
+		} else if String(item["id"]) != id {
+			t.Fatalf("the list is one item: %s vs %s", id, item["id"])
+		}
+		lists = append(lists, item)
+	}
+	if len(lists) != 5 {
+		t.Fatalf("one list per write: %d%s", len(lists), claudeFrameLog(frames))
+	}
+	todo := func(i, j int) map[string]any { return Map(Array(lists[i]["todos"])[j]) }
+	if len(Array(lists[1]["todos"])) != 2 || todo(1, 0)["content"] != "Write the parser" || todo(1, 0)["status"] != "pending" || todo(1, 0)["activeForm"] != "Writing the parser" {
+		t.Fatalf("after creates: %v", lists[1]["todos"])
+	}
+	if todo(2, 0)["status"] != "in_progress" || todo(2, 1)["status"] != "pending" {
+		t.Fatalf("after update: %v", lists[2]["todos"])
+	}
+	if todo(3, 0)["status"] != "in_progress" || todo(3, 0)["activeForm"] != "Writing the parser" || todo(3, 1)["content"] != "Add tests" {
+		t.Fatalf("after list: %v", lists[3]["todos"])
+	}
+	if len(Array(lists[4]["todos"])) != 1 || todo(4, 0)["content"] != "Ship" || todo(4, 0)["status"] != "completed" || lists[4]["tool"] != "TodoWrite" {
+		t.Fatalf("after TodoWrite: %v", lists[4])
+	}
+}
+
+func TestClaudeTaskHelpers(t *testing.T) {
+	if claudeTaskStatus("completed", "Background command \"x\" completed (exit code 0)") != "completed" || claudeTaskStatus("completed", "failed with exit code 3") != "failed" || claudeTaskStatus("failed", "") != "failed" || claudeTaskStatus("killed", "") != "failed" || claudeTaskStatus("", "done") != "completed" {
+		t.Fatal("task status")
+	}
+	task, out, status := claudeTaskOutput(map[string]any{"content": "<retrieval_status>success</retrieval_status>\n\n<task_id>b1</task_id>\n\n<status>failed</status>\n\n<exit_code>2</exit_code>\n\n<output>\nboom\n</output>"}, nil)
+	if task != "b1" || out != "boom" || status != "failed" {
+		t.Fatalf("text fallback: %q %q %q", task, out, status)
+	}
+	if task, _, _ := claudeTaskOutput(map[string]any{"content": "<retrieval_status>not_found</retrieval_status>"}, nil); task != "" {
+		t.Fatal("a failed retrieval changes nothing")
+	}
+	var l claudeTodoList
+	if !l.apply("TaskList", nil, map[string]any{"content": "#1 [in_progress] Write\n#2 [pending] Test\nnot a task"}, nil) || len(l.items) != 2 || l.items[0].status != "in_progress" || l.items[1].content != "Test" || l.items[1].id != "2" {
+		t.Fatalf("TaskList text: %+v", l.items)
+	}
+	if !l.apply("TaskUpdate", map[string]any{"taskId": "1", "status": "deleted"}, nil, nil) || len(l.items) != 1 || l.items[0].id != "2" {
+		t.Fatalf("delete: %+v", l.items)
+	}
+	if l.apply("TaskUpdate", map[string]any{"taskId": "9", "status": "completed"}, nil, nil) {
+		t.Fatal("an unknown task changes nothing")
+	}
+	if !l.apply("TaskGet", nil, nil, map[string]any{"task": map[string]any{"id": "2", "subject": "Test it", "status": "completed"}}) || l.items[0].content != "Test it" || l.items[0].status != "completed" {
+		t.Fatalf("TaskGet: %+v", l.items)
+	}
+	if id := claudeBackgroundTask(claudeTool{name: "Bash", task: "b7"}, map[string]any{"content": "Command running in background with ID: b7."}, nil); id != "b7" {
+		t.Fatalf("background from text: %q", id)
+	}
+	if id := claudeBackgroundTask(claudeTool{name: "Bash"}, map[string]any{"content": "done"}, map[string]any{"stdout": "done"}); id != "" {
+		t.Fatalf("a foreground command: %q", id)
 	}
 }

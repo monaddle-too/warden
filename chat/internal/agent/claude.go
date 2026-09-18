@@ -144,17 +144,16 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 			return claudeOr(String(t.input["description"]), claudeCut(strings.SplitN(String(t.input["command"]), "\n", 2)[0], 80))
 		}
 		// settleTask completes the card of the call behind background task
-		// `taskID` (the notification's outcome and summary; a TaskOutput's
-		// real output) and forgets the call. A foreground subagent's task
-		// is left to its tool_result, which carries the subagent's text.
+		// `taskID`: with the notification's outcome and summary, then again
+		// with the real output when the model reads it (TaskOutput), so the
+		// call stays known. A foreground subagent's task is left to its
+		// tool_result, which carries the subagent's text.
 		settleTask := func(taskID, status, output string) {
 			id := tasks[taskID]
 			t, ok := toolCalls[id]
 			if !ok || !t.background {
 				return
 			}
-			delete(toolCalls, id)
-			delete(tasks, taskID)
 			item := claudeToolItem(id, t, map[string]any{"content": output, "is_error": status == "failed"}, nil)
 			item["status"] = status
 			event("item/completed", map[string]any{"turnId": t.turn, "item": item})

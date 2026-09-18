@@ -292,3 +292,50 @@ func TestResidentSessionsDefaultToClaudeAndCodex(t *testing.T) {
 		t.Fatal("only Codex steers a message into the running turn")
 	}
 }
+
+// A turn the agent starts by itself on an idle resident session (Claude
+// Code resumes the model when a background task it started reports back)
+// is driven like one asked for: the chat runs, the turn has a record with
+// its start, its items land in it, and its completion settles the chat.
+func TestAgentStartedTurnOnIdleSessionIsDriven(t *testing.T) {
+	e, w := residentSetup(t)
+	id, _ := e.Create("Background", "", "", nil)
+	sendAndDeliver(t, e, id, "first")
+	completeTurn(t, e, w, id)
+	until(t, func() bool { return e.sessionIdle(id) })
+	w.send(agent.Frame{Method: "turn/started", Params: map[string]any{"turn": map[string]any{"id": "turn-cli", "status": "inProgress"}}})
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "running" })
+	if e.sessionIdle(id) {
+		t.Fatal("the session is idle while the agent's turn runs")
+	}
+	w.send(agent.Frame{Method: "item/completed", Params: map[string]any{"turnId": "turn-cli", "item": map[string]any{"id": "m1", "type": "agentMessage", "text": "The task finished."}}})
+	until(t, func() bool {
+		entries := e.Store.Snapshot().chat(id).Conversation.Entries
+		return len(entries) > 0 && entries[len(entries)-1].ID == "m1"
+	})
+	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-cli", "status": "completed"}}})
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
+	c := e.Store.Snapshot().chat(id)
+	last := c.Conversation.Entries[len(c.Conversation.Entries)-1]
+	if last.TurnID == nil || *last.TurnID != "turn-cli" || last.IsStreaming {
+		t.Fatalf("the agent's message in its turn: %+v", last)
+	}
+	var record *cv.Turn
+	for i := range c.Conversation.Turns {
+		if c.Conversation.Turns[i].ID == "turn-cli" {
+			record = &c.Conversation.Turns[i]
+		}
+	}
+	if record == nil || record.StartedAt == 0 || record.EndedAt == 0 {
+		t.Fatalf("turn record: %+v", record)
+	}
+	if w.turnCount() != 1 {
+		t.Fatalf("the engine asked for %d turns; the agent's own is not one", w.turnCount())
+	}
+	if !e.sessionAlive(id) {
+		t.Fatal("session ended with the agent's turn")
+	}
+	sendAndDeliver(t, e, id, "second")
+	until(t, func() bool { return w.turnCount() == 2 })
+	completeTurn(t, e, w, id)
+}
