@@ -1640,6 +1640,8 @@ button.danger:hover {
 .workspace-memory li > button.link {
   flex: 1;
   min-width: 0;
+  display: flex;
+  justify-content: flex-start;
   height: auto;
   padding: 0;
   border: 0;
@@ -1648,8 +1650,11 @@ button.danger:hover {
   color: var(--accent-text);
   cursor: pointer;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+.workspace-memory li > button.link code {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .workspace-memory li > button.link:hover:not(:disabled) code {
   text-decoration: underline;
