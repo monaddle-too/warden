@@ -63,3 +63,19 @@ deployment):
 ## Progress log
 
 - 2026-09-18: diagnosed (see Objective); worktree opened.
+- 2026-09-18: steps 1–4 done. `sandbox.ChatRenderingPrompt` appended to
+  `WardenSystemPrompt` and to Codex's `developerInstructions`
+  (`sandbox`/`chats` tests green). `errorLine` rewritten with tests
+  (the owner's sequence error now reads `Parse error on line 18 at
+  "...d; metadata audited)": got 'NEWLINE', expecting '()', …`);
+  `CodeBlock` shows a warning glyph, the full message as the title and
+  "mermaid · not rendered" in the label. Contrast pass: `parseColor`,
+  `over`, `contrastRatio`, `inkFor`, `backdrop`, `readableInk` in
+  `mermaid.ts` (tests), `fixContrast` in `Mermaid.tsx` run from a
+  `useLayoutEffect` after the SVG mounts. Verified in a Vite probe page
+  rendering the owner's four diagrams and styled flowchart/state cases
+  through the real components against Mermaid 11.17.2, both schemes:
+  the `classDef trusted/hostile` boxes read (52 tspans repainted in
+  dark, none in light), the theme's own diagrams untouched (0 repaints),
+  `fill:#222` under the light scheme repainted light. Web suite 271
+  tests, `tsc`, `vite build` green. Not yet merged or deployed.
