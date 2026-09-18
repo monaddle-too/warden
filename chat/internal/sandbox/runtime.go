@@ -180,14 +180,11 @@ func AgentCommand(run RunSpec, opts LaunchOptions) []string {
 	broker := run.Broker
 	paths := run.Paths.orDefaults()
 	if broker.Provider == "claude" {
-		args := []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN=" + broker.APIKeyPlaceholder, "ANTHROPIC_BASE_URL=" + broker.ProviderBaseURL, "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "DISABLE_AUTOUPDATER=1", paths.Claude, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode", "default", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{"warden":{"type":"sdk","name":"warden"}}}`, "--setting-sources=", "--append-system-prompt", "You work inside a Warden-managed sandbox. Warden controls external access and tool approvals. Never request or expose host credentials. Keep files in the workspace. GitHub repositories are reached through Warden's repository sharing: list_shared_repositories shows what this workspace can clone and read; to clone or read one that is not listed, ask with request_repository_access (contents), never with request_network_access for github.com: a refused git clone means the repository is not shared, not that the network is blocked. For web previews, start a detached server on 0.0.0.0 and use the Warden MCP preview_attach or sandbox_bind_port tool; Warden chooses the URL."}
+		args := append(claudeEnvironment(broker), paths.Claude, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode", "default", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{"warden":{"type":"sdk","name":"warden"}}}`, "--setting-sources=", "--append-system-prompt", "You work inside a Warden-managed sandbox. Warden controls external access and tool approvals. Never request or expose host credentials. Keep files in the workspace. GitHub repositories are reached through Warden's repository sharing: list_shared_repositories shows what this workspace can clone and read; to clone or read one that is not listed, ask with request_repository_access (contents), never with request_network_access for github.com: a refused git clone means the repository is not shared, not that the network is blocked. For web previews, start a detached server on 0.0.0.0 and use the Warden MCP preview_attach or sandbox_bind_port tool; Warden chooses the URL.")
 		if broker.Model != "" {
 			args = append(args, "--model", broker.Model)
 		}
-		if broker.ThreadID != "" {
-			args = append(args, "--resume", broker.ThreadID)
-		}
-		return args
+		return append(args, claudeSessionArgs(broker)...)
 	}
 	args := []string{"env", "-u", "OPENAI_API_KEY", "-u", "OPENAI_BASE_URL", "-u", "CODEX_API_KEY", "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "WARDEN_API_KEY=" + broker.APIKeyPlaceholder, "WORKSPACE_DOCUMENT_API_URL=" + broker.DocumentBaseURL, paths.Codex + "/bin/codex", "app-server", "--listen", "stdio://", "-c", `model_provider="warden"`, "-c", `cli_auth_credentials_store="ephemeral"`, "-c", `forced_login_method="api"`, "-c", `model_providers.warden.base_url=` + strconv.Quote(broker.ProviderBaseURL), "-c", `model_providers.warden.name="Warden"`, "-c", `model_providers.warden.wire_api="responses"`, "-c", `model_providers.warden.env_key="WARDEN_API_KEY"`,
 		// The model's reasoning summaries stream as items, so the chat can
@@ -197,6 +194,35 @@ func AgentCommand(run RunSpec, opts LaunchOptions) []string {
 		"-c", `model_reasoning_summary="detailed"`}
 	if opts.CodexSandboxMode != "" {
 		args = append(args, "-c", "sandbox_mode="+strconv.Quote(opts.CodexSandboxMode))
+	}
+	return args
+}
+
+// claudeEnvironment is the `env` prefix every Claude launch in a guest
+// takes: the variables an agent would otherwise take a credential or
+// endpoint from cleared, the brokered session's set.
+func claudeEnvironment(broker BrokerConfig) []string {
+	return []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN=" + broker.APIKeyPlaceholder, "ANTHROPIC_BASE_URL=" + broker.ProviderBaseURL, "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "DISABLE_AUTOUPDATER=1"}
+}
+
+// claudeSessionArgs are the flags that pick the session a Claude launch
+// continues and how: `--resume` for the chat's recorded session, with
+// `--fork-session` when the chat was forked from another (the CLI copies
+// the session under a new id and reports it in system/init), and the
+// output style as the settings key the CLI reads it from (there is no
+// flag for it on 2.1.272; docs/claude-parity.md, item 15). The style
+// name is JSON-encoded, so it is data whatever it contains.
+func claudeSessionArgs(broker BrokerConfig) []string {
+	var args []string
+	if broker.ThreadID != "" {
+		args = append(args, "--resume", broker.ThreadID)
+		if broker.ForkSession {
+			args = append(args, "--fork-session")
+		}
+	}
+	if broker.OutputStyle != "" {
+		settings, _ := json.Marshal(map[string]string{"outputStyle": broker.OutputStyle})
+		args = append(args, "--settings", string(settings))
 	}
 	return args
 }

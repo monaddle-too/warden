@@ -136,6 +136,33 @@ type Entry struct {
 	// its context here (Text says so; Detail is the summary it continues
 	// from, when the agent gives one).
 	Compaction *Compaction `json:"compaction,omitempty"`
+	// Fork is what a fork marker records: the chat this one was forked
+	// from and the message it was cut before (Text says so).
+	Fork *Fork `json:"fork,omitempty"`
+	// Aside is what an aside entry records: a side question (Text, by
+	// Sender) answered from a copy of the agent's session (Detail is the
+	// answer), what it cost, and never sent to the session.
+	Aside *Aside `json:"aside,omitempty"`
+}
+
+// Fork names the chat a forked chat was copied from and, when the copy
+// was cut before one of its messages, that message.
+type Fork struct {
+	ChatID    string `json:"chatID"`
+	Title     string `json:"title,omitempty"`
+	MessageID string `json:"messageID,omitempty"`
+}
+
+// Aside is what a side question came to: Status running, completed or
+// failed (Error says why), and the answer's cost and tokens as the
+// agent reported them (0 when it gave none).
+type Aside struct {
+	Status     string  `json:"status"`
+	Error      string  `json:"error,omitempty"`
+	CostUSD    float64 `json:"costUSD,omitempty"`
+	Input      int64   `json:"input,omitempty"`
+	Output     int64   `json:"output,omitempty"`
+	DurationMS int64   `json:"durationMS,omitempty"`
 }
 
 // Compaction describes one compaction of the agent's context: Trigger is

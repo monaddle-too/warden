@@ -63,7 +63,16 @@ type Request struct {
 	Title     string `json:"title,omitempty"`
 	// NewSession on a prepare drops the chat's recorded agent thread, so
 	// the next stream starts a session instead of resuming one.
-	NewSession      bool     `json:"newSession,omitempty"`
+	NewSession bool `json:"newSession,omitempty"`
+	// ForkSession, with ThreadID, makes a stream resume that thread as a
+	// copy (Claude Code's --fork-session): the agent reports a new session
+	// of its own, which the chat then records. On a prepare it drops the
+	// binding's thread instead of recording ThreadID, which belongs to the
+	// chat forked from (chats/fork.go).
+	ForkSession bool `json:"forkSession,omitempty"`
+	// OutputStyle is the Claude output style the stream launches with
+	// (chats/style.go); "" is the CLI's default.
+	OutputStyle     string   `json:"outputStyle,omitempty"`
 	BundleSize      int64    `json:"bundleSize,omitempty"`
 	RemoteHead      string   `json:"remoteHead,omitempty"`
 	PublicationHead string   `json:"publicationHead,omitempty"`
@@ -130,6 +139,9 @@ type Response struct {
 	Paths []string `json:"paths,omitempty"`
 	// Exec is what an "exec" came to: output, exit code, timeout.
 	Exec *ExecResult `json:"exec,omitempty"`
+	// Aside is what an "aside" (a side question to a forked copy of the
+	// chat's session) came to.
+	Aside *AsideResult `json:"aside,omitempty"`
 }
 type SandboxInfo struct {
 	ID          string `json:"id"`

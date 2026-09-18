@@ -110,8 +110,10 @@ type Engine struct {
 	startupTrace map[string][]string
 	mu           sync.Mutex
 	active       map[string]*activeRun
-	wake         chan struct{}
-	done         chan struct{}
+	// asides: chat id -> a side question being answered (aside.go).
+	asides map[string]bool
+	wake   chan struct{}
+	done   chan struct{}
 }
 
 const runSlots = 2
@@ -877,6 +879,7 @@ func (e *Engine) run(parent context.Context, id string) {
 		r.ThreadID = *current.Conversation.ThreadID
 	}
 	r.NewSession = current.NewSession
+	r.ForkSession = current.ForkSession
 	var prep sandbox.Response
 	// The runner reports its stages (sandbox creation, the boot, the guest
 	// provisioning) while prepare runs; a follower copies them to the chat.
@@ -913,6 +916,13 @@ func (e *Engine) run(parent context.Context, id string) {
 	e.setStartup(id, stageLaunching, "starting the agent in the sandbox")
 	r = request(&current, "stream")
 	r.Directory = prep.Directory
+	r.OutputStyle = current.OutputStyle
+	if current.ForkSession && current.Conversation.ThreadID != nil {
+		// A forked chat's first run resumes the source chat's session as
+		// a copy (fork.go); the runner records nothing until the agent
+		// reports the copy's own id.
+		r.ThreadID, r.ForkSession = *current.Conversation.ThreadID, true
+	}
 	var stream io.ReadWriteCloser
 	stream, _, err = e.Worker.Open(ctx, r)
 	if err != nil {
@@ -1388,6 +1398,7 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 		case "thread/started":
 			thread := agent.Map(p["thread"])
 			c.ThreadID = cv.Ptr(agent.String(thread["id"]))
+			chat.ForkSession = false // the copy has its own session now (fork.go)
 			chat.sessionStarted(thread)
 		case "turn/started":
 			c.ActiveTurnID = cv.Ptr(turn)

@@ -354,11 +354,18 @@ func kept(entries []cv.Entry, messageID string) []cv.Entry {
 	return entries
 }
 
-// recap renders a transcript for a fresh session to continue from: the
-// people's and the agent's messages and the agent's top-level tool calls
-// by name and title, the last maxRecap bytes when longer. Empty for a
-// transcript with nothing to continue from.
+// recap renders a transcript for a fresh session to continue from after a
+// rewind (recapWith with the rewind's preamble).
 func recap(entries []cv.Entry) string {
+	return recapWith(entries, "Context: this session was started after the conversation was rewound; the transcript so far is below. Continue from it without repeating it.")
+}
+
+// recapWith renders a transcript for a fresh session to continue from: the
+// people's and the agent's messages and the agent's top-level tool calls
+// by name and title (side questions and markers left out: they never
+// entered the session), the last maxRecap bytes when longer, behind the
+// preamble. Empty for a transcript with nothing to continue from.
+func recapWith(entries []cv.Entry, preamble string) string {
 	var b strings.Builder
 	for _, v := range entries {
 		switch v.Role {
@@ -381,7 +388,7 @@ func recap(entries []cv.Entry) string {
 	if len(s) > maxRecap {
 		s = "…\n" + s[len(s)-maxRecap:]
 	}
-	return "Context: this session was started after the conversation was rewound; the transcript so far is below. Continue from it without repeating it.\n\n" + s
+	return preamble + "\n\n" + s
 }
 
 // rewindLabel is the marker's text: which message and what was rewound.

@@ -34,14 +34,48 @@ type claudeWorker struct {
 	hold chan struct{}
 	// frames are extra CLI frames to emit at the start of a turn.
 	frames []map[string]any
+	// session is the id system/init reports ("claude-session" when
+	// empty); requests are every worker request, calls and streams
+	// (fork_test.go reads the prepare and stream ones); rewinds the
+	// rewind_conversation requests received, answered as rewound; aside
+	// is what an "aside" call answers.
+	session  string
+	requests []sandbox.Request
+	rewinds  []map[string]any
+	aside    *sandbox.AsideResult
 }
 
 func (w *claudeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
+	w.mu.Lock()
+	w.requests = append(w.requests, r)
+	aside := w.aside
+	w.mu.Unlock()
+	if r.Operation == "aside" {
+		if aside == nil {
+			aside = &sandbox.AsideResult{Text: "the answer", CostUSD: 0.01, Input: 100, Output: 5}
+		}
+		return sandbox.Response{Version: 2, Aside: aside}, nil
+	}
 	return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID}}, nil
+}
+
+func (w *claudeWorker) requestsOf(op string) []sandbox.Request {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []sandbox.Request
+	for _, r := range w.requests {
+		if r.Operation == op {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (w *claudeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWriteCloser, sandbox.Response, error) {
 	client, server := net.Pipe()
+	w.mu.Lock()
+	w.requests = append(w.requests, r)
+	w.mu.Unlock()
 	go func() {
 		defer server.Close()
 		enc := json.NewEncoder(server)
@@ -66,6 +100,11 @@ func (w *claudeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWrit
 					w.mu.Unlock()
 					send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{"mode": req["mode"]}}})
 					send(map[string]any{"type": "system", "subtype": "status", "status": nil, "permissionMode": req["mode"]})
+				case "rewind_conversation":
+					w.mu.Lock()
+					w.rewinds = append(w.rewinds, req)
+					w.mu.Unlock()
+					send(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": v["request_id"], "response": map[string]any{"rewound": true, "targetMessageUuid": req["target_message_uuid"]}}})
 				}
 			case "control_response":
 				w.mu.Lock()
@@ -82,9 +121,13 @@ func (w *claudeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWrit
 				frames := w.frames
 				w.frames = nil
 				hold := w.hold
+				session := w.session
 				w.mu.Unlock()
+				if session == "" {
+					session = "claude-session"
+				}
 				go func() {
-					send(map[string]any{"type": "system", "subtype": "init", "session_id": "claude-session"})
+					send(map[string]any{"type": "system", "subtype": "init", "session_id": session})
 					for _, f := range frames {
 						send(f)
 					}

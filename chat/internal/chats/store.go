@@ -68,6 +68,13 @@ type Chat struct {
 	Rewind     *PendingRewind `json:"rewind,omitempty"`
 	Recap      string         `json:"recap,omitempty"`
 	NewSession bool           `json:"newSession,omitempty"`
+	// ForkSession marks a chat forked from another whose session (the
+	// ThreadID it carries) its first run resumes as a copy; cleared once
+	// the agent reports the copy's own session (fork.go).
+	ForkSession bool `json:"forkSession,omitempty"`
+	// OutputStyle is the Claude output style the chat's process launches
+	// with; "" is the CLI's default (style.go).
+	OutputStyle string `json:"outputStyle,omitempty"`
 }
 
 // Command is one slash command the agent's session offers.

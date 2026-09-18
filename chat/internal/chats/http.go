@@ -196,9 +196,12 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Resources *sandbox.Resources `json:"resources"`
 		// Attachments are upload IDs a message sends along.
 		Attachments []string `json:"attachments"`
-		// TurnID and What are a rewind's target and scope (rewind.go).
+		// TurnID and What are a rewind's target and scope (rewind.go);
+		// TurnID is also where a fork cuts (fork.go).
 		TurnID string `json:"turnID"`
 		What   string `json:"what"`
+		// Style is the body of chats/{id}/style (style.go).
+		Style string `json:"style"`
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
 	dec.DisallowUnknownFields()
@@ -253,6 +256,14 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			result, err = h.Engine.Runtime(r.Context(), parts[1], "activity")
 		case "rewind":
 			result, err = h.Engine.Rewind(r.Context(), parts[1], body.TurnID, body.What)
+		case "fork":
+			// A sibling chat copied from this one up to a message (fork.go).
+			result, err = h.Engine.Fork(r.Context(), parts[1], body.TurnID, requester(r))
+		case "aside":
+			// A side question answered from a copy of the session (aside.go).
+			result, err = h.Engine.Aside(r.Context(), parts[1], body.Text, requester(r))
+		case "style":
+			err = h.Engine.SetOutputStyle(r.Context(), parts[1], body.Style)
 		default:
 			http.Error(w, "not found", 404)
 			return

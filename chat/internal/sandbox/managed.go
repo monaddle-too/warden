@@ -61,6 +61,10 @@ type managedRun struct {
 	Expires   time.Time
 	Streaming bool
 	cancel    context.CancelFunc
+	// broker is the streaming run's brokered session, for a side question
+	// asked of a copy of the agent's session while the run is up
+	// (aside.go); never persisted.
+	broker BrokerConfig
 }
 type chatBinding struct{ ID, ProjectID, SandboxID, RolloutPath, ThreadID string }
 type managedState struct {
@@ -592,12 +596,15 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 	}
 	s.Active.Expires = w.now().Add(60 * time.Second)
 
-	if r.NewSession {
+	if r.NewSession || r.ForkSession {
 		// The chat dropped its thread (a conversation rewind the agent
-		// could not apply): the next stream starts fresh.
+		// could not apply): the next stream starts fresh. A forked chat's
+		// ThreadID is the source chat's session, which its stream resumes
+		// as a copy; the session this chat gets is the one the agent then
+		// reports, recorded at the next prepare.
 		c.ThreadID, c.RolloutPath = "", ""
 	}
-	if r.ThreadID != "" {
+	if r.ThreadID != "" && !r.ForkSession {
 		if !validIdentity(r.ThreadID) {
 			return fail(errors.New("invalid provider thread ID"))
 		}
@@ -658,6 +665,9 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 		return w.execCommand(ctx, r)
 	case "memory-append":
 		return w.appendMemory(ctx, r)
+	case "aside":
+		// A side question to a copy of the running agent session.
+		return w.aside(ctx, r)
 	}
 	if r.Operation == "status" {
 		// The read the workspace panel polls: never behind a creation.
@@ -895,9 +905,20 @@ func (w *Worker) streamManaged(parent context.Context, conn net.Conn, reader *bu
 		broker.Provider = s.Grant.Provider
 		broker.Model = r.Model
 		broker.ThreadID = w.managed.Chats[r.ChatID].ThreadID
-		if r.Provider != s.Grant.Provider || ValidateAgent(r.Provider, r.Model) != nil {
+		broker.OutputStyle = r.OutputStyle
+		if r.ForkSession && r.ThreadID != "" {
+			// A forked chat's first run: the source chat's session,
+			// resumed as a copy (its own binding holds no thread yet).
+			broker.ThreadID, broker.ForkSession = r.ThreadID, true
+		}
+		switch {
+		case r.Provider != s.Grant.Provider || ValidateAgent(r.Provider, r.Model) != nil:
 			err = errors.New("agent selection mismatch")
-		} else {
+		case broker.ForkSession && !validIdentity(broker.ThreadID):
+			err = errors.New("invalid provider thread ID")
+		case !ValidOutputStyle(broker.OutputStyle):
+			err = errors.New("invalid output style")
+		default:
 			stream, err = w.launchLocked(ctx, s, broker)
 		}
 	}
@@ -924,6 +945,7 @@ func (w *Worker) streamManaged(parent context.Context, conn net.Conn, reader *bu
 	var enforcementFailed atomic.Bool
 	s.Active.Streaming = true
 	s.Active.cancel = cancel
+	s.Active.broker = broker
 	s.Active.Expires = w.now().Add(60 * time.Second)
 	res := w.statusLocked(r)
 	res.APIKeyPlaceholder = broker.APIKeyPlaceholder
