@@ -221,7 +221,7 @@ func localPaths(query string) []string {
 // staticModels are the rows a provider's picker offers when its CLI has
 // reported no catalog (the web's ModelSelect keeps the same).
 var staticModels = map[string][]ModelInfo{
-	"codex": {{Value: "gpt-6-astra", Label: "GPT-6 Astra"}, {Value: "gpt-5.6-sol", Label: "GPT-5.6 Sol"}, {Value: "gpt-5.6-terra", Label: "GPT-5.6 Terra"}, {Value: "gpt-5.6-luna", Label: "GPT-5.6 Luna"}, {Value: "gpt-5.5", Label: "GPT-5.5"}},
+	"codex":  {{Value: "gpt-6-astra", Label: "GPT-6 Astra"}, {Value: "gpt-5.6-sol", Label: "GPT-5.6 Sol"}, {Value: "gpt-5.6-terra", Label: "GPT-5.6 Terra"}, {Value: "gpt-5.6-luna", Label: "GPT-5.6 Luna"}, {Value: "gpt-5.5", Label: "GPT-5.5"}},
 	"claude": {{Value: "sonnet", Label: "Claude Sonnet", Efforts: chats.Efforts, AdaptiveThinking: true}, {Value: "opus", Label: "Claude Opus", Efforts: chats.Efforts, AdaptiveThinking: true, FastMode: true}, {Value: "haiku", Label: "Claude Haiku"}, {Value: "sonnet[1m]", Label: "Claude Sonnet 1M", Efforts: chats.Efforts, AdaptiveThinking: true}, {Value: "opus[1m]", Label: "Claude Opus 1M", Efforts: chats.Efforts, AdaptiveThinking: true, FastMode: true}},
 }
 
