@@ -153,6 +153,16 @@ func TestSubagentEntriesNestUnderTheirCall(t *testing.T) {
 	if c.Entries[0].EndedAt != 0 || !c.Entries[0].IsStreaming {
 		t.Fatalf("running agent card: %+v", c.Entries[0])
 	}
+	// The subagent's own account of its work rides on the card's item
+	// while it runs (Claude Code's task_progress); an empty one is nil.
+	created := c.Entries[0].CreatedAt
+	c.Upsert(map[string]any{"id": "agent_1", "type": "toolCall", "tool": "Agent", "kind": "task", "title": "Agent: list files (Explore)", "status": "running", "progress": map[string]any{"toolCalls": 2.0, "lastTool": "Grep", "durationMS": 1500.0, "tokens": 900.0}}, "t1", false)
+	if p := c.Entries[0].Tool.Progress; p == nil || *p != (Progress{ToolCalls: 2, LastTool: "Grep", DurationMS: 1500, Tokens: 900}) || c.Entries[0].CreatedAt != created || !c.Entries[0].IsStreaming {
+		t.Fatalf("progress: %+v", c.Entries[0])
+	}
+	if ProgressFrom(map[string]any{}) != nil || ProgressFrom(nil) != nil {
+		t.Fatal("an empty progress is nil")
+	}
 	// An async launch: the card is re-announced as background, still running.
 	c.Upsert(map[string]any{"id": "agent_1", "type": "toolCall", "tool": "Agent", "kind": "task", "title": "Agent: list files (Explore)", "status": "running", "background": true}, "t1", false)
 	if e := c.Entries[0]; !e.Tool.Background || e.Tool.Status != "running" || e.EndedAt != 0 {

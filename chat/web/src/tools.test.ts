@@ -171,10 +171,25 @@ describe("subagent and todo cards", () => {
       entry({ kind: "read", status: "running" }, { id: "c2" }),
       entry(undefined, { id: "m", role: "assistant" }),
     ];
-    expect(subagentProgress(children)).toEqual({ steps: 2, running: true });
+    expect(subagentProgress(children)).toEqual({
+      steps: 2,
+      running: true,
+      lastTool: "",
+    });
     expect(subagentProgress([children[0]])).toEqual({
       steps: 1,
       running: false,
+      lastTool: "",
+    });
+    // The agent's own account (task_progress) when it runs ahead of the
+    // entries, and the tool it says the subagent used last.
+    expect(
+      subagentProgress(children, { toolCalls: 5, lastTool: "Grep" }),
+    ).toEqual({ steps: 5, running: true, lastTool: "Grep" });
+    expect(subagentProgress(children, { toolCalls: 1 })).toEqual({
+      steps: 2,
+      running: true,
+      lastTool: "",
     });
   });
   it("measures a subagent's time to its end, or to now while it runs", () => {

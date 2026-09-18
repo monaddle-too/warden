@@ -1024,6 +1024,47 @@ func TestClaudeForegroundSubagentNests(t *testing.T) {
 	}
 }
 
+// A subagent's task_progress frames update its Agent card in place with
+// the CLI's count, last tool, time and tokens; a frame that says nothing
+// is dropped, and the completed card keeps the last progress seen.
+func TestClaudeSubagentProgress(t *testing.T) {
+	frames := claudeSession(t, func(e *json.Encoder) {
+		_ = e.Encode(claudeToolUse("", "agent_1", "Agent", map[string]any{"description": "List files", "subagent_type": "Explore", "prompt": "List the files."}))
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_started", "task_id": "a1", "tool_use_id": "agent_1", "description": "List files", "is_backgrounded": false, "task_type": "local_agent"})
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_progress", "task_id": "a1", "tool_use_id": "agent_1", "description": "List files", "usage": map[string]any{"total_tokens": 0.0}, "tool_uses": 0.0, "duration_ms": 0.0})
+		_ = e.Encode(claudeToolUse("agent_1", "bash_1", "Bash", map[string]any{"command": "ls"}))
+		_ = e.Encode(claudeToolResult("agent_1", "bash_1", "a.txt", nil))
+		// By task id alone, as the notification may name it.
+		_ = e.Encode(map[string]any{"type": "system", "subtype": "task_progress", "task_id": "a1", "usage": map[string]any{"total_tokens": 1234.0}, "tool_uses": 1.0, "duration_ms": 900.0, "last_tool_name": "Bash"})
+		_ = e.Encode(claudeToolResult("", "agent_1", "a.txt", map[string]any{"status": "completed", "totalToolUseCount": 1.0}))
+		_ = e.Encode(claudeResult(""))
+	}, 1)
+	var progress []map[string]any
+	for _, f := range frames {
+		item := Map(f.Params["item"])
+		if String(item["id"]) != "agent_1" {
+			continue
+		}
+		progress = append(progress, Map(item["progress"]))
+		if f.Method == "item/started" && item["status"] != "running" {
+			t.Fatalf("a progress update keeps the card running: %v", item)
+		}
+	}
+	// The start (no progress), the empty frame dropped, the update, the
+	// completion carrying the last progress.
+	if len(progress) != 3 || progress[0] != nil || progress[1] == nil || progress[2] == nil {
+		t.Fatalf("agent card frames: %v%s", progress, claudeFrameLog(frames))
+	}
+	want := map[string]any{"toolCalls": 1, "lastTool": "Bash", "durationMS": 900, "tokens": 1234}
+	for _, p := range progress[1:] {
+		for k, v := range want {
+			if fmt.Sprint(p[k]) != fmt.Sprint(v) {
+				t.Fatalf("progress %s = %v, want %v (%v)", k, p[k], v, p)
+			}
+		}
+	}
+}
+
 // An async subagent: the Agent card stays running (background) past its
 // boilerplate result, the parent's text streams on while the child works,
 // the child's items keep the parent's turn after that turn ended, the

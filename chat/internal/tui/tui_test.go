@@ -1699,6 +1699,18 @@ func TestStatusLineShowsTheTurn(t *testing.T) {
 	if status = plain(StatusLine(old, nil, true, now)); !strings.Contains(status, "creating: pulling image") {
 		t.Fatalf("startup stage: %q", status)
 	}
+	// Once the turn runs, the status says what the agent is doing
+	// (activity.go), in place of "running".
+	old.Startup = nil
+	old.Conversation.Entries = append(old.Conversation.Entries, Entry{ID: "e1", Role: "activity", Text: "Edit engine.go", IsStreaming: true, Tool: &Tool{Kind: "edit", Name: "Edit", Status: "running", Paths: []string{"/home/agent/workspace/engine.go"}}})
+	if status = plain(StatusLine(old, nil, true, now)); !strings.Contains(status, "12s Editing engine.go") || strings.Contains(status, "running") {
+		t.Fatalf("activity status: %q", status)
+	}
+	old.Conversation.Entries[1].IsStreaming = false
+	old.Conversation.Entries[1].Tool.Status = "completed"
+	if status = plain(StatusLine(old, nil, true, now)); !strings.Contains(status, "12s running") {
+		t.Fatalf("nothing running: %q", status)
+	}
 }
 
 func TestReadKeysReportsALoneEscape(t *testing.T) {

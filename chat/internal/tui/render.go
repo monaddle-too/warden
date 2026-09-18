@@ -291,6 +291,9 @@ func renderSubagent(c *Chat, e Entry, width int, expanded bool, children map[str
 				messages++
 			}
 		}
+		if p := e.Tool.Progress; p != nil && int(p.ToolCalls) > steps {
+			steps = int(p.ToolCalls) // the agent's count runs ahead of the entries
+		}
 		out = append(out, dim+fmt.Sprintf("    │ … %d tool calls, %d messages (Tab to expand)", steps, messages)+reset)
 	} else if len(kids) > 0 {
 		label := "subagent"
@@ -327,6 +330,18 @@ type Tool struct {
 	Query       string         `json:"query"`
 	Input       map[string]any `json:"input"`
 	Background  bool           `json:"background"`
+	// Progress is a running subagent's own account of its work
+	// (conversation.Progress), nil until the agent reports one.
+	Progress *Progress `json:"progress"`
+}
+
+// Progress mirrors conversation.Progress: what a running subagent has
+// done so far as its agent reports it.
+type Progress struct {
+	ToolCalls  int64  `json:"toolCalls"`
+	LastTool   string `json:"lastTool"`
+	DurationMS int64  `json:"durationMS"`
+	Tokens     int64  `json:"tokens"`
 }
 
 // foldedLines is how many lines of a tool's output or diff show before
@@ -385,6 +400,10 @@ func renderTool(e Entry, width int, expanded bool) []string {
 		// final text below.
 		if secs := taskSeconds(e); secs > 0 {
 			head += fmt.Sprintf("  %s%s%s", dim, formatSeconds(secs), reset)
+		}
+		if p := t.Progress; p != nil && p.LastTool != "" && (e.IsStreaming || t.Status == "running") {
+			// The agent's own account of the subagent's work while it runs.
+			head += fmt.Sprintf("  %susing %s%s", dim, sanitize(p.LastTool), reset)
 		}
 		if t.Input != nil {
 			if p, ok := t.Input["prompt"].(string); ok && strings.TrimSpace(p) != "" && t.Description == "" {

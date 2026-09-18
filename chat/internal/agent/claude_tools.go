@@ -15,7 +15,9 @@ import (
 // (a command with run_in_background, an async subagent): task is its task
 // id and the call's item stays running until the task reports back.
 // taskTitle names the task a TaskOutput, TaskStop or Monitor call waits
-// on, for its card.
+// on, for its card. progress is a subagent's account of its work so far
+// (the CLI's task_progress), carried on the Agent call's item while it
+// runs.
 type claudeTool struct {
 	name       string
 	input      map[string]any
@@ -24,6 +26,41 @@ type claudeTool struct {
 	background bool
 	task       string
 	taskTitle  string
+	progress   map[string]any
+}
+
+// claudeTaskProgress reads a task_progress frame into the item's
+// `progress` (conversation.Progress): the tool calls made, the last tool
+// used, the time and tokens spent. Nil when the frame says nothing the
+// card shows.
+func claudeTaskProgress(v map[string]any) map[string]any {
+	// The counts sit on the frame itself (2.1.275), or under a `progress`
+	// object should a CLI nest them.
+	src := v
+	if p := Map(v["progress"]); p != nil {
+		src = p
+	}
+	calls := claudeInt(src["tool_uses"])
+	if calls == 0 {
+		calls = claudeInt(src["tool_use_count"])
+	}
+	last := claudeOr(String(src["last_tool_name"]), String(src["last_tool"]))
+	duration := claudeInt(src["duration_ms"])
+	tokens := claudeInt(Map(src["usage"])["total_tokens"])
+	if calls == 0 && last == "" && duration == 0 && tokens == 0 {
+		return nil
+	}
+	out := map[string]any{"toolCalls": calls}
+	if last != "" {
+		out["lastTool"] = last
+	}
+	if duration > 0 {
+		out["durationMS"] = duration
+	}
+	if tokens > 0 {
+		out["tokens"] = tokens
+	}
+	return out
 }
 
 // claudeTodoTool says whether the tool writes the agent's todo list, whose
@@ -323,6 +360,9 @@ func claudeToolItem(id string, t claudeTool, result map[string]any, structured a
 	}
 	kind, title, paths, query := claudeToolTitle(t)
 	item := mark(map[string]any{"id": id, "type": "toolCall", "tool": t.name, "kind": kind, "title": title, "status": status, "output": output, "input": claudeToolInput(in)})
+	if t.progress != nil {
+		item["progress"] = t.progress
+	}
 	if len(paths) > 0 {
 		list := make([]any, 0, len(paths))
 		for _, p := range paths {

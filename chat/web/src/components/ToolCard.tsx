@@ -90,10 +90,15 @@ export const ToolSummary = memo(function ToolSummary({
   const counts = useMemo(() => {
     if (tool.kind === "task") {
       const parts: string[] = [];
-      const { steps: calls } = subagentProgress(steps ?? []);
+      const { steps: calls, lastTool } = subagentProgress(
+        steps ?? [],
+        tool.progress,
+      );
       if (calls) parts.push(`${calls} tool call${calls === 1 ? "" : "s"}`);
       const elapsed = taskElapsed(entry, now);
       if (elapsed >= 1) parts.push(formatElapsed(elapsed));
+      // The agent's own account of the subagent's work while it runs.
+      if (running && lastTool) parts.push(`using ${lastTool}`);
       return parts.join(" · ");
     }
     if (tool.kind === "todo") return todoProgress(todoItems(tool));

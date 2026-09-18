@@ -138,9 +138,9 @@ func ContextIndicator(c *Chat) string {
 }
 
 // StatusLine is the one-line status bar: the connection, the chat's title,
-// provider and model, what the agent is doing (with the startup stage or
-// the run's elapsed time), pending approvals, the turn's tokens and cost,
-// the context, previews and the chat's error.
+// provider and model, what the agent is doing (the startup stage, then
+// the step it is on, with the run's elapsed time), pending approvals, the
+// turn's tokens and cost, the context, previews and the chat's error.
 func StatusLine(c *Chat, ports []Port, live bool, now time.Time) string {
 	link := green + "●" + reset
 	if !live {
@@ -160,6 +160,12 @@ func StatusLine(c *Chat, ports []Port, live bool, now time.Time) string {
 			stage += ": " + sanitize(c.Startup.Detail)
 		}
 		status = yellow + stage + reset
+	} else if c.Status == "running" {
+		// What the agent is doing (activity.go): the step it is on, the
+		// subagent it waits for, its thinking; "running" when nothing says.
+		if what := ActivityLabel(c.Conversation.Entries); what != "" {
+			status = yellow + sanitize(what) + reset
+		}
 	}
 	if ind := RunIndicator(c, now); ind != "" {
 		status = ind + " " + status
