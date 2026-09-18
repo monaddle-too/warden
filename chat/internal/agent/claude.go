@@ -199,11 +199,9 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 						// decline with the message the model reads as the
 						// tool's error; `mode` moves the CLI's permission mode
 						// with the answer (a plan approved into auto or ask).
-						answer := map[string]any{"behavior": "deny", "message": "Denied by Warden"}
+						answer := map[string]any{"behavior": "deny", "message": claudeDenial(String(req["tool_name"]), String(result["message"]))}
 						if result["decision"] == "accept" {
 							answer = map[string]any{"behavior": "allow", "updatedInput": req["input"]}
-						} else if msg := String(result["message"]); msg != "" {
-							answer["message"] = msg
 						}
 						if mode := String(result["mode"]); mode != "" {
 							cliMode = claudePermissionMode(mode)
@@ -430,6 +428,27 @@ func claudeID() string { var b [16]byte; _, _ = rand.Read(b[:]); return hex.Enco
 type claudeOutbound struct {
 	id   json.RawMessage
 	mode string
+}
+
+// claudeDenial is the tool error a denied ask hands the model, in the
+// words the CLI itself uses when its own user rejects a tool call, with
+// the person's message where they gave one. The wording matters: a bare
+// message reads to the model as the tool's output (it took one for a
+// prompt injection and retried), while this phrasing is the one it is
+// trained to take as the user's decision. A plan sent back keeps the
+// model in plan mode.
+func claudeDenial(tool, message string) string {
+	if tool == "ExitPlanMode" {
+		if message == "" {
+			return "The user doesn't want to proceed with this plan yet. Stay in plan mode and wait for the user to tell you how to proceed."
+		}
+		return "The user doesn't want to proceed with this plan yet. Stay in plan mode and revise it. To tell you how to proceed, the user said: " + message
+	}
+	const rejected = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file)."
+	if message == "" {
+		return rejected + " STOP what you are doing and wait for the user to tell you how to proceed."
+	}
+	return rejected + " To tell you how to proceed, the user said: " + message
 }
 
 // claudePermissionMode is the CLI's permission mode for one of Warden's:

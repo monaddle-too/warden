@@ -300,7 +300,7 @@ func TestPermissionAsksPerMode(t *testing.T) {
 	}
 	idle(t, e, id)
 	answers = w.answersSoFar()
-	if len(answers) != 3 || agent.Map(answers[1]["response"])["behavior"] != "allow" || agent.Map(answers[2]["response"])["behavior"] != "deny" || agent.Map(answers[2]["response"])["message"] != "not that file" {
+	if len(answers) != 3 || agent.Map(answers[1]["response"])["behavior"] != "allow" || agent.Map(answers[2]["response"])["behavior"] != "deny" || !strings.HasSuffix(agent.String(agent.Map(answers[2]["response"])["message"]), "the user said: not that file") {
 		t.Fatalf("ask: %+v", answers)
 	}
 	c := e.Store.Snapshot().chat(id)
@@ -363,7 +363,7 @@ func TestPlanApproval(t *testing.T) {
 	answers := w.answersSoFar()
 	first, second := agent.Map(answers[0]["response"]), agent.Map(answers[1]["response"])
 	updates := agent.Array(second["updatedPermissions"])
-	if len(answers) != 2 || first["behavior"] != "deny" || first["message"] != "add tests" || second["behavior"] != "allow" || len(updates) != 1 || agent.Map(updates[0])["mode"] != "default" {
+	if len(answers) != 2 || first["behavior"] != "deny" || !strings.HasSuffix(agent.String(first["message"]), "the user said: add tests") || second["behavior"] != "allow" || len(updates) != 1 || agent.Map(updates[0])["mode"] != "default" {
 		t.Fatalf("%+v", answers)
 	}
 	c := e.Store.Snapshot().chat(id)

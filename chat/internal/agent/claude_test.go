@@ -786,8 +786,19 @@ func TestClaudePermissionAskDeniedWithMessage(t *testing.T) {
 	v := cf.next(t, ctx)
 	r := Map(v["response"])
 	answer := Map(r["response"])
-	if v["type"] != "control_response" || r["request_id"] != "r1" || answer["behavior"] != "deny" || answer["message"] != "use printf" || answer["updatedPermissions"] != nil {
+	if v["type"] != "control_response" || r["request_id"] != "r1" || answer["behavior"] != "deny" || answer["updatedPermissions"] != nil {
 		t.Fatalf("%+v", v)
+	}
+	// The message rides in the CLI's own rejection wording, so the model
+	// takes it as the user's decision rather than the tool's output.
+	if msg := String(answer["message"]); !strings.HasPrefix(msg, "The user doesn't want to proceed with this tool use.") || !strings.HasSuffix(msg, "the user said: use printf") {
+		t.Fatal(msg)
+	}
+	if msg := claudeDenial("Bash", ""); !strings.HasSuffix(msg, "wait for the user to tell you how to proceed.") {
+		t.Fatal(msg)
+	}
+	if msg := claudeDenial("ExitPlanMode", "add tests"); !strings.Contains(msg, "Stay in plan mode") || !strings.HasSuffix(msg, "the user said: add tests") {
+		t.Fatal(msg)
 	}
 }
 
