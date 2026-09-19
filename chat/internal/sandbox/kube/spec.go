@@ -72,6 +72,9 @@ type Options struct {
 	CPUMillis    int
 	NodeSelector map[string]string
 	Tolerations  []config.Toleration
+	// SparePriorityClass is set on spare pods only (config.Kubernetes):
+	// the spare is capacity a sandbox pod may preempt.
+	SparePriorityClass string
 	// GuestUID and GuestGID are the account the container runs as and the
 	// workspace's group, the base image's agent user (1000/1000 when zero);
 	// Home is the mount point of the workspace claim (/home/agent when
@@ -200,9 +203,14 @@ func PodSpec(o Options, spec sandbox.RuntimeSpec, workspace string, bound bool) 
 	for _, t := range o.Tolerations {
 		tolerations = append(tolerations, kube.Toleration{Key: t.Key, Operator: t.Operator, Value: t.Value, Effect: t.Effect, TolerationSeconds: t.TolerationSeconds})
 	}
+	priorityClass := ""
+	if spare {
+		priorityClass = o.SparePriorityClass
+	}
 	return kube.Pod{
 		Metadata: kube.ObjectMeta{Name: name, Namespace: o.Namespace, Labels: labels, Annotations: annotations},
 		Spec: kube.PodSpec{
+			PriorityClassName:             priorityClass,
 			RuntimeClassName:              kube.String(o.RuntimeClass),
 			AutomountServiceAccountToken:  kube.Bool(false),
 			RestartPolicy:                 "Always",

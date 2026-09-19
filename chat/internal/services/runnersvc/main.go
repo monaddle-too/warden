@@ -223,18 +223,19 @@ func runtimeDriver(s settings, limits sandbox.ResourceLimits, kubeconfig string)
 // size (what a spare is booted at) to the driver's options.
 func kubernetesOptions(k *config.Kubernetes, size sandbox.Resources) sandboxkube.Options {
 	return sandboxkube.Options{
-		Namespace:        k.Namespace,
-		Tier:             k.Tier,
-		RuntimeClass:     k.RuntimeClass,
-		GuestImage:       k.GuestImage,
-		GuestImageDigest: k.GuestImageDigest,
-		StorageClass:     k.StorageClass,
-		WorkspaceSizeGi:  k.WorkspaceSizeGi,
-		TrustConfigMap:   k.TrustConfigMap,
-		MemoryMB:         size.MemoryMB,
-		CPUMillis:        size.CPUMilli,
-		NodeSelector:     k.NodeSelector,
-		Tolerations:      k.Tolerations,
+		Namespace:          k.Namespace,
+		Tier:               k.Tier,
+		RuntimeClass:       k.RuntimeClass,
+		GuestImage:         k.GuestImage,
+		GuestImageDigest:   k.GuestImageDigest,
+		StorageClass:       k.StorageClass,
+		WorkspaceSizeGi:    k.WorkspaceSizeGi,
+		TrustConfigMap:     k.TrustConfigMap,
+		MemoryMB:           size.MemoryMB,
+		CPUMillis:          size.CPUMilli,
+		NodeSelector:       k.NodeSelector,
+		Tolerations:        k.Tolerations,
+		SparePriorityClass: k.SparePriorityClass,
 	}
 }
 

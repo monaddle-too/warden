@@ -116,7 +116,7 @@ func (api *fakeAPI) client() *kube.Client {
 
 // options are driver options for the fake.
 func testOptions() Options {
-	return Options{Namespace: testNamespace, Tier: "gvisor", RuntimeClass: "gvisor", GuestImage: "ghcr.io/monaddle-too/warden-guest-base", GuestImageDigest: "sha256:" + strings.Repeat("ab", 32), StorageClass: "local-path", WorkspaceSizeGi: 4, TrustConfigMap: "warden-guest-trust", MemoryMB: 1024}
+	return Options{Namespace: testNamespace, Tier: "gvisor", RuntimeClass: "gvisor", GuestImage: "ghcr.io/monaddle-too/warden-guest-base", GuestImageDigest: "sha256:" + strings.Repeat("ab", 32), StorageClass: "local-path", WorkspaceSizeGi: 4, TrustConfigMap: "warden-guest-trust", MemoryMB: 1024, SparePriorityClass: "warden-warden-sandboxes-spare"}
 }
 
 func newTestDriver(t *testing.T, api *fakeAPI, opts Options) *Driver {

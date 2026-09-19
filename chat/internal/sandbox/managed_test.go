@@ -81,6 +81,37 @@ type testRuntime struct {
 	// survivors is what a restarted worker's Reconcile finds still
 	// running: runtime name to the generation of its guest.
 	survivors map[string]string
+	// lost is what Resident denies: guests taken away under the worker (a
+	// preempted spare pod).
+	lost map[string]bool
+}
+
+func (d *testRuntime) Resident(_ context.Context, name string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls = append(d.calls, "resident:"+name)
+	return !d.lost[name], nil
+}
+
+func (d *testRuntime) lose(name string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.lost == nil {
+		d.lost = map[string]bool{}
+	}
+	d.lost[name] = true
+}
+
+func (d *testRuntime) removed() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var names []string
+	for _, c := range d.calls {
+		if strings.HasPrefix(c, "remove:") {
+			names = append(names, strings.TrimPrefix(c, "remove:"))
+		}
+	}
+	return names
 }
 
 func (d *testRuntime) record(s string) {
@@ -2057,4 +2088,83 @@ func TestOperationTimeoutHonoursPrepareTimeout(t *testing.T) {
 			t.Errorf("%s bounded by %v, want 2m", op, got)
 		}
 	}
+}
+
+// A spare whose guest was taken away (its pod preempted by a sandbox pod)
+// is retired by the periodic look and replaced, and one lost between looks
+// is not handed to a chat: the chat is created fresh instead.
+func TestPreemptedSpareIsReplacedAndNeverAdopted(t *testing.T) {
+	w, d, _, r := managedFixture(t)
+	w.Spares = 1
+	spares := func() map[string]bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		out := map[string]bool{}
+		for name := range w.managed.Spares {
+			out[name] = true
+		}
+		return out
+	}
+	w.maintainSpares(context.Background())
+	waitFor(t, "spare not created", func() bool { return len(spares()) == 1 })
+	var first string
+	for name := range spares() {
+		first = name
+	}
+	// Still there: the look keeps it.
+	w.retireLostSpares(context.Background())
+	if !spares()[first] {
+		t.Fatal("a resident spare was retired")
+	}
+	// Preempted: the next look (10 s later) retires and removes it, and
+	// the pool refills with a new name.
+	d.lose(first)
+	w.retireLostSpares(context.Background())
+	if !spares()[first] {
+		t.Fatal("the look ran again within 10 s")
+	}
+	w.mu.Lock()
+	w.spareCheckAt = time.Time{}
+	w.mu.Unlock()
+	w.retireLostSpares(context.Background())
+	if len(spares()) != 0 {
+		t.Fatalf("lost spare still listed: %v", spares())
+	}
+	waitFor(t, "lost spare not removed", func() bool {
+		for _, name := range d.removed() {
+			if name == first {
+				return true
+			}
+		}
+		return false
+	})
+	w.maintainSpares(context.Background())
+	waitFor(t, "pool not refilled", func() bool { return len(spares()) == 1 && !spares()[first] })
+	var second string
+	for name := range spares() {
+		second = name
+	}
+	// Lost between looks: adoption checks, retires it and creates fresh.
+	d.lose(second)
+	w.mu.Lock()
+	hashed := w.managed.Sandboxes[r.SandboxID].RuntimeName
+	w.mu.Unlock()
+	prepareFixture(t, w, r)
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	w.mu.Unlock()
+	if s.RuntimeName != hashed || !s.Created {
+		t.Fatalf("lost spare adopted: runtime %q (spare %q, hashed %q)", s.RuntimeName, second, hashed)
+	}
+	if len(spares()) != 0 {
+		t.Fatalf("lost spare still listed after adoption: %v", spares())
+	}
+	waitFor(t, "lost spare not removed after adoption", func() bool {
+		for _, name := range d.removed() {
+			if name == second {
+				return true
+			}
+		}
+		return false
+	})
 }

@@ -804,3 +804,28 @@ func TestResizeReportsInfeasible(t *testing.T) {
 		}
 	}
 }
+
+// Resident tells a spare whose pod was preempted from one still there: the
+// driver's pod, by UID, not terminating and not ended.
+func TestResidentSeesAPreemptedPod(t *testing.T) {
+	api, d := readyFake(t)
+	ctx := testContext(t)
+	if _, err := d.Resident(ctx, "wc-spare-1"); err != nil {
+		t.Fatal(err)
+	} else if ok, _ := d.Resident(ctx, "wc-spare-1"); ok {
+		t.Fatal("an unknown runtime is resident")
+	}
+	if err := d.Create(ctx, sandbox.RuntimeSpec{Name: "wc-spare-1", Directory: "/home/agent/workspace", Spare: true}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := d.Resident(ctx, "wc-spare-1"); err != nil || !ok {
+		t.Fatalf("running spare: resident=%v err=%v", ok, err)
+	}
+	// Preempted: the scheduler deletes the pod.
+	api.mu.Lock()
+	delete(api.objects, "pods/wc-spare-1")
+	api.mu.Unlock()
+	if ok, err := d.Resident(ctx, "wc-spare-1"); err != nil || ok {
+		t.Fatalf("preempted spare: resident=%v err=%v", ok, err)
+	}
+}

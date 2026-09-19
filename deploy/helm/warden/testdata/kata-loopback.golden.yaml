@@ -1,4 +1,22 @@
 ---
+# Source: warden/templates/spare-priorityclass.yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: warden-warden-sandboxes-spare
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: sandboxes
+value: -10
+preemptionPolicy: Never
+globalDefault: false
+description: Warden warm spare sandboxes; a sandbox pod may preempt one for its slot.
+
+---
 # Source: warden/templates/sandbox-namespace.yaml
 apiVersion: v1
 kind: Namespace
@@ -607,6 +625,7 @@ data:
           "warden.monaddle.com/pool": "kata"
         },
         "runtimeClass": "kata-qemu",
+        "sparePriorityClass": "warden-warden-sandboxes-spare",
         "storageClass": "",
         "tier": "kata",
         "trustConfigMap": "warden-guest-trust",
@@ -1286,7 +1305,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: policy
       annotations:
-        checksum/config: a2c4a9cf5d22f975e43efaf9e9fd973d4c113852c471df49a5cfc835df8fd9c8
+        checksum/config: 86387c33ccc01f8b3b05abb173d92ddc80b600426a923b4b1367962f411b0a96
     spec:
       serviceAccountName: warden-policy
       automountServiceAccountToken: true
@@ -1421,7 +1440,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: runner
       annotations:
-        checksum/config: a2c4a9cf5d22f975e43efaf9e9fd973d4c113852c471df49a5cfc835df8fd9c8
+        checksum/config: 86387c33ccc01f8b3b05abb173d92ddc80b600426a923b4b1367962f411b0a96
     spec:
       serviceAccountName: warden-runner
       automountServiceAccountToken: true
@@ -1556,7 +1575,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: chat
       annotations:
-        checksum/config: a2c4a9cf5d22f975e43efaf9e9fd973d4c113852c471df49a5cfc835df8fd9c8
+        checksum/config: 86387c33ccc01f8b3b05abb173d92ddc80b600426a923b4b1367962f411b0a96
     spec:
       serviceAccountName: warden-chat
       automountServiceAccountToken: false
@@ -1688,7 +1707,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: edge
       annotations:
-        checksum/config: a2c4a9cf5d22f975e43efaf9e9fd973d4c113852c471df49a5cfc835df8fd9c8
+        checksum/config: 86387c33ccc01f8b3b05abb173d92ddc80b600426a923b4b1367962f411b0a96
     spec:
       serviceAccountName: warden-edge
       automountServiceAccountToken: false

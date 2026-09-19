@@ -19,6 +19,7 @@ import {
   type SuggestionCard,
 } from "./schema";
 import { commentHighlights } from "./comments";
+import { activeHighlight, type ActiveKey } from "./active";
 import {
   anchorPosition,
   commentRange,
@@ -87,7 +88,9 @@ export function SuggestionEditor({
   const paper = useRef<HTMLDivElement>(null);
   const commentsRef = useRef(comments);
   commentsRef.current = comments;
-  const [selected, setSelected] = useState<string>();
+  const [selected, setSelected] = useState<ActiveKey>();
+  const selectedRef = useRef<ActiveKey>(undefined);
+  selectedRef.current = selected;
   const [tops, setTops] = useState<Map<string, number>>(new Map());
   const [composer, setComposer] = useState<{
     top: number;
@@ -111,9 +114,11 @@ export function SuggestionEditor({
   const editor = useEditor({
     extensions: [
       ...suggestionExtensions(),
-      commentHighlights(
+      commentHighlights(() => commentsRef.current),
+      activeHighlight(
+        () => selectedRef.current,
         () => commentsRef.current,
-        (index) => setSelected("comment:" + index),
+        (key) => setSelected(key),
       ),
     ],
     content: doc,
@@ -245,21 +250,17 @@ export function SuggestionEditor({
       editor.off("selectionUpdate", onSelection);
     };
   }, [editor, editable]);
-  // Highlight the page range of the selected card.
+  // The selection lives outside the document: poke the view so the
+  // active decoration recomputes, and bring the selected card into view.
   useEffect(() => {
-    const root = container.current;
-    if (!root) return;
-    root
-      .querySelectorAll(".suggest-active")
-      .forEach((el) => el.classList.remove("suggest-active"));
-    if (!selected) return;
-    const [kind, id] = selected.split(":");
-    const attr =
-      kind === "suggestion" ? "data-suggestion-id" : "data-comment-index";
-    root
-      .querySelectorAll(`[${attr}="${id}"]`)
-      .forEach((el) => el.classList.add("suggest-active"));
-  }, [selected, revision, tops]);
+    if (editor && !editor.isDestroyed)
+      editor.view.dispatch(editor.state.tr.setMeta("active", selected));
+    if (!selected || selected === "composer") return;
+    const card = container.current?.querySelector<HTMLElement>(
+      `[data-margin-key="${selected.replace(/["\\]/g, "")}"]`,
+    );
+    card?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [editor, selected, revision]);
 
   const items = useMemo<MarginItem[]>(() => {
     const out: MarginItem[] = [];

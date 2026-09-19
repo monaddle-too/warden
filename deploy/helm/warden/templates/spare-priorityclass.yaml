@@ -1,0 +1,21 @@
+{{- /*
+The PriorityClass of warm spare pods: below the default (0) so a sandbox
+pod that finds no node with room preempts a spare and starts in its slot
+within seconds, where it would otherwise wait for a node to be added
+(docs/preemptible-spare-plan.md). preemptionPolicy Never: a spare never
+evicts anything itself. Cluster-scoped, named by the sandbox namespace
+like the ClusterRole.
+*/ -}}
+{{- if and (gt (int .Values.sandboxes.warmSpares) 0) .Values.sandboxes.preemptibleSpares }}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ include "warden.sparePriorityClassName" . }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: sandboxes
+value: -10
+preemptionPolicy: Never
+globalDefault: false
+description: Warden warm spare sandboxes; a sandbox pod may preempt one for its slot.
+{{- end }}

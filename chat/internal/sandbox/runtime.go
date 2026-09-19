@@ -208,6 +208,17 @@ type Reconciler interface {
 	Reconcile(ctx context.Context, registered []RegisteredRuntime) (resident []string, err error)
 }
 
+// ResidencyChecker is implemented by a driver whose guests can be taken
+// away while the worker believes them resident: a spare pod carries a low
+// priority so a sandbox pod may preempt it for its slot
+// (docs/preemptible-spare-plan.md). Resident says whether the named
+// runtime's guest is still the one the driver started; a false answer
+// makes the worker retire a spare (and replace it) rather than hand it to
+// a chat.
+type ResidencyChecker interface {
+	Resident(ctx context.Context, name string) (bool, error)
+}
+
 // LaunchOptions vary the agent command line per driver.
 type LaunchOptions struct {
 	// CodexSandboxMode overrides Codex's inner sandbox (plan decision 14

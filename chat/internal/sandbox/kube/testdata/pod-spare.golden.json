@@ -91,7 +91,8 @@
     "automountServiceAccountToken": false,
     "restartPolicy": "Always",
     "terminationGracePeriodSeconds": 10,
-    "enableServiceLinks": false
+    "enableServiceLinks": false,
+    "priorityClassName": "warden-warden-sandboxes-spare"
   },
   "status": {}
 }
