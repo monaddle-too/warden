@@ -5,6 +5,7 @@
 #
 #   scripts/k8s-gke.sh up            APIs, the Autopilot cluster, the Cloud DNS zone, Artifact Registry,
 #                                    ingress-nginx, cert-manager with Workload Identity, the issuers
+#   scripts/k8s-gke.sh addons        ingress-nginx and cert-manager (part of `up`; re-run after a change)
 #   scripts/k8s-gke.sh dns           name servers to delegate the zone to; A records to the ingress
 #   scripts/k8s-gke.sh build-images  build linux/amd64 images in the dev VM (emulated) and push them
 #   scripts/k8s-gke.sh secrets       copy the three provider login Secrets from the dev cluster
@@ -90,21 +91,7 @@ cmd_up() {
   gcloud_ iam service-accounts add-iam-policy-binding "$GSA" --role roles/iam.workloadIdentityUser \
     --member "serviceAccount:${PROJECT}.svc.id.goog[cert-manager/cert-manager]" >/dev/null
 
-  helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx >/dev/null 2>&1 || true
-  helm repo add jetstack https://charts.jetstack.io >/dev/null 2>&1 || true
-  helm repo update >/dev/null
-  # The admission webhook is off: GKE's control plane reaches node ports
-  # 443 and 10250 only, and the webhook (8443) would need a firewall rule;
-  # it only validates Ingress syntax. cert-manager's webhook listens on
-  # 10250 for exactly that reason.
-  helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx --create-namespace \
-    --set controller.admissionWebhooks.enabled=false --wait --timeout 10m
-  # Leader election in cert-manager's own namespace: Autopilot forbids the
-  # leases cert-manager would otherwise keep in kube-system (cainjector then
-  # never injects the webhook CA and the startup check fails).
-  helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace \
-    --set crds.enabled=true --set global.leaderElection.namespace=cert-manager \
-    --set "serviceAccount.annotations.iam\.gke\.io/gcp-service-account=${GSA}" --wait --timeout 10m
+  cmd_addons
   sed -e "s/__PROJECT__/${PROJECT}/g" -e "s/__EMAIL__/${OWNER}/g" -e "s/__ZONE__/${ZONE}/g" "$ROOT/deploy/k8s/gke/cluster-issuer.yaml" | kubectl apply -f -
   cmd_dns
   echo "export KUBECONFIG=\"$KUBECONFIG\""
@@ -123,6 +110,35 @@ record() { # name ip: create or update an A record in the zone
     gcloud_ dns record-sets update "$name" --type A --ttl 300 --rrdatas "$ip" --zone "$ZONE" >/dev/null
   fi
   echo "$name A $ip"
+}
+
+# ingress-nginx and cert-manager, installed or upgraded in place (`up`
+# runs this; run it alone to apply a change here to a live cluster).
+cmd_addons() {
+  load_env
+  helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx >/dev/null 2>&1 || true
+  helm repo add jetstack https://charts.jetstack.io >/dev/null 2>&1 || true
+  helm repo update >/dev/null
+  # The admission webhook is off: GKE's control plane reaches node ports
+  # 443 and 10250 only, and the webhook (8443) would need a firewall rule;
+  # it only validates Ingress syntax. cert-manager's webhook listens on
+  # 10250 for exactly that reason.
+  helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx --create-namespace \
+    --set controller.admissionWebhooks.enabled=false --wait --timeout 10m
+  # Leader election in cert-manager's own namespace: Autopilot forbids the
+  # leases cert-manager would otherwise keep in kube-system (cainjector then
+  # never injects the webhook CA and the startup check fails).
+  # Requests are what Autopilot bills. The chart sets none, so Autopilot
+  # gave each of the three pods 500m / 2Gi (about $70 a month for a
+  # renewal every two months); they use a few millicores and ~25Mi, so
+  # they get a little over Autopilot's floor (50m / 52Mi).
+  helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace \
+    --set crds.enabled=true --set global.leaderElection.namespace=cert-manager \
+    --set "serviceAccount.annotations.iam\.gke\.io/gcp-service-account=${GSA}" \
+    --set resources.requests.cpu=50m --set resources.requests.memory=128Mi \
+    --set cainjector.resources.requests.cpu=50m --set cainjector.resources.requests.memory=128Mi \
+    --set webhook.resources.requests.cpu=50m --set webhook.resources.requests.memory=64Mi \
+    --wait --timeout 10m
 }
 
 cmd_dns() {
@@ -282,6 +298,7 @@ cmd_delete() {
 case "${1:-}" in
   up) shift; cmd_up "$@" ;;
   kubeconfig) load_env; echo "$KUBECONFIG" ;;
+  addons) shift; cmd_addons "$@" ;;
   dns) shift; cmd_dns "$@" ;;
   build-images) shift; cmd_build_images "$@" ;;
   secrets) shift; cmd_secrets "$@" ;;
@@ -291,5 +308,5 @@ case "${1:-}" in
   unpark) cmd_unpark ;;
   down) cmd_down ;;
   delete) cmd_delete ;;
-  *) sed -n '2,18p' "$0"; exit 2 ;;
+  *) sed -n '2,19p' "$0"; exit 2 ;;
 esac

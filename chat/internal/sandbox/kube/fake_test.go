@@ -447,6 +447,10 @@ func (api *fakeAPI) serveCreate(w http.ResponseWriter, resource string, body []b
 	}
 	api.stamp(obj, resource, true)
 	if resource == "pods" {
+		// The workspace claim binds when its first pod is created, as a
+		// WaitForFirstConsumer class does (the disk lands where the pod
+		// schedules); a claim without a pod stays Pending.
+		api.bindClaimOf(obj)
 		obj["status"] = map[string]any{"phase": "Pending"}
 		if api.failStart != "" {
 			obj["status"] = map[string]any{"phase": "Pending", "containerStatuses": []any{map[string]any{"name": ContainerName, "state": map[string]any{"waiting": map[string]any{"reason": api.failStart, "message": "image not present"}}}}}
@@ -456,11 +460,36 @@ func (api *fakeAPI) serveCreate(w http.ResponseWriter, resource string, body []b
 		}
 	}
 	if resource == "persistentvolumeclaims" {
-		obj["status"] = map[string]any{"phase": "Bound"}
+		obj["status"] = map[string]any{"phase": "Pending"}
 	}
 	api.objects[resource+"/"+name] = obj
 	api.emit(kube.Added, resource, obj)
 	writeJSON(w, http.StatusCreated, obj)
+}
+
+// bindClaimOf binds the claims a pod mounts: phase Bound and a volume
+// name, as the provisioner does once the pod is scheduled. Called with
+// api.mu held.
+func (api *fakeAPI) bindClaimOf(pod map[string]any) {
+	spec, _ := pod["spec"].(map[string]any)
+	volumes, _ := spec["volumes"].([]any)
+	for _, v := range volumes {
+		vol, _ := v.(map[string]any)
+		pvc, _ := vol["persistentVolumeClaim"].(map[string]any)
+		name, _ := pvc["claimName"].(string)
+		claim, ok := api.objects["persistentvolumeclaims/"+name]
+		if !ok {
+			continue
+		}
+		claimSpec, _ := claim["spec"].(map[string]any)
+		if claimSpec == nil {
+			claimSpec = map[string]any{}
+			claim["spec"] = claimSpec
+		}
+		claimSpec["volumeName"] = "pv-" + name
+		claim["status"] = map[string]any{"phase": "Bound"}
+		api.emit(kube.Modified, "persistentvolumeclaims", claim)
+	}
 }
 
 // startPod moves a pod to Running with an address after startDelay.

@@ -17,6 +17,7 @@ import (
 // that disagrees with a loaded file is an error.
 type settings struct {
 	cfg        config.Config
+	configPath string         // the warden.json the settings came from ("" for flags only)
 	root       string         // paths.state/runner
 	listen     string         // services.runner.listen (unix://paths.state/runner/worker.sock)
 	policy     string         // services.policy.address (unix://paths.state/policy/sbx-control.sock)
@@ -49,7 +50,7 @@ func resolveSettings(fs *flag.FlagSet, f runnerFlags) (settings, error) {
 		return settings{}, err
 	}
 	o := config.NewOverrides(fs, source)
-	s := settings{cfg: cfg}
+	s := settings{cfg: cfg, configPath: source}
 	s.root = config.Override(o, "root", *f.root, "paths.state (runner directory)", cfg.RunnerState())
 	// The listener is the Unix socket of --socket or the mutual-TLS port of
 	// --tls-listen, both against services.runner.listen.
@@ -110,8 +111,13 @@ var findSBX = hostinfo.FindSBX
 // (SBX takes no fraction, so a fractional setting rounds up), and a resize
 // that restarts the sandbox.
 func resourceLimits(s config.Sandboxes, defaultMemoryMB, hostMemoryMB, cores int) sandbox.ResourceLimits {
+	// An unset value stays 0 so the fallbacks below apply: CPUsFromSpec
+	// would turn it into one CPU and pin the ceiling there.
 	wholeCPUs := func(cpus float64) int {
 		milli := sandbox.CPUMilli(cpus)
+		if milli == 0 {
+			return 0
+		}
 		return sandbox.CPUsFromSpec(milli) * 1000
 	}
 	l := sandbox.ResourceLimits{CPUStepMilli: 1000, Restart: true}

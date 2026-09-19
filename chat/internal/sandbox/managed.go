@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"warden/chat/internal/bugreport"
 	"warden/chat/internal/release"
 )
 
@@ -35,7 +36,12 @@ type managedSandbox struct {
 	Installed          bool
 	ClaudeInstalled    string // fingerprint of the host Claude executable copied into the guest
 	ProxyCA            string // fingerprint of the gateway CA the guest trusts
-	GuestCA            string // SHA-256 of a CA preinstalled by the guest image, as its manifest reports
+	// ImageDigest is the image a sandbox the runner derived from a
+	// snapshot runs (a workspace copy, a regeneration at a new size),
+	// which the policy service's image pin accepts on the runner's word
+	// (recordImageLocked); "" for a sandbox on the pinned guest image.
+	ImageDigest string `json:",omitempty"`
+	GuestCA     string // SHA-256 of a CA preinstalled by the guest image, as its manifest reports
 	// pendingReport is a guest report captured while the guest was a spare;
 	// fresh marks a guest this worker just created or adopted, which cannot
 	// hold port publications yet. Neither is persisted.
@@ -44,11 +50,14 @@ type managedSandbox struct {
 	// paths is the guest layout the last guest report described (the
 	// manifest's paths object, or the SBX template's defaults); it is
 	// taken again at every prepare, so it is not persisted.
-	paths          GuestPaths
-	LastActivity   time.Time
-	Grant          GrantContext
-	Active         *managedRun
-	Reviewing      bool `json:"-"`
+	paths        GuestPaths
+	LastActivity time.Time
+	Grant        GrantContext
+	Active       *managedRun
+	// Checkpoints are the workspace snapshots taken before user turns,
+	// oldest first (checkpoint.go).
+	Checkpoints    []Checkpoint `json:",omitempty"`
+	Reviewing      bool         `json:"-"`
 	residency      io.Closer
 	previewAuditAt time.Time
 }
@@ -58,6 +67,10 @@ type managedRun struct {
 	Expires   time.Time
 	Streaming bool
 	cancel    context.CancelFunc
+	// broker is the streaming run's brokered session, for a side question
+	// asked of a copy of the agent's session while the run is up
+	// (aside.go); never persisted.
+	broker BrokerConfig
 }
 type chatBinding struct{ ID, ProjectID, SandboxID, RolloutPath, ThreadID string }
 type managedState struct {
@@ -99,7 +112,7 @@ func (w *Worker) defaultsLocked() {
 		w.Runtime = &sbxRuntime{w}
 	}
 	if w.IdleTimeout <= 0 {
-		w.IdleTimeout = 15 * time.Minute
+		w.IdleTimeout = 30 * time.Minute
 	}
 	if w.MaxResident <= 0 {
 		w.MaxResident = 3
@@ -123,6 +136,8 @@ func (w *Worker) defaultsLocked() {
 	if _, isSBX := w.Runtime.(*sbxRuntime); isSBX {
 		w.Limits.Restart = true
 	}
+	offer := w.Limits
+	w.offer.Store(&offer)
 }
 
 // defaultMemoryMB sizes a sandbox when the configuration does not.
@@ -162,19 +177,60 @@ func (w *Worker) initializeManaged(ctx context.Context) error {
 		}
 	}
 	// Only names registered in this worker root are ours. Startup never scans a prefix.
-	for _, s := range w.managed.Sandboxes {
-		if s.State != "stopped" && (s.Created || s.Creating) {
-			if err = w.Runtime.Stop(ctx, s.RuntimeName); err != nil {
-				return fmt.Errorf("could not stop interrupted registered sandbox: %w", err)
-			}
+	if w.managed.Spares == nil {
+		w.managed.Spares = map[string]*spareSandbox{}
+	}
+	for name := range w.managed.Spares {
+		// Its keep-alive died with the previous worker; a fresh spare is cheaper
+		// than proving what state this one is in.
+		_ = w.Runtime.Remove(ctx, name)
+		delete(w.managed.Spares, name)
+	}
+	resident := map[string]bool{}
+	reconciler, outlives := w.Runtime.(Reconciler)
+	if outlives {
+		// The driver's guests outlive the worker, so the driver settles
+		// them: it keeps the registered ones it finds still running at
+		// their generation (the worker keeps those sandboxes running
+		// below), stops what else it finds and keeps the registered
+		// workspaces.
+		registered := make([]RegisteredRuntime, 0, len(w.managed.Sandboxes))
+		for _, s := range w.managed.Sandboxes {
+			registered = append(registered, RegisteredRuntime{Name: s.RuntimeName, Generation: s.Generation, Resident: s.Created && !s.Creating && (s.State == "running" || s.State == "starting")})
 		}
+		kept, err := reconciler.Reconcile(ctx, registered)
+		if err != nil {
+			return fmt.Errorf("runtime reconciliation: %w", err)
+		}
+		for _, name := range kept {
+			resident[name] = true
+		}
+	}
+	for _, s := range w.managed.Sandboxes {
 		if s.Active != nil && s.Grant.RunID != "" {
 			endCtx, done := context.WithTimeout(ctx, 10*time.Second)
 			_ = w.Gate.End(endCtx, s.Grant)
 			done()
 		}
-		s.State = "stopped"
 		s.Active = nil
+		if resident[s.RuntimeName] {
+			// The guest survived the restart: the sandbox stays running with
+			// no run on it (its stream died with the worker; the next start
+			// registers and attests the same generation again) and a whole
+			// idle window ahead of it. Its publications are restored by the
+			// next run like any resumed sandbox's.
+			s.State = "running"
+			s.LastActivity = w.now()
+			s.previewAuditAt = time.Time{}
+			continue
+		}
+		if !outlives && s.State != "stopped" && (s.Created || s.Creating) {
+			// The guest died with the previous worker; stop what is left of it.
+			if err = w.Runtime.Stop(ctx, s.RuntimeName); err != nil {
+				return fmt.Errorf("could not stop interrupted registered sandbox: %w", err)
+			}
+		}
+		s.State = "stopped"
 	}
 	for _, p := range w.managed.Publications {
 		if p.State != "removed" {
@@ -196,27 +252,6 @@ func (w *Worker) initializeManaged(ctx context.Context) error {
 		if a.State != "removed" {
 			a.State = "stopped"
 			a.URL = ""
-		}
-	}
-	if w.managed.Spares == nil {
-		w.managed.Spares = map[string]*spareSandbox{}
-	}
-	for name := range w.managed.Spares {
-		// Its keep-alive died with the previous worker; a fresh spare is cheaper
-		// than proving what state this one is in.
-		_ = w.Runtime.Remove(ctx, name)
-		delete(w.managed.Spares, name)
-	}
-	if reconciler, ok := w.Runtime.(Reconciler); ok {
-		// Every registered guest is stopped and every registered spare gone;
-		// a driver whose guests outlive the worker retires what else it finds
-		// and keeps the registered workspaces.
-		registered := make([]string, 0, len(w.managed.Sandboxes))
-		for _, s := range w.managed.Sandboxes {
-			registered = append(registered, s.RuntimeName)
-		}
-		if err = reconciler.Reconcile(ctx, registered); err != nil {
-			return fmt.Errorf("runtime reconciliation: %w", err)
 		}
 	}
 	if err = w.saveManagedLocked(); err != nil {
@@ -414,7 +449,7 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		}
 	}
 	w.setProgress(s.ID, StageWaiting, "registering with the policy service")
-	grant := GrantContext{Provider: r.Provider, ProjectID: s.ProjectID, SandboxID: s.ID, RuntimeName: s.RuntimeName, Generation: s.Generation, ChatID: c.ID, RunID: r.RunID, PrincipalID: s.PrincipalID}
+	grant := GrantContext{Provider: r.Provider, ProjectID: s.ProjectID, SandboxID: s.ID, RuntimeName: s.RuntimeName, Generation: s.Generation, ChatID: c.ID, RunID: r.RunID, PrincipalID: s.PrincipalID, ImageDigest: s.ImageDigest}
 	if err = w.Gate.Register(ctx, grant); err != nil {
 		w.failEnforcementLocked(s)
 		return Response{}, err
@@ -589,7 +624,15 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 	}
 	s.Active.Expires = w.now().Add(60 * time.Second)
 
-	if r.ThreadID != "" {
+	if r.NewSession || r.ForkSession {
+		// The chat dropped its thread (a conversation rewind the agent
+		// could not apply): the next stream starts fresh. A forked chat's
+		// ThreadID is the source chat's session, which its stream resumes
+		// as a copy; the session this chat gets is the one the agent then
+		// reports, recorded at the next prepare.
+		c.ThreadID, c.RolloutPath = "", ""
+	}
+	if r.ThreadID != "" && !r.ForkSession {
 		if !validIdentity(r.ThreadID) {
 			return fail(errors.New("invalid provider thread ID"))
 		}
@@ -644,6 +687,23 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 		// The pod read is a cluster call; it never holds the registry.
 		return w.snapshotOp(ctx, r)
 	}
+	switch r.Operation {
+	case "exec":
+		// A person's own command: resolved under the lock, run without it.
+		return w.execCommand(ctx, r)
+	case "memory-append":
+		return w.appendMemory(ctx, r)
+	case "aside":
+		// A side question to a copy of the running agent session.
+		return w.aside(ctx, r)
+	case "oneshot":
+		// A prompt to a fresh, tool-less CLI beside the running session.
+		return w.oneshot(ctx, r)
+	case "memory-list":
+		return w.listMemory(ctx, r)
+	case "memory-write":
+		return w.writeMemory(ctx, r)
+	}
 	if r.Operation == "status" {
 		// The read the workspace panel polls: never behind a creation.
 		if !w.mu.TryLock() {
@@ -657,6 +717,10 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	if r.Operation == "bind-chat" {
 		return w.bindLocked(r)
 	}
+	if r.Operation == "clone" {
+		// A new sandbox as a copy of a registered one (clone.go).
+		return w.cloneLocked(ctx, r)
+	}
 	s, _, err := w.bindingLocked(r)
 	if err != nil {
 		return Response{}, err
@@ -669,7 +733,16 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	case "cancel":
 		return Response{}, w.cancelLocked(r)
 	case "activity":
-		s.LastActivity = w.now()
+		// The chat's own report of activity (a turn's end as the chat
+		// service sees it, the person's "Keep workspace running"): the idle
+		// window counts from it. The clock never moves back.
+		at := w.now()
+		if !r.At.IsZero() && r.At.Before(at) {
+			at = r.At
+		}
+		if at.After(s.LastActivity) {
+			s.LastActivity = at
+		}
 		return w.statusLocked(r), w.saveManagedLocked()
 	case "stop":
 		if s.Active != nil {
@@ -733,6 +806,8 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 			return Response{}, err
 		}
 		return w.writeAttachmentLocked(ctx, s, r)
+	case "checkpoint", "checkpoints", "restore", "diff":
+		return w.checkpointOp(ctx, s, r)
 	case "host.import", "host.export":
 		// Owner-approved copy of a host directory into the sandbox, or of
 		// the sandbox's copy back over it (local installs only; the chat
@@ -781,10 +856,18 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 		send(Response{Error: "invalid or incompatible worker protocol; protocol 2 required"})
 		return
 	}
+	// A panic in an op is drafted as a bug report before it takes the
+	// runner down as it did before (docs/bug-reporting-plan.md).
+	defer bugreport.Recover("runner op " + r.Operation)
 	_ = c.SetReadDeadline(time.Time{})
 	slots := w.ordinarySlots
-	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" {
+	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" || r.Operation == "capacity" {
 		slots = w.controlSlots
+	}
+	if r.Operation == "exec" {
+		// A person's command may run for a minute; it never takes a slot
+		// from the sandbox operations.
+		slots = w.execSlots
 	}
 	select {
 	case slots <- struct{}{}:
@@ -796,11 +879,23 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	if r.Operation == "health" {
 		// The size offer travels with the health answer so the chat can
 		// validate a size and fill its form without a second operation.
-		w.mu.Lock()
-		w.defaultsLocked()
-		limits := w.Limits
-		w.mu.Unlock()
-		send(Response{Output: "sbx protocol 2; execution requires verified Warden readiness", Revision: w.Revision, Limits: &limits})
+		// It is read without w.mu (settled at initializeManaged, before
+		// the first request): the answer must not wait behind a prepare
+		// or a stop, which hold the mutex for their whole subprocess.
+		limits := w.offer.Load()
+		if limits == nil {
+			w.mu.Lock()
+			w.defaultsLocked()
+			limits = w.offer.Load()
+			w.mu.Unlock()
+		}
+		send(Response{Output: "sbx protocol 2; execution requires verified Warden readiness", Revision: w.Revision, Limits: limits})
+		return
+	}
+	if r.Operation == "capacity" {
+		ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+		defer cancel()
+		send(w.capacity(ctx))
 		return
 	}
 	if r.Operation == "stats" {
@@ -826,7 +921,7 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 		w.streamManaged(parent, c, reader, r, send)
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, w.operationTimeout(r.Operation))
 	defer cancel()
 	res, err := w.dispatch(ctx, r)
 	if err != nil {
@@ -839,6 +934,21 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	}
 	send(res)
 }
+
+// operationTimeout bounds one operation. The ones that create or boot a
+// sandbox (a fresh chat's prepare, a resume, a fork's copy, a resize that
+// restarts) take PrepareTimeout, since on Kubernetes the pod may wait for
+// a node to be provisioned first; everything else gets two minutes.
+func (w *Worker) operationTimeout(op string) time.Duration {
+	switch op {
+	case "prepare", "start", "clone", "resize":
+		if w.PrepareTimeout > 0 {
+			return w.PrepareTimeout
+		}
+	}
+	return 2 * time.Minute
+}
+
 func (w *Worker) streamManaged(parent context.Context, conn net.Conn, reader *bufio.Reader, r Request, send func(Response)) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -873,10 +983,21 @@ func (w *Worker) streamManaged(parent context.Context, conn net.Conn, reader *bu
 		broker.Provider = s.Grant.Provider
 		broker.Model = r.Model
 		broker.ThreadID = w.managed.Chats[r.ChatID].ThreadID
-		if r.Provider != s.Grant.Provider || ValidateAgent(r.Provider, r.Model) != nil {
+		broker.OutputStyle = r.OutputStyle
+		if r.ForkSession && r.ThreadID != "" {
+			// A forked chat's first run: the source chat's session,
+			// resumed as a copy (its own binding holds no thread yet).
+			broker.ThreadID, broker.ForkSession = r.ThreadID, true
+		}
+		switch {
+		case r.Provider != s.Grant.Provider || ValidateAgent(r.Provider, r.Model) != nil:
 			err = errors.New("agent selection mismatch")
-		} else {
-			stream, err = w.launchLocked(ctx, s, broker)
+		case broker.ForkSession && !validIdentity(broker.ThreadID):
+			err = errors.New("invalid provider thread ID")
+		case !ValidOutputStyle(broker.OutputStyle):
+			err = errors.New("invalid output style")
+		default:
+			stream, err = w.launchLocked(ctx, s, broker, r.Instructions)
 		}
 	}
 	if err != nil {
@@ -902,6 +1023,7 @@ func (w *Worker) streamManaged(parent context.Context, conn net.Conn, reader *bu
 	var enforcementFailed atomic.Bool
 	s.Active.Streaming = true
 	s.Active.cancel = cancel
+	s.Active.broker = broker
 	s.Active.Expires = w.now().Add(60 * time.Second)
 	res := w.statusLocked(r)
 	res.APIKeyPlaceholder = broker.APIKeyPlaceholder
@@ -1090,8 +1212,31 @@ func (w *Worker) resizeLocked(ctx context.Context, s *managedSandbox, r Request)
 		_ = w.saveManagedLocked()
 		return err
 	}
+	if restarted && w.Limits.Restart {
+		// A regeneration runs a snapshot of the old instance: its image is
+		// the snapshot's, which the policy service pins by the digest the
+		// runner reports.
+		w.recordImageLocked(ctx, s)
+	}
 	s.Resources = resolved
 	return w.saveManagedLocked()
+}
+
+// recordImageLocked asks the driver which image the sandbox runs and keeps
+// it for the policy service's image pin; a driver that cannot say, or a
+// failed inspection, leaves the record as it was (the pin then decides on
+// the guest image alone).
+func (w *Worker) recordImageLocked(ctx context.Context, s *managedSandbox) {
+	inspector, ok := w.Runtime.(ImageInspector)
+	if !ok {
+		return
+	}
+	digest, err := inspector.ImageDigest(ctx, s.RuntimeName)
+	if err != nil {
+		log.Printf("sandbox %s: image digest not recorded: %v", s.ID, err)
+		return
+	}
+	s.ImageDigest = digest
 }
 
 // removeSandboxLocked deletes the environment: its runtime, workspace and every
@@ -1239,7 +1384,10 @@ func (w *Worker) finishManagedRun(r Request, grant GrantContext, enforcementFail
 	}
 	explicitCancel := w.wasExplicitlyCancelled(r)
 	s.Active = nil
-	s.LastActivity = w.now()
+	// The stream's end is not activity: a resident session is released
+	// after sitting idle, and the idle window counts from the last turn's
+	// end the chat service reported (the activity op) or the last user
+	// action, not from the release.
 	if explicitCancel || endErr != nil || enforcementFailed {
 		// A failed/expired broker request cannot consume the VM-stop deadline.
 		stopCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1302,7 +1450,7 @@ func (w *Worker) execOK(ctx context.Context, name, dir string, args ...string) (
 // driver installs it once per guest, and again only after a rotation or a
 // loss. The fingerprint is recorded once the launch succeeded, since the
 // driver delivers trust as part of it.
-func (w *Worker) launchLocked(ctx context.Context, s *managedSandbox, broker BrokerConfig) (io.ReadWriteCloser, error) {
+func (w *Worker) launchLocked(ctx context.Context, s *managedSandbox, broker BrokerConfig, instructions ...string) (io.ReadWriteCloser, error) {
 	fingerprint := ""
 	trusted := true
 	if broker.CACertificate != "" {
@@ -1312,7 +1460,7 @@ func (w *Worker) launchLocked(ctx context.Context, s *managedSandbox, broker Bro
 			s.ProxyCA = ""
 		}
 	}
-	stream, err := w.Runtime.Stream(ctx, s.RuntimeName, RunSpec{Directory: s.Directory, Broker: broker, Paths: s.paths.orDefaults(), TrustsCA: trusted})
+	stream, err := w.Runtime.Stream(ctx, s.RuntimeName, RunSpec{Directory: s.Directory, Broker: broker, Paths: s.paths.orDefaults(), TrustsCA: trusted, Instructions: strings.Join(instructions, "\n\n")})
 	if err != nil {
 		return nil, err
 	}
@@ -1434,7 +1582,7 @@ func (w *Worker) maintainSpares(ctx context.Context) {
 	w.mu.Unlock()
 	name := "wc-spare-" + randomID()[:16]
 	go func() {
-		createCtx, done := context.WithTimeout(ctx, 2*time.Minute)
+		createCtx, done := context.WithTimeout(ctx, w.operationTimeout("prepare"))
 		defer done()
 		var residency io.Closer
 		spec := RuntimeSpec{Name: name, Directory: "/home/agent/workspace", Spare: true, Resources: w.Limits.Default}

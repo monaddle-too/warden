@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"warden/chat/internal/bugreport"
 	"warden/chat/internal/config"
 	"warden/chat/internal/release"
 )
@@ -30,6 +33,8 @@ type installer struct {
 	upgrade    bool
 	guestTar   string
 	sbxLogin   bool
+	service    bool   // --service: register and start the user service
+	bugReports string // --bug-reports: yes, no, or "" to ask
 	client     *http.Client
 	memoryMB   int
 	cpus       int
@@ -38,6 +43,15 @@ type installer struct {
 	sbxExe  string
 	sbx     *sbxCLI
 	changed []string
+	// phase is the step under way, for the report a failure drafts;
+	// transcript is everything printed so far, the report's log.
+	phase      string
+	transcript bytes.Buffer
+	// reporting is the bug-reporting answer once decided (decided false
+	// until the question is asked, answered by the flag or found in an
+	// existing warden.json).
+	reporting bool
+	decided   bool
 }
 
 const sbxLoginMarker = "login.json"
@@ -52,6 +66,8 @@ func (c *cli) install(args []string) error {
 	fs.BoolVar(&in.upgrade, "upgrade", false, "accept a state directory installed by another Warden release")
 	fs.StringVar(&in.guestTar, "guest-image-tar", "", "a saved Warden guest image tar to load when the release pins one for this architecture")
 	fs.BoolVar(&in.sbxLogin, "sbx-login", true, "run the SBX device login when Warden's namespace is not signed in yet")
+	fs.BoolVar(&in.service, "service", true, "register Warden with launchd (macOS) or systemd --user (Linux) and start it; --service=false leaves starting it to you")
+	fs.StringVar(&in.bugReports, "bug-reports", "", "yes or no: send bug reports to Monaddle (you review every report before it is sent); asked on the terminal when not given")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
@@ -59,7 +75,20 @@ func (c *cli) install(args []string) error {
 		fmt.Fprintf(c.stderr, "warden install: unexpected argument %q\n", fs.Arg(0))
 		return errUsage
 	}
-	return in.run()
+	switch in.bugReports {
+	case "", "yes", "no":
+	default:
+		fmt.Fprintf(c.stderr, "warden install: --bug-reports must be yes or no, not %q\n", in.bugReports)
+		return errUsage
+	}
+	// Everything printed is also kept: a failure's report carries the
+	// installer's own output so far.
+	in.c = &cli{stdin: c.stdin, stdout: io.MultiWriter(c.stdout, &in.transcript), stderr: io.MultiWriter(c.stderr, &in.transcript), terminal: c.terminal, openFn: c.openFn, notifyFn: c.notifyFn, serviceFn: c.serviceFn}
+	err := in.run()
+	if err != nil {
+		in.reportFailure(err)
+	}
+	return err
 }
 
 func (in *installer) step(name, result string) {
@@ -80,6 +109,7 @@ func (in *installer) run() error {
 	fmt.Fprintf(in.c.stdout, "Warden %s installing into %s (guest architecture %s)\n", revision, in.state, in.arch)
 
 	// 1. State root, owner-only, and the release record.
+	in.phase = "state"
 	if err = ensurePrivateDir(in.state); err != nil {
 		return err
 	}
@@ -97,7 +127,15 @@ func (in *installer) run() error {
 	}
 	in.step("state", in.state+" (owner-only)")
 
+	// The one question: asked once, before the slow steps, so a failure
+	// among them can be reported; a re-run keeps the earlier answer.
+	in.phase = "bug reports"
+	if err = in.decideBugReports(); err != nil {
+		return err
+	}
+
 	// 2. The sbx executable and the private namespace wrapper.
+	in.phase = "sbx namespace"
 	if in.sbxExe, err = findSBX(in.sbxFlag); err != nil {
 		return err
 	}
@@ -114,20 +152,24 @@ func (in *installer) run() error {
 	}
 
 	// 3. Daemon and settings.
+	in.phase = "sbx daemon"
 	if err = in.ensureDaemon(); err != nil {
 		return err
 	}
+	in.phase = "sbx settings"
 	if err = in.ensureSettings(); err != nil {
 		return err
 	}
 
 	// 4. SBX device login. It must precede the host checks: an unsigned-in
 	// daemon answers the MCP and policy queries with 401.
+	in.phase = "sbx login"
 	if err = in.ensureSBXLogin(); err != nil {
 		return err
 	}
 
 	// 5. The host invariants the verifier enforces.
+	in.phase = "host checks"
 	checks := hostChecks(in.sbx)
 	printChecks(in.c.stdout, checks)
 	if failed(checks) {
@@ -136,20 +178,24 @@ func (in *installer) run() error {
 
 	// 6. Runtimes.
 	runtimes := filepath.Join(in.state, "runtimes")
+	in.phase = "codex"
 	if err = in.ensureCodex(runtimes); err != nil {
 		return err
 	}
+	in.phase = "claude"
 	if err = in.ensureClaude(runtimes); err != nil {
 		return err
 	}
 
 	// 7. Guest image, or the stock template.
+	in.phase = "guest image"
 	image, digest, err := in.ensureGuestImage()
 	if err != nil {
 		return err
 	}
 
 	// 8. warden.json with the detected facts.
+	in.phase = "config"
 	cfg, err := in.compose(privateHome, runtimes, image, digest)
 	if err != nil {
 		return err
@@ -158,11 +204,192 @@ func (in *installer) run() error {
 		return err
 	}
 	in.step("config", in.configPath)
+	previous, _, _ := readRecord(in.state)
 	if err = writeRecord(in.state, currentRecord(in.arch)); err != nil {
 		return err
 	}
-	fmt.Fprintf(in.c.stdout, "\nInstalled. Next: `warden login codex` (and `warden login claude`, `warden login github` as needed), then `warden start` and `warden open`.\n")
+
+	// 9. The service: registered with the user service manager and
+	// started, so Warden runs from now on and again at every login.
+	in.phase = "service"
+	running, err := in.ensureService(cfg, previous)
+	if err != nil {
+		return err
+	}
+	next := "then `warden start` and `warden open`"
+	if running {
+		next = "then `warden open`"
+	}
+	fmt.Fprintf(in.c.stdout, "\nInstalled. Bug reports: %s. Next: `warden login codex` (and `warden login claude`, `warden login github` as needed), %s.\n", in.bugReportsSummary(), next)
 	return nil
+}
+
+// ensureService registers the service for this launcher and starts it
+// (idempotent: an unchanged, running service is left alone, unless this
+// install brought a new release, which restarts it). It reports whether
+// Warden is running afterwards.
+func (in *installer) ensureService(cfg config.Config, previous installRecord) (bool, error) {
+	if !in.service {
+		in.step("service", "not registered (--service=false); `warden start` runs Warden, `warden service install` registers it later")
+		return false, nil
+	}
+	svc, reason := in.c.service(in.state)
+	if svc == nil {
+		in.step("service", "not registered ("+reason+"); `warden start --detach` runs Warden in the background")
+		return false, nil
+	}
+	if pid, alive := runningPID(cfg); alive {
+		in.step("service", fmt.Sprintf("not registered: a detached Warden is running (pid %d); `warden stop` it, then `warden service install`", pid))
+		return true, nil
+	}
+	before := svc.status()
+	upgraded := previous.Warden != "" && previous.Warden != revision && before.Running
+	result, err := in.c.registerService(cfg, svc, in.configPath)
+	if err != nil {
+		return false, err
+	}
+	if upgraded && svc.status().PID == before.PID {
+		// The unit did not change (it names the launcher through a link
+		// such as ~/.warden/release/bin/warden), so the old release is
+		// still the one running.
+		previous := fileStamp(cfg.OwnerTokenFile())
+		if err := svc.restart(); err != nil {
+			return false, err
+		}
+		if err := awaitReady(cfg, previous, func() bool { return svc.status().Running }); err != nil {
+			return false, err
+		}
+		result = svc.kind() + " " + svc.label() + ": restarted on " + revision + " (" + svc.status().String() + ")"
+	}
+	in.step("service", result)
+	for _, h := range svc.hints() {
+		in.step("note", h)
+	}
+	return true, nil
+}
+
+// bugReportsQuestion is asked once on the terminal.
+const bugReportsQuestion = "Send bug reports to Monaddle? You review every report before it is sent. [y/N] "
+
+// decideBugReports settles the bug-reporting answer: the flag when given;
+// else an existing warden.json's setting (a re-run keeps the earlier
+// answer); else the question on the terminal; else no (with the way to
+// change it) when nobody can be asked.
+func (in *installer) decideBugReports() error {
+	existing, found := reportingIn(in.configPath)
+	switch {
+	case in.bugReports == "yes":
+		in.reporting = true
+	case in.bugReports == "no":
+		in.reporting = false
+	case found:
+		in.reporting = existing
+	case !in.c.terminal:
+		in.reporting = false
+		in.step("bug reports", "off (no terminal to ask; --bug-reports=yes or `warden bugs on` to enable)")
+		in.decided = true
+		return nil
+	default:
+		fmt.Fprint(in.c.stdout, "\n"+bugReportsQuestion)
+		answer, err := readAnswer(in.c.stdin)
+		fmt.Fprintln(in.c.stdout)
+		if err != nil && answer == "" {
+			// No answer at all (stdin closed): the default.
+			in.reporting = false
+		} else {
+			in.reporting = yes(answer)
+		}
+	}
+	in.decided = true
+	if in.reporting {
+		in.step("bug reports", "on — every report is shown to you before it is sent (`warden bugs off` to stop)")
+	} else {
+		in.step("bug reports", "off (`warden bugs on` to enable)")
+	}
+	return nil
+}
+
+func (in *installer) bugReportsSummary() string {
+	if in.reporting {
+		return "on (you review each one before it is sent; `warden bugs off` to stop)"
+	}
+	return "off (`warden bugs on` to enable)"
+}
+
+func yes(answer string) bool {
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true
+	}
+	return false
+}
+
+// readAnswer reads one line byte by byte (unlike login's buffered
+// readLine), so nothing after it is consumed from a stdin the SBX login is
+// about to share.
+func readAnswer(r io.Reader) (string, error) {
+	var line []byte
+	buf := make([]byte, 1)
+	for {
+		n, err := r.Read(buf)
+		if n == 1 {
+			if buf[0] == '\n' {
+				return strings.TrimRight(string(line), "\r"), nil
+			}
+			line = append(line, buf[0])
+		}
+		if err != nil {
+			return string(line), err
+		}
+	}
+}
+
+// reportingIn reads whether path has a reporting section (the question
+// was answered before) and what it says.
+func reportingIn(path string) (enabled, found bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, false
+	}
+	var file struct {
+		Reporting *struct {
+			Enabled bool `json:"enabled"`
+		} `json:"reporting"`
+	}
+	if json.Unmarshal(raw, &file) != nil || file.Reporting == nil {
+		return false, false
+	}
+	return file.Reporting.Enabled, true
+}
+
+// reportFailure drafts and presents the report of a failed step when bug
+// reporting is on: the step, the error and the installer's output so far.
+// Off, or never asked (a failure before the question), nothing happens.
+func (in *installer) reportFailure(err error) {
+	if !in.decided || !in.reporting || errors.Is(err, errUsage) {
+		return
+	}
+	cfg := config.Defaults(in.state)
+	if existing, loadErr := config.Load(in.configPath, in.state); loadErr == nil {
+		cfg = existing
+	}
+	cfg.Reporting.Enabled = true
+	cap := bugreport.New(cfg, "", bugreport.ComponentInstall)
+	r := cap.Draft(bugreport.KindError, bugreport.TriggerInstallStep, "warden install failed at "+in.phase+": "+bugreport.Summarize(err.Error()))
+	r.Error = &bugreport.Error{Message: err.Error(), Operation: in.phase}
+	r.Logs = []bugreport.Log{{Name: "warden install output", Lines: bugreport.TailText(in.transcript.String())}}
+	draft, written, captureErr := cap.Capture(r)
+	if captureErr != nil || !written {
+		return
+	}
+	if !in.c.terminal {
+		fmt.Fprintf(in.c.stdout, "\nBug report %s drafted; `warden bugs pending` shows it for review.\n", r.ID)
+		return
+	}
+	fmt.Fprintln(in.c.stdout)
+	if presentErr := in.c.present(cfg, draft); presentErr != nil {
+		fmt.Fprintf(in.c.stdout, "could not show the bug report: %v\n", presentErr)
+	}
 }
 
 // ensureDaemon starts the daemon in Warden's namespace with the deny-all
@@ -503,6 +730,9 @@ func (in *installer) compose(privateHome, runtimes, image, digest string) (confi
 	cfg.Runtimes.Codex = codexDir(runtimes)
 	cfg.Runtimes.Claude = claudePath(runtimes)
 	cfg.Sandboxes = sizeSandboxes(cfg.Sandboxes, in.memoryMB, in.cpus)
+	if in.decided {
+		cfg.Reporting.Enabled = in.reporting
+	}
 	if fresh {
 		ports, err := freeLoopbackPorts(portOf(cfg.Chat.Listen), portOf(cfg.Previews.EdgeListen))
 		if err != nil {

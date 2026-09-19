@@ -191,13 +191,169 @@ export function scrub(elements: Iterable<Scrubbable>): void {
   }
 }
 
-/* Mermaid's errors span several lines ("Parse error on line 3:\n...^\nExpecting
-   ..."); the first line is what fits under the code block. */
+/* The message of a render error, for the error line's title. */
+export function errorText(err: unknown): string {
+  return err instanceof Error
+    ? err.message
+    : typeof err === "string"
+      ? err
+      : "";
+}
+
+/* Mermaid's parser errors span several lines:
+
+     Parse error on line 18:
+     ...d; metadata audited)
+     -----------------------^
+     Expecting 'SOLID_ARROW', ..., got 'NEWLINE'
+
+   The one line under the code block keeps what locates the mistake: the
+   line number, the source excerpt the caret points into, and what the
+   parser got and expected (cut when the token list runs long). A message
+   without that shape is its first line. */
 export function errorLine(err: unknown): string {
-  const message =
-    err instanceof Error ? err.message : typeof err === "string" ? err : "";
-  const line = message.split("\n").find((l) => l.trim()) ?? "";
-  const trimmed = line.trim();
-  if (!trimmed) return "Diagram could not be rendered";
-  return trimmed.length > 160 ? `${trimmed.slice(0, 159)}…` : trimmed;
+  const lines = errorText(err)
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const [head, ...rest] = lines;
+  if (!head) return "Diagram could not be rendered";
+  const parts = [head.replace(/[.:]$/, "")];
+  const caret = rest.findIndex((l) => /^-*\^$/.test(l));
+  if (caret > 0) parts[0] += ` at "${rest[caret - 1]}"`;
+  const expecting = rest.find((l) => l.startsWith("Expecting "));
+  if (expecting) {
+    const got = /,?\s*got\s+('[^']*'|\S+)$/.exec(expecting);
+    const expected = expecting
+      .slice("Expecting ".length, got?.index)
+      .replace(/,\s*$/, "");
+    parts.push(
+      [got && `got ${got[1]}`, expected && `expecting ${expected}`]
+        .filter(Boolean)
+        .join(", "),
+    );
+  }
+  const line = parts.join(": ");
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+}
+
+/* A colour as Mermaid's SVG carries it and the browser computes it. */
+export type RGBA = { r: number; g: number; b: number; a: number };
+
+/* `rgb()`/`rgba()` (what getComputedStyle returns), `#rgb[a]`/`#rrggbb[aa]`,
+   `transparent`; anything else (`none`, a `url()` paint, a name) is
+   undefined, and a colour with no alpha left is undefined too, since it
+   paints nothing. */
+export function parseColor(value: string): RGBA | undefined {
+  const v = value.trim().toLowerCase();
+  if (v === "transparent") return undefined;
+  const fn =
+    /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/.exec(
+      v,
+    );
+  let c: RGBA | undefined;
+  if (fn) {
+    const alpha = fn[4] === undefined ? 1 : parseAlpha(fn[4]);
+    c = { r: +fn[1], g: +fn[2], b: +fn[3], a: alpha };
+  } else {
+    const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(v);
+    if (!hex) return undefined;
+    let h = hex[1];
+    if (h.length <= 4)
+      h = h
+        .split("")
+        .map((ch) => ch + ch)
+        .join("");
+    const n = (i: number) => parseInt(h.slice(i, i + 2), 16);
+    c = { r: n(0), g: n(2), b: n(4), a: h.length === 8 ? n(6) / 255 : 1 };
+  }
+  return c.a > 0 ? c : undefined;
+}
+
+function parseAlpha(s: string): number {
+  return s.endsWith("%") ? parseFloat(s) / 100 : parseFloat(s);
+}
+
+/* `fg` painted over an opaque `bg`. */
+export function over(fg: RGBA, bg: RGBA): RGBA {
+  const a = fg.a;
+  return {
+    r: fg.r * a + bg.r * (1 - a),
+    g: fg.g * a + bg.g * (1 - a),
+    b: fg.b * a + bg.b * (1 - a),
+    a: 1,
+  };
+}
+
+/* WCAG relative luminance and contrast ratio, on opaque colours. */
+export function luminance({ r, g, b }: RGBA): number {
+  const lin = (v: number) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+export function contrastRatio(a: RGBA, b: RGBA): number {
+  const la = luminance(a);
+  const lb = luminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/* The two inks a label can be repainted in: the `--text` token of each
+   scheme, so a repainted label matches the labels the theme paints. */
+export const INK = { dark: "#1c1b18", light: "#ecebe6" } as const;
+
+/* The ink that reads better on `bg`. */
+export function inkFor(bg: RGBA): string {
+  const dark = parseColor(INK.dark)!;
+  const light = parseColor(INK.light)!;
+  return contrastRatio(dark, bg) >= contrastRatio(light, bg)
+    ? INK.dark
+    : INK.light;
+}
+
+/* Below this ratio a label is repainted: WCAG's floor for large text,
+   since the theme's own pairs sit well above it and an agent's `style`
+   fill that fails it is unreadable rather than merely light. */
+export const MIN_CONTRAST = 3;
+
+export type Box = { left: number; top: number; width: number; height: number };
+
+/* What the pass needs of a drawn element: where it is and what colour it
+   shows, the shape's fill already composited to opaque. */
+export type Label = { box: Box; color: RGBA | undefined };
+export type Shape = { box: Box; fill: RGBA };
+
+/* The colour behind a label: the smallest shape whose box holds the
+   label's centre (a node over its cluster, an edge label's backing over
+   the node behind it), else the diagram's surface. */
+export function backdrop(label: Box, shapes: Shape[], surface: RGBA): RGBA {
+  const cx = label.left + label.width / 2;
+  const cy = label.top + label.height / 2;
+  let best: Shape | undefined;
+  for (const s of shapes) {
+    const { left, top, width, height } = s.box;
+    if (cx < left || cx > left + width || cy < top || cy > top + height)
+      continue;
+    if (!best || width * height < best.box.width * best.box.height) best = s;
+  }
+  return best?.fill ?? surface;
+}
+
+/* The ink a label must be repainted in to read against what is behind
+   it, or undefined when it reads as it is. An agent's `style`/`classDef`
+   fill in a light colour keeps the theme's light label in the dark
+   scheme (and the reverse), which is the case this catches; a label whose
+   colour the agent set to something that reads is left alone. */
+export function readableInk(
+  label: Label,
+  shapes: Shape[],
+  surface: RGBA,
+): string | undefined {
+  if (!label.color || !label.box.width || !label.box.height) return undefined;
+  const bg = backdrop(label.box, shapes, surface);
+  if (contrastRatio(over(label.color, bg), bg) >= MIN_CONTRAST)
+    return undefined;
+  return inkFor(bg);
 }

@@ -39,6 +39,9 @@ func (w *sizeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 	switch r.Operation {
 	case "health":
 		return sandbox.Response{Limits: w.limits}, nil
+	case "capacity":
+		available := 21504
+		return sandbox.Response{Capacity: &sandbox.Capacity{Kind: "host", CPUMilli: 14000, MemoryMB: 49152, MemoryAvailableMB: &available, Load: []float64{5.1, 4.2, 4.0}, Reserved: sandbox.Resources{CPUMilli: 2000, MemoryMB: 4096}, Running: 2, Limits: *w.limits}}, nil
 	case "resize":
 		if w.inPlaceRefused && !slices.Contains(w.ops[:len(w.ops)-1], "resize") {
 			return sandbox.Response{}, fmt.Errorf("%w: not implemented", sandbox.ErrResizeRestart)

@@ -85,6 +85,20 @@ conveniences (copy, export, search, jump-to-bottom, turn timing).
   on its own. The CSS filter also rejects `image-set()`, `image()`,
   `src()` and `cross-fade()`, which fetch like `url()`. A CSP on the
   served page would be a further backstop and is out of this plan's scope.
+- Agent styling can defeat the theme: `style X fill:#e8f0fe` or a
+  `classDef` keeps the theme's label colour (light in the dark scheme),
+  so the label vanishes. `MermaidDiagram` therefore checks every label
+  against the shape behind it once the SVG is in the document — by
+  geometry (the smallest shape whose box holds the label's centre), so it
+  holds for every diagram type — and repaints, inline, the ones below
+  3:1 in the ink that reads (`mermaid.ts` `readableInk`, `INK`). A label
+  the agent coloured to read is left alone.
+- A parse error stays useful: `errorLine` keeps the line number, the
+  excerpt under the parser's caret and what it got and expected on the one
+  line under the block, the full message in the line's title, and the
+  fence label reads "mermaid · not rendered". Both providers' prompts
+  (`sandbox.ChatRenderingPrompt`) say the chat renders Markdown, diagrams,
+  diffs, math and workspace images, so a diagram is put in the reply.
 - Inline images are not attachments. `attach_image` stores an immutable
   copy in the policy service because a Doc or PR may later refer to it; an
   `![alt](path)` in the transcript is just a view of a workspace file, so

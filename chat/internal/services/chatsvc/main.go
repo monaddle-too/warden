@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"warden/chat/internal/bugreport"
 	"warden/chat/internal/chats"
 	"warden/chat/internal/config"
 	"warden/chat/internal/conversation"
@@ -123,10 +124,24 @@ func run(args []string) error {
 	// single-owner install on a machine with such directories, which the
 	// Kubernetes shape is not (the runner is a pod).
 	engine.LocalMode = s.cfg.Auth.Mode == config.AuthOwner && s.cfg.RuntimeKind() != config.RuntimeKubernetes
+	engine.DefaultModels = map[string]string{}
+	if claude := s.cfg.Providers.Claude; claude != nil {
+		engine.AllowFastMode, engine.AllowLongContext = claude.AllowFastMode, claude.AllowLongContext
+		engine.DefaultModels["claude"] = claude.DefaultModel
+	}
+	if codex := s.cfg.Providers.Codex; codex != nil {
+		engine.DefaultModels["codex"] = codex.DefaultModel
+	}
 	handler.Engine = engine
+	// Bug reports (docs/bug-reporting-plan.md): a recovered panic in a
+	// handler or a run goroutine is drafted; the capability is one of the
+	// values the redaction removes.
+	bugs := bugreport.New(s.cfg, s.configPath, bugreport.ComponentChat, handler.Token)
+	bugreport.SetDefault(bugs)
+	engine.Bugs = bugs
 	go engine.Serve(ctx)
 	defer func() { cancel(); <-engine.Done() }()
-	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: transport.ProbeQuietLog()}
+	server := &http.Server{Addr: *listen, Handler: bugs.Handler(handler), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: transport.ProbeQuietLog()}
 	go func() {
 		<-ctx.Done()
 		shutdown, done := context.WithTimeout(context.Background(), 10*time.Second)

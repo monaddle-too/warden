@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { isKey } from "../shortcuts";
 import {
   exportMime,
   exportName,
@@ -51,7 +52,7 @@ export function ExportDialog({
       // Explicit as well as the dialog's own cancel handling, which some
       // synthetic key events do not reach.
       onKeyDown={(event) => {
-        if (event.key === "Escape") dialog.current?.close();
+        if (isKey(event, "dialog-close")) dialog.current?.close();
       }}
     >
       <form onSubmit={save}>

@@ -258,12 +258,16 @@ func TestConsoleGitHubSignInFailures(t *testing.T) {
 	if err != nil || again["user_code"] != first["user_code"] {
 		t.Fatalf("second start: %v %v", again, err)
 	}
+	s.SignIn.mu.Lock()
+	polling := s.SignIn.done
+	s.SignIn.mu.Unlock()
 	if r, err := s.Dispatch("github_login_cancel", nil); err != nil || r["ok"] != true {
 		t.Fatalf("cancel: %v %v", r, err)
 	}
 	if status, _ := s.Dispatch("github_login_status", nil); status["status"] != "none" {
 		t.Fatalf("after cancel: %v", status)
 	}
+	<-polling // the cancelled poller is done with the flow before it changes
 	// An expired code reads as failed as soon as the clock passes it, even
 	// while the poller is still waiting.
 	clock := &testClock{now: 1000}

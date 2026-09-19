@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"warden/chat/internal/bugreport"
 	"warden/chat/internal/config"
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/policy"
@@ -88,6 +89,9 @@ func run(args []string) error {
 	if err := supportedKind(s.kind); err != nil {
 		return err
 	}
+	// Bug reports (docs/bug-reporting-plan.md): a recovered panic in the
+	// control loop or a gateway is drafted for the launcher to show.
+	bugreport.SetDefault(bugreport.New(s.cfg, s.configPath, bugreport.ComponentPolicy))
 	if *manageNetwork && s.sbx == "" && s.kind == config.RuntimeSBX {
 		return errors.New("managed mode requires --sbx")
 	}

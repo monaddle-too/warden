@@ -180,9 +180,29 @@ never replaces a provider login. What it does, in order:
    the services (every field has a computed default), but `warden start`
    requires it to exist because it is where the detected facts live.
 
+9. **Service.** Registers Warden with the platform's per-user service
+   manager and starts it: a launchd agent
+   `~/Library/LaunchAgents/com.monaddle.warden.plist` on macOS, a systemd
+   user unit `~/.config/systemd/user/warden.service` on Linux, both
+   running `warden start --service --config <state>/warden.json` with the
+   launcher as it was invoked (through `~/.warden/release/bin/warden`
+   when installed by `install.sh`, so a new release only needs `warden
+   restart`). Warden then runs from now on and again at every login; a
+   crash is restarted (launchd `KeepAlive` on an unsuccessful exit, ten
+   seconds apart; systemd `Restart=on-failure`). A re-run leaves a running
+   service alone, unless this install is a new release, which restarts it
+   on the new one. `--service=false` skips the step (`warden service
+   install` does it later); a host without a manager (no `launchctl`, no
+   `systemctl --user` session) reports so and `warden start --detach` is
+   the background option. The service step waits up to 90 s for the chat
+   endpoint. On Linux the step prints a note when your user does not
+   linger: `loginctl enable-linger $USER` makes the unit start at boot and
+   survive logout (it can ask for authentication, so it is not run for
+   you). A state directory other than the default gets its own label
+   (`com.monaddle.warden.<basename>`, `warden-<basename>.service`).
+
 The last line is `Installed. Next: `warden login codex` (and `warden login
-claude`, `warden login github` as needed), then `warden start` and `warden
-open`.`
+claude`, `warden login github` as needed), then `warden open`.`
 
 ## 3. `warden doctor`
 
@@ -274,15 +294,44 @@ App's secret, which releases do not ship). Codex and Claude sign-ins are
 files under `<state>/provider/`; delete the file, or run the login again
 with `--replace`.
 
-## 5. `warden start` and `warden open`
+## 5. `warden start`, `stop`, `restart`, `status` and `warden open`
+
+After install Warden is already running as a service (step 9), and the
+four commands drive the service manager:
 
 ```sh
-warden start
+warden status          # service: launchd agent com.monaddle.warden: running (pid N) (…plist)
+warden stop            # stops it; it starts again at the next login, or with `warden start`
+warden start           # starts the registered service and waits for the chat endpoint
+warden restart         # after a new release; the owner session rotates, run `warden open` again
+warden service install # register (again) for this launcher; `warden service uninstall` unregisters
+```
+
+`stop` is SIGTERM through the manager (`launchctl kill TERM` /
+`systemctl --user stop`), so the launcher's own shutdown runs; the
+launcher exits 0 and the manager does not restart it. `restart` is
+`launchctl kickstart -k` / `systemctl --user restart` (launchd waits its
+`ThrottleInterval` of 10 s when the service has run for less than that).
+The launcher's output goes to `<state>/warden.log`, which it rotates
+itself (with the four service logs) at 10 MiB when it starts, keeping
+three generations; launchd holds no log of its own. `warden doctor` has a
+`service` check: a registered unit must be this launcher's and loaded
+(running or stopped is a detail). `warden uninstall` unregisters first.
+
+Without a registered service (`--service=false`, or no manager on the
+host) `warden start` runs the stack in the terminal and `warden start
+--detach` in the background (recorded in `<state>/warden.pid`, `warden
+stop` sends it SIGTERM); with one, `--foreground` runs it in the terminal
+once the service is stopped. The foreground run:
+
+```sh
+warden start --foreground
 ```
 
 `start` requires `warden.json` (from install), takes `<state>/launcher.lock`
 (a second `start` on the same state directory is refused with "Warden is
-already running or shutting down in this state directory."), then runs
+already running or shutting down in this state directory.", or, when the
+service holds it, "Warden is already running as a launchd agent"), then runs
 the four services as `warden policy`, `warden runner`, `warden serve` and
 `warden edge` (the same executable, so one build always runs with itself),
 each with `WARDEN_CONFIG` pointing at `warden.json` and output appended to
@@ -327,9 +376,11 @@ chats the Claude executable to `/tmp/warden-claude` (once per guest, again
 only if the host file changes). It also installs the gateway CA and applies
 the sandbox's deny-all policy. Expect the first turn of a new sandbox to
 take noticeably longer than later ones; the live run did not time it.
-Sandboxes stop after 15 minutes without user activity
-(`sandboxes.stopAfterIdleMinutes`) unless they hold a published preview;
-files and chat history survive a stop, and the next message resumes.
+Sandboxes stop 30 minutes after the last chat activity — the agent's
+last reply, a message, a command, a preview — (`sandboxes.stopAfterIdleMinutes`)
+unless they hold a published preview; the idle agent session's release
+after ten minutes does not count. Files and chat history survive a stop,
+and the next message resumes.
 
 ## 7. Previews
 
@@ -375,7 +426,8 @@ second one. Do not expose that port.
 
 ## 8. Stopping, state and reset
 
-**Stopping.** Ctrl+C in the `warden start` terminal (or SIGTERM to it) stops
+**Stopping.** `warden stop` (the service), or Ctrl+C in a foreground
+`warden start` terminal (or SIGTERM to it), stops
 the four services in reverse order (SIGTERM, then SIGKILL after 15 s) and
 releases the lock. The runner releases the keep-alive session it holds on
 each resident sandbox, after which SBX's own rule (a VM stops once its last
@@ -397,11 +449,13 @@ namespace was started detached and keeps running.
 | `sbx/` | The private SBX namespace (`home`, `cache`, `state`, `config`, `data`, `login.json`); sandboxes and templates live here. |
 | `runtimes/` | `codex/` (the bundle) and `claude/claude`. |
 | `bin/warden-sbx` | The namespace wrapper; use it for any manual `sbx` command against Warden's sandboxes. |
-| `warden-policy.log`, `warden-runner.log`, `warden-chat.log`, `warden-edge.log` | Service output, appended across starts. |
+| `warden.log` | The launcher's output under the service or `--detach`; rotated at 10 MiB on start (`.1`–`.3`). |
+| `warden-policy.log`, `warden-runner.log`, `warden-chat.log`, `warden-edge.log` | Service output, appended across starts; rotated the same way. |
+| `warden.pid` | A detached launcher's pid (not used by the service). |
 | `launcher.lock` | Held while `warden start` runs. |
 
-**Reset and uninstall.** `warden uninstall` stops a background Warden,
-deletes every sandbox in the namespace, stops the namespace daemon and
+**Reset and uninstall.** `warden uninstall` stops and unregisters the
+service (or stops a detached Warden), deletes every sandbox in the namespace, stops the namespace daemon and
 removes `<state>`; `--keep-state` stops after the sbx cleanup, `--yes`
 skips the confirmation. Nothing outside `<state>` was created by install,
 so afterwards only the unpacked release directory (and any PATH entry for
@@ -415,8 +469,8 @@ own sbx namespace is unaffected by any of this.
 ## What an agent can ask for
 
 Besides sharing documents and repositories yourself, an agent can ask, and
-every request becomes an approval card in the chat, a popup and a
-`warden chat approve` item. Nothing happens until you answer, and the
+every request becomes an approval card in the app and the terminal client
+and a `warden chat approve` item. Nothing happens until you answer, and the
 answer and who gave it land in the workspace's Access history.
 
 - **Network access** (`request_network_access`): one public host over
@@ -529,6 +583,17 @@ default in `warden.json` and restart Warden:
 A console choice wins over the file until `<state>/policy/egress.json` is
 deleted.
 
+A workspace can have a network access of its own, chosen by the owner:
+the new-chat form's Network access fieldset (or `warden chat new
+--network restricted|open`) for a fresh workspace, and the workspace
+panel's Network access section, **Change…**, afterwards; every chat in
+the workspace follows, running ones included, and a fork with a copy of
+the workspace keeps it. "Install setting" (the default) follows the
+console switch above. Workspaces with a setting of their own are counted
+under the console switch, which leaves them alone; the policy service
+keeps them in `<state>/policy/egress-overrides.json`. Agents cannot ask
+for it: `request_network_access` stays one host for a bounded time.
+
 ## 9. Limits
 
 - One owner. The launcher capability is the only identity and it is the
@@ -546,7 +611,7 @@ deleted.
   2.1.272, the template digests. A new Warden release moves them; the
   installer never floats versions and refuses another release's state
   directory without `--upgrade`.
-- Idle sandboxes stop after 15 minutes; the sizing in `warden.json`
+- Idle sandboxes stop 30 minutes after the last chat activity; the sizing in `warden.json`
   (`sandboxes.*`, validated on load: memoryMB 512–65536,
   cpus 0.25–64, maxRunning ≥ 1; `maxMemoryMB`/`maxCPUs` cap what any one
   workspace may be given, 0 derives them from the host; see "Workspace
@@ -638,10 +703,10 @@ on the host, only the agent runs in the sandbox, and everything the agent
 produced is printed as text (escape sequences are stripped).
 
 ```bash
-warden start --detach      # run Warden in the background; logs in ~/.warden/warden.log
+warden status              # the service is running since install; logs in ~/.warden/warden.log
 warden chat                # open the most recent chat interactively
 warden chat 2              # or a number from `warden chat list`, an id prefix, or a title
-warden stop                # stop the background Warden
+warden stop                # stop Warden (it comes back at the next login, or with `warden start`)
 ```
 
 Inside `warden chat`: type and press Enter to send (during a run the message
@@ -674,15 +739,35 @@ warden status
 `send --wait` prints each transcript entry once it is complete and announces
 pending approvals; answer them with `warden chat approve` or in the app.
 
-**Approval popups.** While Warden runs it watches for approvals and surfaces
-each one once: a desktop notification (macOS Notification Center, or
-`notify-send` on Linux) naming the chat and the request, and, when started
-with `--detach`, the app opened in your browser on that chat so the card is
-in front of you. `warden start --popups browser|notify|none` overrides the
-default (`auto`: browser when detached, notification when in the
-foreground). Popups never answer anything; the app, `warden chat` or
-`warden chat approve` do. The terminal client also rings the bell when an
-approval appears on the open chat.
+**Approval popups.** By default a pending approval waits where it is: the
+app and the terminal client both show the card and answer it, and whichever
+answers first settles it everywhere. `warden start --popups notify` adds a
+desktop notification (macOS Notification Center, or `notify-send` on Linux)
+naming the chat and the request; `--popups browser` also opens the app in
+your browser on that chat; `--popups auto` is browser when detached and
+notify otherwise. Popups never answer anything; the app, `warden chat` or
+`warden chat approve` do. The terminal client rings the bell when an
+approval appears on the open chat (`/bell`), and the app can show a browser
+notification when its tab is hidden (the chat menu's "Desktop
+notifications").
+
+**Reviews open the app.** Three requests can only be done in the app: a
+pull request proposal (`request_pull_request`), suggested document edits
+(`propose_google_document_edit`) and a document selection or creation
+(`request_google_docs_access`, `request_google_document_creation`, which
+need the Google picker). When one appears the launcher opens the app on
+that chat under every `--popups` value, the default `none` included, and
+logs a line (`warden: review pending in "…": …; opening the app`); `notify`
+and `browser` add the desktop notification. `--popups silent` turns even
+that off, for a machine with no browser to open; `$BROWSER`, when set,
+names the command that opens URLs instead of `open`/`xdg-open`. The terminal client shows
+the review above the approvals ("Claude proposed a pull request “…” to
+owner/repo — review it in the app: /review"), counts it in the status line
+and the terminal title, rings the bell for it, and `/review [N]` opens the
+app on the chat (or shows the URL when it cannot); `warden chat send
+--wait` prints `review pending: …`. The reviews are `chats[].reviews` in
+`GET state`, kept while the policy service holds the request open and
+matched to it again when Warden restarts.
 
 ## Optional: a guest image so new sandboxes start faster
 

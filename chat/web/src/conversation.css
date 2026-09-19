@@ -244,6 +244,108 @@
 .message-actions.shown {
   opacity: 1;
 }
+/* A queued message (queue.ts): held by Warden until the agent's turn ends,
+   its bubble outlined rather than filled, with its actions always shown. */
+.message-queued .message-body {
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+}
+.message-queued .queued-label {
+  color: var(--accent-text);
+}
+.queued-actions {
+  align-items: center;
+}
+.queued-actions .queued-send {
+  height: 28px;
+  padding: 0 10px;
+  gap: 5px;
+  color: var(--accent-text);
+}
+/* A queued message edited on its card: the editor takes the bubble's
+   place, its bar under it. */
+.queued-editor {
+  width: min(600px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px dashed var(--accent);
+  border-radius: 14px 14px 4px 14px;
+  background: var(--surface);
+}
+.queued-editor textarea {
+  width: 100%;
+  min-height: 40px;
+  max-height: 320px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  resize: vertical;
+  outline: none;
+}
+.queued-editor textarea:focus {
+  border-color: var(--accent);
+}
+.queued-editor-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 13px;
+}
+.queued-editor-files li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.queued-editor-files button {
+  width: 20px;
+  height: 20px;
+}
+.queued-editor-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.queued-editor-bar > span:last-child {
+  display: flex;
+  gap: 6px;
+}
+.queued-editor-bar button {
+  height: 26px;
+  padding: 0 10px;
+}
+/* Undo under a rewind marker while the removed transcript is kept. */
+.rewind-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+}
+.rewind-actions button {
+  height: 26px;
+  padding: 0 10px;
+  gap: 5px;
+  color: var(--accent-text);
+}
+.rewind-actions small {
+  flex-basis: 100%;
+  text-align: center;
+  color: var(--muted);
+}
 @media (hover: none) {
   .message-actions {
     opacity: 1;
@@ -257,6 +359,112 @@
   text-align: center;
   color: var(--muted);
   white-space: pre-wrap;
+}
+
+/* A side question (/btw) and its answer: a card set apart from the
+   conversation, since the agent never sees it. */
+.aside-entry {
+  align-self: stretch;
+  border: 1px dashed var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 8px 12px;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.aside-entry header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.aside-entry header strong {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent-text);
+}
+.aside-question {
+  margin: 0;
+  font-weight: 600;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.aside-answer {
+  margin: 0;
+}
+.aside-answer > :first-child {
+  margin-top: 0;
+}
+.aside-answer > :last-child {
+  margin-bottom: 0;
+}
+.aside-entry.failed {
+  border-left-color: var(--danger);
+}
+.aside-facts {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* "Ask in chat" / "Asked in chat" on an answered side question. */
+.aside-facts button.aside-promote {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--accent-text);
+}
+
+/* The /cost card: this chat's totals, for the reader who asked. */
+.cost-card {
+  align-self: stretch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.cost-card header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.cost-card header strong {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cost-card header button {
+  margin-left: auto;
+}
+.cost-card table {
+  border-collapse: collapse;
+}
+.cost-card th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-2);
+  padding: 1px 16px 1px 0;
+}
+.cost-card tr.sub th {
+  padding-left: 14px;
+  color: var(--muted);
+}
+.cost-card td {
+  font-variant-numeric: tabular-nums;
+  padding: 1px 0;
 }
 
 /* Tool activity: one collapsed row per run of consecutive steps. */
@@ -348,6 +556,97 @@
 }
 .activity-entry pre {
   margin: 4px 0 6px;
+}
+
+/* Typed tool cards (ToolCard.tsx): the summary row names the call in its
+   own terms, the body shows its output folded, its diff, or its input. An
+   open card takes a readable width whatever its title's length. */
+.activity-group.tool-card[open] {
+  min-width: min(100%, 520px);
+}
+.tool-card summary .tool-icon {
+  flex: none;
+  color: var(--muted);
+}
+.tool-card summary .tool-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-card summary .tool-title.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.tool-card summary .tool-count,
+.tool-card summary .tool-failed {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.tool-card summary .tool-failed {
+  color: var(--danger);
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--danger-soft);
+}
+.tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.activity-group > .tool-body {
+  padding: 0 10px 10px;
+}
+.activity-entry > .tool-body {
+  padding: 4px 0 6px;
+}
+.tool-body p {
+  margin: 0;
+}
+.tool-description,
+.tool-meta {
+  font-size: 12px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.tool-meta code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.tool-meta a {
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.tool-output {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+.tool-output pre {
+  align-self: stretch;
+  margin: 0;
+  max-height: none;
+}
+.tool-input pre {
+  color: var(--muted);
+}
+.tool-more {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 2px 6px;
+}
+.tool-more:hover {
+  color: var(--text);
+}
+.tool-body .activity-detail {
+  margin: 0;
 }
 
 /* Approval card */
@@ -445,6 +744,40 @@
   justify-content: flex-end;
   gap: 8px;
 }
+/* A tool permission ask: the command or diff as the transcript shows it,
+   an optional message to the model, and its answers; a plan renders as
+   markdown. */
+.permission-card .permission-command {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.permission-card .permission-diff {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.permission-card .plan-body {
+  max-height: 480px;
+  overflow: auto;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 14px;
+}
+.permission-card .permission-message input {
+  width: 100%;
+}
+.permission-card .approval-actions {
+  flex-wrap: wrap;
+}
+.notice-entry {
+  font-style: italic;
+}
 .approval-card [role="alert"] {
   margin: 0;
 }
@@ -461,6 +794,8 @@
 }
 .composer-wrap > .error {
   margin-bottom: 10px;
+  /* One line per file /attach could not attach. */
+  white-space: pre-line;
 }
 .composer {
   position: relative;
@@ -490,50 +825,237 @@
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px 8px 8px;
+  padding: 4px 8px 8px 8px;
   font-size: 13px;
   color: var(--text-2);
 }
-/* The model picker sits in the composer, as in the desktop agent apps. */
-.composer-model select {
-  width: auto;
+/* The footer, as in the desktop agent apps: the attach button and the
+   permission mode at the left; Stop, the model · effort menu and Send
+   at the right. */
+.composer-tools,
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.composer-actions {
+  gap: 6px;
+}
+.composer-stop {
   height: 30px;
-  min-height: 0;
-  padding: 0 26px 0 8px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+/* The permission mode has no control in the footer: Shift+Tab and /mode
+   set it, and the line under the composer says when it is not auto. */
+.composer-mode-mark {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.composer-mode-mark.mode-plan {
+  color: var(--accent-text);
+}
+/* The model · effort menu (ComposerMenu.tsx). */
+.composer-menu {
+  position: relative;
+}
+.composer-menu-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 6px 0 10px;
   border: 1px solid transparent;
   border-radius: var(--radius);
-  background-color: transparent;
+  background: transparent;
   font-size: 13px;
   font-weight: 500;
   color: var(--text-2);
-  cursor: pointer;
+  white-space: nowrap;
 }
-.composer-model select:hover:not(:disabled) {
-  background-color: var(--surface-3);
+.composer-menu-button:hover:not(:disabled),
+.composer-menu.open .composer-menu-button {
+  background: var(--surface-3);
   color: var(--text);
 }
-.composer-model select:disabled {
+.composer-menu-button:disabled {
   opacity: 0.6;
   cursor: default;
 }
-.composer-footer > span {
+.composer-menu-sep {
+  color: var(--muted);
+}
+.composer-menu-effort {
+  color: var(--muted);
+  font-weight: 400;
+}
+.composer-menu-button:hover .composer-menu-effort,
+.composer-menu.open .composer-menu-effort {
+  color: var(--text-2);
+}
+.composer-menu-mark {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.composer-menu-list {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  min-width: 240px;
+  max-height: min(60vh, 480px);
+  overflow: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  text-align: left;
+}
+.composer-menu-section {
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.composer-menu-section + .composer-menu-section,
+.composer-menu-list > button + .composer-menu-section,
+.composer-menu-advanced {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+.composer-menu-list > button {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  height: auto;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.composer-menu-list > button:hover:not(:disabled),
+.composer-menu-list > button:focus-visible {
+  background: var(--surface-3);
+}
+.composer-menu-list > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.composer-menu-check {
+  flex: none;
+  width: 14px;
+  display: inline-flex;
+  justify-content: center;
+  color: var(--accent);
+}
+.composer-menu-label {
+  flex: 1;
   min-width: 0;
 }
-.composer-footer > span > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
+.composer-menu-hint {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+.composer-menu-advanced summary {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.composer-menu-advanced summary:hover {
+  color: var(--text);
+}
+.composer-menu-advanced label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 400;
+  text-align: left;
+  color: var(--text);
+}
+.composer-menu-advanced label > span:first-child {
+  color: var(--text-2);
+}
+.composer-menu-advanced select {
+  width: auto;
+  height: 28px;
+  min-height: 0;
+  padding: 0 24px 0 8px;
+  font-size: 13px;
+}
+.composer-menu-advanced .composer-menu-fast {
+  justify-content: flex-start;
+}
+.composer-menu-advanced .composer-menu-fast input {
+  width: 14px;
+  height: 14px;
+}
+.send-button {
+  width: 36px;
+  padding: 0;
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+}
+.send-button:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+/* Under the composer: the agent's state at the left, a hint about the
+   draft in the middle when there is one, the context meter and the spend
+   at the right. */
+.composer-hint {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 22px;
+  padding: 6px 6px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.composer-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
   white-space: nowrap;
 }
 /* The startup line while the sandbox starts: the whole detail, wrapped
    (up to three lines; the panel has the rest), and a button to the panel. */
-.composer-footer > span > .composer-startup {
+.composer-status > .composer-startup {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   overflow: hidden;
+  min-width: 0;
   height: auto;
   min-height: 0;
   padding: 2px 4px;
@@ -550,33 +1072,25 @@
   color: var(--accent-text);
   cursor: pointer;
 }
-.composer-footer > span > .composer-startup:hover:not(:disabled) {
+.composer-status > .composer-startup:hover:not(:disabled) {
   background: var(--surface-3);
   color: var(--accent-text);
 }
-.composer-footer > span > .composer-startup:disabled {
+.composer-status > .composer-startup:disabled {
   cursor: default;
 }
-.composer-footer > div {
-  display: flex;
-  gap: 8px;
+.composer-hint-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-meters {
+  display: inline-flex;
   align-items: center;
-}
-.send-button {
-  width: 36px;
-  padding: 0;
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--on-primary);
-}
-.send-button:hover {
-  background: var(--primary-hover);
-  border-color: var(--primary-hover);
-}
-.composer-hint {
-  padding: 6px 4px 0;
-  font-size: 12px;
-  color: var(--muted);
+  gap: 10px;
+  flex: none;
 }
 
 /* Slash commands and @path mentions: a list floating over the composer,
@@ -619,6 +1133,18 @@
 .suggest li[aria-disabled="true"] {
   opacity: 0.5;
   cursor: default;
+}
+.suggest li.suggest-group {
+  padding: 8px 10px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: default;
+}
+.suggest li.suggest-group:first-child {
+  padding-top: 3px;
 }
 .suggest li small {
   margin-left: auto;
@@ -688,6 +1214,129 @@ ul + .suggest-note {
 button.attachment-chip {
   cursor: pointer;
 }
+/* Long pastes: chips above the composer's text for the placeholders in
+   it (paste.ts); the chip opens the text in a dialog. */
+/* Editing a message the agent got (queue.ts): the bar over the textarea
+   saying that sending rewinds the conversation to before it. */
+.composer-editing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 10px 12px 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+.composer-editing-what {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+}
+.composer-editing-code {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-weight: 400;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.composer-editing button {
+  height: 26px;
+  padding: 0 8px;
+}
+.composer-pastes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px 0;
+}
+.paste-chip {
+  height: 30px;
+  padding: 0 4px 0 0;
+  gap: 0;
+}
+.paste-chip .paste-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 4px 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.paste-chip .paste-open .muted {
+  font-size: 12px;
+}
+.paste-chip .paste-remove {
+  width: 22px;
+  height: 22px;
+}
+.paste-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: 85vh;
+  padding: 16px 20px 20px;
+  display: none;
+  flex-direction: column;
+}
+.paste-dialog[open] {
+  display: flex;
+}
+.paste-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.paste-dialog pre {
+  margin: 0;
+  overflow: auto;
+  max-height: 70vh;
+  padding: 12px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* A command the person ran ("!cmd"): their name on the card, open by
+   default, with the way to hand it to the agent. */
+.tool-card summary .tool-by {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+.activity-group.by-person > summary {
+  cursor: pointer;
+}
+.tool-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 10px 8px;
+}
+.tool-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  font-size: 12px;
+}
+
 .entry-attachments {
   display: flex;
   flex-wrap: wrap;
@@ -863,4 +1512,210 @@ button.attachment-chip {
   .pending-reply {
     animation: none;
   }
+}
+
+/* A subagent's card (an Agent call): its prompt, then its own transcript
+   collapsed behind a count, then its final text. A background call wears
+   a badge. */
+.tool-card summary .tool-badge {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-2);
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+.tool-prompt pre {
+  color: var(--text-2);
+}
+.tool-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.subagent {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  min-width: 0;
+}
+.subagent > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.subagent > summary::-webkit-details-marker {
+  display: none;
+}
+.subagent > summary:hover {
+  color: var(--text);
+}
+.subagent[open] > summary .chevron {
+  transform: rotate(90deg);
+}
+.subagent-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 10px 10px;
+  border-top: 1px solid var(--line);
+}
+.subagent-transcript .message {
+  font-size: 13px;
+}
+.subagent-transcript .message-avatar {
+  display: none;
+}
+.subagent-transcript .activity-group {
+  background: var(--surface);
+}
+
+/* The todo list: a checklist that stands open and updates in place. */
+.todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.todo-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.todo-list li svg {
+  flex: none;
+  position: relative;
+  top: 2px;
+  color: var(--muted);
+}
+.todo-list li.todo-completed svg {
+  color: var(--ok, var(--accent-text));
+}
+.todo-list li.todo-completed .todo-content {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.todo-list li.todo-in_progress svg {
+  color: var(--accent-text);
+}
+.todo-list li.todo-in_progress .todo-content {
+  color: var(--text);
+  font-weight: 500;
+}
+.todo-active {
+  font-size: 12px;
+}
+/* The context meter under the composer: a small bar and "42k / 200k",
+   amber from 80 % of the window, red from 95 %. */
+.context-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: default;
+}
+.context-bar {
+  display: inline-block;
+  width: 40px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.context-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--muted);
+  transition: width 0.3s;
+}
+.context-meter.warn {
+  color: var(--accent-text);
+}
+.context-meter.warn .context-bar > span {
+  background: var(--accent);
+}
+.context-meter.high {
+  color: var(--danger);
+}
+.context-meter.high .context-bar > span {
+  background: var(--danger);
+}
+
+/* The spend chip beside the context meter: the chat's cost (or tokens) so far. */
+.spend-chip {
+  display: inline-flex;
+  flex: none; /* a few characters: never the one the footer cuts */
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: default;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The divider where the agent compacted its context. */
+.compaction-entry {
+  align-self: stretch;
+  font-size: 12px;
+  color: var(--muted);
+}
+.compaction-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.compaction-line::before,
+.compaction-line::after {
+  content: "";
+  flex: 1;
+  border-top: 1px dashed var(--line-strong);
+}
+.compaction-entry.running .compaction-line span {
+  color: var(--accent-text);
+}
+.compaction-entry.failed .compaction-line span {
+  color: var(--danger);
+}
+.compaction-summary {
+  max-width: 720px;
+  margin: 6px auto 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.compaction-summary > summary {
+  cursor: pointer;
+  text-align: center;
+  color: var(--muted);
+}
+.compaction-summary > summary:hover {
+  color: var(--text);
+}
+.compaction-summary[open] > summary {
+  margin-bottom: 6px;
+}
+.compaction-entry + .turn-stats.block {
+  margin-top: -4px;
+  align-self: center;
+}
+.context-bar {
+  position: relative;
+}
+.context-threshold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-strong);
 }

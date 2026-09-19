@@ -335,10 +335,15 @@ helm upgrade warden oci://ghcr.io/monaddle-too/charts/warden --version <chart ve
 
 - Each Deployment uses `Recreate`: the old pod stops before the new one
   starts, so each service is down for the restart. An edge restart signs
-  viewers out (chat and agent work stay server-side); a runner restart
-  reconciles the sandbox pods and PVCs it finds by label (every registered
-  sandbox is stopped, spares are removed and recreated, unregistered claims
-  are kept and logged; seen on every runner restart on the dev cluster).
+  viewers out (chat and agent work stay server-side); a chat restart ends
+  the agent turns in flight (each chat says "Warden restarted. Send a new
+  message to resume."); a runner restart reconciles the sandbox pods and
+  PVCs it finds by label: the pod of a registered workspace that was
+  running, at the generation the registry recorded, is kept and the
+  workspace stays running with a fresh idle window (the next message
+  resumes on it in seconds rather than waiting for a new sandbox node),
+  every other pod is deleted, spares are removed and recreated,
+  unregistered claims are kept and logged.
 - The pods carry a checksum of the rendered `warden.json`, so a values
   change that alters it rolls the pods; a change that does not (for
   example `resources`) rolls only what Kubernetes needs to.
@@ -391,7 +396,7 @@ when the two differ.
 | `guestImage` | The guest base image sandboxes run: `repository` and `digest`. The digest is required and must be a platform manifest digest; the runner pins it and the policy service checks each pod's `imageID` against it. | `ghcr.io/monaddle-too/warden-guest-base`, `""` |
 | `runtime` | `tier` (`kata` or `gvisor`); `runtimeClassName` (empty selects the tier default, `gvisor` or `kata-qemu`; the admission policy refuses any other class); `handlers.{gvisor,kata}` (used only when the chart creates the RuntimeClass); `createRuntimeClasses` (off: clusters usually own theirs); `overhead.{memoryMi,cpuMillis}` (the RuntimeClass pod overhead the sandbox quota must allow, typically 160Mi and 250m on Kata; written into the RuntimeClass when the chart creates it). | `gvisor`, `""`, `runsc`/`kata-qemu`, `false`, `0`/`0` |
 | `sandboxNamespace` | `name` of the sandbox namespace, whether the chart creates it, and whether it is kept on uninstall. | `warden-sandboxes`, `true`, `true` |
-| `sandboxes` | Sandbox sizing, mirrored into `warden.json` and into the namespace quota and LimitRange: `memoryMB` and `cpus` (the default size of a fresh workspace; CPUs in quarters), `maxMemoryMB` and `maxCPUs` (the most any one workspace may be resized to: the quota allows every sandbox at this size and the LimitRange caps containers at it), `maxRunning`, `warmSpares`, `stopAfterIdleMinutes`, `keepStopped` (stopped workspaces kept), `extraPods` (quota headroom for the two canaries), `extraPVCs` (headroom for a fork clone in flight), `nodeSelector` and `tolerations` for sandbox pods (rendered into `warden.json` only when set). | `1536`, `1`, `8192`, `4`, `2`, `1`, `15`, `32`, `2`, `2`, `{}`, `[]` |
+| `sandboxes` | Sandbox sizing, mirrored into `warden.json` and into the namespace quota and LimitRange: `memoryMB` and `cpus` (the default size of a fresh workspace; CPUs in quarters), `maxMemoryMB` and `maxCPUs` (the most any one workspace may be resized to: the quota allows every sandbox at this size and the LimitRange caps containers at it), `maxRunning`, `warmSpares`, `stopAfterIdleMinutes` (minutes after the last chat activity), `keepStopped` (stopped workspaces kept), `extraPods` (quota headroom for the two canaries), `extraPVCs` (headroom for a fork clone in flight), `nodeSelector` and `tolerations` for sandbox pods (rendered into `warden.json` only when set). | `1536`, `1`, `8192`, `4`, `2`, `1`, `30`, `32`, `2`, `2`, `{}`, `[]` |
 | `egress` | `restricted` (the policy template's destination list) or `open` (any public HTTP/HTTPS host); enforced at the gateway, same NetworkPolicies either way. | `restricted` |
 | `auth` | `mode` (`owner` or `google`); `publicURL` (the URL browsers open: `http://127.0.0.1:<edge.port>` by default in owner mode, the Ingress URL in Google mode); `google.signInClientID`, `google.owners`, `google.demoDomains`. | `owner`, `""`, `""`, `[]`, `[]` |
 | `previews` | `mode` (`loopback` or `public`); `hostSuffix` (public only); `ingress.enabled`, `ingress.className`, `ingress.annotations`, `ingress.host` (empty derives the app host from `auth.publicURL`), `ingress.tls.enabled`, `ingress.tls.secretName` (the certificate for the app host and `*.<hostSuffix>`). | `loopback`, `""`, `true`, `""`, `{}`, `""`, `true`, `warden-edge-public-tls` |
@@ -530,10 +535,18 @@ edge's launch URL, which the owner already holds.
 
 **Startup stages.** While a chat's first message waits for its sandbox,
 the chat's status line says which stage the start is at, with the
-runtime's detail — `Resuming the sandbox · waiting for a node: 0/1 nodes
-are available: 1 Insufficient cpu`, `Creating the sandbox · pulling the
-container image`, `Installing the agent runtime` — so a node being
-provisioned or a slow image pull is visible where the wait is felt. The
+runtime's detail — `Resuming the sandbox · waiting for a node: none of
+the 5 nodes can take the sandbox: 2 full (cpu, memory), 3 not for
+sandboxes`, `Creating the sandbox · pulling the container image`,
+`Installing the agent runtime` — so a node being provisioned or a slow
+image pull is visible where the wait is felt. The scheduler's tally
+(`0/5 nodes are available: 2 Insufficient cpu, …`, then its preemption
+reasoning) is put in the owner's words by `SchedulerVerdict`
+(`sandbox/kube/driver.go`): a node "full" may be one whose slack a
+managed cluster's balloon pod holds, "not for sandboxes" is the runtime
+or zone selector, "in another zone than the workspace's disk" the
+PersistentVolume's affinity, "still starting or reserved" a taint; on an
+autoscaled cluster that line is what a node being added looks like. The
 runner's prepare operation allows ten minutes for that on this shape (two
 on the sbx shapes); a pod that cannot be scheduled in that time fails the
 chat with the scheduler's reason.
@@ -1014,14 +1027,41 @@ The dev VM cannot exercise public previews (a public address, a domain,
 a browser certificate, Google sign-in). `deploy/k8s/gke/` and
 `scripts/k8s-gke.sh` run the chart on a GKE Autopilot cluster for that,
 as a test cluster that costs little while nothing runs: Autopilot bills
-pod requests only (the four service pods on Spot capacity are about $8 a
-month, the GKE free tier covers one cluster's management fee), GKE Sandbox
-is the gVisor tier with nothing to install on nodes, Dataplane V2 enforces
-the NetworkPolicies, the ingress controller's load balancer is about $18 a
-month while it exists, and a sandbox costs about five cents an hour while
-it runs. `sandboxes.warmSpares` is 0 in `deploy/k8s/gke/values.yaml` for
-that reason (a warm spare is billed around the clock), so the first
-sandbox after an idle period waits for a GKE Sandbox node.
+pod requests only (the four service pods request 350m and 448Mi in all,
+about $17 a month on demand; the GKE free tier covers one cluster's
+management fee), GKE Sandbox is the gVisor tier with nothing to install on
+nodes, Dataplane V2 enforces the NetworkPolicies, the ingress controller's
+load balancer is about $18 a month while it exists, and a sandbox costs
+about five cents an hour while it runs. Requests are the whole bill, so
+every pod's are set on purpose: a chart that sets none gets Autopilot's
+defaults of 500m / 2Gi per pod — cert-manager's three pods came to about
+$70 a month that way, until `scripts/k8s-gke.sh addons` gave them 50m /
+64–128Mi. Node count is not a cost signal: Autopilot fills spare node
+capacity with `gke-system-balloon-pod`s and reclaims empty nodes itself.
+A request is a floor, not a cap: Autopilot sets no CPU quota (a pod with
+no CPU limit is `Burstable` with `cpu.max = max`), it pins the pod to a
+cpuset of whole physical cores that grows with the request — measured on
+1.35: 100m and 250m both get one core (two hyperthreads), 1000m two,
+2000m three — and the burst is free. So the policy service at 100m can
+still use a whole core for TLS inspection; a second core costs a 1000m
+request, about $32 a month. `sandboxes.warmSpares` is 1 in `deploy/k8s/gke/values.yaml`
+(a warm spare is billed around the clock, about $38 a month), so a fresh
+workspace usually starts at once; a **resume** cannot use the spare, and
+on Autopilot's container-optimized platform it rarely finds a node
+either: the workspace's disk is a zonal `pd-balanced`, the regional
+cluster's autoscaler drains gVisor nodes per zone once they idle, and the
+nodes still up hold their slack in a `system-node-critical`
+`gke-system-balloon-pod` that no pod preempts ("Insufficient cpu" on a
+node running one 1-CPU sandbox). Every resume after a long idle then
+boots a node in the disk's zone (~45 s, plus attach and pull). The
+values pin sandbox pods to one zone (`sandboxes.nodeSelector:
+topology.kubernetes.io/zone`), so spares, new disks and the nodes they
+need share it and a resume can land on a node that is already up (GKE
+regrows it in seconds); the runner leaves the zone key off a pod whose
+claim is already bound (`Placement` in `sandbox/kube/spec.go`), since
+the disk's own node affinity places it and a disk from before the pin
+would otherwise never schedule. Changing the pinned zone strands no
+disk for the same reason; it only moves where new ones go.
 
 The domain is one delegated zone: the app is `https://<domain>/` and
 previews are `https://<binding-id>.<domain>/`, so `auth.publicURL` and

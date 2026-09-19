@@ -1,3 +1,4 @@
+import { runningLabel } from "./activity";
 import type { Chat, Startup } from "./types";
 
 /* The startup stages the chat and the runner report
@@ -36,27 +37,31 @@ export function startupLine(s: Startup, now = Date.now() / 1000): string {
 }
 
 /* What a chat's status means for people: the startup stage while it is
-   starting, otherwise the status itself. */
+   starting, what the agent is doing while its turn runs (activity.ts),
+   otherwise the status itself. */
 export function chatStatusLabel(
   c: Pick<Chat, "status" | "startup"> & Partial<Pick<Chat, "conversation">>,
 ): string {
   if (c.startup && (c.status === "running" || c.status === "queued"))
     return stageLabel(c.startup.stage);
+  const entries = c.conversation?.entries ?? [];
+  // Messages queued behind the turn, or held once it was stopped (queue.ts).
+  const queued = entries.filter(
+    (e) => e.role === "user" && !e.parentID && e.delivery === "queued",
+  ).length;
+  const held = queued
+    ? ` · ${queued} message${queued === 1 ? "" : "s"} held`
+    : "";
   switch (c.status) {
-    case "running": {
-      const entries = c.conversation?.entries ?? [];
-      const last = entries[entries.length - 1];
-      if (last?.role === "thinking" && last.isStreaming)
-        return "Agent is thinking";
-      return "Agent is running";
-    }
+    case "running":
+      return runningLabel(entries) + (queued ? ` · ${queued} queued` : "");
     case "queued":
       return "Waiting to start";
     case "stopping":
       return "Stopping…";
     case "idle":
-      return "Agent is idle";
+      return "Agent is idle" + held;
     default:
-      return c.status;
+      return c.status + held;
   }
 }

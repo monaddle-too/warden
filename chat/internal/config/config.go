@@ -82,6 +82,13 @@ type Config struct {
 	// chat.
 	Services Services `json:"services,omitzero"`
 	TLS      *TLS     `json:"tls,omitempty"`
+	// Edge is what the edge does beyond sign-in and previews (which it
+	// derives from auth.* and previews.*): today the bug-report receiver.
+	Edge Edge `json:"edge,omitzero"`
+	// Reporting is bug reporting (docs/bug-reporting-plan.md): off unless
+	// the person opted in at install or with `warden bugs on`; every report
+	// is shown to them before it is sent to URL.
+	Reporting Reporting `json:"reporting,omitzero"`
 }
 
 // Paths locates Warden's data and release assets.
@@ -277,10 +284,28 @@ type GoogleSignIn struct {
 	SignInLedger   string   `json:"signInLedger,omitempty"`
 }
 
+// Edge is the edge's own section: the bug-report receiver
+// (docs/bug-reporting-plan.md).
+type Edge struct {
+	BugReports BugReports `json:"bugReports"`
+}
+
+// BugReports configures POST /api/bug-reports on the edge: off unless
+// enabled (a local install never receives; the cloud chart values turn it
+// on), reports kept under <edge state>/bug-reports for retentionDays and
+// at most 10 000 files, at most maxPerHour reports per source IP and
+// maxPerDay overall.
+type BugReports struct {
+	Enabled       bool `json:"enabled"`
+	RetentionDays int  `json:"retentionDays,omitempty"`
+	MaxPerHour    int  `json:"maxPerHour,omitempty"`
+	MaxPerDay     int  `json:"maxPerDay,omitempty"`
+}
+
 // Providers are the accounts Warden brokers for agents.
 type Providers struct {
 	Codex  *AuthFile `json:"codex,omitempty"`
-	Claude *AuthFile `json:"claude,omitempty"`
+	Claude *Claude   `json:"claude,omitempty"`
 	Google *Google   `json:"google,omitempty"`
 	GitHub *GitHub   `json:"github,omitempty"`
 }
@@ -290,6 +315,35 @@ type Providers struct {
 type AuthFile struct {
 	AuthFile string `json:"authFile,omitempty"`
 	Secret   string `json:"secret,omitempty"`
+	// DefaultModel is the model new chats of this provider start with
+	// (chats/defaults.go has the built-in: GPT-5.6 Sol for Codex).
+	DefaultModel string `json:"defaultModel,omitempty"`
+}
+
+// Claude is the Claude login (as AuthFile) plus the session features the
+// operator may let chats use. Both cost more than the defaults, so both
+// are off unless set: fast mode (Claude Code's faster, pricier Opus
+// serving) and the 1M-context model variants (`sonnet[1m]`, `opus[1m]`).
+type Claude struct {
+	AuthFile         string `json:"authFile,omitempty"`
+	Secret           string `json:"secret,omitempty"`
+	AllowFastMode    bool   `json:"allowFastMode,omitempty"`
+	AllowLongContext bool   `json:"allowLongContext,omitempty"`
+	// DefaultModel is the model new Claude chats start with (the
+	// built-in is Opus, chats/defaults.go).
+	DefaultModel string `json:"defaultModel,omitempty"`
+}
+
+// logins are the two agent logins as one shape, for the validation that
+// applies to both.
+func (p Providers) logins() map[string]*AuthFile {
+	m := map[string]*AuthFile{"codex": p.Codex}
+	if p.Claude != nil {
+		m["claude"] = &AuthFile{AuthFile: p.Claude.AuthFile, Secret: p.Claude.Secret}
+	} else {
+		m["claude"] = nil
+	}
+	return m
 }
 
 // Google selects the Docs OAuth client: "builtin" or a path to an operator
@@ -312,6 +366,17 @@ type GitHub struct {
 // BuiltinGoogleClient names the shared Warden Docs client.
 const BuiltinGoogleClient = "builtin"
 
+// Reporting is the bug-reporting opt-in and the receiver it sends to
+// (docs/bug-reporting-plan.md). Enabled false means no drafts are written
+// at all; URL is https, or http for a loopback receiver only.
+type Reporting struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url,omitempty"`
+}
+
+// DefaultReportingURL is the cloud Warden's receiver.
+const DefaultReportingURL = "https://cloud.warden.monaddle.com/api/bug-reports"
+
 // Defaults returns the local-mode configuration for a state root with every
 // field computed. Callers that detect host facts overwrite fields afterwards.
 func Defaults(state string) Config {
@@ -319,17 +384,19 @@ func Defaults(state string) Config {
 	c.Paths.State = state
 	c.SBX.PrivateHome = filepath.Join(state, "sbx")
 	c.SBX.InspectionCertMaxAgeDays = 365
-	c.Sandboxes = Sandboxes{MemoryMB: 1536, CPUs: 1, MaxRunning: 2, WarmSpares: 1, StopAfterIdleMinutes: 15, KeepStopped: 32, Egress: EgressRestricted}
+	c.Sandboxes = Sandboxes{MemoryMB: 1536, CPUs: 1, MaxRunning: 2, WarmSpares: 1, StopAfterIdleMinutes: 30, KeepStopped: 32, Egress: EgressRestricted}
 	c.Chat.Listen = "127.0.0.1:18780"
 	c.Previews = Previews{Mode: PreviewLoopback, HostSuffix: "localhost", EdgeListen: "127.0.0.1:18781"}
 	c.Auth = Auth{Mode: AuthOwner, PublicURL: "http://" + c.Previews.EdgeListen}
+	c.Edge.BugReports = BugReports{RetentionDays: 90, MaxPerHour: 30, MaxPerDay: 500}
 	provider := filepath.Join(state, "provider")
 	c.Providers = Providers{
 		Codex:  &AuthFile{AuthFile: filepath.Join(provider, "auth.json")},
-		Claude: &AuthFile{AuthFile: filepath.Join(provider, "claude.json")},
+		Claude: &Claude{AuthFile: filepath.Join(provider, "claude.json")},
 		Google: &Google{DocsClient: BuiltinGoogleClient},
 		GitHub: &GitHub{AuthFile: filepath.Join(provider, "github.json")},
 	}
+	c.Reporting = Reporting{URL: DefaultReportingURL}
 	return c
 }
 
@@ -647,6 +714,12 @@ func merge(c *Config, file Config) {
 		}
 		c.Auth.Google = &g
 	}
+	if file.Edge.BugReports.Enabled {
+		c.Edge.BugReports.Enabled = true
+	}
+	setInt(&c.Edge.BugReports.RetentionDays, file.Edge.BugReports.RetentionDays)
+	setInt(&c.Edge.BugReports.MaxPerHour, file.Edge.BugReports.MaxPerHour)
+	setInt(&c.Edge.BugReports.MaxPerDay, file.Edge.BugReports.MaxPerDay)
 	// Providers: a section present in the file replaces the default section;
 	// a JSON null removes it (hides that integration).
 	if file.Providers.Codex != nil {
@@ -661,6 +734,10 @@ func merge(c *Config, file Config) {
 	if file.Providers.GitHub != nil {
 		c.Providers.GitHub = file.Providers.GitHub
 	}
+	if file.Reporting.Enabled {
+		c.Reporting.Enabled = true
+	}
+	setString(&c.Reporting.URL, file.Reporting.URL)
 }
 
 func setString(dst *string, v string) {
@@ -780,7 +857,36 @@ func (c Config) Validate() error {
 	if g := c.Providers.Google; g != nil && g.DocsClient == "" {
 		return errors.New("providers.google.docsClient must be \"builtin\" or a file path")
 	}
+	if b := c.Edge.BugReports; b.RetentionDays < 1 || b.RetentionDays > 3650 || b.MaxPerHour < 1 || b.MaxPerDay < 1 {
+		return errors.New("edge.bugReports: retentionDays 1–3650, maxPerHour ≥ 1, maxPerDay ≥ 1")
+	}
+	if err := c.Reporting.validate(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validate admits an https receiver, or http on a loopback address (a
+// local receiver while developing); anything else is refused so a report
+// never travels in the clear to another host.
+func (r Reporting) validate() error {
+	if r.URL == "" {
+		return errors.New("reporting.url is required")
+	}
+	u, err := url.Parse(r.URL)
+	if err != nil || u.Host == "" || u.User != nil {
+		return fmt.Errorf("reporting.url %q must be an absolute https:// URL", r.URL)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if ip := net.ParseIP(u.Hostname()); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+		return fmt.Errorf("reporting.url %q: http is allowed for 127.0.0.1 only", r.URL)
+	}
+	return fmt.Errorf("reporting.url %q must be an absolute https:// URL", r.URL)
 }
 
 // validateKind applies the rules that depend on runtime.kind: the sbx
@@ -792,7 +898,7 @@ func (c Config) validateKind() error {
 		if c.Kubernetes != nil {
 			return errors.New("kubernetes.* is only used with runtime.kind \"kubernetes\"")
 		}
-		for name, p := range map[string]*AuthFile{"codex": c.Providers.Codex, "claude": c.Providers.Claude} {
+		for name, p := range c.Providers.logins() {
 			if p != nil && p.Secret != "" {
 				return fmt.Errorf("providers.%s.secret is only used with runtime.kind \"kubernetes\"; the sbx shapes use authFile", name)
 			}
@@ -840,7 +946,7 @@ func (c Config) validateKind() error {
 				return fmt.Errorf("kubernetes.tolerations[%d].effect must be NoSchedule, PreferNoSchedule or NoExecute", i)
 			}
 		}
-		for name, p := range map[string]*AuthFile{"codex": c.Providers.Codex, "claude": c.Providers.Claude} {
+		for name, p := range c.Providers.logins() {
 			if p == nil {
 				continue
 			}

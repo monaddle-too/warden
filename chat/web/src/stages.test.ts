@@ -24,7 +24,7 @@ describe("stages", () => {
         startup: { stage: "launching", since: 0 },
       }),
     ).toBe("Starting the agent");
-    expect(chatStatusLabel({ status: "running" })).toBe("Agent is running");
+    expect(chatStatusLabel({ status: "running" })).toBe("Agent is working");
     const thinking = (isStreaming: boolean) => ({
       status: "running",
       conversation: {
@@ -42,7 +42,27 @@ describe("stages", () => {
       },
     });
     expect(chatStatusLabel(thinking(true))).toBe("Agent is thinking");
-    expect(chatStatusLabel(thinking(false))).toBe("Agent is running");
+    expect(chatStatusLabel(thinking(false))).toBe("Agent is working");
+    // What the agent is doing, from the newest running step (activity.ts).
+    expect(
+      chatStatusLabel({
+        status: "running",
+        conversation: {
+          entries: [
+            {
+              id: "b",
+              role: "activity",
+              text: "go test ./...",
+              detail: "",
+              createdAt: 0,
+              isStreaming: true,
+              delivery: "",
+              tool: { kind: "command", name: "Bash", status: "running" },
+            },
+          ],
+        },
+      }),
+    ).toBe("Running go test ./...");
     expect(chatStatusLabel({ status: "queued" })).toBe("Waiting to start");
     expect(
       chatStatusLabel({
@@ -50,6 +70,29 @@ describe("stages", () => {
         startup: { stage: "launching", since: 0 },
       }),
     ).toBe("Agent is idle");
+  });
+  it("counts the messages queued behind the turn, or held after a stop", () => {
+    const queued = (status: string, n: number) => ({
+      status,
+      conversation: {
+        entries: Array.from({ length: n }, (_, i) => ({
+          id: "q" + i,
+          role: "user",
+          text: "later",
+          detail: "",
+          createdAt: 0,
+          isStreaming: false,
+          delivery: "queued",
+        })),
+      },
+    });
+    expect(chatStatusLabel(queued("running", 2))).toBe(
+      "Agent is working · 2 queued",
+    );
+    expect(chatStatusLabel(queued("interrupted", 1))).toBe(
+      "interrupted · 1 message held",
+    );
+    expect(chatStatusLabel(queued("idle", 0))).toBe("Agent is idle");
   });
 });
 

@@ -1,0 +1,448 @@
+package tui
+
+import (
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"unicode"
+	"warden/chat/internal/chats"
+)
+
+// Completion in the composer, the pure parts (the web's composer.ts): a
+// command is a draft that starts with "/" (its first line is the command
+// and the argument); a mention is an "@" at the start of a word, and the
+// text from it to the caret is the workspace path prefix to complete. A
+// command's argument can have its own list (a local file for /attach, a
+// chat for /switch). Picking a suggestion replaces the trigger's range;
+// nothing else about the text changes, and a mention stays in the text as
+// written for the agent to read.
+
+// Command is one slash command: its name, the argument it takes (empty
+// for none) and a hint for the menu.
+type Command struct {
+	Name string
+	Arg  string
+	Hint string
+}
+
+// Commands is the `/` menu, in the order it shows them.
+var Commands = []Command{
+	{"help", "", "show the commands"},
+	{"keys", "", "list every key by area, from the table the keys are handled with"},
+	{"new", "[TITLE]", "start a chat on a fresh workspace"},
+	{"chats", "", "list chats"},
+	{"switch", "N", "open chat N"},
+	{"rename", "TITLE", "rename this chat"},
+	{"archive", "", "archive this chat (stopped chats only)"},
+	{"restore", "", "bring an archived chat back"},
+	{"delete", "", "delete this chat's workspace and its files"},
+	{"stop", "", "interrupt the agent's turn (Esc)"},
+	{"model", "MODEL", "set the model for the next turn"},
+	{"provider", "codex|claude", "set the provider for the next turn"},
+	{"mode", "auto|ask|plan", "permission mode of a Claude chat (Shift+Tab cycles)"},
+	{"thinking", "on|off|TOKENS", "how much a Claude chat thinks: the model decides, none, or a budget (8k)"},
+	{"effort", "low|medium|high|xhigh|max|default", "effort level of a Claude chat"},
+	{"fast", "on|off", "fast mode of a Claude chat, where Warden allows it"},
+	{"attach", "PATH…", "send local files with the next message (several paths, globs)"},
+	{"attachments", "", "list the files waiting to be sent"},
+	{"detach", "N", "drop a waiting file"},
+	{"paste", "[N]", "list the draft's collapsed pastes, or print paste N in full"},
+	{"export", "[md|json] [all] [FILE]", "write the transcript to a file"},
+	{"rewind", "[N] [code|conv|both]", "go back to before message N: its code, the conversation or both"},
+	{"edit", "[N] [both]", "edit message N: a queued one in place (Enter saves it into its slot), a sent one is rewound to before and sent again (↑ edits the last queued, Esc Esc the last sent)"},
+	{"queue", "[send]", "list the messages queued behind the agent's turn; send lets a held queue go"},
+	{"withdraw", "N", "drop queued message N (N from /queue)"},
+	{"undo-rewind", "[code]", "put back what the last conversation rewind removed; code restores the workspace as it was before the rewind too"},
+	{"diff", "", "show or hide what changed in the workspace since this chat began"},
+	{"instructions", "[edit|clear]", "your standing instructions for the agent, in every chat"},
+	{"memory", "[FILE | edit FILE]", "the workspace's CLAUDE.md, rules and auto-memory files"},
+	{"fork", "[N|all] [copy]", "copy this chat into a sibling (before message N, or the whole of it); copy takes a copy of the workspace too"},
+	{"btw", "QUESTION", "a side question answered from this chat's context, never sent to the agent (promote N asks it in chat)"},
+	{"cost", "", "this chat's turns, tokens and cost so far"},
+	{"rules", "[add allow|deny|ask PATTERN | rm N]", "the workspace's permission rules (Bash(git *), Edit(src/**)…) and this chat's"},
+	{"permissions", "", "how this chat's tool asks were decided and by whom"},
+	{"allow", "[chat]", "allow the pending tool ask always, for the workspace (or this chat)"},
+	{"bug", "TEXT", "report a bug to Monaddle; you review the report before it is sent"},
+	{"test", "bugreporting", "raise a test exception in the chat service; the report opens for review"},
+	{"style", "[default|Explanatory|Learning]", "Claude's output style for the next session"},
+	{"bell", "[on|off]", "ring the terminal bell when the agent finishes, asks or fails"},
+	{"copy", "", "put the agent's last reply on the clipboard"},
+	{"find", "TEXT", "print the transcript lines containing TEXT, a subagent's steps and folded output too (your terminal's search jumps to them)"},
+	{"search", "TEXT | N", "search every chat's title and transcript; N opens a listed hit"},
+	{"bottom", "", "reprint the chat so the terminal shows its end (End on an empty draft, G in vim mode)"},
+	{"vim", "[on|off]", "vim keys in the composer: Esc for normal mode, i inserts, :w sends"},
+	{"expand", "", "toggle full tool output and diffs (Tab)"},
+	{"verbose", "", "show or hide tool steps and thinking (Ctrl+O)"},
+	{"open", "", "open this chat in the browser"},
+	{"review", "[N]", "open the app on this chat's pending review (a pull request proposal, document suggestions, a document choice)"},
+	{"previews", "", "list published previews"},
+	{"preview", "N", "open preview N in the browser"},
+	{"unpublish", "N", "take preview N down"},
+	{"clear", "", "discard the draft and its attachments"},
+	{"quit", "", "leave (Ctrl+D)"},
+}
+
+// Trigger is the completion the caret asks for.
+type Trigger struct {
+	// Kind is "command" (the name after "/"), "path" (an @-mention),
+	// "localpath" (an @-mention of this machine's file), "local" (a
+	// local file for /attach) or "chat" (a chat for /switch).
+	Kind string
+	// Start and End bound the runes replaced when a suggestion is picked.
+	Start, End int
+	// Query is what was typed after the "/" or "@", up to the caret.
+	Query string
+}
+
+func isSpace(r rune) bool { return r == ' ' || r == '\t' || r == '\n' }
+
+// argumentKinds are the commands whose argument has its own list.
+var argumentKinds = map[string]string{"attach": "local", "switch": "chat", "model": "model", "effort": "effort"}
+
+// triggerAt finds the trigger at the caret, if any.
+func triggerAt(text []rune, caret int) (Trigger, bool) {
+	caret = max(0, min(caret, len(text)))
+	if len(text) > 0 && text[0] == '/' {
+		end := len(text)
+		for i, r := range text {
+			if r == '\n' {
+				end = i
+				break
+			}
+		}
+		if caret < 1 || caret > end {
+			return Trigger{}, false
+		}
+		line := string(text[1:end])
+		name, _, hasArg := strings.Cut(line, " ")
+		if !hasArg || caret <= 1+len([]rune(name)) {
+			return Trigger{Kind: "command", Start: 0, End: 1 + len([]rune(name)), Query: string(text[1:min(caret, 1+len([]rune(name)))])}, true
+		}
+		kind, ok := argumentKinds[strings.ToLower(name)]
+		if !ok {
+			return Trigger{}, false
+		}
+		argStart := 1 + len([]rune(name)) + 1
+		for argStart < end && text[argStart] == ' ' {
+			argStart++
+		}
+		if caret < argStart {
+			return Trigger{}, false
+		}
+		return Trigger{Kind: kind, Start: argStart, End: end, Query: string(text[argStart:caret])}, true
+	}
+	start := caret
+	for start > 0 && !isSpace(text[start-1]) {
+		start--
+	}
+	if start >= len(text) || text[start] != '@' || caret == start {
+		return Trigger{}, false
+	}
+	end := caret
+	for end < len(text) && !isSpace(text[end]) {
+		end++
+	}
+	query := string(text[start+1 : caret])
+	if IsLocalPath(query) {
+		// @./x, @../x, @~/x: a file on this machine (attach.go).
+		return Trigger{Kind: "localpath", Start: start, End: end, Query: query}, true
+	}
+	return Trigger{Kind: "path", Start: start, End: end, Query: query}, true
+}
+
+// commandItems are the commands whose name starts with the word typed;
+// extra (commands the chat offers, when it does) come after the built-ins.
+func commandItems(query string, extra []Command) []Command {
+	name := strings.ToLower(strings.TrimLeftFunc(query, unicode.IsSpace))
+	var out []Command
+	for _, c := range append(append([]Command(nil), Commands...), extra...) {
+		if strings.HasPrefix(c.Name, name) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// resourceItems are the rows the "@" menu offers for the chat's shared
+// resources (chats/mentions.go: documents, repositories, previews), before
+// the workspace paths. With a kind typed (`doc:`, `repo:`, `preview:`)
+// only that kind, its names filtered by the rest; without one, every
+// resource whose kind or name contains the query. Picking one inserts
+// its token (`@doc:"Budget 2026" `), which the service expands for the
+// agent when the message is sent. At most 12 rows.
+func resourceItems(r chats.Resources, query string) []MenuItem {
+	q := strings.ToLower(strings.TrimSpace(query))
+	kind, rest, typed := strings.Cut(q, ":")
+	if !typed || (kind != "doc" && kind != "repo" && kind != "preview") {
+		kind, rest = "", q
+	}
+	matches := func(k, name string) bool {
+		if kind != "" {
+			return k == kind && strings.Contains(strings.ToLower(name), rest)
+		}
+		return strings.Contains(k, rest) || strings.Contains(strings.ToLower(name), rest)
+	}
+	var out []MenuItem
+	add := func(k, name, hint string) {
+		if matches(k, name) && len(out) < 12 {
+			out = append(out, MenuItem{Insert: chats.MentionToken(k, name) + " ", Label: k + ": " + truncate(sanitize(name), 48), Hint: truncate(sanitize(hint), 60)})
+		}
+	}
+	for _, d := range r.Documents {
+		name := d.Title
+		if name == "" {
+			name = d.ID
+		}
+		hint := d.Kind
+		if d.Access != "" {
+			hint = strings.TrimSpace(hint + " · " + d.Access + " access")
+		}
+		add("doc", name, strings.TrimPrefix(hint, " · "))
+	}
+	for _, repo := range r.Repositories {
+		add("repo", repo.Name, "repository · "+strings.Join(repo.Access, ", "))
+	}
+	for _, p := range r.Previews {
+		name := p.Title
+		if name == "" {
+			name = p.ID
+		}
+		add("preview", name, p.URL)
+	}
+	return out
+}
+
+// mentionFor is what a picked path becomes in the text: a file ends the
+// mention with a space, a directory keeps the caret after its slash so the
+// next segment can be completed.
+func mentionFor(path string) string {
+	if strings.HasSuffix(path, "/") {
+		return "@" + path
+	}
+	return "@" + path + " "
+}
+
+// replaceRange puts insert in place of the runes [start, end) and returns
+// the text and where the caret goes.
+func replaceRange(text []rune, start, end int, insert string) ([]rune, int) {
+	ins := []rune(insert)
+	out := make([]rune, 0, len(text)-(end-start)+len(ins))
+	out = append(out, text[:start]...)
+	out = append(out, ins...)
+	out = append(out, text[end:]...)
+	return out, start + len(ins)
+}
+
+// expandHome turns a leading ~ into the home directory.
+func expandHome(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home + p[1:]
+		}
+	}
+	return p
+}
+
+// localPaths completes a local path for /attach, shell style: the entries
+// of the directory the query names whose name starts with its last
+// segment, directories first with a trailing slash. At most 50.
+func localPaths(query string) []string {
+	dir, stem := filepath.Split(query)
+	lookup := expandHome(dir)
+	if lookup == "" {
+		lookup = "."
+	}
+	entries, err := os.ReadDir(lookup)
+	if err != nil {
+		return nil
+	}
+	var dirs, files []string
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(strings.ToLower(name), strings.ToLower(stem)) {
+			continue
+		}
+		if strings.HasPrefix(name, ".") && !strings.HasPrefix(stem, ".") {
+			continue
+		}
+		if e.IsDir() {
+			dirs = append(dirs, dir+name+"/")
+		} else {
+			files = append(files, dir+name)
+		}
+	}
+	lower := func(s []string) {
+		sort.Slice(s, func(i, j int) bool { return strings.ToLower(s[i]) < strings.ToLower(s[j]) })
+	}
+	lower(dirs)
+	lower(files)
+	out := append(dirs, files...)
+	if len(out) > 50 {
+		out = out[:50]
+	}
+	return out
+}
+
+// staticModels are the rows a provider's picker offers when its CLI has
+// reported no catalog (the web's ModelSelect keeps the same).
+var staticModels = map[string][]ModelInfo{
+	"codex":  {{Value: "gpt-5.6-sol", Label: "GPT-5.6 Sol"}, {Value: "gpt-6-astra", Label: "GPT-6 Astra"}, {Value: "gpt-5.6-terra", Label: "GPT-5.6 Terra"}, {Value: "gpt-5.6-luna", Label: "GPT-5.6 Luna"}, {Value: "gpt-5.5", Label: "GPT-5.5"}},
+	"claude": {{Value: "opus", Label: "Opus", Efforts: chats.Efforts, AdaptiveThinking: true, FastMode: true}, {Value: "sonnet", Label: "Sonnet", Efforts: chats.Efforts, AdaptiveThinking: true}, {Value: "haiku", Label: "Haiku"}, {Value: "sonnet[1m]", Label: "Sonnet 1M", Efforts: chats.Efforts, AdaptiveThinking: true}, {Value: "opus[1m]", Label: "Opus 1M", Efforts: chats.Efforts, AdaptiveThinking: true, FastMode: true}},
+}
+
+// LongContextHint and FastModeHint say why a costlier choice is refused
+// where the operator has not allowed it (config providers.claude.*).
+const (
+	LongContextHint = "not allowed here: enable providers.claude.allowLongContext"
+	FastModeHint    = "not allowed here: enable providers.claude.allowFastMode"
+)
+
+// longContextModel reports a 1M-context alias (chats.longContextModel).
+func longContextModel(value string) bool { return strings.HasSuffix(value, "[1m]") }
+
+// DefaultModel is the model chats of a provider start with, as the
+// service reported it (chats/defaults.go), or the static rows' first.
+func DefaultModel(provider string, options AgentOptions) string {
+	if m := options.Defaults[provider]; m != "" {
+		return m
+	}
+	if provider == "claude" {
+		return chats.DefaultClaudeModel
+	}
+	return chats.DefaultCodexModel
+}
+
+// ModelRows are the picker's rows for a provider: the CLI's catalog when
+// it reported one (its "default" row, the CLI's own default, is dropped:
+// a chat always has a concrete model), else the static rows. The
+// provider's default model comes first, marked. A 1M-context row the
+// operator has not allowed stays listed with the hint.
+func ModelRows(provider string, options AgentOptions) []ModelInfo {
+	rows := options.Models[provider]
+	if len(rows) == 0 {
+		rows = staticModels[provider]
+	}
+	def := DefaultModel(provider, options)
+	var out []ModelInfo
+	found := false
+	for _, r := range rows {
+		if r.Value == "default" {
+			continue
+		}
+		if r.Value == def {
+			r.Label += " (default)"
+			out = append([]ModelInfo{r}, out...)
+			found = true
+			continue
+		}
+		out = append(out, r)
+	}
+	if !found && def != "" {
+		// A default the catalog does not list (the operator's choice, or
+		// an alias the CLI resolves without listing) still leads.
+		label := def
+		for _, r := range staticModels[provider] {
+			if r.Value == def {
+				label = r.Label
+			}
+		}
+		out = append([]ModelInfo{{Value: def, Label: label + " (default)"}}, out...)
+	}
+	return out
+}
+
+// modelItems are the rows a /model argument can pick: those whose value
+// or label contains the query.
+func modelItems(provider string, options AgentOptions, query string) []MenuItem {
+	q := strings.ToLower(strings.TrimSpace(query))
+	var out []MenuItem
+	for _, r := range ModelRows(provider, options) {
+		insert := r.Value
+		if q != "" && !strings.Contains(strings.ToLower(insert), q) && !strings.Contains(strings.ToLower(r.Label), q) {
+			continue
+		}
+		hint := r.Description
+		if r.Resolved != "" {
+			hint = strings.TrimSpace(r.Resolved + " · " + hint)
+			hint = strings.TrimSuffix(hint, " ·")
+		}
+		if provider == "claude" && longContextModel(r.Value) && !options.LongContext {
+			hint = LongContextHint
+		}
+		out = append(out, MenuItem{Insert: insert, Label: insert + "  " + truncate(sanitize(r.Label), 32), Hint: hint, Run: true})
+	}
+	return out
+}
+
+// EffortsFor are the effort levels the chat's model takes: the catalog
+// row's when the CLI reported one (a row with none, like Haiku, takes no
+// level), else every level. A chat recorded without a model runs the
+// provider's default.
+func EffortsFor(c *Chat, options AgentOptions) []string {
+	if c == nil || c.Provider != "claude" {
+		return chats.Efforts
+	}
+	rows := options.Models["claude"]
+	if len(rows) == 0 {
+		return chats.Efforts
+	}
+	want := c.Model
+	if want == "" {
+		want = DefaultModel("claude", options)
+	}
+	for _, r := range rows {
+		if r.Value == want {
+			return r.Efforts
+		}
+	}
+	return chats.Efforts
+}
+
+// effortItems are the rows a /effort argument can pick: the model's
+// levels and the default.
+func effortItems(c *Chat, options AgentOptions, query string) []MenuItem {
+	q := strings.ToLower(strings.TrimSpace(query))
+	var out []MenuItem
+	for _, level := range append([]string{"default"}, EffortsFor(c, options)...) {
+		if q != "" && !strings.HasPrefix(level, q) {
+			continue
+		}
+		hint := "the model's default level"
+		if level != "default" {
+			hint = "effort " + level
+		}
+		out = append(out, MenuItem{Insert: level, Label: level, Hint: hint, Run: true})
+	}
+	return out
+}
+
+// chatItems are the chats a /switch argument can name: by number, or by a
+// word of the title, the chat whose number is exactly the query first
+// (Enter picks the first row, and a title may contain the digits typed);
+// unread, when given, counts a chat's unread messages for the hint
+// (unread.go).
+func chatItems(chats []*Chat, query string, unread func(*Chat) int) []MenuItem {
+	q := strings.ToLower(strings.TrimSpace(query))
+	var out []MenuItem
+	for i, c := range chats {
+		n := strconv.Itoa(i + 1)
+		if q != "" && !strings.HasPrefix(n, q) && !strings.Contains(strings.ToLower(c.Title), q) {
+			continue
+		}
+		hint := c.Provider + " · " + c.Status
+		if unread != nil {
+			if u := unreadMark(unread(c)); u != "" {
+				hint += " · " + u
+			}
+		}
+		item := MenuItem{Insert: n, Label: n + "  " + truncate(sanitize(c.Title), 40), Hint: hint, Run: true}
+		if n == q {
+			out = append([]MenuItem{item}, out...)
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}

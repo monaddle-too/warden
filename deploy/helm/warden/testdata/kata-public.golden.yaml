@@ -563,6 +563,14 @@ data:
       "chat": {
         "listen": "127.0.0.1:18780"
       },
+      "edge": {
+        "bugReports": {
+          "enabled": false,
+          "maxPerDay": 500,
+          "maxPerHour": 30,
+          "retentionDays": 90
+        }
+      },
       "kubernetes": {
         "gatewayPort": 7000,
         "gatewayService": "warden-gateway",
@@ -612,7 +620,7 @@ data:
         "maxMemoryMB": 8192,
         "maxRunning": 2,
         "memoryMB": 1536,
-        "stopAfterIdleMinutes": 15,
+        "stopAfterIdleMinutes": 30,
         "warmSpares": 1
       },
       "services": {
@@ -1200,7 +1208,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: policy
       annotations:
-        checksum/config: b0e680dbf09ade0098a14930bf5f682224460be298130fa7933d030d3f047203
+        checksum/config: f8da5ba47b59afb387ee91cb72b729cc77d551093337047a6ac1c20889abe359
     spec:
       serviceAccountName: warden-policy
       automountServiceAccountToken: true
@@ -1268,8 +1276,8 @@ spec:
             limits:
               memory: 1Gi
             requests:
-              cpu: 250m
-              memory: 256Mi
+              cpu: 100m
+              memory: 128Mi
           volumeMounts:
             - name: state
               mountPath: /var/lib/warden/policy
@@ -1337,7 +1345,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: runner
       annotations:
-        checksum/config: b0e680dbf09ade0098a14930bf5f682224460be298130fa7933d030d3f047203
+        checksum/config: f8da5ba47b59afb387ee91cb72b729cc77d551093337047a6ac1c20889abe359
     spec:
       serviceAccountName: warden-runner
       automountServiceAccountToken: true
@@ -1405,8 +1413,8 @@ spec:
             limits:
               memory: 1Gi
             requests:
-              cpu: 250m
-              memory: 256Mi
+              cpu: 100m
+              memory: 128Mi
           volumeMounts:
             - name: state
               mountPath: /var/lib/warden/runner
@@ -1474,7 +1482,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: chat
       annotations:
-        checksum/config: b0e680dbf09ade0098a14930bf5f682224460be298130fa7933d030d3f047203
+        checksum/config: f8da5ba47b59afb387ee91cb72b729cc77d551093337047a6ac1c20889abe359
     spec:
       serviceAccountName: warden-chat
       automountServiceAccountToken: false
@@ -1608,7 +1616,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: edge
       annotations:
-        checksum/config: b0e680dbf09ade0098a14930bf5f682224460be298130fa7933d030d3f047203
+        checksum/config: f8da5ba47b59afb387ee91cb72b729cc77d551093337047a6ac1c20889abe359
     spec:
       serviceAccountName: warden-edge
       automountServiceAccountToken: false
@@ -1673,7 +1681,7 @@ spec:
             limits:
               memory: 256Mi
             requests:
-              cpu: 100m
+              cpu: 50m
               memory: 64Mi
           volumeMounts:
             - name: state

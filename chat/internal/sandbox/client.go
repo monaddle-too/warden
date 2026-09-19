@@ -54,36 +54,80 @@ type Request struct {
 	Port         int    `json:"port,omitempty"`
 	// Namespace, Pod, Container, Tail and Previous select pod logs
 	// (cluster.logs).
-	Namespace       string   `json:"namespace,omitempty"`
-	Pod             string   `json:"pod,omitempty"`
-	Container       string   `json:"container,omitempty"`
-	Tail            int      `json:"tail,omitempty"`
-	Previous        bool     `json:"previous,omitempty"`
-	Path            string   `json:"path,omitempty"`
-	Title           string   `json:"title,omitempty"`
-	NewSession      bool     `json:"newSession,omitempty"`
-	BundleSize      int64    `json:"bundleSize,omitempty"`
-	RemoteHead      string   `json:"remoteHead,omitempty"`
-	PublicationHead string   `json:"publicationHead,omitempty"`
-	OpenAIAPIKey    string   `json:"openaiAPIKey,omitempty"`
-	SourceSessionID string   `json:"sourceSessionID,omitempty"`
-	Version         int      `json:"version"`
-	Operation       string   `json:"operation"`
-	ProjectID       string   `json:"projectID,omitempty"`
-	SessionID       string   `json:"sessionID,omitempty"`
-	ThreadID        string   `json:"threadID,omitempty"`
-	Repository      string   `json:"repository,omitempty"`
-	Token           string   `json:"token,omitempty"`
-	Directory       string   `json:"directory,omitempty"`
-	Args            []string `json:"args,omitempty"`
-	Expected        string   `json:"expected,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Pod       string `json:"pod,omitempty"`
+	Container string `json:"container,omitempty"`
+	Tail      int    `json:"tail,omitempty"`
+	Previous  bool   `json:"previous,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Title     string `json:"title,omitempty"`
+	// NewSession on a prepare drops the chat's recorded agent thread, so
+	// the next stream starts a session instead of resuming one.
+	NewSession bool `json:"newSession,omitempty"`
+	// ForkSession, with ThreadID, makes a stream resume that thread as a
+	// copy (Claude Code's --fork-session): the agent reports a new session
+	// of its own, which the chat then records. On a prepare it drops the
+	// binding's thread instead of recording ThreadID, which belongs to the
+	// chat forked from (chats/fork.go).
+	ForkSession bool `json:"forkSession,omitempty"`
+	// OutputStyle is the Claude output style the stream launches with
+	// (chats/style.go); "" is the CLI's default.
+	OutputStyle     string `json:"outputStyle,omitempty"`
+	BundleSize      int64  `json:"bundleSize,omitempty"`
+	RemoteHead      string `json:"remoteHead,omitempty"`
+	PublicationHead string `json:"publicationHead,omitempty"`
+	OpenAIAPIKey    string `json:"openaiAPIKey,omitempty"`
+	SourceSessionID string `json:"sourceSessionID,omitempty"`
+	// Source, on a clone, is the registered sandbox whose disk the new
+	// sandbox SandboxID is created as a copy of (managed.go cloneLocked).
+	Source     string   `json:"source,omitempty"`
+	Version    int      `json:"version"`
+	Operation  string   `json:"operation"`
+	ProjectID  string   `json:"projectID,omitempty"`
+	SessionID  string   `json:"sessionID,omitempty"`
+	ThreadID   string   `json:"threadID,omitempty"`
+	Repository string   `json:"repository,omitempty"`
+	Token      string   `json:"token,omitempty"`
+	Directory  string   `json:"directory,omitempty"`
+	Args       []string `json:"args,omitempty"`
+	Expected   string   `json:"expected,omitempty"`
 	// Resources is the size a fresh workspace is created with (bind-chat,
 	// prepare) or resized to (resize); nil leaves the sandbox's own.
 	Resources *Resources `json:"resources,omitempty"`
-	// Bytes is the content an attachment-write puts into the sandbox.
+	// Bytes is the content an attachment-write puts into the sandbox, or
+	// the note a memory-append adds to CLAUDE.md.
 	Bytes []byte `json:"bytes,omitempty"`
+	// Command is the shell command line an exec runs in the workspace.
+	Command string `json:"command,omitempty"`
+	// Before, on a restore, is the checkpoint ID the workspace as it is
+	// now is recorded under before the checkpoint CallID names is written
+	// back, so the restore itself can be undone (chats/rewind.go); ""
+	// records nothing.
+	Before string `json:"before,omitempty"`
+	// Instructions is the participants' standing instructions a stream
+	// appends to the agent's system prompt (memory.go: one block per
+	// person, assembled by the chat service); "" appends nothing. On a
+	// oneshot it is the system prompt the one-shot CLI runs with.
+	Instructions string `json:"instructions,omitempty"`
+	// At, on an activity report, is when the chat activity it reports
+	// happened (the chat service reports a turn's end as it happens); zero
+	// means now. The workspace's idle window counts from the latest
+	// activity the runner knows of (managed.go SweepIdle).
+	At time.Time `json:"at,omitzero"`
+	// Scope says which memory location a memory-write's Directory names:
+	// "workspace" (CLAUDE.md, AGENTS.md, .claude/rules) or "auto" (the
+	// CLI's auto-memory directory); memory-list takes the auto-memory
+	// directory the CLI reported in Path, when the chat knows it.
+	Scope string `json:"scope,omitempty"`
 }
 type Response struct {
+	// Checkpoint is a checkpoint just taken; Checkpoints the sandbox's
+	// records; Restore what a restore changed; Changes a workspace diff
+	// (checkpoint.go).
+	Checkpoint        *Checkpoint            `json:"checkpoint,omitempty"`
+	Checkpoints       []Checkpoint           `json:"checkpoints,omitempty"`
+	Restore           *WorkspaceRestore      `json:"restore,omitempty"`
+	Changes           *WorkspaceChanges      `json:"changes,omitempty"`
 	PublishPlan       *RepositoryPublishPlan `json:"publishPlan,omitempty"`
 	Review            *RepositoryReview      `json:"review,omitempty"`
 	Available         bool                   `json:"available,omitempty"`
@@ -102,6 +146,7 @@ type Response struct {
 	Version           int                    `json:"version,omitempty"`
 	Sandbox           *SandboxInfo           `json:"sandbox,omitempty"`
 	Limits            *ResourceLimits        `json:"limits,omitempty"`
+	Capacity          *Capacity              `json:"capacity,omitempty"`
 	Attachment        *PreviewAttachment     `json:"attachment,omitempty"`
 	Attachments       []PreviewAttachment    `json:"attachments,omitempty"`
 	APIKeyPlaceholder string                 `json:"apiKeyPlaceholder,omitempty"`
@@ -116,6 +161,15 @@ type Response struct {
 	Bytes             []byte                 `json:"bytes,omitempty"`
 	// Paths is a "paths" completion: workspace paths matching the query.
 	Paths []string `json:"paths,omitempty"`
+	// Exec is what an "exec" came to: output, exit code, timeout.
+	Exec *ExecResult `json:"exec,omitempty"`
+	// Aside is what an "aside" (a side question to a forked copy of the
+	// chat's session) or a "oneshot" (a prompt to a fresh, tool-less CLI)
+	// came to.
+	Aside *AsideResult `json:"aside,omitempty"`
+	// Memory is a "memory-list": the workspace's instruction and memory
+	// files with their contents.
+	Memory *MemoryListing `json:"memory,omitempty"`
 }
 type SandboxInfo struct {
 	ID          string `json:"id"`

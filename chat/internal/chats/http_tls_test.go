@@ -43,9 +43,8 @@ func leaf(t *testing.T, m *transport.TLS) *x509.Certificate {
 // identity and nothing else: no bearer exists, and the identity headers
 // are honoured because only the edge can reach the handler.
 func TestPeerCertificateReplacesTheCapability(t *testing.T) {
-	e, _, _ := setup(t)
 	now := time.Unix(1000, 0)
-	e.Now = func() time.Time { return now }
+	e, _, _ := setup(t, func(e *Engine) { e.Now = func() time.Time { return now } })
 	dir := t.TempDir()
 	ca, err := transport.NewCA("test", time.Now(), time.Hour)
 	if err != nil {

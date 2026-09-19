@@ -47,8 +47,8 @@ func TestPodAndClaimSpecGolden(t *testing.T) {
 	o := testOptions()
 	o.NodeSelector = map[string]string{"warden.monaddle.com/pool": "sandboxes"}
 	o.Tolerations = []config.Toleration{{Key: "sandbox.gke.io/runtime", Operator: "Equal", Value: "gvisor", Effect: "NoSchedule"}}
-	golden(t, "pod.golden.json", PodSpec(o, sandbox.RuntimeSpec{Name: "wc-0123456789abcdef01234567", SandboxID: "sandbox-one", Generation: "gen-1"}, WorkspaceFresh))
-	golden(t, "pod-spare.golden.json", PodSpec(testOptions(), sandbox.RuntimeSpec{Name: "wc-spare-0123456789abcdef", Spare: true}, WorkspaceFresh))
+	golden(t, "pod.golden.json", PodSpec(o, sandbox.RuntimeSpec{Name: "wc-0123456789abcdef01234567", SandboxID: "sandbox-one", Generation: "gen-1"}, WorkspaceFresh, false))
+	golden(t, "pod-spare.golden.json", PodSpec(testOptions(), sandbox.RuntimeSpec{Name: "wc-spare-0123456789abcdef", Spare: true}, WorkspaceFresh, false))
 	golden(t, "claim.golden.json", ClaimSpec(o, "wc-0123456789abcdef01234567", "sandbox-one", "", false))
 	golden(t, "claim-clone.golden.json", ClaimSpec(o, "wc-fork", "sandbox-two", "wc-0123456789abcdef01234567", false))
 }
@@ -56,7 +56,7 @@ func TestPodAndClaimSpecGolden(t *testing.T) {
 // The properties the admission policy and the spike require, checked by
 // name so a golden refresh cannot lose them silently.
 func TestPodSpecHardening(t *testing.T) {
-	pod := PodSpec(testOptions(), sandbox.RuntimeSpec{Name: "wc-abc", SandboxID: "s", Generation: "g"}, WorkspaceFresh)
+	pod := PodSpec(testOptions(), sandbox.RuntimeSpec{Name: "wc-abc", SandboxID: "s", Generation: "g"}, WorkspaceFresh, false)
 	spec := pod.Spec
 	if spec.RuntimeClassName == nil || *spec.RuntimeClassName != "gvisor" {
 		t.Fatal("runtimeClassName")
@@ -128,7 +128,7 @@ func TestPodSpecHardening(t *testing.T) {
 		t.Fatal("grace period")
 	}
 	// A spare carries the spare label and no sandbox annotations.
-	spare := PodSpec(testOptions(), sandbox.RuntimeSpec{Name: "wc-spare-1", Spare: true}, WorkspaceFresh)
+	spare := PodSpec(testOptions(), sandbox.RuntimeSpec{Name: "wc-spare-1", Spare: true}, WorkspaceFresh, false)
 	if spare.Metadata.Labels[LabelSpare] != "true" || spare.Metadata.Annotations[AnnotationSandboxID] != "" || spare.Metadata.Annotations[AnnotationGeneration] != "" {
 		t.Fatalf("spare pod %+v", spare.Metadata)
 	}
@@ -185,5 +185,32 @@ func TestOptionsAndNames(t *testing.T) {
 	kata.Tier = config.TierKata
 	if newTestDriver(t, api, kata).launchOptions().CodexSandboxMode != "" {
 		t.Fatal("kata tier keeps Codex's inner sandbox")
+	}
+}
+
+// A zone pin in the node selector applies to a pod whose claim has no
+// volume yet (the disk is created where the pod schedules) and is dropped
+// once the claim is bound: the disk's own node affinity places the pod,
+// and a selector naming another zone would leave it Pending forever. The
+// other keys stay either way.
+func TestPlacementDropsZoneForBoundClaim(t *testing.T) {
+	o := testOptions()
+	o.NodeSelector = map[string]string{"topology.kubernetes.io/zone": "us-central1-c", "warden.monaddle.com/pool": "sandboxes"}
+	fresh := PodSpec(o, sandbox.RuntimeSpec{Name: "wc-abc"}, WorkspaceFresh, false)
+	if got := fresh.Spec.NodeSelector; len(got) != 2 || got["topology.kubernetes.io/zone"] != "us-central1-c" {
+		t.Fatalf("fresh claim: selector %v", got)
+	}
+	resumed := PodSpec(o, sandbox.RuntimeSpec{Name: "wc-abc"}, WorkspaceFresh, true)
+	if got := resumed.Spec.NodeSelector; len(got) != 1 || got["warden.monaddle.com/pool"] != "sandboxes" {
+		t.Fatalf("bound claim: selector %v", got)
+	}
+	if o.NodeSelector["topology.kubernetes.io/zone"] == "" {
+		t.Fatal("the options' selector was modified")
+	}
+	if got := Placement(map[string]string{"topology.gke.io/zone": "us-central1-c"}, true); got != nil {
+		t.Fatalf("only a zone key, bound: %v", got)
+	}
+	if got := Placement(nil, false); got != nil {
+		t.Fatalf("no selector: %v", got)
 	}
 }

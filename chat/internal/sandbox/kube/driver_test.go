@@ -99,12 +99,21 @@ func TestCreateIsClaimThenPodAndIdempotent(t *testing.T) {
 // pod of the new generation is created, and the handle is a no-op. On a
 // running runtime it confirms the pod and creates nothing.
 func TestPrepareRecreatesThePodAfterAStop(t *testing.T) {
-	api, d := readyFake(t)
+	api := newFakeAPI(t)
+	api.publishTrust("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
+	// A deployment pinned to one zone (deploy/k8s/gke/values.yaml): the
+	// first pod carries the pin so the disk is created there.
+	o := testOptions()
+	o.NodeSelector = map[string]string{"topology.kubernetes.io/zone": "us-central1-c"}
+	d := newTestDriver(t, api, o)
 	ctx := testContext(t)
 	if err := d.Create(ctx, sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace", SandboxID: "s1", Generation: "gen-1"}); err != nil {
 		t.Fatal(err)
 	}
 	first, _ := d.Runtime(runtimeName)
+	if pod, _ := api.pod(runtimeName); pod.Spec.NodeSelector["topology.kubernetes.io/zone"] != "us-central1-c" {
+		t.Fatalf("first pod selector %v", pod.Spec.NodeSelector)
+	}
 	before := len(api.recorded())
 	h, err := d.Prepare(ctx, sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace", SandboxID: "s1", Generation: "gen-1"})
 	if err != nil || h == nil {
@@ -133,7 +142,16 @@ func TestPrepareRecreatesThePodAfterAStop(t *testing.T) {
 	if !ok || pod.Status.Phase != "Running" || pod.Metadata.UID == first.PodUID || pod.Metadata.Annotations[AnnotationGeneration] != "gen-2" {
 		t.Fatalf("resumed pod %+v", pod.Metadata)
 	}
+	// The resumed pod mounts a bound disk, whose zone is fixed: the pin is
+	// left off so a disk from before the pin (or in another zone) still
+	// finds its node.
+	if pod.Spec.NodeSelector != nil {
+		t.Fatalf("resumed pod selector %v", pod.Spec.NodeSelector)
+	}
 	claim, _ := api.claim(runtimeName)
+	if claim.Spec.VolumeName == "" || claim.Status.Phase != "Bound" {
+		t.Fatalf("resumed claim %+v", claim)
+	}
 	if rt, _ := d.Runtime(runtimeName); rt.ClaimUID != first.ClaimUID || claim.Metadata.UID != first.ClaimUID || rt.PodUID != pod.Metadata.UID || rt.Generation != "gen-2" || rt.PodIP != pod.Status.PodIP {
 		t.Fatalf("resumed record %+v", rt)
 	}
@@ -315,16 +333,22 @@ func TestReadinessWaitsForTheTrustBundle(t *testing.T) {
 	}
 }
 
-// Reconcile at startup deletes every pod under the driver's labels (the
-// worker has stopped everything it knows), deletes unregistered spare
-// claims and keeps every other claim; the policy service's pods in the
-// namespace are not touched.
-func TestReconcileRetiresStalePodsAndSpareClaims(t *testing.T) {
+// Reconcile at startup keeps the pod of a sandbox the worker registered
+// as resident when it runs at the registered generation, rebuilding the
+// driver's view of it so a later Create adopts it without a manifest
+// check; it deletes every other pod under the driver's labels (a
+// registered sandbox not resident, one whose pod is of another
+// generation, an unregistered one), deletes unregistered spare claims and
+// keeps every other claim; the policy service's pods in the namespace
+// are not touched.
+func TestReconcileKeepsResidentPodsAndRetiresTheRest(t *testing.T) {
 	api, d := readyFake(t)
 	ctx := testContext(t)
 	for _, spec := range []sandbox.RuntimeSpec{
-		{Name: "wc-registered", Directory: "/home/agent/workspace", SandboxID: "s1"},
-		{Name: "wc-orphan", Directory: "/home/agent/workspace", SandboxID: "s2"},
+		{Name: "wc-resident", Directory: "/home/agent/workspace", SandboxID: "s1", Generation: "g1"},
+		{Name: "wc-registered", Directory: "/home/agent/workspace", SandboxID: "s2", Generation: "g2"},
+		{Name: "wc-regenerated", Directory: "/home/agent/workspace", SandboxID: "s3", Generation: "g3"},
+		{Name: "wc-orphan", Directory: "/home/agent/workspace", SandboxID: "s4"},
 		{Name: "wc-spare-adopted", Directory: "/home/agent/workspace", Spare: true},
 		{Name: "wc-spare-lost", Directory: "/home/agent/workspace", Spare: true},
 	} {
@@ -332,19 +356,47 @@ func TestReconcileRetiresStalePodsAndSpareClaims(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	before, _ := d.Runtime("wc-resident")
 	api.mu.Lock()
 	api.objects["pods/canary"] = map[string]any{"metadata": map[string]any{"name": "canary", "uid": "canary", "labels": map[string]any{LabelSandbox: "canary", LabelManagedBy: "warden-policy"}}, "status": map[string]any{"phase": "Running"}}
 	api.mu.Unlock()
 	fresh := newTestDriver(t, api, testOptions())
-	if err := fresh.Reconcile(ctx, []string{"wc-registered", "wc-spare-adopted"}); err != nil {
+	resident, err := fresh.Reconcile(ctx, []sandbox.RegisteredRuntime{
+		{Name: "wc-resident", Generation: "g1", Resident: true},
+		{Name: "wc-registered", Generation: "g2"},
+		{Name: "wc-regenerated", Generation: "g3-next", Resident: true},
+		{Name: "wc-spare-adopted", Resident: true},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
+	if strings.Join(resident, ",") != "wc-resident" {
+		t.Fatalf("resident after reconcile: %v", resident)
+	}
 	time.Sleep(3 * api.deleteDelay)
-	if names := api.names("pods"); strings.Join(names, ",") != "canary" {
+	if names := api.names("pods"); strings.Join(names, ",") != "canary,wc-resident" {
 		t.Fatalf("pods after reconcile: %v", names)
 	}
-	if names := api.names("persistentvolumeclaims"); strings.Join(names, ",") != "wc-orphan,wc-registered,wc-spare-adopted" {
+	if names := api.names("persistentvolumeclaims"); strings.Join(names, ",") != "wc-orphan,wc-regenerated,wc-registered,wc-resident,wc-spare-adopted" {
 		t.Fatalf("claims after reconcile: %v", names)
+	}
+	kept, ok := fresh.Runtime("wc-resident")
+	if !ok || kept.PodUID != before.PodUID || kept.PodIP != before.PodIP || kept.ClaimUID != before.ClaimUID || kept.Generation != "g1" || kept.Workspace != WorkspaceFresh {
+		t.Fatalf("kept runtime not rebuilt: %+v (was %+v)", kept, before)
+	}
+	// The next Create (the worker's Prepare) adopts the kept pod as known:
+	// no manifest check, no new pod.
+	requests := len(api.recorded())
+	if err := fresh.Create(ctx, sandbox.RuntimeSpec{Name: "wc-resident", Directory: "/home/agent/workspace", SandboxID: "s1", Generation: "g1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range api.recorded()[requests:] {
+		if r.Method == "POST" && strings.Contains(r.Path, "/pods") {
+			t.Fatalf("kept pod replaced or probed: %s %s", r.Method, r.Path)
+		}
+	}
+	if after, _ := fresh.Runtime("wc-resident"); after.PodUID != before.PodUID {
+		t.Fatalf("kept pod replaced: %+v", after)
 	}
 }
 

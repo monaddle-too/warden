@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -94,6 +95,40 @@ type RunSpec struct {
 	// still has the file). A driver that delivers trust by exec installs it
 	// when false; one whose guests mount the trust bundle ignores it.
 	TrustsCA bool
+	// Instructions is the participants' standing instructions, assembled
+	// by the chat service (Request.Instructions), appended after Warden's
+	// own prompt; "" appends nothing.
+	Instructions string
+}
+
+// ChatRenderingPrompt tells an agent what the chat makes of its replies,
+// so a diagram it is asked for goes into the reply rather than into a
+// file or a web page; both providers' prompts carry it.
+const ChatRenderingPrompt = "Your replies are shown in Warden's chat as Markdown: fenced code with a language is highlighted, a ```diff fence is shown as a diff, a ```mermaid fence is rendered as a diagram (one that does not parse is shown as source with the error), $$ math is typeset, and ![alt](relative/path) shows an image file from the workspace. To show a diagram, put the ```mermaid fence in the reply itself; do not write a file or a web page for it unless asked."
+
+// WardenSystemPrompt is what Warden itself tells a Claude session, the
+// first part of the appended system prompt.
+const WardenSystemPrompt = "You work inside a Warden-managed sandbox. Warden controls external access and tool approvals. Never request or expose host credentials. Keep files in the workspace. GitHub repositories are reached through Warden's repository sharing: list_shared_repositories shows what this workspace can clone and read; to clone or read one that is not listed, ask with request_repository_access (contents), never with request_network_access for github.com: a refused git clone means the repository is not shared, not that the network is blocked. For web previews, start a detached server on 0.0.0.0 and use the Warden MCP preview_attach or sandbox_bind_port tool; Warden chooses the URL. " + ChatRenderingPrompt
+
+// MaxInstructions bounds the instructions text one launch appends (every
+// participant's blocks together); the chat service caps one person's text
+// well below it. The argument travels the exec path as data, and a guest
+// argument has a hard size on Linux, so the cap keeps a launch safe.
+const MaxInstructions = 96 << 10
+
+// claudeSystemPrompt is the text `--append-system-prompt` carries: Warden's
+// own prompt first, then the participants' instructions when there are
+// any, a blank line between. An over-long instructions text is cut at the
+// cap rather than failing the launch, since the prompt is advice.
+func claudeSystemPrompt(run RunSpec) string {
+	instructions := strings.TrimSpace(run.Instructions)
+	if instructions == "" {
+		return WardenSystemPrompt
+	}
+	if len(instructions) > MaxInstructions {
+		instructions = instructions[:MaxInstructions] + "\n[instructions cut at the size limit]"
+	}
+	return WardenSystemPrompt + "\n\n" + instructions
 }
 
 // PortMapping is one published guest port: the address and port the core
@@ -151,14 +186,26 @@ type NoResidency struct{}
 
 func (NoResidency) Close() error { return nil }
 
+// RegisteredRuntime is what a restarted worker knows about one registered
+// sandbox's runtime when it hands it to Reconcile: its name, the
+// generation its guest was made for, and whether the registry had it
+// resident (running or starting) when the previous worker last saved.
+type RegisteredRuntime struct {
+	Name       string
+	Generation string
+	Resident   bool
+}
+
 // Reconciler is implemented by a driver whose guests outlive the worker
-// process (pods do, SBX VMs stop with their keep-alive session). At startup,
-// after the worker has stopped every registered sandbox and removed every
-// registered spare, it is handed the runtime names of the registered
-// sandboxes, whose workspaces must be kept; anything else it finds under its
-// labels is stale.
+// process (pods do, SBX VMs stop with their keep-alive session), and it
+// settles them at startup, after the worker has removed every registered
+// spare: handed the registered sandboxes' runtimes, whose workspaces must
+// be kept, it keeps a guest it finds still running for a resident runtime
+// at its generation and returns its name, so the worker keeps that sandbox
+// running across the restart, and stops every other guest it finds under
+// its labels; the worker stops nothing itself on such a driver.
 type Reconciler interface {
-	Reconcile(ctx context.Context, registered []string) error
+	Reconcile(ctx context.Context, registered []RegisteredRuntime) (resident []string, err error)
 }
 
 // LaunchOptions vary the agent command line per driver.
@@ -180,14 +227,17 @@ func AgentCommand(run RunSpec, opts LaunchOptions) []string {
 	broker := run.Broker
 	paths := run.Paths.orDefaults()
 	if broker.Provider == "claude" {
-		args := []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN=" + broker.APIKeyPlaceholder, "ANTHROPIC_BASE_URL=" + broker.ProviderBaseURL, "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "DISABLE_AUTOUPDATER=1", paths.Claude, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode", "default", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{"warden":{"type":"sdk","name":"warden"}}}`, "--setting-sources=", "--append-system-prompt", "You work inside a Warden-managed sandbox. Warden controls external access and tool approvals. Never request or expose host credentials. Keep files in the workspace. GitHub repositories are reached through Warden's repository sharing: list_shared_repositories shows what this workspace can clone and read; to clone or read one that is not listed, ask with request_repository_access (contents), never with request_network_access for github.com: a refused git clone means the repository is not shared, not that the network is blocked. For web previews, start a detached server on 0.0.0.0 and use the Warden MCP preview_attach or sandbox_bind_port tool; Warden chooses the URL."}
+		args := append(claudeEnvironment(broker), paths.Claude, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode", "default", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{"warden":{"type":"sdk","name":"warden"}}}`, "--setting-sources=",
+			// Rendered fresh on every request: with the CLI's default (on)
+			// a resumed conversation keeps the system prompt recorded at
+			// its first request, so a relaunch could never change the
+			// appended text (the participants' instructions).
+			"--system-prompt-snapshot", "off",
+			"--append-system-prompt", claudeSystemPrompt(run))
 		if broker.Model != "" {
 			args = append(args, "--model", broker.Model)
 		}
-		if broker.ThreadID != "" {
-			args = append(args, "--resume", broker.ThreadID)
-		}
-		return args
+		return append(args, claudeSessionArgs(broker)...)
 	}
 	args := []string{"env", "-u", "OPENAI_API_KEY", "-u", "OPENAI_BASE_URL", "-u", "CODEX_API_KEY", "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "WARDEN_API_KEY=" + broker.APIKeyPlaceholder, "WORKSPACE_DOCUMENT_API_URL=" + broker.DocumentBaseURL, paths.Codex + "/bin/codex", "app-server", "--listen", "stdio://", "-c", `model_provider="warden"`, "-c", `cli_auth_credentials_store="ephemeral"`, "-c", `forced_login_method="api"`, "-c", `model_providers.warden.base_url=` + strconv.Quote(broker.ProviderBaseURL), "-c", `model_providers.warden.name="Warden"`, "-c", `model_providers.warden.wire_api="responses"`, "-c", `model_providers.warden.env_key="WARDEN_API_KEY"`,
 		// The model's reasoning summaries stream as items, so the chat can
@@ -197,6 +247,35 @@ func AgentCommand(run RunSpec, opts LaunchOptions) []string {
 		"-c", `model_reasoning_summary="detailed"`}
 	if opts.CodexSandboxMode != "" {
 		args = append(args, "-c", "sandbox_mode="+strconv.Quote(opts.CodexSandboxMode))
+	}
+	return args
+}
+
+// claudeEnvironment is the `env` prefix every Claude launch in a guest
+// takes: the variables an agent would otherwise take a credential or
+// endpoint from cleared, the brokered session's set.
+func claudeEnvironment(broker BrokerConfig) []string {
+	return []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN=" + broker.APIKeyPlaceholder, "ANTHROPIC_BASE_URL=" + broker.ProviderBaseURL, "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "DISABLE_AUTOUPDATER=1"}
+}
+
+// claudeSessionArgs are the flags that pick the session a Claude launch
+// continues and how: `--resume` for the chat's recorded session, with
+// `--fork-session` when the chat was forked from another (the CLI copies
+// the session under a new id and reports it in system/init), and the
+// output style as the settings key the CLI reads it from (there is no
+// flag for it on 2.1.272; docs/claude-parity.md, item 15). The style
+// name is JSON-encoded, so it is data whatever it contains.
+func claudeSessionArgs(broker BrokerConfig) []string {
+	var args []string
+	if broker.ThreadID != "" {
+		args = append(args, "--resume", broker.ThreadID)
+		if broker.ForkSession {
+			args = append(args, "--fork-session")
+		}
+	}
+	if broker.OutputStyle != "" {
+		settings, _ := json.Marshal(map[string]string{"outputStyle": broker.OutputStyle})
+		args = append(args, "--settings", string(settings))
 	}
 	return args
 }
@@ -221,21 +300,93 @@ func (d *sbxRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 			return nil
 		}
 	}
+	if s.Source != "" {
+		return d.createFrom(ctx, s)
+	}
 	args, err := d.createArgs(s.Name, s.Resources, d.worker.Template)
 	if err != nil {
 		return err
 	}
-	if s.Source != "" {
-		args = append(args, "--clone", "shell", s.Source)
-	} else {
-		args = append(args, "shell")
+	Report(ctx, "creating the sandbox VM from the guest template")
+	return runCreate(ctx, d.worker.Executable, append(args, "shell"))
+}
+
+// createFrom creates the sandbox as a copy of Source's disk (a workspace
+// copy, docs/claude-parity.md R2.13): SBX has no sandbox clone, so the
+// source is saved as a template (`sbx template save`, which refuses a
+// running sandbox — the worker stops the source first), the copy is
+// created from that template at the requested size with the deny-all
+// rule, and the template is dropped. The snapshot carries the guest's
+// root filesystem without /tmp, so the runtimes the worker installed
+// there are installed again at the copy's first prepare. The copy boots
+// with its creation, as any created sandbox does.
+func (d *sbxRuntime) createFrom(ctx context.Context, s RuntimeSpec) error {
+	tag := "warden-copy-" + strings.ToLower(s.Name)
+	args, err := d.createArgs(s.Name, s.Resources, tag)
+	if err != nil {
+		return err
 	}
-	if s.Source != "" {
-		Report(ctx, "cloning the sandbox VM from "+s.Source)
-	} else {
-		Report(ctx, "creating the sandbox VM from the guest template")
+	sbx := func(a ...string) error {
+		cmd := command(ctx, d.worker.Executable, a...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &limitedWriter{W: &stderr, N: 4096}
+		if err := cmd.Run(); err != nil {
+			if detail := strings.TrimSpace(stderr.String()); detail != "" {
+				return fmt.Errorf("sbx %s: %w: %s", a[0], err, detail)
+			}
+			return fmt.Errorf("sbx %s: %w", a[0], err)
+		}
+		return nil
 	}
-	return runCreate(ctx, d.worker.Executable, args)
+	Report(ctx, "saving a snapshot of the source sandbox "+s.Source)
+	if err := sbx("template", "save", s.Source, tag); err != nil {
+		return fmt.Errorf("SBX copy failed: %w", err)
+	}
+	// The template is only disk once the copy exists, and only a leftover
+	// when the creation failed; either way it goes.
+	defer func() { _ = sbx("template", "rm", tag) }()
+	Report(ctx, "creating the sandbox VM from the snapshot")
+	if err := runCreate(ctx, d.worker.Executable, append(args, "shell")); err != nil {
+		return fmt.Errorf("SBX copy failed: %w", err)
+	}
+	return nil
+}
+
+// ImageDigest is the digest of the image the sandbox runs, as `sbx
+// inspect` reports it: the guest image for a sandbox created from the
+// template, the snapshot's own digest for one created from a saved
+// template (a copy, or a resize's regeneration). The worker passes a
+// snapshot's digest to the policy service, whose inspector pins the
+// image (policy/sbxinspector.go allowedImage), so a sandbox the runner
+// derived from a verified guest is accepted for what it is.
+func (d *sbxRuntime) ImageDigest(ctx context.Context, name string) (string, error) {
+	cmd := command(ctx, d.worker.Executable, "inspect", name, "--json")
+	var out bytes.Buffer
+	cmd.Stdout = &limitedWriter{W: &out, N: 1 << 20}
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("sbx inspect: %w", err)
+	}
+	var details struct {
+		ImageDigest string `json:"image_digest"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &details); err != nil {
+		return "", errors.New("invalid sandbox inspection")
+	}
+	if !imageDigestShape.MatchString(details.ImageDigest) {
+		return "", errors.New("sandbox inspection reports no image digest")
+	}
+	return details.ImageDigest, nil
+}
+
+// imageDigestShape is a container image digest as sbx reports it.
+var imageDigestShape = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// ImageInspector is a driver that can say which image a sandbox runs; the
+// worker records the digest of a sandbox derived from a snapshot (a copy,
+// a regeneration) for the policy service's image pin.
+type ImageInspector interface {
+	ImageDigest(ctx context.Context, name string) (string, error)
 }
 
 // createArgs is the `sbx create` invocation for a sandbox of the given size

@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"warden/chat/internal/agent"
+	"warden/chat/internal/bugreport"
 	cv "warden/chat/internal/conversation"
 	"warden/chat/internal/sandbox"
 	"warden/chat/internal/transport"
@@ -52,6 +55,11 @@ type activeRun struct {
 	// them.
 	usage, usageBase cv.Usage
 	usageTurn        string
+	// instructed is, by principal, the instructions text this session's
+	// launch put in the agent's system prompt (instructions.go); a queued
+	// message whose sender's current text differs relaunches the session.
+	// Only the run's goroutine touches it.
+	instructed map[string]string
 }
 type Engine struct {
 	// PolicyAddress is the policy service's control endpoint (a unix:// or
@@ -88,13 +96,45 @@ type Engine struct {
 	// LocalMode: a single-owner install (auth.mode owner). Host directory
 	// grants exist only there.
 	LocalMode bool
+	// AllowFastMode and AllowLongContext are the operator's leave for the
+	// costlier Claude session features (config providers.claude.*): fast
+	// mode as a chat setting, the 1M-context model variants as choices.
+	AllowFastMode    bool
+	AllowLongContext bool
+	// DefaultModels is the operator's default model by provider
+	// (providers.<p>.defaultModel); DefaultModel fills the built-ins in.
+	DefaultModels map[string]string
+	// Bugs drafts this service's bug reports (bugs.go); nil reports nothing.
+	Bugs *bugreport.Capturer
 	// Now is the clock (tests replace it); nil means time.Now.
 	Now func() time.Time
-	// limits is the runner's size offer, asked for on demand and kept for
-	// limitsTTL: the form and validation need it before any chat exists.
-	limitsMu sync.Mutex
-	limits   *sandbox.ResourceLimits
-	limitsAt time.Time
+	// NormalizeImage replaces the imageguard subprocess (images.go) in
+	// tests; nil runs it.
+	NormalizeImage func(context.Context, []byte) ([]byte, error)
+	// limits is the runner's size offer, refreshed in the background every
+	// limitsTTL by Serve (refreshLimits) and fetched once on demand before
+	// the first refresh: the form and validation need it before any chat
+	// exists. limitsMu guards the value, never the fetch, so a view never
+	// waits on the runner.
+	limitsMu    sync.Mutex
+	limits      *sandbox.ResourceLimits
+	limitsAt    time.Time
+	limitsFetch sync.Mutex
+	// view is the encoded view of the current generation (ViewJSON),
+	// shared by every event stream and state read; viewGen counts the
+	// changes outside the store that the view shows (typing, startup
+	// stages, the size offer), touch bumps it and wakes viewWait.
+	viewMu      sync.Mutex
+	view        []byte
+	viewKey     viewKey
+	viewTyping  bool
+	viewGen     uint64
+	viewChanged chan struct{}
+	// capacity is the runner's last capacity answer (capacity.go), kept
+	// for capacityTTL so an open size picker's polling shares one read.
+	capacityMu sync.Mutex
+	capacity   *sandbox.Capacity
+	capacityAt time.Time
 	// resizing: workspace id -> the resize in flight or its outcome
 	// (resources.go).
 	resizingMu sync.Mutex
@@ -110,8 +150,15 @@ type Engine struct {
 	startupTrace map[string][]string
 	mu           sync.Mutex
 	active       map[string]*activeRun
-	wake         chan struct{}
-	done         chan struct{}
+	// asides: chat id -> a side question being answered (aside.go);
+	// titling: chat id -> a title being made (title.go).
+	asides  map[string]bool
+	titling map[string]bool
+	// background counts the goroutines a run leaves behind it (a naming
+	// beside the idle session); Serve returns once they are done.
+	background sync.WaitGroup
+	wake       chan struct{}
+	done       chan struct{}
 }
 
 const runSlots = 2
@@ -194,10 +241,16 @@ func (e *Engine) Wake() {
 }
 func (e *Engine) Serve(ctx context.Context) {
 	defer close(e.done)
+	defer e.background.Wait() // after the runs, which spawn them
+	defer e.Bugs.Recover("engine serve loop")
+	e.fillDefaultModels()
+	if e.Worker != nil {
+		go func() { defer e.Bugs.Recover("limits refresh"); e.refreshLimits(ctx) }()
+	}
 	if e.PolicyAddress != "" {
 		deliveryCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
-		go func() { defer close(done); e.sharingDelivery(deliveryCtx) }()
+		go func() { defer close(done); defer e.Bugs.Recover("sharing delivery"); e.sharingDelivery(deliveryCtx) }()
 		defer func() { cancel(); <-done }()
 	}
 	running := map[string]string{}
@@ -237,7 +290,7 @@ func (e *Engine) Serve(ctx context.Context) {
 			id := c.ID
 			running[id] = c.SandboxID
 			workers.Add(1)
-			go func() { defer workers.Done(); e.run(ctx, id); finished <- id }()
+			go func() { defer workers.Done(); defer e.Bugs.Recover("chat run " + id); e.run(ctx, id); finished <- id }()
 		}
 		select {
 		case <-ctx.Done():
@@ -255,26 +308,76 @@ func (e *Engine) Serve(ctx context.Context) {
 const limitsTTL = 30 * time.Second
 
 // Limits is the runner's size offer (default, ceiling, CPU step, whether
-// a resize restarts), or nil when the runner cannot be reached.
+// a resize restarts), or nil when the runner cannot be reached. It is
+// the offer refreshLimits last got; only before the first refresh does
+// it ask the runner itself, once per limitsTTL, so a runner busy stopping
+// a workspace never stalls the views that show the offer.
 func (e *Engine) Limits(ctx context.Context) *sandbox.ResourceLimits {
 	e.limitsMu.Lock()
-	defer e.limitsMu.Unlock()
-	if e.Worker == nil || (e.limits != nil && e.now().Before(e.limitsAt.Add(limitsTTL))) {
-		return e.limits
+	limits, at := e.limits, e.limitsAt
+	e.limitsMu.Unlock()
+	if e.Worker == nil || limits != nil || e.now().Before(at.Add(limitsTTL)) {
+		return limits
+	}
+	return e.fetchLimits(ctx)
+}
+
+// fetchLimits asks the runner for its offer and keeps the answer; a
+// failed ask keeps the previous offer and is not repeated for limitsTTL.
+func (e *Engine) fetchLimits(ctx context.Context) *sandbox.ResourceLimits {
+	e.limitsFetch.Lock()
+	defer e.limitsFetch.Unlock()
+	e.limitsMu.Lock()
+	limits, at := e.limits, e.limitsAt
+	e.limitsMu.Unlock()
+	if e.now().Before(at.Add(limitsTTL)) {
+		return limits // fetched meanwhile
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	res, err := e.Worker.Call(ctx, sandbox.Request{Operation: "health"})
-	if err != nil || res.Limits == nil {
-		return e.limits
+	e.limitsMu.Lock()
+	defer e.limitsMu.Unlock()
+	e.limitsAt = e.now()
+	if err == nil && res.Limits != nil && !reflect.DeepEqual(e.limits, res.Limits) {
+		e.limits = res.Limits
+		e.touch()
 	}
-	e.limits, e.limitsAt = res.Limits, e.now()
 	return e.limits
+}
+
+// refreshLimits keeps the offer current while the engine serves: every
+// limitsTTL, sooner after a failure while nothing is known yet.
+func (e *Engine) refreshLimits(ctx context.Context) {
+	for {
+		limits := e.fetchLimits(ctx)
+		wait := limitsTTL
+		if limits == nil {
+			wait = 5 * time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		e.limitsMu.Lock()
+		e.limitsAt = time.Time{} // due
+		e.limitsMu.Unlock()
+	}
 }
 
 // Create starts a chat: on a fresh workspace of the given size (nil is the
 // runner's default), or sharing an existing one, whose size is settled.
 func (e *Engine) Create(title, shared, repository string, resources *sandbox.Resources, selection ...string) (string, error) {
+	return e.CreateFrom(cv.Actor{PrincipalID: "owner"}, title, shared, repository, resources, selection...)
+}
+
+// CreateFrom creates a chat by actor (the requester the edge identified,
+// or the owner), recorded as its creator.
+func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, resources *sandbox.Resources, selection ...string) (string, error) {
+	if actor.PrincipalID == "" {
+		actor.PrincipalID = "owner"
+	}
 	provider, model := "codex", ""
 	if len(selection) > 0 {
 		provider = selection[0]
@@ -282,11 +385,14 @@ func (e *Engine) Create(title, shared, repository string, resources *sandbox.Res
 	if len(selection) > 1 {
 		model = selection[1]
 	}
-	if err := sandbox.ValidateAgent(provider, model); err != nil {
+	if err := e.validateAgent(provider, model); err != nil {
 		return "", err
 	}
 	if provider == "" {
 		provider = "codex"
+	}
+	if model == "" {
+		model = e.DefaultModel(provider)
 	}
 	if resources != nil && resources.IsZero() {
 		resources = nil
@@ -306,10 +412,14 @@ func (e *Engine) Create(title, shared, repository string, resources *sandbox.Res
 		resources = &resolved
 	}
 	id := cv.ID()
+	network := "" // a shared workspace's own network access comes along
 	err := e.Store.update(func(st *State) error {
 		title = strings.TrimSpace(title)
+		// A chat named by its creator keeps that name; one left at the
+		// default is named from its first exchange (title.go).
+		titled := "manual"
 		if title == "" {
-			title = "New chat"
+			title, titled = DefaultTitle, ""
 		}
 		if len(title) > 160 || len(repository) > 300 {
 			return errors.New("title or repository too long")
@@ -325,6 +435,7 @@ func (e *Engine) Create(title, shared, repository string, resources *sandbox.Res
 					sbxID = shared
 					repository = c.Repository
 					resources = c.Resources
+					network = c.Network
 					found = true
 					break
 				}
@@ -333,7 +444,8 @@ func (e *Engine) Create(title, shared, repository string, resources *sandbox.Res
 				return errors.New("unknown workspace")
 			}
 		}
-		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, SandboxID: sbxID, Repository: repository, Resources: resources, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
+		creator := actor
+		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, Titled: titled, SandboxID: sbxID, Repository: repository, Resources: resources, Network: network, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
 		return nil
 	})
 	return id, err
@@ -409,7 +521,7 @@ func (e *Engine) Typing(id string, actor cv.Actor) error {
 	if actor.PrincipalID == "" {
 		actor.PrincipalID = "owner"
 	}
-	if e.Store.Snapshot().chat(id) == nil {
+	if e.Store.Chat(id) == nil {
 		return errors.New("chat not found")
 	}
 	label := actor.Name
@@ -427,6 +539,7 @@ func (e *Engine) Typing(id string, actor cv.Actor) error {
 	if e.typing[id] == nil {
 		e.typing[id] = map[string]Typist{}
 	}
+	defer e.touch()
 	e.typing[id][actor.PrincipalID] = Typist{PrincipalID: actor.PrincipalID, Name: label, Until: float64(e.now().Add(TypingTTL).UnixNano()) / 1e9}
 	return nil
 }
@@ -458,20 +571,129 @@ type View struct {
 	// Sandboxes is the runner's size offer; nil while the runner is
 	// unreachable, when clients offer no size choice.
 	Sandboxes *sandbox.ResourceLimits `json:"sandboxes,omitempty"`
+	// AgentOptions are the Claude session features this Warden allows,
+	// so clients offer them only then.
+	AgentOptions AgentOptions `json:"agentOptions"`
+}
+
+// AgentOptions are the optional, costlier Claude features an operator
+// enables (config providers.claude.allowFastMode, allowLongContext), and
+// each provider's model catalog as its CLI reported it (catalog.go), by
+// provider; a provider without one is absent and clients fall back to
+// their own rows.
+type AgentOptions struct {
+	FastMode    bool                   `json:"fastMode"`
+	LongContext bool                   `json:"longContext"`
+	Models      map[string][]ModelInfo `json:"models,omitempty"`
+	// Defaults is the model a chat of each provider starts with
+	// (defaults.go), the row the pickers show first.
+	Defaults map[string]string `json:"defaults"`
+	// LocalFiles: the composer may attach files from this machine by
+	// path (localfiles.go; a local install, where the service runs on the
+	// owner's machine).
+	LocalFiles bool `json:"localFiles"`
 }
 
 func (e *Engine) View() View {
-	return View{State: e.state(), Sandboxes: e.Limits(context.Background())}
+	st := e.state()
+	models := catalogRows(st.Catalog)
+	st.Catalog = nil // clients get it as agentOptions.models
+	return View{State: st, Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models, Defaults: e.defaultModels(), LocalFiles: e.LocalMode}}
 }
 
-// state is the store with typing indicators filled in.
+// viewKey names a generation of the view: the store's version and the
+// engine's own changes (touch).
+type viewKey struct{ store, engine uint64 }
+
+// key is the current generation.
+func (e *Engine) key() viewKey {
+	e.viewMu.Lock()
+	gen := e.viewGen
+	e.viewMu.Unlock()
+	return viewKey{e.Store.Version(), gen}
+}
+
+// touch records a change the view shows that the store does not hold
+// (typing, a startup stage, the size offer) and wakes viewWait.
+func (e *Engine) touch() {
+	e.viewMu.Lock()
+	defer e.viewMu.Unlock()
+	e.viewGen++
+	if e.viewChanged != nil {
+		close(e.viewChanged)
+		e.viewChanged = nil
+	}
+}
+
+// ViewJSON is the encoded view of the current generation, built once per
+// generation and shared by every event stream and state read (the slice
+// is never written to), and whether it shows typists: a view with
+// typists is rebuilt on every read, since they expire with time.
+func (e *Engine) ViewJSON() ([]byte, viewKey, bool) {
+	key := e.key()
+	e.viewMu.Lock()
+	if e.view != nil && e.viewKey == key && !e.viewTyping {
+		b := e.view
+		e.viewMu.Unlock()
+		return b, key, false
+	}
+	e.viewMu.Unlock()
+	view := e.View()
+	b, _ := json.Marshal(view)
+	typing := false
+	for _, c := range view.Chats {
+		typing = typing || len(c.Typing) > 0
+	}
+	e.viewMu.Lock()
+	defer e.viewMu.Unlock()
+	if e.view == nil || (key.store >= e.viewKey.store && key.engine >= e.viewKey.engine) {
+		e.view, e.viewKey, e.viewTyping = b, key, typing
+	}
+	return b, key, typing
+}
+
+// viewWait returns when the generation is past since, or ctx ends.
+func (e *Engine) viewWait(ctx context.Context, since viewKey) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	e.viewMu.Lock()
+	if e.viewGen > since.engine {
+		e.viewMu.Unlock()
+		return
+	}
+	if e.viewChanged == nil {
+		e.viewChanged = make(chan struct{})
+	}
+	touched := e.viewChanged
+	e.viewMu.Unlock()
+	stored := make(chan struct{})
+	go func() { defer close(stored); e.Store.Wait(ctx, since.store) }()
+	select {
+	case <-touched:
+	case <-stored:
+	case <-ctx.Done():
+	}
+}
+
+// state is the store with typing indicators and each chat's spend filled
+// in, and the people's instructions left out (each person reads their
+// own through me/instructions); a kept rewind tail becomes the marker it
+// can undo (rewind.go).
 func (e *Engine) state() State {
 	st := e.Store.Snapshot()
+	st.Instructions = nil
 	now := float64(e.now().UnixNano()) / 1e9
 	for _, c := range st.Chats {
+		c.Permissions = nil // chats/{id}/permissions serves the history
 		if c.Status == "queued" || c.Status == "running" {
 			c.Startup = e.startupOf(c.ID)
 		}
+		if c.RewoundTail != nil {
+			c.UndoRewind = c.RewoundTail.MarkerID
+			c.RewoundTail = nil
+		}
+		spend := spendOf(c)
+		c.Spend = &spend
 	}
 	e.typingMu.Lock()
 	defer e.typingMu.Unlock()
@@ -509,6 +731,11 @@ func (e *Engine) Edit(id, title string, archived bool) error {
 		if !archived && c.Archived && st.deleted(c.SandboxID) {
 			return errors.New("this chat's workspace was deleted; start a new chat")
 		}
+		if title != c.Title {
+			// A person's name for the chat wins over, and ends, the
+			// automatic naming (title.go).
+			c.Titled = "manual"
+		}
 		c.Title = title
 		c.Archived = archived
 		return nil
@@ -524,8 +751,10 @@ func (e *Engine) Edit(id, title string, archived bool) error {
 // (`turn/interrupt`; the model stops mid-thought, a running tool is
 // aborted) and the chat is handed back as `interrupted`, with the agent's
 // session resident and the sandbox up, so the next message is answered at
-// once. An idle session is released, and a chat still queued just has its
-// messages failed. Only a run with no live agent yet (still booting), or
+// once. An idle session is released, and a chat still queued is taken off
+// the queue. Messages queued behind the turn are held, not failed: they
+// stay in the transcript until SendQueued or the next message lets them
+// go (queue.go). Only a run with no live agent yet (still booting), or
 // an agent that ignores the interrupt, falls back to cancelling the run,
 // which stops the sandbox (the runner cannot otherwise prove the guest's
 // processes died). Stopping the sandbox itself is StopEnvironment.
@@ -569,15 +798,9 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 			if c == nil {
 				return errors.New("chat not found")
 			}
-			fail := func() {
-				for i := range c.Conversation.Entries {
-					v := &c.Conversation.Entries[i]
-					if v.Delivery == "queued" {
-						v.Delivery = "failed"
-						v.Detail = "Stopped before delivery"
-					}
-				}
-			}
+			// Messages still queued are held, not failed: they stay in the
+			// transcript to be edited, withdrawn or sent (SendQueued, or
+			// the next message) once the person is ready (queue.go).
 			switch {
 			case c.Status == "stopping":
 				return errors.New("stop already pending")
@@ -587,14 +810,12 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 			case a == nil || (c.Status == "queued" && idle):
 				// Waiting for a slot or the sandbox (or the run just ended, its
 				// own cleanup keeps the mark): off the queue, nothing to cancel.
-				fail()
 				c.Status = "interrupted"
 				c.Conversation.ActiveTurnID = nil
 				mode = "unqueued"
 			case idle || c.Status == "queued":
 				again = true // a session resuming, or settling with a message waiting
 			default:
-				fail()
 				c.Status = "stopping"
 				cpy = *c
 				mode = "stop"
@@ -744,7 +965,7 @@ func (e *Engine) endSession(ctx context.Context, id string) {
 func (e *Engine) awaitInterrupted(ctx context.Context, id string) bool {
 	deadline := time.Now().Add(interruptGrace)
 	for {
-		if c := e.Store.Snapshot().chat(id); c == nil || c.Status != "stopping" {
+		if c := e.Store.Chat(id); c == nil || c.Status != "stopping" {
 			return true
 		}
 		if time.Now().After(deadline) {
@@ -758,8 +979,7 @@ func (e *Engine) awaitInterrupted(ctx context.Context, id string) bool {
 	}
 }
 func (e *Engine) Runtime(ctx context.Context, id, op string) (sandbox.Response, error) {
-	st := e.Store.Snapshot()
-	c := st.chat(id)
+	c := e.Store.Chat(id)
 	if c == nil {
 		return sandbox.Response{}, errors.New("chat not found")
 	}
@@ -810,7 +1030,13 @@ func (e *Engine) run(parent context.Context, id string) {
 		if err != nil && a.ending.Load() {
 			err = nil // Stop ended a run that had no turn in flight
 		}
-		if err != nil {
+		if err != nil && parent.Err() == nil {
+			// A run that failed is tombstoned so the runner stops its
+			// sandbox. A run cut short by the service's own shutdown is
+			// not: the disconnect is a normal end to the runner, the
+			// sandbox stays resident, and on Kubernetes the pod outlives
+			// the restart (docs/workspace-keepalive-plan.md) for the run
+			// that resumes the chat.
 			cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
 			_, _ = e.Worker.Call(cleanup, request(&current, "cancel"))
 			done()
@@ -838,15 +1064,25 @@ func (e *Engine) run(parent context.Context, id string) {
 			}
 			c.Conversation.ActiveTurnID = nil
 			c.Conversation.EndTurns(e.at())
+			// A run Stop ended (the agent ignored the interrupt, or had no
+			// turn yet) holds its queued messages like any stop; a run
+			// that failed on its own fails them, retry being the fix.
+			held := c.Status == "stopping" || c.Status == "interrupted"
 			for i := range c.Conversation.Entries {
 				v := &c.Conversation.Entries[i]
 				v.IsStreaming = false
-				if err != nil && v.Delivery == "queued" {
+				if err != nil && !held && v.Delivery == "queued" {
 					v.Delivery = "failed"
 					v.Detail = "Not delivered"
 				}
+				if v.Delivery == "sending" {
+					// Handed over but never confirmed by the agent: the run
+					// ended in between, so whether it was read is unknown.
+					v.Delivery = "failed"
+					v.Detail = deliveryUnconfirmed
+				}
 			}
-			if c.Status == "stopping" || c.Status == "interrupted" {
+			if held {
 				return nil
 			}
 			c.Status = "idle"
@@ -876,6 +1112,8 @@ func (e *Engine) run(parent context.Context, id string) {
 	if current.Conversation.ThreadID != nil {
 		r.ThreadID = *current.Conversation.ThreadID
 	}
+	r.NewSession = current.NewSession
+	r.ForkSession = current.ForkSession
 	var prep sandbox.Response
 	// The runner reports its stages (sandbox creation, the boot, the guest
 	// provisioning) while prepare runs; a follower copies them to the chat.
@@ -910,8 +1148,22 @@ func (e *Engine) run(parent context.Context, id string) {
 		return
 	}
 	e.setStartup(id, stageLaunching, "starting the agent in the sandbox")
+	// The participants' standing instructions go with the launch (Claude:
+	// the appended system prompt; Codex: developerInstructions below).
+	var instructions string
+	if snapshot := e.Store.Snapshot(); snapshot.chat(id) != nil {
+		instructions, a.instructed = sessionInstructions(&snapshot, snapshot.chat(id))
+	}
 	r = request(&current, "stream")
 	r.Directory = prep.Directory
+	r.Instructions = instructions
+	r.OutputStyle = current.OutputStyle
+	if current.ForkSession && current.Conversation.ThreadID != nil {
+		// A forked chat's first run resumes the source chat's session as
+		// a copy (fork.go); the runner records nothing until the agent
+		// reports the copy's own id.
+		r.ThreadID, r.ForkSession = *current.Conversation.ThreadID, true
+	}
 	var stream io.ReadWriteCloser
 	stream, _, err = e.Worker.Open(ctx, r)
 	if err != nil {
@@ -939,11 +1191,12 @@ func (e *Engine) run(parent context.Context, id string) {
 	e.mu.Lock()
 	a.client = client
 	e.mu.Unlock()
-	params := map[string]any{"cwd": prep.Directory, "approvalPolicy": "on-request", "sandbox": "danger-full-access", "developerInstructions": "You are an agent in a Warden-managed sandbox. The files, shared documents and shared repositories belong to this workspace and are visible to every chat in it; preserve other chats' files. Warden controls external access. Do not request or expose host credentials. GitHub repositories are reached through Warden's repository sharing: list_shared_repositories shows what this workspace can clone and read; to clone or read one that is not listed, ask with request_repository_access (contents), never with request_network_access for github.com: a refused git clone means the repository is not shared, not that the network is blocked. To show a web preview, start the server as a detached process on 0.0.0.0 inside this sandbox (for example subprocess.Popen with start_new_session=True and stdio redirected to files), then call preview_attach with port, path beginning /, and title. The controller chooses the URL.", "ephemeral": false, "historyMode": "legacy"}
+	params := map[string]any{"cwd": prep.Directory, "approvalPolicy": "on-request", "sandbox": "danger-full-access", "developerInstructions": "You are an agent in a Warden-managed sandbox. The files, shared documents and shared repositories belong to this workspace and are visible to every chat in it; preserve other chats' files. Warden controls external access. Do not request or expose host credentials. GitHub repositories are reached through Warden's repository sharing: list_shared_repositories shows what this workspace can clone and read; to clone or read one that is not listed, ask with request_repository_access (contents), never with request_network_access for github.com: a refused git clone means the repository is not shared, not that the network is blocked. To show a web preview, start the server as a detached process on 0.0.0.0 inside this sandbox (for example subprocess.Popen with start_new_session=True and stdio redirected to files), then call preview_attach with port, path beginning /, and title. The controller chooses the URL. " + sandbox.ChatRenderingPrompt, "ephemeral": false, "historyMode": "legacy"}
 	params["modelProvider"] = "warden"
-	if current.Model != "" {
-		params["model"] = current.Model
+	if instructions != "" {
+		params["developerInstructions"] = params["developerInstructions"].(string) + "\n\n" + instructions
 	}
+	params["model"] = e.modelOf(&current)
 	params["runtimeWorkspaceRoots"] = []string{prep.Directory}
 	params["approvalsReviewer"] = "user"
 	tools := append(append(previewTools(), sharingTools()...), grantTools(e.LocalMode)...)
@@ -987,47 +1240,92 @@ func (e *Engine) run(parent context.Context, id string) {
 	if err != nil {
 		return
 	}
+	// The provider's model catalog, from the process just started
+	// (catalog.go); a refusal or a slow answer leaves the cached one.
+	e.loadCatalog(ctx, current.Provider, client)
+	if current.Rewind != nil && !e.applyPendingRewind(ctx, id, client, threadID) {
+		// The resumed session could not rewind: this run ends cleanly and
+		// the message stays queued for a fresh session (rewind.go).
+		return
+	}
 	var message *cv.Entry
 	message, err = e.attempt(id, "")
 	if err != nil {
 		return
 	}
-	if message == nil {
+	if message == nil && !a.resident {
 		err = errors.New("no pending message")
 		return
 	}
-	e.setStartup(id, stageSending, "handing your message to the agent")
 	var items []any
-	if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
-		return
-	}
-	response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
-	if err != nil {
-		return
-	}
-	turn := agent.Map(response["turn"])
-	turnID := agent.String(turn["id"])
-	if turnID == "" {
-		err = errors.New("agent returned no turn ID")
-		return
-	}
-	e.mu.Lock()
-	a.turnID = turnID
-	e.mu.Unlock()
-	if err = e.confirm(id, message.ID, turnID); err != nil {
-		return
-	}
-	// The turn is accepted; the model has not said anything yet. The
-	// first item of the turn ends the start (turn below).
-	e.setStartup(id, stageFirstResponse, "waiting for the model's first reply")
-	for {
-		if err = e.turn(ctx, id, &current, a, client, frames, threadID, turnID, prep.Directory, turn); err != nil || !a.resident {
+	var turn map[string]any
+	turnID := ""
+	if message != nil {
+		e.setStartup(id, stageSending, "handing your message to the agent")
+		if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 			return
+		}
+		items = e.beforeTurn(ctx, id, &current, message.ID, items)
+		e.applySession(ctx, id, &current, client)
+		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
+		if err != nil {
+			return
+		}
+		turn = agent.Map(response["turn"])
+		turnID = agent.String(turn["id"])
+		if turnID == "" {
+			err = errors.New("agent returned no turn ID")
+			return
+		}
+		e.mu.Lock()
+		a.turnID = turnID
+		e.mu.Unlock()
+		if err = e.confirm(id, message.ID, turnID); err != nil {
+			return
+		}
+		// The turn is accepted; the model has not said anything yet. The
+		// first item of the turn ends the start (turn below).
+		e.setStartup(id, stageFirstResponse, "waiting for the model's first reply")
+	} else {
+		// Nothing to send: the run was started for a side question
+		// (aside.go), or its message was withdrawn meanwhile. The session
+		// is up; it waits for the chat's next message like one that just
+		// finished a turn.
+		e.clearStartup(id)
+	}
+	for {
+		if turnID != "" {
+			if err = e.turn(ctx, id, &current, a, client, frames, threadID, turnID, prep.Directory, turn); err != nil {
+				return
+			}
+			if !a.resident {
+				// The run ends with the turn; a chat still at the default
+				// title is named from the transcript alone (title.go).
+				e.reportActivity(parent, id)
+				e.autoTitle(parent, id, nil)
+				return
+			}
 		}
 		// The turn finished but the session stays open: settle the transcript,
 		// report idle, and wait for the chat's next message.
 		e.settleTurn(parent, id, a)
-		message = e.awaitMessage(ctx, id, &current, a, client, frames)
+		// A chat still at the default title is named from its first
+		// exchange, beside the idle session (title.go).
+		e.background.Add(1)
+		go func() { defer e.background.Done(); e.autoTitle(parent, id, a) }()
+		var agentTurn string
+		message, agentTurn = e.awaitMessage(ctx, id, &current, a, client, frames)
+		if agentTurn != "" {
+			// The agent began a turn of its own (Claude Code resumes the
+			// model when a background task it started reports back): drive
+			// it like one asked for, with nothing to send.
+			turnID = agentTurn
+			turn = map[string]any{"id": turnID, "status": "inProgress"}
+			e.mu.Lock()
+			a.turnID = turnID
+			e.mu.Unlock()
+			continue
+		}
 		if message == nil {
 			return // released, timed out, stopped or ended by the worker: a clean end
 		}
@@ -1035,6 +1333,8 @@ func (e *Engine) run(parent context.Context, id string) {
 		if items, err = e.input(ctx, &current, prep.Directory, *message); err != nil {
 			return
 		}
+		items = e.beforeTurn(ctx, id, &current, message.ID, items)
+		e.applySession(ctx, id, &current, client)
 		response, err = client.Call(ctx, "turn/start", map[string]any{"threadId": threadID, "clientUserMessageId": message.ID, "cwd": prep.Directory, "approvalPolicy": "on-request", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "input": items})
 		if err != nil {
 			return
@@ -1093,7 +1393,7 @@ func (e *Engine) turn(ctx context.Context, id string, current *Chat, a *activeRu
 			if len(f.ID) > 0 {
 				err = e.request(ctx, current, client, f)
 			} else {
-				err = e.notification(id, f)
+				err = e.notification(ctx, id, f)
 			}
 			if err != nil {
 				return err
@@ -1110,6 +1410,9 @@ func (e *Engine) turn(ctx context.Context, id string, current *Chat, a *activeRu
 		case <-tick.C:
 			if !e.steers(current.Provider) || a.interrupting.Load() {
 				continue // Claude queues a separate turn; it does not implement Codex steering.
+			}
+			if e.instructionsOwed(id, a) {
+				continue // left queued: the session is relaunched for the sender's instructions after this turn
 			}
 			message, err := e.attempt(id, turnID)
 			if err != nil {
@@ -1128,6 +1431,8 @@ func (e *Engine) turn(ctx context.Context, id string, current *Chat, a *activeRu
 					if err = e.confirm(id, message.ID, turnID); err != nil {
 						return err
 					}
+				} else {
+					e.unconfirmed(id, message.ID)
 				}
 			}
 		}
@@ -1145,6 +1450,7 @@ func (e *Engine) settleTurn(parent context.Context, id string, a *activeRun) {
 	for _, requestID := range sharingResults {
 		_, _ = e.sharingCall(parent, "ack", map[string]any{"id": requestID})
 	}
+	e.reportActivity(parent, id)
 	_ = e.Store.update(func(st *State) error {
 		c := st.chat(id)
 		if c == nil || c.RunID != a.runID {
@@ -1174,11 +1480,37 @@ func (e *Engine) settleTurn(parent context.Context, id string, a *activeRun) {
 	})
 }
 
+// reportActivity tells the runner the chat was active now: a turn just
+// ended. The workspace's idle window counts from the last such report or
+// the last user action (a message's checkpoint, a command, a preview), not
+// from the moment the idle session is released (sandbox/managed.go
+// SweepIdle), so a workspace stays up for the configured time after the
+// agent's last reply. The report carries its time and goes in the
+// background: the runner serialises it behind a creation in flight, which
+// can take minutes on a cluster, and the run must not wait for that.
+func (e *Engine) reportActivity(ctx context.Context, id string) {
+	c := e.Store.Chat(id)
+	if c == nil {
+		return
+	}
+	r := request(c, "activity")
+	r.At = e.now()
+	go func() {
+		defer e.Bugs.Recover("activity report")
+		callCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		_, _ = e.Worker.Call(callCtx, r)
+	}()
+}
+
 // awaitMessage keeps a resident session open until the chat's next message
-// arrives, returning it with the chat marked running. It returns nil when the
-// session should end: released for another chat, idle too long, the run
-// cancelled, the chat stopped, or the agent stream closed by the worker.
-func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *activeRun, client *agent.Client, frames chan agent.Frame) *cv.Entry {
+// arrives, returning it with the chat marked running, or until the agent
+// starts a turn by itself (`turn/started` with no turn asked for), returning
+// that turn's id with the chat marked running and the turn begun. It
+// returns neither when the session should end: released for another chat,
+// idle too long, the run cancelled, the chat stopped, or the agent stream
+// closed by the worker.
+func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *activeRun, client *agent.Client, frames chan agent.Frame) (*cv.Entry, string) {
 	idleCtx, release := context.WithTimeout(ctx, e.residentIdle())
 	defer release()
 	e.mu.Lock()
@@ -1199,29 +1531,61 @@ func (e *Engine) awaitMessage(ctx context.Context, id string, current *Chat, a *
 	for {
 		select {
 		case <-idleCtx.Done():
-			return nil
+			return nil, ""
 		case <-client.Done():
-			return nil
+			return nil, ""
 		case f := <-frames:
 			if len(f.ID) > 0 {
 				_ = e.request(ctx, current, client, f)
-			} else {
-				_ = e.notification(id, f)
+				continue
+			}
+			_ = e.notification(ctx, id, f)
+			if f.Method == "turn/started" {
+				if turn := agent.String(agent.Map(f.Params["turn"])["id"]); turn != "" {
+					if err := e.beginAgentTurn(id, turn); err != nil {
+						return nil, ""
+					}
+					return nil, turn
+				}
 			}
 		case <-tick.C:
+			if e.instructionsOwed(id, a) {
+				// The message stays queued; the run ends cleanly and the
+				// chat's next run launches with the sender's instructions.
+				log.Printf("chat %s: relaunching the agent session for a sender's standing instructions", id)
+				return nil, ""
+			}
 			message, err := e.resume(id)
 			if err != nil {
-				return nil
+				return nil, ""
 			}
 			if message != nil {
-				return message
+				return message, ""
 			}
 		}
 	}
 }
 
+// beginAgentTurn marks the chat running for a turn the agent started by
+// itself and records the turn's start. It fails when the chat is being
+// stopped or archived, which ends the session.
+func (e *Engine) beginAgentTurn(id, turn string) error {
+	return e.Store.update(func(st *State) error {
+		c := st.chat(id)
+		if c == nil || c.Archived || c.Status == "stopping" {
+			return errors.New("session ended")
+		}
+		c.Status = "running"
+		c.Error = ""
+		c.Conversation.Begin(turn, e.at())
+		dropRewoundTail(c) // a turn started: the last rewind is final (rewind.go)
+		return nil
+	})
+}
+
 // resume moves a queued chat with a live resident session back to running and
-// hands over its first undelivered message. It fails when the chat is being
+// hands over its first undelivered message, which is "sending" until the
+// agent's turn confirms it (confirm) or the run ends without (unconfirmed). It fails when the chat is being
 // stopped or archived, which ends the session. A chat whose turn Stop
 // interrupted keeps its session: the next message resumes it.
 func (e *Engine) resume(id string) (*cv.Entry, error) {
@@ -1237,8 +1601,8 @@ func (e *Engine) resume(id string) (*cv.Entry, error) {
 		for i := range c.Conversation.Entries {
 			v := &c.Conversation.Entries[i]
 			if v.Delivery == "queued" {
-				v.Delivery = "failed"
-				v.Detail = "Delivery unconfirmed. Check the agent response before retrying."
+				v.Delivery = "sending"
+				v.Detail = ""
 				copy := *v
 				message = &copy
 				break
@@ -1250,6 +1614,7 @@ func (e *Engine) resume(id string) (*cv.Entry, error) {
 		}
 		c.Status = "running"
 		c.Error = ""
+		dropRewoundTail(c) // a turn starts: the last rewind is final (rewind.go)
 		return nil
 	})
 	return message, err
@@ -1264,8 +1629,8 @@ func (e *Engine) attempt(id, turn string) (*cv.Entry, error) {
 		for i := range c.Conversation.Entries {
 			v := &c.Conversation.Entries[i]
 			if v.Delivery == "queued" {
-				v.Delivery = "failed"
-				v.Detail = "Delivery unconfirmed. Check the agent response before retrying."
+				v.Delivery = "sending"
+				v.Detail = ""
 				if turn != "" {
 					v.TurnID = cv.Ptr(turn)
 				}
@@ -1274,21 +1639,60 @@ func (e *Engine) attempt(id, turn string) (*cv.Entry, error) {
 				break
 			}
 		}
+		if message != nil {
+			dropRewoundTail(c) // a turn starts: the last rewind is final (rewind.go)
+		}
 		return nil
 	})
 	return message, err
+}
+
+// deliveryUnconfirmed is the detail of a message the agent may or may not
+// have read: it was handed over (Delivery "sending") but the turn that
+// would confirm it never started.
+const deliveryUnconfirmed = "Delivery unconfirmed. Check the agent response before retrying."
+
+// unconfirmed fails message `message` of chat `id` as unconfirmed if it is
+// still in flight: for a hand-over the agent did not acknowledge while the
+// run goes on (a steer it refused), where the run's end will not do it.
+func (e *Engine) unconfirmed(id, message string) {
+	_ = e.Store.update(func(st *State) error {
+		c := st.chat(id)
+		if c == nil {
+			return nil
+		}
+		for i := range c.Conversation.Entries {
+			if v := &c.Conversation.Entries[i]; v.ID == message && v.Delivery == "sending" {
+				v.Delivery = "failed"
+				v.Detail = deliveryUnconfirmed
+			}
+		}
+		return nil
+	})
 }
 func (e *Engine) confirm(id, message, turn string) error {
 	return e.Store.update(func(st *State) error {
 		c := st.chat(id)
 		c.Conversation.Begin(turn, e.at())
-		for i := range c.Conversation.Entries {
-			v := &c.Conversation.Entries[i]
-			if v.ID == message {
-				v.Delivery = "sent"
-				v.Detail = ""
-				v.TurnID = cv.Ptr(turn)
+		c.Recap, c.NewSession = "", false // delivered with this turn (rewind.go)
+		entries := c.Conversation.Entries
+		for i := range entries {
+			v := &entries[i]
+			if v.ID != message {
+				continue
 			}
+			v.Delivery = "sent"
+			v.Detail = ""
+			v.TurnID = cv.Ptr(turn)
+			if i < len(entries)-1 {
+				// The message opens its turn now: it moves past what the
+				// earlier turn appended while it waited in the queue, so
+				// the transcript reads in the order things happened.
+				sent := *v
+				entries = append(entries[:i:i], entries[i+1:]...)
+				c.Conversation.Entries = append(entries, sent)
+			}
+			break
 		}
 		return nil
 	})
@@ -1314,7 +1718,7 @@ func (e *Engine) turnUsage(id string, p map[string]any) (string, *cv.Usage) {
 	usage := total.Sub(a.usageBase)
 	return turn, &usage
 }
-func (e *Engine) notification(id string, f agent.Frame) error {
+func (e *Engine) notification(ctx context.Context, id string, f agent.Frame) error {
 	// Looked up before the store is locked: the engine lock is taken around
 	// store updates elsewhere, never inside one.
 	var usage *cv.Usage
@@ -1322,8 +1726,26 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 	if f.Method == "thread/tokenUsage/updated" {
 		usageTurn, usage = e.turnUsage(id, f.Params)
 	}
-	return e.Store.update(func(st *State) error {
-		c := &st.chat(id).Conversation
+	if f.Method == "item/completed" {
+		// An image a Read returned is stored before the entry records it
+		// (images.go keepReadImage): the store keeps an id, never bytes.
+		e.keepReadImage(ctx, id, agent.Map(f.Params["item"]))
+	}
+	// A streamed token is applied in memory and written shortly after with
+	// the tokens around it (Store.stream); every other frame is on disk
+	// before the adapter gets its acknowledgement.
+	apply := e.Store.update
+	switch f.Method {
+	case "item/agentMessage/delta", "item/commandExecution/outputDelta", "item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded", "thread/tokenUsage/updated", "thread/context/updated":
+		apply = e.Store.stream
+	}
+	return apply(func(st *State) error {
+		chat := st.chat(id)
+		if f.Method == "permissions/modeChanged" {
+			chat.applyMode(agent.String(f.Params["mode"]))
+			return nil
+		}
+		c := &chat.Conversation
 		p := f.Params
 		turn := agent.String(p["turnId"])
 		if turn == "" {
@@ -1331,7 +1753,10 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 		}
 		switch f.Method {
 		case "thread/started":
-			c.ThreadID = cv.Ptr(agent.String(agent.Map(p["thread"])["id"]))
+			thread := agent.Map(p["thread"])
+			c.ThreadID = cv.Ptr(agent.String(thread["id"]))
+			chat.ForkSession = false // the copy has its own session now (fork.go)
+			chat.sessionStarted(thread)
 		case "turn/started":
 			c.ActiveTurnID = cv.Ptr(turn)
 		case "item/started", "item/completed":
@@ -1353,6 +1778,12 @@ func (e *Engine) notification(id string, f agent.Frame) error {
 			if usage != nil {
 				c.Report(usageTurn, *usage)
 			}
+		case "thread/context/updated":
+			// How full the agent's context is (the Claude adapter reports
+			// it per model call and after a compaction).
+			if context := cv.ContextFrom(agent.Map(p["context"])); context != nil {
+				c.Context = context
+			}
 		case "error":
 			if p["willRetry"] != true {
 				c.Entries = append(c.Entries, cv.NewEntry("system", agent.String(agent.Map(p["error"])["message"])))
@@ -1372,6 +1803,53 @@ func (e *Engine) request(ctx context.Context, c *Chat, client *agent.Client, f a
 			chat.Approvals = append(chat.Approvals, Approval{ID: cv.ID(), RunID: c.RunID, RPCID: append(json.RawMessage(nil), f.ID...), Method: f.Method, Params: f.Params, State: "pending"})
 			return nil
 		})
+	case methodPermission:
+		// A Claude tool ask: the chat's mode and rules answer it, or the
+		// owner does from a card that shows the call as its transcript
+		// card and, for a plan, the plan (permissions.go).
+		tool, input := agent.String(f.Params["tool"]), agent.Map(f.Params["input"])
+		var verdict *Verdict
+		err := e.Store.update(func(st *State) error {
+			chat := st.chat(c.ID)
+			entry := permissionEntry(f.Params)
+			if verdict = st.decide(chat, tool, input); verdict != nil {
+				// Answered by a rule or the mode: history only (rules.go).
+				ev := PermissionEvent{At: e.at(), Tool: tool, Summary: askSummary(tool, input, entry), Decision: "allow", How: "auto"}
+				if verdict.Decision == "decline" {
+					ev.Decision, ev.Message = "deny", verdict.Message
+				}
+				if verdict.Rule != nil {
+					rule := verdict.Rule.Rule
+					ev.How, ev.Rule, ev.Scope = "rule", &rule, verdict.Rule.Scope
+				}
+				chat.record(ev)
+				return nil
+			}
+			params := map[string]any{"tool": tool, "input": input}
+			if tool != "ExitPlanMode" {
+				// What "Allow always" would remember; a plan never is.
+				pattern := RuleFor(tool, input)
+				params["rule"], params["always"] = pattern, RuleLabel(pattern)
+			}
+			if entry != nil {
+				params["entry"] = entry
+			}
+			for _, k := range []string{"description", "plan"} {
+				if v := agent.String(f.Params[k]); v != "" {
+					params[k] = v
+				}
+			}
+			chat.Approvals = append(chat.Approvals, Approval{ID: cv.ID(), RunID: c.RunID, RPCID: append(json.RawMessage(nil), f.ID...), Method: f.Method, Params: params, State: "pending"})
+			return nil
+		})
+		if err != nil || verdict == nil {
+			return err
+		}
+		reply := map[string]any{"decision": verdict.Decision}
+		if verdict.Message != "" {
+			reply["message"] = verdict.Message
+		}
+		return client.Reply(f.ID, reply)
 	default:
 		return client.Send(agent.Frame{ID: f.ID, Error: &agent.RPCError{Code: -32601, Message: "Unsupported Warden agent request"}})
 	}
@@ -1383,6 +1861,27 @@ func (e *Engine) Resolve(chatID, approvalID string, allow bool, answers map[stri
 // ResolveAs answers an approval on behalf of actor, the person the edge
 // identified (grants record who approved them).
 func (e *Engine) ResolveAs(chatID, approvalID string, allow bool, answers map[string][]string, actor cv.Actor) error {
+	return e.Answer(chatID, approvalID, Answer{Allow: allow, Answers: answers}, actor)
+}
+
+// Answer is what the person says to an approval. Allow and Answers (a
+// question's) serve every kind; a tool permission ask also takes Always
+// (allow, and remember the call's rule for the chat, or for every chat of
+// the workspace when Scope is "workspace"), Message (why it is denied,
+// read by the model) and, for a plan, Mode (the permission mode the chat
+// moves to on approval: auto or ask).
+type Answer struct {
+	Allow   bool
+	Answers map[string][]string
+	Always  bool
+	Scope   string
+	Message string
+	Mode    string
+}
+
+// Answer resolves an approval with the given answer on behalf of actor.
+func (e *Engine) Answer(chatID, approvalID string, answer Answer, actor cv.Actor) error {
+	allow, answers := answer.Allow || answer.Always, answer.Answers
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	a := e.active[chatID]
@@ -1429,6 +1928,65 @@ func (e *Engine) ResolveAs(chatID, approvalID string, allow bool, answers map[st
 			out[qid] = map[string]any{"answers": answers[qid]}
 		}
 		result = map[string]any{"answers": out}
+	case methodPermission:
+		decision := map[string]any{"decision": "decline"}
+		if allow {
+			decision["decision"] = "accept"
+		} else if answer.Message != "" {
+			decision["message"] = answer.Message
+		}
+		tool, input := agent.String(approval.Params["tool"]), agent.Map(approval.Params["input"])
+		plan := tool == "ExitPlanMode"
+		if plan && allow {
+			// An approved plan moves the chat out of plan mode, into auto
+			// unless the answer asks to keep asking; the CLI's mode moves
+			// with the answer (adapter: updatedPermissions setMode).
+			mode := ModeAuto
+			if answer.Mode == ModeAsk {
+				mode = ModeAsk
+			}
+			decision["mode"] = mode
+		}
+		err = e.Store.update(func(st *State) error {
+			c := st.chat(chatID)
+			entry := permissionEntry(approval.Params)
+			ev := PermissionEvent{At: e.at(), Tool: tool, Summary: askSummary(tool, input, entry), Decision: "deny", How: "card", By: &actor, Message: answer.Message}
+			if allow {
+				ev.Decision, ev.Message = "allow", ""
+			}
+			switch {
+			case plan && allow:
+				mode := agent.String(decision["mode"])
+				c.Mode = mode
+				c.Conversation.Entries = append(c.Conversation.Entries, cv.NewEntry("notice", "Plan approved — "+strings.TrimPrefix(modeNotice(mode), "Permission mode: ")))
+			case answer.Always && !plan:
+				// The call's rule, remembered for this chat or, at the
+				// workspace scope, for every chat of the sandbox (rules.go).
+				rule := Rule{Kind: RuleAllow, Pattern: RuleFor(tool, input)}.stamp("always", actor, e.at())
+				ev.Rule, ev.Scope = &rule, "chat"
+				if answer.Scope == "workspace" {
+					rule.ChatID = chatID
+					ev.Scope = "workspace"
+					if st.Environments == nil {
+						st.Environments = map[string]*EnvironmentRecord{}
+					}
+					env := st.Environments[c.SandboxID]
+					if env == nil {
+						env = &EnvironmentRecord{}
+						st.Environments[c.SandboxID] = env
+					}
+					env.Rules, _ = addRule(env.Rules, rule)
+				} else {
+					c.Rules, _ = addRule(c.Rules, rule)
+				}
+			}
+			c.record(ev)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		result = decision
 	default:
 		decision := "decline"
 		if allow {
@@ -1457,8 +2015,31 @@ func (e *Engine) ResolveAs(chatID, approvalID string, allow bool, answers map[st
 
 func (e *Engine) Done() <-chan struct{} { return e.done }
 
-func (e *Engine) ConfigureAgent(id, provider, model string) error {
+// validateAgent is sandbox.ValidateAgent plus this Warden's leave: the
+// 1M-context variants only when the operator allows them.
+func (e *Engine) validateAgent(provider, model string) error {
 	if err := sandbox.ValidateAgent(provider, model); err != nil {
+		return err
+	}
+	if longContextModel(model) && !e.AllowLongContext {
+		return errors.New("1M-context models are not enabled on this Warden (providers.claude.allowLongContext)")
+	}
+	return nil
+}
+
+// ConfigureAgent records a chat's provider and model for its next session
+// (an idle chat only). ConfigureAgentAndRelease is the route's entry: it
+// applies the model to a live session where it can.
+func (e *Engine) ConfigureAgent(id, provider, model string) error {
+	return e.configureAgent(id, provider, model, true)
+}
+
+// configureAgent stores the selection; with idleOnly the chat must not be
+// running (the session is about to be released), otherwise the model was
+// applied to the live session and a running turn is fine. A model change
+// on a conversation leaves a marker.
+func (e *Engine) configureAgent(id, provider, model string, idleOnly bool) error {
+	if err := e.validateAgent(provider, model); err != nil {
 		return err
 	}
 	if provider == "" {
@@ -1469,7 +2050,7 @@ func (e *Engine) ConfigureAgent(id, provider, model string) error {
 		if c == nil {
 			return errors.New("chat not found")
 		}
-		if c.Status == "running" || c.Status == "queued" || c.Status == "stopping" {
+		if idleOnly && (c.Status == "running" || c.Status == "queued" || c.Status == "stopping") {
 			return errors.New("wait until the conversation is idle")
 		}
 		old := c.Provider
@@ -1479,15 +2060,50 @@ func (e *Engine) ConfigureAgent(id, provider, model string) error {
 		if provider != old && len(c.Conversation.Entries) > 0 {
 			return errors.New("start a new conversation to change providers")
 		}
+		if provider != old {
+			c.Commands, c.Session = nil, nil
+		}
+		if model != c.Model && len(c.Conversation.Entries) > 0 {
+			c.Conversation.Entries = append(c.Conversation.Entries, cv.NewEntry("notice", modelNotice(model)))
+		}
 		c.Provider = provider
 		c.Model = model
 		return nil
 	})
 }
 
-// ConfigureAgentAndRelease applies ConfigureAgent and ends the chat's resident
-// session, so the next message starts an agent with the new selection.
+// ConfigureAgentAndRelease applies a provider and model choice. A model
+// change on a Claude chat with a live session is made on that session
+// (set_model through the adapter): the process, its thread and its
+// context stay, and the CLI's next system/init reports the model it
+// resolved (chat.session.model). A model the CLI does not know is refused
+// with its message and nothing changes. Otherwise (no live session, the
+// CLI refusing the request for another reason, a Codex chat, whose
+// app-server takes the model at launch here) the selection is recorded
+// and the resident session ends, so the next message starts an agent
+// with it.
 func (e *Engine) ConfigureAgentAndRelease(ctx context.Context, id, provider, model string) error {
+	if provider == "" {
+		provider = "codex"
+	}
+	if model == "" {
+		model = e.DefaultModel(provider)
+	}
+	if current := e.Store.Chat(id); current != nil && current.Provider == "claude" && provider == "claude" && model != current.Model {
+		if client := e.liveClient(id); client != nil {
+			if err := e.validateAgent(provider, model); err != nil {
+				return err
+			}
+			err := e.pushModel(ctx, client, model)
+			if err == nil {
+				return e.configureAgent(id, provider, model, false)
+			}
+			if modelRefused(err) {
+				return err
+			}
+			log.Printf("model %s not applied to the running session of chat %s (%v); restarting the session", model, id, err)
+		}
+	}
 	if err := e.ConfigureAgent(id, provider, model); err != nil {
 		return err
 	}

@@ -208,14 +208,33 @@ Compose file uses.
 {{- $_ = set $auth "google" $google -}}
 {{- end -}}
 {{- $_ = set $cfg "auth" $auth -}}
+{{- $_ = set $cfg "edge" (dict "bugReports" (dict
+      "enabled" (eq (toString .Values.edge.bugReports.enabled) "true")
+      "retentionDays" (int .Values.edge.bugReports.retentionDays)
+      "maxPerHour" (int .Values.edge.bugReports.maxPerHour)
+      "maxPerDay" (int .Values.edge.bugReports.maxPerDay))) -}}
 {{- $providers := dict -}}
 {{- if .Values.providers.codex.enabled -}}
-{{- $_ = set $providers "codex" (dict "secret" .Values.secrets.codex) -}}
+{{- $codex := dict "secret" .Values.secrets.codex -}}
+{{- if .Values.providers.codex.defaultModel -}}
+{{- $_ = set $codex "defaultModel" .Values.providers.codex.defaultModel -}}
+{{- end -}}
+{{- $_ = set $providers "codex" $codex -}}
 {{- else -}}
 {{- $_ = set $providers "codex" nil -}}
 {{- end -}}
 {{- if .Values.providers.claude.enabled -}}
-{{- $_ = set $providers "claude" (dict "secret" .Values.secrets.claude) -}}
+{{- $claude := dict "secret" .Values.secrets.claude -}}
+{{- if .Values.providers.claude.allowFastMode -}}
+{{- $_ = set $claude "allowFastMode" true -}}
+{{- end -}}
+{{- if .Values.providers.claude.allowLongContext -}}
+{{- $_ = set $claude "allowLongContext" true -}}
+{{- end -}}
+{{- if .Values.providers.claude.defaultModel -}}
+{{- $_ = set $claude "defaultModel" .Values.providers.claude.defaultModel -}}
+{{- end -}}
+{{- $_ = set $providers "claude" $claude -}}
 {{- else -}}
 {{- $_ = set $providers "claude" nil -}}
 {{- end -}}

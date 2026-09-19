@@ -20,7 +20,7 @@ func TestStartupDetail(t *testing.T) {
 		want string
 	}{
 		{&kube.Pod{Status: kube.PodStatus{Phase: "Pending"}}, "waiting for a node"},
-		{&kube.Pod{Status: kube.PodStatus{Phase: "Pending", Conditions: []kube.PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available: 3 Insufficient cpu. no new claims to deallocate, preemption: 0/3 nodes are available: 3 No preemption victims found for incoming pod."}}}}, "waiting for a node: 0/3 nodes are available: 3 Insufficient cpu"},
+		{&kube.Pod{Status: kube.PodStatus{Phase: "Pending", Conditions: []kube.PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available: 3 Insufficient cpu. no new claims to deallocate, preemption: 0/3 nodes are available: 3 No preemption victims found for incoming pod."}}}}, "waiting for a node: none of the 3 nodes can take the sandbox: 3 full (cpu)"},
 		{&kube.Pod{Status: kube.PodStatus{Phase: "Pending", Conditions: []kube.PodCondition{{Type: "PodScheduled", Status: "True"}}}}, "waiting for the kubelet to start the container"},
 		{waiting("ContainerCreating", ""), "starting the container"},
 		{waiting("ImagePullBackOff", "Back-off pulling image"), "waiting for the container image: Back-off pulling image"},
@@ -34,6 +34,38 @@ func TestStartupDetail(t *testing.T) {
 	for _, c := range cases {
 		if got := StartupDetail(c.pod); got != c.want {
 			t.Errorf("StartupDetail = %q, want %q", got, c.want)
+		}
+	}
+}
+
+// The scheduler's tally in the owner's words: the GKE Autopilot resume that
+// prompted it, the dev cluster's one node, a disk in another zone, a node
+// still starting, an empty cluster, a reason the verdict does not know
+// (kept verbatim) and a message that is not a tally.
+func TestSchedulerVerdict(t *testing.T) {
+	cases := []struct{ message, want string }{
+		{"0/5 nodes are available: 2 Insufficient cpu, 2 Insufficient memory, 3 node(s) didn't match Pod's node affinity/selector. no new claims to deallocate, preemption: 0/5 nodes are available: 2 No preemption victims found for incoming pod, 3 Preemption is not helpful for scheduling.",
+			"none of the 5 nodes can take the sandbox: 2 full (cpu, memory), 3 not for sandboxes"},
+		{"0/6 nodes are available: 1 node(s) didn't match PersistentVolume's node affinity, 2 Insufficient cpu, 2 Insufficient memory, 3 node(s) didn't match Pod's node affinity/selector. no new claims to deallocate, preemption: 0/6 nodes are available: 2 No preemption victims found for incoming pod, 4 Preemption is not helpful for scheduling.",
+			"none of the 6 nodes can take the sandbox: 2 full (cpu, memory), 1 in another zone than the workspace's disk, 3 not for sandboxes"},
+		{"0/6 nodes are available: 1 node(s) had untolerated taint(s), 2 Insufficient cpu, 3 node(s) didn't match Pod's node affinity/selector. preemption: 0/6 nodes are available: 2 No preemption victims found for incoming pod, 4 Preemption is not helpful for scheduling.",
+			"none of the 6 nodes can take the sandbox: 2 full (cpu), 1 still starting or reserved, 3 not for sandboxes"},
+		{"0/1 nodes are available: 1 Insufficient memory. preemption: 0/1 nodes are available: 1 No preemption victims found for incoming pod.",
+			"the cluster's only node cannot take the sandbox: 1 full (memory)"},
+		{"0/2 nodes are available: 1 Too many pods, 1 node(s) were unschedulable. preemption: 0/2 nodes are available: 1 No preemption victims found for incoming pod, 1 Preemption is not helpful for scheduling.",
+			"none of the 2 nodes can take the sandbox: 1 full (Too many pods), 1 cordoned"},
+		{"0/0 nodes are available: no nodes available to schedule pods.", "the cluster has no nodes"},
+		{"no nodes available to schedule pods", "the cluster has no nodes"},
+		{"0/2 nodes are available: 2 node(s) exceed max volume count. preemption: 0/2 nodes are available: 2 No preemption victims found for incoming pod.",
+			"none of the 2 nodes can take the sandbox: 2 node(s) exceed max volume count"},
+		{"0/1 nodes are available: pod has unbound immediate PersistentVolumeClaims. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling.",
+			"the cluster's only node cannot take the sandbox: the workspace's disk is not ready"},
+		{"skip schedule deleting pod: warden-sandboxes/wc-1", "skip schedule deleting pod: warden-sandboxes/wc-1"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := SchedulerVerdict(c.message); got != c.want {
+			t.Errorf("SchedulerVerdict(%q)\n got %q\nwant %q", c.message, got, c.want)
 		}
 	}
 }
@@ -239,13 +271,13 @@ func TestStartupDetailWithEvents(t *testing.T) {
 	scaleUp := sandbox.Event{At: created.Add(5 * time.Second), Type: "Normal", Reason: "TriggeredScaleUp", Hint: "a node is being added"}
 	old := sandbox.Event{At: created.Add(-time.Minute), Type: "Warning", Reason: "FailedScheduling", Message: "an earlier pod's"}
 	plain := sandbox.Event{At: created.Add(time.Second), Type: "Normal", Reason: "SandboxChanged", Message: "Pod sandbox changed"}
-	if got := startupDetailWithEvents(pending, nil); got != "waiting for a node: 0/2 nodes are available: 2 Insufficient cpu" {
+	if got := startupDetailWithEvents(pending, nil); got != "waiting for a node: none of the 2 nodes can take the sandbox: 2 full (cpu)" {
 		t.Fatalf("no events: %q", got)
 	}
-	if got := startupDetailWithEvents(pending, []sandbox.Event{scaleUp, old}); got != "waiting for a node: 0/2 nodes are available: 2 Insufficient cpu · a node is being added" {
+	if got := startupDetailWithEvents(pending, []sandbox.Event{scaleUp, old}); got != "waiting for a node: none of the 2 nodes can take the sandbox: 2 full (cpu) · a node is being added" {
 		t.Fatalf("scale-up: %q", got)
 	}
-	if got := startupDetailWithEvents(pending, []sandbox.Event{plain, old}); got != "waiting for a node: 0/2 nodes are available: 2 Insufficient cpu" {
+	if got := startupDetailWithEvents(pending, []sandbox.Event{plain, old}); got != "waiting for a node: none of the 2 nodes can take the sandbox: 2 full (cpu)" {
 		t.Fatalf("nothing to add: %q", got)
 	}
 	warning := sandbox.Event{At: created.Add(time.Second), Type: "Warning", Reason: "FailedMount", Message: "MountVolume.SetUp failed for volume \"workspace\": timed out. Retrying.", Hint: EventHint("FailedMount", "MountVolume.SetUp failed for volume \"workspace\": timed out. Retrying.")}

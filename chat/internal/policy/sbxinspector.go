@@ -303,7 +303,7 @@ func (i *SbxInspector) Facts(_ context.Context, identity map[string]string) (Run
 	kits, _ := details["kits"].([]any)
 	daemonVersion, _ := details["daemon_version"].(string)
 	facts.ImageDigest, _ = details["image_digest"].(string)
-	if daemonVersion == "" || details["agent"] != "shell" || !i.allowedImage(details["image_digest"]) || kits == nil || len(kits) != 0 {
+	if daemonVersion == "" || details["agent"] != "shell" || !i.allowedImage(details["image_digest"], identity["imageDigest"]) || kits == nil || len(kits) != 0 {
 		return facts, errors.New("unsupported runtime profile")
 	}
 	for _, k := range []string{"workspace", "workspaces", "mounts", "static_mcp"} {
@@ -428,12 +428,19 @@ func ValidImageDigest(value string) bool {
 
 // allowedImage accepts the stock shell template, under any digest it may
 // report on this architecture, and the pinned guest image.
-func (i *SbxInspector) allowedImage(digest any) bool {
+// allowedImage is the image pin: the stock or pinned guest image, or the
+// snapshot image the runner declared for this binding (a workspace copy
+// or a regeneration it made from a verified guest; registry.go
+// imageDigestShape).
+func (i *SbxInspector) allowedImage(digest any, declared string) bool {
 	value, ok := digest.(string)
 	if !ok {
 		return false
 	}
 	if value == SBXShellDigest || value == i.ShellDigest {
+		return true
+	}
+	if declared != "" && value == declared {
 		return true
 	}
 	for _, stock := range i.StockDigests {

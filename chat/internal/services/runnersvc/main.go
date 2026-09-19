@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	"warden/chat/internal/bugreport"
 	"warden/chat/internal/config"
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/hostinfo"
@@ -38,7 +39,7 @@ func run(args []string) error {
 	template := fs.String("template", "", "Pinned SBX template for the verified Warden launch profile (sbx.guestImage@sbx.guestImageDigest; default the stock shell template)")
 	runtimeDir := fs.String("runtime-dir", "", "Pinned Linux Codex vendor bundle directory (runtimes.codex)")
 	wardenSocket := fs.String("warden-socket", "", "Private Warden enforcement socket; missing/unverified enforcement denies execution (services.policy.address, default paths.state/policy/sbx-control.sock)")
-	idle := fs.Duration("idle-timeout", 15*time.Minute, "Stop environments after this much trusted user inactivity (sandboxes.stopAfterIdleMinutes)")
+	idle := fs.Duration("idle-timeout", 30*time.Minute, "Stop environments this long after the last chat activity (a turn's end, a message, a command, a preview; sandboxes.stopAfterIdleMinutes)")
 	memoryMB := fs.Int("sandbox-memory-mb", 1536, "Memory in MiB for newly created chat sandboxes, 512–16384 (sandboxes.memoryMB)")
 	residents := fs.Int("max-resident", 2, "Maximum resident sandbox environments (sandboxes.maxRunning)")
 	spares := fs.Int("spare-sandboxes", 1, "Booted spare guests kept ready for new environments, beside max-resident (sandboxes.warmSpares)")
@@ -63,6 +64,9 @@ func run(args []string) error {
 	}
 	root, sbx, template, runtimeDir, claudePath = &s.root, &s.sbx, &s.template, &s.runtimeDir, &s.claudePath
 	idle, memoryMB, residents, spares, retained = &s.idle, &s.memoryMB, &s.residents, &s.spares, &s.retained
+	// Bug reports (docs/bug-reporting-plan.md): a recovered panic in a
+	// worker op or the preview server is drafted for the launcher to show.
+	bugreport.SetDefault(bugreport.New(s.cfg, s.configPath, bugreport.ComponentRunner))
 	limits := sizeLimits(s)
 	driver, err := runtimeDriver(s, limits, *kubeconfig)
 	if err != nil {

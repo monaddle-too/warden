@@ -135,6 +135,9 @@ export function RepositorySharing({
         ),
       });
       setOpen(false);
+      // The workspace panel lists the shares; refresh it now rather than
+      // on its next poll.
+      window.dispatchEvent(new Event("warden-refresh-state"));
     } catch (e) {
       setError(String(e));
     } finally {

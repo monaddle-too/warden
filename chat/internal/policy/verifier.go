@@ -16,7 +16,7 @@ import (
 const (
 	ProofSeconds   = 300  // proof lifetime: a refreshed proof outlives two refresh cycles
 	RefreshSeconds = 120  // background re-verification cadence (cluster checks and warm bindings)
-	WarmSeconds    = 1200 // a binding stays warm this long after its last begin (longer than the runner's idle stop)
+	WarmSeconds    = 2400 // a binding stays warm this long after its last begin (longer than the runner's 30-minute idle stop)
 )
 
 // GatewayHealthy probes a loopback binding gateway with a fresh HMAC

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"warden/chat/internal/hoststats"
@@ -29,9 +30,15 @@ const MaxParallelSessions = 2
 type Worker struct {
 	ordinarySlots chan struct{}
 	controlSlots  chan struct{}
-	Revision      string
-	Parallel      int
-	Retained      int
+	execSlots     chan struct{} // a person's own commands (exec.go)
+	// offer is Limits as defaultsLocked last settled it, for health to
+	// answer without w.mu: the chat service asks for the offer while a
+	// prepare or a stop holds the mutex for as long as its subprocess
+	// runs, and its views must not wait for that.
+	offer    atomic.Pointer[ResourceLimits]
+	Revision string
+	Parallel int
+	Retained int
 	// Root is the private worker state directory. Executable and Template
 	// are the pinned SBX executable and guest template; only the SBX runtime
 	// driver reads them.
@@ -95,7 +102,7 @@ func (w *Worker) parallelLimit() int {
 }
 
 func NewWorker(root, executable, template string) *Worker {
-	return &Worker{metrics: &hoststats.Collector{Root: root}, ordinarySlots: make(chan struct{}, 4), controlSlots: make(chan struct{}, 16), controls: &controlState{bindings: map[string]Request{}, cancel: map[string]context.CancelFunc{}, cancelled: map[string]bool{}}, Root: root, Executable: executable, Template: template}
+	return &Worker{metrics: &hoststats.Collector{Root: root}, ordinarySlots: make(chan struct{}, 4), controlSlots: make(chan struct{}, 16), execSlots: make(chan struct{}, 4), controls: &controlState{bindings: map[string]Request{}, cancel: map[string]context.CancelFunc{}, cancelled: map[string]bool{}}, Root: root, Executable: executable, Template: template}
 }
 func (w *Worker) Serve(ctx context.Context, l net.Listener) error {
 	// A worker restart must not leave detached app servers in old guests.

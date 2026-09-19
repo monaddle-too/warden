@@ -1,5 +1,12 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { workspacePaths } from "../api";
+import {
+  Fragment,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { chatResources, localPaths, workspacePaths } from "../api";
+import { EMPTY_RESOURCES, type Resources } from "../composer";
 
 /* One row of the composer's suggestion list. */
 export type Suggestion = {
@@ -10,6 +17,9 @@ export type Suggestion = {
   disabled?: boolean;
   /* Paths are shown in the monospace face. */
   mono?: boolean;
+  /* Rows with a group are listed under its heading, when the list has
+     more than one group (the chat's commands, then the agent's). */
+  group?: string;
 };
 
 /* A list floating over the composer: the textarea keeps the focus and the
@@ -37,30 +47,37 @@ export function Suggest({
       ?.querySelector('[aria-selected="true"]')
       ?.scrollIntoView({ block: "nearest" });
   }, [active]);
+  const grouped = new Set(items.map((item) => item.group)).size > 1;
   return (
     <div className="suggest" onMouseDown={(event) => event.preventDefault()}>
       {items.length > 0 && (
         <ul id={id} role="listbox" ref={list}>
           {items.map((item, i) => (
-            <li
-              key={item.id}
-              id={`${id}-${i}`}
-              role="option"
-              aria-selected={i === active}
-              aria-disabled={item.disabled || undefined}
-              onMouseMove={() => {
-                if (i !== active && !item.disabled) onHover(i);
-              }}
-              onClick={() => {
-                if (!item.disabled) onPick(item);
-              }}
-            >
-              {item.icon}
-              <span className={item.mono ? "suggest-path" : "suggest-label"}>
-                {item.label}
-              </span>
-              {item.hint && <small>{item.hint}</small>}
-            </li>
+            <Fragment key={item.id}>
+              {grouped && item.group && item.group !== items[i - 1]?.group && (
+                <li role="presentation" className="suggest-group">
+                  {item.group}
+                </li>
+              )}
+              <li
+                id={`${id}-${i}`}
+                role="option"
+                aria-selected={i === active}
+                aria-disabled={item.disabled || undefined}
+                onMouseMove={() => {
+                  if (i !== active && !item.disabled) onHover(i);
+                }}
+                onClick={() => {
+                  if (!item.disabled) onPick(item);
+                }}
+              >
+                {item.icon}
+                <span className={item.mono ? "suggest-path" : "suggest-label"}>
+                  {item.label}
+                </span>
+                {item.hint && <small>{item.hint}</small>}
+              </li>
+            </Fragment>
           ))}
         </ul>
       )}
@@ -77,7 +94,13 @@ const DEBOUNCE = 120;
    remembered per chat so backspacing through a path does not ask again
    (a bounded cache; a failure is not remembered, so the next keystroke
    retries once the workspace is running). */
-export function usePathCompletion(chatID: string, query: string | undefined) {
+export function usePathCompletion(
+  chatID: string,
+  query: string | undefined,
+  /* Where the paths are: the workspace, or this computer (a local
+     mention's prefix, an /attach word; chats/localfiles.go). */
+  source: "workspace" | "local" = "workspace",
+) {
   const cache = useRef(new Map<string, string[]>());
   const [state, setState] = useState<{
     query: string;
@@ -89,20 +112,22 @@ export function usePathCompletion(chatID: string, query: string | undefined) {
   }, [chatID]);
   useEffect(() => {
     if (query === undefined) return;
-    const known = cache.current.get(query);
+    const key = source + ":" + query;
+    const known = cache.current.get(key);
     if (known) {
       setState({ query, paths: known });
       return;
     }
     let stale = false;
     const timer = setTimeout(() => {
-      void workspacePaths(chatID, query).then(
+      const lookup = source === "local" ? localPaths : workspacePaths;
+      void lookup(chatID, query).then(
         (paths) => {
           if (stale) return;
           const store = cache.current;
           if (store.size >= CACHE_LIMIT)
             store.delete(store.keys().next().value as string);
-          store.set(query, paths);
+          store.set(key, paths);
           setState({ query, paths });
         },
         (e: unknown) => {
@@ -118,7 +143,7 @@ export function usePathCompletion(chatID: string, query: string | undefined) {
       stale = true;
       clearTimeout(timer);
     };
-  }, [chatID, query]);
+  }, [chatID, query, source]);
   if (query === undefined) return { paths: undefined, error: undefined };
   // While a lookup is in flight the last answer stays up, so the list does
   // not blink between keystrokes.
@@ -126,4 +151,45 @@ export function usePathCompletion(chatID: string, query: string | undefined) {
     paths: state.paths,
     error: state.query === query ? state.error : undefined,
   };
+}
+
+const RESOURCES_TTL = 15000;
+
+/* The chat's shared resources for the "@" menu (documents, repositories,
+   previews; chats/{id}/resources), asked for when a mention opens and
+   kept for a short while per chat, so typing through a mention asks
+   once; a failure leaves the list empty and the next mention asks
+   again. */
+export function useResourceCompletion(chatID: string, open: boolean) {
+  const cache = useRef<
+    { chatID: string; at: number; resources: Resources } | undefined
+  >(undefined);
+  const [resources, setResources] = useState<Resources>();
+  useEffect(() => {
+    if (!open) return;
+    const known = cache.current;
+    if (
+      known &&
+      known.chatID === chatID &&
+      Date.now() - known.at < RESOURCES_TTL
+    ) {
+      setResources(known.resources);
+      return;
+    }
+    let stale = false;
+    void chatResources(chatID).then(
+      (result) => {
+        if (stale) return;
+        cache.current = { chatID, at: Date.now(), resources: result };
+        setResources(result);
+      },
+      () => {
+        if (!stale) setResources(EMPTY_RESOURCES);
+      },
+    );
+    return () => {
+      stale = true;
+    };
+  }, [chatID, open]);
+  return open ? resources : undefined;
 }
