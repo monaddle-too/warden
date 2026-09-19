@@ -311,21 +311,26 @@ func TestBugReportLimitsPerSourceAndPerDay(t *testing.T) {
 }
 
 func TestBugReportRetentionAndCap(t *testing.T) {
+	// The construction sweep runs on the real clock, so the days are
+	// laid out from it (the fixed clock is moved to the same day below).
+	today := time.Now().UTC().Truncate(24 * time.Hour)
 	dir := filepath.Join(t.TempDir(), "bug-reports")
-	old := filepath.Join(dir, "2026-06-01")
+	old := filepath.Join(dir, today.AddDate(0, 0, -100).Format("2006-01-02"))
 	os.MkdirAll(old, 0700)
 	os.WriteFile(filepath.Join(old, strings.Repeat("0", 32)+".json"), []byte("{}"), 0600)
-	edge := filepath.Join(dir, "2026-06-20")
+	edgeDay := today.AddDate(0, 0, -90)
+	edge := filepath.Join(dir, edgeDay.Format("2006-01-02"))
 	os.MkdirAll(edge, 0700)
 	boundary := filepath.Join(edge, strings.Repeat("1", 32)+".json")
 	os.WriteFile(boundary, []byte("{}"), 0600)
 	// The file's time is its order after a restart (the receiver sets it
 	// to receivedAt when it writes).
-	os.Chtimes(boundary, time.Date(2026, 6, 20, 8, 0, 0, 0, time.UTC), time.Date(2026, 6, 20, 8, 0, 0, 0, time.UTC))
+	os.Chtimes(boundary, edgeDay.Add(8*time.Hour), edgeDay.Add(8*time.Hour))
 	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("kept"), 0600)
-	// At construction the directories beyond retention go (90 days
-	// before 2026-09-18 is 2026-06-20, which stays).
+	// At construction the directories beyond retention go (the day 90
+	// days before today stays).
 	s, _, _, now := bugServer(t, BugReportsConfig{Dir: dir})
+	*now = today.Add(10 * time.Hour)
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Fatal("expired day directory kept")
 	}

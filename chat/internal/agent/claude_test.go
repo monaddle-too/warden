@@ -1887,3 +1887,60 @@ func TestClaudeReadOfImagePDFAndNotebook(t *testing.T) {
 		t.Fatalf("another tool's read: %v", item)
 	}
 }
+
+// A user message the session already holds (its uuid is in the CLI's
+// transcript, as when Warden redelivers a notification a run had handed
+// over before it was cut) is completed by the CLI at once: no queued or
+// started state, no result. The turn ends with nothing said instead of
+// waiting for a first reply that never comes; the lifecycle report that
+// follows a normal result is not a second completion.
+func TestClaudeRedeliveredMessageEndsTurn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, cf, frames := newClaudeFake(t, ctx)
+	started, err := c.Call(ctx, "turn/start", map[string]any{"clientUserMessageId": "4bdad3198fbded76d5628389721a3f95", "input": []any{map[string]any{"text": "Warden document suggestion review resolved: …"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnID := String(Map(started["turn"])["id"])
+	if user := cf.next(t, ctx); user["uuid"] != "4bdad3198fbded76d5628389721a3f95" {
+		t.Fatalf("user message not handed over with its uuid: %v", user)
+	}
+	// Another message's lifecycle (a background task's, say) is not this turn's.
+	cf.send(map[string]any{"type": "command_lifecycle", "command_uuid": "other", "state": "completed", "session_id": "s"})
+	cf.send(map[string]any{"type": "command_lifecycle", "command_uuid": "4bdad3198fbded76d5628389721a3f95", "state": "completed", "session_id": "s"})
+	f := nextFrame(t, ctx, frames, "turn/completed")
+	if turn := Map(f.Params["turn"]); turn["id"] != turnID || turn["status"] != "completed" {
+		t.Fatalf("turn ended %v", turn)
+	}
+	// The next turn runs normally: result first, then the lifecycle report,
+	// which must not complete the turn twice.
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"clientUserMessageId": "m2", "input": []any{map[string]any{"text": "go"}}}); err != nil {
+		t.Fatal(err)
+	}
+	cf.next(t, ctx)
+	cf.send(map[string]any{"type": "command_lifecycle", "command_uuid": "m2", "state": "queued", "session_id": "s"})
+	cf.send(map[string]any{"type": "command_lifecycle", "command_uuid": "m2", "state": "started", "session_id": "s"})
+	cf.send(map[string]any{"type": "result", "is_error": false, "result": "Done."})
+	cf.send(map[string]any{"type": "command_lifecycle", "command_uuid": "m2", "state": "completed", "session_id": "s"})
+	nextFrame(t, ctx, frames, "turn/completed")
+	if _, err = c.Call(ctx, "turn/start", map[string]any{"clientUserMessageId": "m3", "input": []any{map[string]any{"text": "again"}}}); err != nil {
+		t.Fatal(err)
+	}
+	cf.next(t, ctx)
+	completed := 0
+	deadline := time.After(300 * time.Millisecond)
+	for {
+		select {
+		case f := <-frames:
+			if f.Method == "turn/completed" {
+				completed++
+			}
+		case <-deadline:
+			if completed != 0 {
+				t.Fatalf("a normal turn's lifecycle report completed %d extra turn(s)", completed)
+			}
+			return
+		}
+	}
+}
