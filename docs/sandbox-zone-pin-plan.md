@@ -84,3 +84,13 @@ the startup detail says the scheduler's verdict in the owner's words.
 ## Progress log
 
 - 2026-09-19: worktree opened, plan written.
+- 2026-09-19: steps 1–4 done. `Placement` drops `ZoneKeys` for a bound
+  claim (`VolumeName` set or phase `Bound`); the fake API now binds a
+  claim when its first pod is created, like a WaitForFirstConsumer class,
+  and `TestPrepareRecreatesThePodAfterAStop` checks the first pod carries
+  the pin and the resumed one does not. `SchedulerVerdict` covers the
+  Autopilot resume, the one-node dev cluster, PV zone affinity, taints,
+  cordons, an empty cluster, unbound claims; unknown tallies verbatim.
+  `go vet`, `go test ./...` green (one `chats` flake on the first run,
+  clean on the rerun). `helm template` with the GKE values renders the
+  zone into `warden.json`. Remains: merge, GKE deploy, watch a resume.

@@ -170,7 +170,12 @@ var DroppedCapabilities = []string{"AUDIT_WRITE", "FSETID", "MKNOD", "NET_RAW", 
 // result under decision 2). The labels are the sandbox name, this driver's
 // mark and the spare flag; the annotations record what the worker knows
 // about the sandbox at creation. The pod's name is the runtime name.
-func PodSpec(o Options, spec sandbox.RuntimeSpec, workspace string) kube.Pod {
+//
+// bound says the workspace claim already has a volume: the options' node
+// selector then loses its zone keys (Placement), since a zonal disk pins
+// the pod's zone by itself and a selector naming another zone would never
+// schedule.
+func PodSpec(o Options, spec sandbox.RuntimeSpec, workspace string, bound bool) kube.Pod {
 	name, sandboxID, generation, spare := spec.Name, spec.SandboxID, spec.Generation, spec.Spare
 	labels := map[string]string{LabelSandbox: name, LabelManagedBy: ManagedBy}
 	if spare {
@@ -203,7 +208,7 @@ func PodSpec(o Options, spec sandbox.RuntimeSpec, workspace string) kube.Pod {
 			RestartPolicy:                 "Always",
 			TerminationGracePeriodSeconds: kube.Int64(StopGraceSeconds),
 			EnableServiceLinks:            kube.Bool(false),
-			NodeSelector:                  copyLabels(o.NodeSelector),
+			NodeSelector:                  Placement(o.NodeSelector, bound),
 			Tolerations:                   tolerations,
 			SecurityContext: &kube.PodSecurityContext{
 				RunAsUser:      kube.Int64(uid),
@@ -260,6 +265,29 @@ func ClaimSpec(o Options, name, sandboxID, source string, spare bool) kube.Persi
 		spec.DataSource = &kube.TypedLocalObjectReference{Kind: "PersistentVolumeClaim", Name: source}
 	}
 	return kube.PersistentVolumeClaim{Metadata: kube.ObjectMeta{Name: name, Namespace: o.Namespace, Labels: labels, Annotations: annotations}, Spec: spec}
+}
+
+// ZoneKeys are the node labels a deployment pins sandbox pods to one zone
+// with (deploy/k8s/gke/values.yaml does, so spares, disks and the nodes a
+// resume needs share a zone). A bound claim's disk carries the same
+// constraint through the PersistentVolume's node affinity.
+var ZoneKeys = []string{"topology.kubernetes.io/zone", "topology.gke.io/zone", "failure-domain.beta.kubernetes.io/zone"}
+
+// Placement is the pod's node selector: the configured one, minus the
+// ZoneKeys when the workspace claim is already bound. A disk created
+// before the zone pin (or in another zone) then resumes where it is
+// instead of never scheduling.
+func Placement(selector map[string]string, bound bool) map[string]string {
+	out := copyLabels(selector)
+	if bound {
+		for _, k := range ZoneKeys {
+			delete(out, k)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+	}
+	return out
 }
 
 func copyLabels(m map[string]string) map[string]string {
