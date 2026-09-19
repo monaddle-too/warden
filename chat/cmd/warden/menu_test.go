@@ -205,3 +205,18 @@ func (l *lockedBuffer) String() string {
 	defer l.mu.Unlock()
 	return l.b.String()
 }
+
+// The feed names a non-default instance so the menu bar item can carry it;
+// the default instance's feed has no instance field.
+func TestMenuFeedNamesTheInstance(t *testing.T) {
+	home := fakeHome(t)
+	def, _ := defaultStateDir()
+	for state, want := range map[string]string{def: "", filepath.Join(home, ".warden-dev"): `"instance":"dev"`} {
+		var out bytes.Buffer
+		f := &menuFeeder{cfg: config.Defaults(state), service: func() serviceManager { return nil }, out: &out, now: time.Now, sleep: func(context.Context, time.Duration) {}}
+		f.emit(menuState{Service: "stopped"})
+		if got := out.String(); (want == "" && strings.Contains(got, `"instance"`)) || (want != "" && !strings.Contains(got, want)) {
+			t.Fatalf("%s: %s", state, got)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -510,6 +511,9 @@ type Tool struct {
 	Query       string         `json:"query"`
 	Input       map[string]any `json:"input"`
 	Background  bool           `json:"background"`
+	// Target is "host" for a jailbroken workspace's host_* tool
+	// (chats/host.go): the call acted on the owner's machine.
+	Target string `json:"target"`
 	// Read is what a read of an image, a PDF or a notebook carried
 	// (conversation.Read); nil for a text read.
 	Read *Read `json:"read"`
@@ -611,6 +615,24 @@ func renderTool(e Entry, width int, expanded bool) []string {
 	head := sanitize(e.Text)
 	var body []string
 	fromEnd := false
+	if t.Target == "host" {
+		// A host tool (chats/host.go): a red HOST mark, the call in its own
+		// terms (the command, the paths, the port), the command's output
+		// from the result.
+		head, body = hostHead(t), hostBody(t, detail)
+		fromEnd = t.Name == "host_run"
+		if failed {
+			head += " " + red + t.Status + reset
+		}
+		out := wrap(head, width, marker+reset, "    ")
+		if len(body) == 1 && strings.TrimSpace(body[0]) == "" {
+			body = nil
+		}
+		if len(body) > 0 {
+			out = append(out, renderBody(body, width, expanded, fromEnd)...)
+		}
+		return out
+	}
 	switch t.Kind {
 	case "command":
 		head = "$ " + head
@@ -690,6 +712,56 @@ func renderTool(e Entry, width int, expanded bool) []string {
 		out = append(out, renderBody(body, width, expanded, fromEnd)...)
 	}
 	return out
+}
+
+// hostHead is a host tool call's head line: the HOST mark, then the
+// command, the copy's paths, the port, or the status call.
+func hostHead(t *Tool) string {
+	mark := bold + red + "HOST" + reset + " "
+	str := func(k string) string { s, _ := t.Input[k].(string); return sanitize(s) }
+	switch t.Name {
+	case "host_run":
+		return mark + "$ " + str("command")
+	case "host_put":
+		return mark + "put " + str("from") + " → " + str("to")
+	case "host_get":
+		return mark + "get " + str("from") + " → " + str("to")
+	case "host_expose":
+		return mark + "expose port " + sanitize(fmt.Sprint(t.Input["port"]))
+	}
+	return mark + strings.TrimPrefix(t.Name, "host_")
+}
+
+// hostBody is what a host call came to: a command's output tail with its
+// exit status, an exposure's URL, a copy's size, else the result as is.
+func hostBody(t *Tool, detail string) []string {
+	var result map[string]any
+	if json.Unmarshal([]byte(detail), &result) != nil || result == nil {
+		if detail == "" {
+			return nil
+		}
+		return strings.Split(detail, "\n")
+	}
+	switch t.Name {
+	case "host_run":
+		out, _ := result["output"].(string)
+		lines := strings.Split(sanitize(strings.TrimRight(out, "\n")), "\n")
+		code, _ := result["exitCode"].(float64)
+		if timed, _ := result["timedOut"].(bool); timed {
+			lines = append(lines, red+"timed out"+reset)
+		} else if code != 0 {
+			lines = append(lines, red+fmt.Sprintf("exit %d", int(code))+reset)
+		}
+		return lines
+	case "host_expose":
+		url, _ := result["url"].(string)
+		return []string{sanitize(url)}
+	case "host_put", "host_get":
+		if bytes, ok := result["bytes"].(float64); ok {
+			return []string{fmt.Sprintf("%d bytes", int64(bytes))}
+		}
+	}
+	return strings.Split(detail, "\n")
 }
 
 // taskSeconds is how long a subagent took: to its end, or so far while

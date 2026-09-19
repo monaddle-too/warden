@@ -85,7 +85,7 @@ func (e *Engine) Fork(ctx context.Context, id, turnID string, copyWorkspace bool
 		}
 	}
 	kept := copyEntries(c.Conversation.Entries[:cut])
-	fork := &Chat{ID: cv.ID(), Provider: c.Provider, Model: c.Model, Title: forkTitle(c.Title), SandboxID: c.SandboxID, Repository: c.Repository, Resources: c.Resources, Network: c.Network, Mode: c.Mode, Rules: append([]Rule(nil), c.Rules...), OutputStyle: c.OutputStyle, Status: "idle", Approvals: []Approval{}, Commands: append([]Command(nil), c.Commands...)}
+	fork := &Chat{ID: cv.ID(), Provider: c.Provider, Model: c.Model, Title: forkTitle(c.Title), SandboxID: c.SandboxID, Repository: c.Repository, Resources: c.Resources, Network: c.Network, Jailbroken: c.Jailbroken, Mode: c.Mode, Rules: append([]Rule(nil), c.Rules...), OutputStyle: c.OutputStyle, Status: "idle", Approvals: []Approval{}, Commands: append([]Command(nil), c.Commands...)}
 	fork.Conversation = cv.Conversation{Entries: kept, Turns: keptTurns(c.Conversation.Turns, kept), Context: c.Conversation.Context}
 	if c.Session != nil {
 		session := *c.Session

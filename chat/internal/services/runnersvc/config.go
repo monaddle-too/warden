@@ -31,6 +31,7 @@ type settings struct {
 	residents  int            // sandboxes.maxRunning
 	spares     int            // sandboxes.warmSpares
 	retained   int            // sandboxes.keepStopped
+	namePrefix string         // sandboxes.namePrefix
 	// previewListen and previewAddress are services.runner.previews, the
 	// shared mutual-TLS preview server and its advertised address; both ""
 	// on the sbx shapes (per-publication loopback listeners). File only.
@@ -39,6 +40,7 @@ type settings struct {
 
 type runnerFlags struct {
 	configPath, root, socket, wardenSocket, sbx, template, runtimeDir, claudePath *string
+	namePrefix                                                                    *string
 	tlsListen, tlsCA, tlsCert, tlsKey                                             *string
 	idle                                                                          *time.Duration
 	memoryMB, residents, spares, retained                                         *int
@@ -81,6 +83,7 @@ func resolveSettings(fs *flag.FlagSet, f runnerFlags) (settings, error) {
 	s.residents = config.Override(o, "max-resident", *f.residents, "sandboxes.maxRunning", cfg.Sandboxes.MaxRunning)
 	s.spares = config.Override(o, "spare-sandboxes", *f.spares, "sandboxes.warmSpares", cfg.Sandboxes.WarmSpares)
 	s.retained = config.Override(o, "retained", *f.retained, "sandboxes.keepStopped", cfg.Sandboxes.KeepStopped)
+	s.namePrefix = config.Override(o, "sandbox-name-prefix", str(f.namePrefix), "sandboxes.namePrefix", cfg.Sandboxes.NamePrefix)
 	if err := o.Err(); err != nil {
 		return settings{}, err
 	}

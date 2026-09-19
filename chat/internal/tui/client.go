@@ -219,9 +219,11 @@ type Chat struct {
 	// Session is what the agent reported when its session started; its
 	// Model is the one it resolved, the truth after a live model change;
 	// OutputStyle is the style the running session has.
-	Session      *SessionInfo `json:"session"`
-	SandboxID    string       `json:"sandboxID"`
-	Repository   string       `json:"repository,omitempty"`
+	Session    *SessionInfo `json:"session"`
+	SandboxID  string       `json:"sandboxID"`
+	Repository string       `json:"repository,omitempty"`
+	// Jailbroken: the workspace has host access (chats/host.go).
+	Jailbroken   bool         `json:"jailbroken"`
 	Status       string       `json:"status"`
 	Error        string       `json:"error,omitempty"`
 	Archived     bool         `json:"archived"`
@@ -380,6 +382,24 @@ type AgentOptions struct {
 	Models      map[string][]ModelInfo `json:"models"`
 	// Defaults is the model a chat of each provider starts with.
 	Defaults map[string]string `json:"defaults"`
+	// Instance is which Warden this is, present for a non-default
+	// instance only (docs/host-dogfood-plan.md).
+	Instance *InstanceInfo `json:"instance,omitempty"`
+}
+
+// InstanceInfo mirrors chats.InstanceInfo: an instance's name and build.
+type InstanceInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// InstanceLabel is the status line's mark of a non-default instance,
+// "name version"; "" for the default instance, which shows nothing new.
+func InstanceLabel(o AgentOptions) string {
+	if o.Instance == nil || o.Instance.Name == "" || o.Instance.Name == "default" {
+		return ""
+	}
+	return strings.TrimSpace(o.Instance.Name + " " + o.Instance.Version)
 }
 
 // ModelInfo mirrors chats.ModelInfo: one row of a provider's catalog as
@@ -474,15 +494,37 @@ func (c *Client) State(ctx context.Context) (*State, error) {
 // network access of its own (the owner's choice; "" follows the install),
 // or sharing sandboxID's workspace.
 func (c *Client) Create(ctx context.Context, title, provider, model, sandboxID string, resources *sandbox.Resources, network ...string) (string, error) {
+	req := CreateRequest{Title: title, Provider: provider, Model: model, SandboxID: sandboxID, Resources: resources}
+	if len(network) > 0 {
+		req.Network = network[0]
+	}
+	return c.CreateChat(ctx, req)
+}
+
+// CreateRequest is what a chat is created with: Create's arguments plus
+// Jailbreak, the fresh workspace's host access (the owner's choice on a
+// Warden with dogfood.jailbreak; chats/host.go).
+type CreateRequest struct {
+	Title, Provider, Model, SandboxID string
+	Resources                         *sandbox.Resources
+	Network                           string
+	Jailbreak                         bool
+}
+
+// CreateChat starts a chat as CreateRequest says.
+func (c *Client) CreateChat(ctx context.Context, req CreateRequest) (string, error) {
 	var res struct {
 		ID string `json:"id"`
 	}
-	body := map[string]any{"title": title, "provider": provider, "model": model, "sandboxID": sandboxID}
-	if resources != nil {
-		body["resources"] = resources
+	body := map[string]any{"title": req.Title, "provider": req.Provider, "model": req.Model, "sandboxID": req.SandboxID}
+	if req.Resources != nil {
+		body["resources"] = req.Resources
 	}
-	if len(network) > 0 && network[0] != "" {
-		body["network"] = network[0]
+	if req.Network != "" {
+		body["network"] = req.Network
+	}
+	if req.Jailbreak {
+		body["jailbreak"] = true
 	}
 	if err := c.do(ctx, "POST", "chats", body, &res); err != nil {
 		return "", err

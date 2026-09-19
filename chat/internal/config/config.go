@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -89,7 +90,28 @@ type Config struct {
 	// the person opted in at install or with `warden bugs on`; every report
 	// is shown to them before it is sent to URL.
 	Reporting Reporting `json:"reporting,omitzero"`
+	// Dogfood holds the owner's opt-ins for developing Warden from a
+	// Warden chat (docs/host-dogfood-plan.md); omitted when nothing is on.
+	Dogfood Dogfood `json:"dogfood,omitzero"`
 }
+
+// Dogfood is the dogfooding section. Jailbreak lets the owner opt a
+// workspace into host access (the agent's host_* tools: commands on this
+// machine as the owner, files each way, a host port as a preview); only a
+// local owner install may turn it on, never a server or Kubernetes.
+type Dogfood struct {
+	Jailbreak bool `json:"jailbreak,omitempty"`
+}
+
+// JailbreakAllowed reports whether this install may turn host access on:
+// a single-owner install on a local runtime (the runner runs on the
+// owner's machine, which the Kubernetes shape's pod is not).
+func (c Config) JailbreakAllowed() bool {
+	return c.Auth.Mode == AuthOwner && c.RuntimeKind() != RuntimeKubernetes
+}
+
+// ErrJailbreakRefused is why dogfood.jailbreak is refused elsewhere.
+var ErrJailbreakRefused = errors.New("dogfood.jailbreak needs auth.mode owner and a local runtime")
 
 // Paths locates Warden's data and release assets.
 type Paths struct {
@@ -202,6 +224,13 @@ type Sandboxes struct {
 	// brokered host without a grant is reached anonymously instead of
 	// being refused.
 	Egress string `json:"egress,omitempty"`
+	// NamePrefix is the instance whose sandboxes these are, carried in
+	// every runtime name the runner derives (wc-<prefix>-<hex>) so that
+	// instances sharing one SBX namespace never see each other's sandboxes
+	// (docs/host-dogfood-plan.md, decision 3). "" is the historic wc-<hex>
+	// of the default instance; `warden install` sets a non-default
+	// instance's name.
+	NamePrefix string `json:"namePrefix,omitempty"`
 }
 
 // Egress modes.
@@ -425,6 +454,37 @@ func (c Config) GatewayMode() string {
 		return GatewayShared
 	}
 	return GatewayLoopback
+}
+
+// instanceNameShape is what an instance name (sandboxes.namePrefix, the
+// --instance flag) may be: a filename-safe, DNS-label-safe word.
+var instanceNameShape = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+
+// ValidInstanceName reports whether name may name an instance: letters,
+// digits and dashes, and not the runner's "spare" marker (a sandbox named
+// wc-spare-<hex> is the default instance's warm spare).
+func ValidInstanceName(name string) bool {
+	return instanceNameShape.MatchString(name) && !strings.EqualFold(name, "spare")
+}
+
+// DefaultInstance names the default instance, the one at the platform's
+// default state directory.
+const DefaultInstance = "default"
+
+// InstanceName is the name of the instance whose state directory this is
+// (docs/host-dogfood-plan.md): "default" for the platform's default
+// directory (~/.warden, or $XDG_DATA_HOME/warden), the rest of the name
+// for a ~/.warden-<name> sibling, else the directory's own basename.
+func InstanceName(state string) string {
+	base := filepath.Base(filepath.Clean(state))
+	switch {
+	case base == ".warden" || base == "warden":
+		return DefaultInstance
+	case strings.HasPrefix(base, ".warden-") && len(base) > len(".warden-"):
+		return strings.TrimPrefix(base, ".warden-")
+	default:
+		return base
+	}
 }
 
 // SBXSocketPath is the longest Unix socket sbx binds inside its namespace
@@ -685,6 +745,7 @@ func merge(c *Config, file Config) {
 	setInt(&c.Sandboxes.StopAfterIdleMinutes, file.Sandboxes.StopAfterIdleMinutes)
 	setInt(&c.Sandboxes.KeepStopped, file.Sandboxes.KeepStopped)
 	setString(&c.Sandboxes.Egress, file.Sandboxes.Egress)
+	setString(&c.Sandboxes.NamePrefix, file.Sandboxes.NamePrefix)
 	setString(&c.Chat.Listen, file.Chat.Listen)
 	setString(&c.Services.Policy.Listen, file.Services.Policy.Listen)
 	setString(&c.Services.Policy.Address, file.Services.Policy.Address)
@@ -745,6 +806,9 @@ func merge(c *Config, file Config) {
 		c.Reporting.Enabled = true
 	}
 	setString(&c.Reporting.URL, file.Reporting.URL)
+	if file.Dogfood.Jailbreak {
+		c.Dogfood.Jailbreak = true
+	}
 }
 
 func setString(dst *string, v string) {
@@ -848,6 +912,12 @@ func (c Config) Validate() error {
 	}
 	if s.Egress != EgressRestricted && s.Egress != EgressOpen {
 		return fmt.Errorf("sandboxes.egress must be %q or %q", EgressRestricted, EgressOpen)
+	}
+	if s.NamePrefix != "" && (!instanceNameShape.MatchString(s.NamePrefix) || strings.EqualFold(s.NamePrefix, "spare")) {
+		return errors.New("sandboxes.namePrefix must be letters, digits and dashes, and not \"spare\"")
+	}
+	if c.Dogfood.Jailbreak && !c.JailbreakAllowed() {
+		return ErrJailbreakRefused
 	}
 	if g := c.Providers.GitHub; g != nil {
 		user, app := g.AuthFile != "" || g.Secret != "", g.AppID != 0 || g.AppSlug != "" || g.InstallationOwner != "" || g.BrokerFile != ""

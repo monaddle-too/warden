@@ -143,7 +143,7 @@ func NewRule(kind, pattern string) (Rule, error) {
 	}
 	if spec != "" {
 		switch {
-		case tool == "Bash", fileTools[tool], readTools[tool]:
+		case tool == "Bash", tool == hostRunTool, fileTools[tool], readTools[tool]:
 		case tool == "WebFetch":
 			if !strings.HasPrefix(spec, "domain:") || len(spec) == len("domain:") {
 				return Rule{}, errors.New("WebFetch rules take domain:HOST, such as WebFetch(domain:example.com)")
@@ -192,7 +192,8 @@ func (r Rule) Matches(tool string, input map[string]any) bool {
 		return true
 	}
 	switch {
-	case tool == "Bash":
+	case tool == "Bash", tool == hostRunTool:
+		// A host command (host.go) is matched like a sandbox one.
 		return commandMatches(spec, agent.String(input["command"]), r.Kind == RuleAllow)
 	case fileTools[tool] || readTools[tool]:
 		return pathMatches(spec, inputPath(tool, input))

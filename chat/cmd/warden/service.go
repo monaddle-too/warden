@@ -190,11 +190,11 @@ func (c *cli) startService(cfg config.Config, svc serviceManager) error {
 }
 
 // serviceFlags is the flag set start, stop, restart and status share.
-func serviceFlags(name string, c *cli) (*flag.FlagSet, *string, *string) {
+func serviceFlags(name string, c *cli) (*flag.FlagSet, *string, *stateFlags) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	configPath := fs.String("config", "", "warden.json (default: <state>/warden.json or $WARDEN_CONFIG)")
-	state := fs.String("state", "", "state directory when no warden.json exists yet")
+	state := addStateFlags(fs)
 	return fs, configPath, state
 }
 
@@ -205,7 +205,7 @@ func (c *cli) stopService(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
-	cfg, _, err := loadConfig(*configPath, *state)
+	cfg, _, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}
@@ -246,7 +246,7 @@ func (c *cli) restartService(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
-	cfg, _, err := loadConfig(*configPath, *state)
+	cfg, _, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}
@@ -274,12 +274,12 @@ func (c *cli) restartService(args []string) error {
 	} else {
 		return errors.New("Warden is not running in the background; `warden start --detach` starts it")
 	}
-	return c.detach(cfg, []string{"--config", cfgPath(cfg, *configPath, *state)})
+	return c.detach(cfg, []string{"--config", cfgPath(cfg, *configPath)})
 }
 
 // cfgPath is the --config a re-spawned launcher gets: the one given, else
 // the state's default.
-func cfgPath(cfg config.Config, configPath, state string) string {
+func cfgPath(cfg config.Config, configPath string) string {
 	if configPath != "" {
 		return configPath
 	}
@@ -292,7 +292,7 @@ func (c *cli) status(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
-	cfg, path, err := loadConfig(*configPath, *state)
+	cfg, path, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}
@@ -348,7 +348,7 @@ func (c *cli) serviceCommand(args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return errUsage
 	}
-	cfg, path, err := loadConfig(*configPath, *state)
+	cfg, path, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}
@@ -417,7 +417,7 @@ func (c *cli) menuSubcommand(args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return errUsage
 	}
-	cfg, path, err := loadConfig(*configPath, *state)
+	cfg, path, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}

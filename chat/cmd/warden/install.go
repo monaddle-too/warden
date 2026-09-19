@@ -36,6 +36,13 @@ type installer struct {
 	service    bool   // --service: register and start the user service
 	menu       bool   // --menu: register and start the menu bar item (macOS)
 	bugReports string // --bug-reports: yes, no, or "" to ask
+	dev        bool   // --dev: a development instance (pins may move without --upgrade)
+	// sharedHome is another instance's SBX namespace this one uses instead
+	// of its own (`warden instance create --from`, decision 3 of
+	// docs/host-dogfood-plan.md); "" keeps <state>/sbx. seed is the source
+	// instance's configuration to take the guest image pin from.
+	sharedHome string
+	seed       *config.Config
 	client     *http.Client
 	memoryMB   int
 	cpus       int
@@ -61,7 +68,7 @@ func (c *cli) install(args []string) error {
 	fs := flag.NewFlagSet("warden install", flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	in := &installer{c: c, client: &http.Client{}, memoryMB: hostMemoryMB(), cpus: runtime.NumCPU()}
-	fs.StringVar(&in.state, "state", "", "state directory (default: the platform's application data directory)")
+	state := addStateFlags(fs)
 	fs.StringVar(&in.configPath, "config", "", "where to write warden.json (default: <state>/warden.json or $WARDEN_CONFIG)")
 	fs.StringVar(&in.sbxFlag, "sbx", "", "the sbx executable (default: found on $PATH)")
 	fs.BoolVar(&in.upgrade, "upgrade", false, "accept a state directory installed by another Warden release")
@@ -70,6 +77,7 @@ func (c *cli) install(args []string) error {
 	fs.BoolVar(&in.service, "service", true, "register Warden with launchd (macOS) or systemd --user (Linux) and start it; --service=false leaves starting it to you")
 	fs.BoolVar(&in.menu, "menu", true, "register the menu bar item (macOS) and start it; --menu=false leaves the menu bar alone")
 	fs.StringVar(&in.bugReports, "bug-reports", "", "yes or no: send bug reports to Monaddle (you review every report before it is sent); asked on the terminal when not given")
+	fs.BoolVar(&in.dev, "dev", false, "mark this a development instance: later installs of builds with other pins are accepted without --upgrade")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
@@ -77,14 +85,23 @@ func (c *cli) install(args []string) error {
 		fmt.Fprintf(c.stderr, "warden install: unexpected argument %q\n", fs.Arg(0))
 		return errUsage
 	}
+	var err error
+	if in.state, err = state.dir(); err != nil {
+		return err
+	}
 	switch in.bugReports {
 	case "", "yes", "no":
 	default:
 		fmt.Fprintf(c.stderr, "warden install: --bug-reports must be yes or no, not %q\n", in.bugReports)
 		return errUsage
 	}
-	// Everything printed is also kept: a failure's report carries the
-	// installer's own output so far.
+	return in.execute()
+}
+
+// execute runs the install, keeping everything printed so a failure's
+// report carries the installer's own output so far.
+func (in *installer) execute() error {
+	c := in.c
 	in.c = &cli{stdin: c.stdin, stdout: io.MultiWriter(c.stdout, &in.transcript), stderr: io.MultiWriter(c.stderr, &in.transcript), terminal: c.terminal, openFn: c.openFn, notifyFn: c.notifyFn, serviceFn: c.serviceFn, menuFn: c.menuFn}
 	err := in.run()
 	if err != nil {
@@ -118,7 +135,12 @@ func (in *installer) run() error {
 	if err = checkRecord(in.state, currentRecord(in.arch), in.upgrade); err != nil {
 		return err
 	}
+	privateHome := in.privateHome()
+	shared := !within(privateHome, in.state)
 	for _, sub := range stateSubdirs {
+		if sub == "sbx" && shared {
+			continue
+		}
 		if err = ensurePrivateDir(filepath.Join(in.state, sub)); err != nil {
 			return err
 		}
@@ -141,15 +163,19 @@ func (in *installer) run() error {
 	if in.sbxExe, err = findSBX(in.sbxFlag); err != nil {
 		return err
 	}
-	privateHome := filepath.Join(in.state, "sbx")
-	changed, err := ensureNamespace(in.state, privateHome, in.sbxExe)
+	changed, err := ensureNamespace(in.state, privateHome, in.sbxExe, shared)
 	if err != nil {
 		return err
 	}
 	in.sbx = &sbxCLI{wrapper: wrapperPath(in.state), stdin: in.c.stdin, stdout: in.c.stdout, stderr: in.c.stderr}
-	if changed {
+	switch {
+	case changed && shared:
+		in.step("sbx namespace", "wrote "+in.sbx.wrapper+" for "+in.sbxExe+", sharing "+privateHome)
+	case changed:
 		in.step("sbx namespace", "wrote "+in.sbx.wrapper+" for "+in.sbxExe)
-	} else {
+	case shared:
+		in.step("sbx namespace", in.sbx.wrapper+" already shares "+privateHome)
+	default:
 		in.step("sbx namespace", in.sbx.wrapper+" already selects "+privateHome)
 	}
 
@@ -166,7 +192,7 @@ func (in *installer) run() error {
 	// 4. SBX device login. It must precede the host checks: an unsigned-in
 	// daemon answers the MCP and policy queries with 401.
 	in.phase = "sbx login"
-	if err = in.ensureSBXLogin(); err != nil {
+	if err = in.ensureSBXLogin(privateHome); err != nil {
 		return err
 	}
 
@@ -207,7 +233,9 @@ func (in *installer) run() error {
 	}
 	in.step("config", in.configPath)
 	previous, _, _ := readRecord(in.state)
-	if err = writeRecord(in.state, currentRecord(in.arch)); err != nil {
+	record := currentRecord(in.arch)
+	record.Name, record.Dev = instanceName(in.state), in.dev || previous.Dev
+	if err = writeRecord(in.state, record); err != nil {
 		return err
 	}
 
@@ -571,8 +599,8 @@ func (in *installer) ensureSettings() error {
 // ensureSBXLogin runs the device login once. SBX has no non-interactive
 // "am I signed in" query, so the completed login is recorded in the
 // namespace and never repeated unless that record is removed.
-func (in *installer) ensureSBXLogin() error {
-	marker := filepath.Join(in.state, "sbx", sbxLoginMarker)
+func (in *installer) ensureSBXLogin(privateHome string) error {
+	marker := filepath.Join(privateHome, sbxLoginMarker)
 	if _, err := os.Stat(marker); err == nil {
 		in.step("sbx login", "already signed in (remove "+marker+" to sign in again)")
 		return nil
@@ -705,6 +733,13 @@ func (in *installer) ensureClaude(runtimes string) error {
 func (in *installer) ensureGuestImage() (image, digest string, err error) {
 	pinned := release.GuestImages[in.arch]
 	if pinned.Digest == "" {
+		// The release pins nothing: a guest image the instance (or the
+		// instance it was created from) already runs on stays, when the
+		// namespace still holds it; the stock template otherwise.
+		if image, digest, ok := in.localGuestImage(); ok {
+			in.step("guest image", image+"@"+digest+" kept (this release pins none)")
+			return image, digest, nil
+		}
 		in.step("guest image", "none pinned for "+in.arch+"; new sandboxes use "+release.StockTemplate+" and the runner copies the runtimes in")
 		return release.StockTemplate, release.StockTemplateDigest, nil
 	}
@@ -749,6 +784,57 @@ func (in *installer) ensureGuestImage() (image, digest string, err error) {
 	return pinned.Ref, pinned.Digest, nil
 }
 
+// privateHome is the SBX namespace this install uses: the one another
+// instance lends it (sharedHome, or what an existing warden.json already
+// says when that is outside the state directory), else <state>/sbx.
+func (in *installer) privateHome() string {
+	if in.sharedHome != "" {
+		return in.sharedHome
+	}
+	if existing, err := config.Load(in.configPath, in.state); err == nil && existing.SBX.PrivateHome != "" && !within(existing.SBX.PrivateHome, in.state) {
+		return existing.SBX.PrivateHome
+	}
+	return filepath.Join(in.state, "sbx")
+}
+
+// within reports whether path is dir or under it.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// localGuestImage is a guest image other than the stock template that the
+// existing warden.json (or the seed configuration) names and the
+// namespace lists, so an install of a release that pins none does not
+// send the instance back to the stock template.
+func (in *installer) localGuestImage() (image, digest string, ok bool) {
+	var candidates []config.Config
+	for _, c := range []*config.Config{in.seed} {
+		if c != nil {
+			candidates = append(candidates, *c)
+		}
+	}
+	if existing, err := config.Load(in.configPath, in.state); err == nil {
+		candidates = append(candidates, existing)
+	}
+	var listing string
+	for _, c := range candidates {
+		if c.SBX.GuestImage == "" || c.SBX.GuestImage == release.StockTemplate || c.SBX.GuestImageDigest == "" {
+			continue
+		}
+		if listing == "" {
+			var err error
+			if listing, err = in.sbx.run([]string{"template", "ls", "--json"}, false); err != nil {
+				return "", "", false
+			}
+		}
+		if templateListed(listing, c.SBX.GuestImageDigest) {
+			return c.SBX.GuestImage, c.SBX.GuestImageDigest, true
+		}
+	}
+	return "", "", false
+}
+
 // compose builds warden.json: the local defaults (or the existing file, so
 // operator edits survive a re-run) overlaid with what this run detected.
 // Ports are chosen on the first install only; a re-run while Warden is
@@ -773,7 +859,7 @@ func (in *installer) compose(privateHome, runtimes, image, digest string) (confi
 		cfg.Reporting.Enabled = in.reporting
 	}
 	if fresh {
-		ports, err := freeLoopbackPorts(portOf(cfg.Chat.Listen), portOf(cfg.Previews.EdgeListen))
+		ports, err := freeLoopbackPorts(in.c.otherInstancePorts(in.state), portOf(cfg.Chat.Listen), portOf(cfg.Previews.EdgeListen))
 		if err != nil {
 			return cfg, err
 		}
@@ -781,6 +867,11 @@ func (in *installer) compose(privateHome, runtimes, image, digest string) (confi
 		cfg.Previews.EdgeListen = listenAddr(cfg.Previews.EdgeListen, ports[1])
 		if cfg.Auth.Mode == config.AuthOwner {
 			cfg.Auth.PublicURL = "http://" + cfg.Previews.EdgeListen
+		}
+		// A named instance's sandboxes carry its name, so instances
+		// sharing one SBX namespace never see each other's (decision 3).
+		if name := instanceName(in.state); name != defaultInstance && config.ValidInstanceName(name) {
+			cfg.Sandboxes.NamePrefix = name
 		}
 	}
 	in.step("host", fmt.Sprintf("%d MiB RAM, %d cores → %d sandbox(es) of %d MiB, %d warm spare; chat %s, previews %s", in.memoryMB, in.cpus, cfg.Sandboxes.MaxRunning, cfg.Sandboxes.MemoryMB, cfg.Sandboxes.WarmSpares, cfg.Chat.Listen, cfg.Previews.EdgeListen))

@@ -41,6 +41,10 @@ type Chat struct {
 	// the owner at creation or from the workspace panel, never by an agent;
 	// the same on every chat of the workspace.
 	Network string `json:"network,omitempty"`
+	// Jailbroken: the workspace has host access (host.go), the owner's
+	// choice at creation or from the workspace panel; the same on every
+	// chat of the workspace.
+	Jailbroken bool `json:"jailbroken,omitempty"`
 	// Mode is the chat's permission mode (permissions.go): auto when
 	// empty. Rules are its own permission rules (rules.go: "Allow always"
 	// answers and rules added to the chat), in the order given; Allowed

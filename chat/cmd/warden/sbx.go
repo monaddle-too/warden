@@ -50,20 +50,31 @@ func shellQuote(s string) string {
 
 // ensureNamespace creates the five directories owner-only and writes the
 // wrapper when missing or different. It reports whether anything changed.
-func ensureNamespace(state, privateHome, executable string) (changed bool, err error) {
-	if err = ensurePrivateDir(privateHome); err != nil {
-		return false, err
-	}
-	for _, d := range namespaceDirs {
-		if err = ensurePrivateDir(filepath.Join(privateHome, d.dir)); err != nil {
+// A shared namespace (another instance's, docs/host-dogfood-plan.md
+// decision 3) is only pointed at: its directories and keychain link are
+// that instance's, and must exist already.
+func ensureNamespace(state, privateHome, executable string, shared bool) (changed bool, err error) {
+	if shared {
+		if _, err = os.Stat(filepath.Join(privateHome, "home")); err != nil {
+			return false, fmt.Errorf("shared SBX namespace %s: %w", privateHome, err)
+		}
+	} else {
+		if err = ensurePrivateDir(privateHome); err != nil {
 			return false, err
+		}
+		for _, d := range namespaceDirs {
+			if err = ensurePrivateDir(filepath.Join(privateHome, d.dir)); err != nil {
+				return false, err
+			}
 		}
 	}
 	if err = ensurePrivateDir(filepath.Join(state, "bin")); err != nil {
 		return false, err
 	}
-	if err = ensureKeychainLink(privateHome); err != nil {
-		return false, err
+	if !shared {
+		if err = ensureKeychainLink(privateHome); err != nil {
+			return false, err
+		}
 	}
 	path := wrapperPath(state)
 	want := wrapperScript(privateHome, executable)

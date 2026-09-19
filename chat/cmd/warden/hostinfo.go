@@ -111,9 +111,15 @@ func sizeSandboxes(base config.Sandboxes, memoryMB, cpus int) config.Sandboxes {
 
 // freeLoopbackPorts returns n distinct free TCP ports on 127.0.0.1, keeping
 // each preferred port that is free and otherwise scanning upward from it.
-func freeLoopbackPorts(preferred ...int) ([]int, error) {
+// avoid are ports to treat as taken although nothing listens on them
+// right now: the ports of the other instances on this machine, which may
+// be stopped.
+func freeLoopbackPorts(avoid []int, preferred ...int) ([]int, error) {
 	var out []int
 	taken := map[int]bool{}
+	for _, p := range avoid {
+		taken[p] = true
+	}
 	for _, want := range preferred {
 		port := want
 		for tries := 0; tries < 200; tries++ {

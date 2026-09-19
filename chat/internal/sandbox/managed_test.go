@@ -2074,17 +2074,17 @@ func TestStartBringsAStoppedSandboxBackWithoutARun(t *testing.T) {
 
 func TestOperationTimeoutHonoursPrepareTimeout(t *testing.T) {
 	w := &Worker{}
-	if got := w.operationTimeout("prepare"); got != 2*time.Minute {
+	if got := w.operationTimeout(Request{Operation: "prepare"}); got != 2*time.Minute {
 		t.Fatalf("unset PrepareTimeout: prepare bounded by %v, want 2m", got)
 	}
 	w.PrepareTimeout = 10 * time.Minute
 	for _, op := range []string{"prepare", "start", "clone", "resize"} {
-		if got := w.operationTimeout(op); got != 10*time.Minute {
+		if got := w.operationTimeout(Request{Operation: op}); got != 10*time.Minute {
 			t.Errorf("%s bounded by %v, want the PrepareTimeout", op, got)
 		}
 	}
 	for _, op := range []string{"status", "stop", "remove", "exec"} {
-		if got := w.operationTimeout(op); got != 2*time.Minute {
+		if got := w.operationTimeout(Request{Operation: op}); got != 2*time.Minute {
 			t.Errorf("%s bounded by %v, want 2m", op, got)
 		}
 	}

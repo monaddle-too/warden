@@ -43,6 +43,11 @@ type Worker struct {
 	// are the pinned SBX executable and guest template; only the SBX runtime
 	// driver reads them.
 	Root, Executable, Template string
+	// Instance is the Warden instance these sandboxes belong to
+	// (sandboxes.namePrefix): every runtime name carries it, so instances
+	// sharing one SBX namespace keep out of each other's inventory
+	// (names.go). "" is the default instance.
+	Instance string
 	// Spares is how many booted, unbound guests to keep ready so a new
 	// environment skips sandbox creation. They sit beside MaxResident.
 	Spares       int
@@ -93,6 +98,14 @@ type Worker struct {
 	// listener per publication and http://127.0.0.1:<port>/ URLs.
 	PreviewListener net.Listener
 	PreviewAddress  string
+	// Jailbreak enables the host.* operations (host.go): the runner was
+	// started with --jailbreak (warden.json dogfood.jailbreak). HostHome
+	// is the owner's home directory host paths must stay under (the
+	// process's when empty).
+	Jailbreak bool
+	HostHome  string
+	hostExecs *hostExecs
+	hostOnce  sync.Once
 }
 
 func (w *Worker) parallelLimit() int {

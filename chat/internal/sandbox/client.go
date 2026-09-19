@@ -97,8 +97,11 @@ type Request struct {
 	// Bytes is the content an attachment-write puts into the sandbox, or
 	// the note a memory-append adds to CLAUDE.md.
 	Bytes []byte `json:"bytes,omitempty"`
-	// Command is the shell command line an exec runs in the workspace.
+	// Command is the shell command line an exec runs in the workspace,
+	// or a host.exec on the host. Timeout is a host.exec's limit in
+	// seconds (0: the default).
 	Command string `json:"command,omitempty"`
+	Timeout int    `json:"timeout,omitempty"`
 	// Before, on a restore, is the checkpoint ID the workspace as it is
 	// now is recorded under before the checkpoint CallID names is written
 	// back, so the restore itself can be undone (chats/rewind.go); ""
@@ -161,8 +164,12 @@ type Response struct {
 	Bytes             []byte                 `json:"bytes,omitempty"`
 	// Paths is a "paths" completion: workspace paths matching the query.
 	Paths []string `json:"paths,omitempty"`
-	// Exec is what an "exec" came to: output, exit code, timeout.
+	// Exec is what an "exec" or a "host.exec" came to: output, exit code,
+	// timeout. Host is a "host.status" answer; Size the bytes a host.put
+	// or host.get moved.
 	Exec *ExecResult `json:"exec,omitempty"`
+	Host *HostStatus `json:"host,omitempty"`
+	Size int64       `json:"size,omitempty"`
 	// Aside is what an "aside" (a side question to a forked copy of the
 	// chat's session) or a "oneshot" (a prompt to a fresh, tool-less CLI)
 	// came to.
@@ -193,6 +200,9 @@ type PreviewAttachment struct {
 	Title     string `json:"title"`
 	URL       string `json:"url,omitempty"`
 	State     string `json:"state"`
+	// Upstream is "host" for a host port exposed by a jailbroken
+	// workspace (host.go); "" for a sandbox port.
+	Upstream string `json:"upstream,omitempty"`
 }
 
 // Client reaches a runner at Address, a unix:// socket (the sbx shapes) or

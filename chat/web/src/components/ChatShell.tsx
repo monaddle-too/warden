@@ -37,6 +37,7 @@ import { api, setOutputStyle, signedIn, subscribe } from "../api";
 import { ForkDialog } from "./ForkDialog";
 import { useNotifications } from "./Notifications";
 import { plural, providerName } from "../export";
+import { documentTitle, instanceLabel } from "../instance";
 import {
   PullRequestReview,
   type PullRequestReviewHandle,
@@ -112,6 +113,9 @@ export function ChatShell({
   // "" follows the install's setting, read when the form opens.
   const [network, setNetwork] = useState<NetworkMode>("");
   const [installNetwork, setInstallNetwork] = useState<InstallNetwork>();
+  // Host access for the fresh workspace (chats/host.go): offered only
+  // when this Warden has dogfood.jailbreak, to the owner, off by default.
+  const [jailbreak, setJailbreak] = useState(false);
   useEffect(() => {
     if (!creating || !admin) return;
     api<InstallNetwork>("sharing/egress").then(setInstallNetwork, () => {});
@@ -186,6 +190,11 @@ export function ChatShell({
   useEffect(() => {
     sessionStorage.setItem("warden-workspace-open", workspaceOpen ? "1" : "0");
   }, [workspaceOpen]);
+  // A non-default instance names itself in the tab's title (instance.ts).
+  const instance = state.agentOptions?.instance;
+  useEffect(() => {
+    document.title = documentTitle("Warden — Chats", instance);
+  }, [instance?.name, instance?.version]);
   // ⌘K / Ctrl+K opens the search palette from anywhere; again closes it.
   // `?` outside an input opens the shortcuts overlay (shortcuts.ts).
   useEffect(() => {
@@ -240,6 +249,7 @@ export function ChatShell({
         model,
         ...(resources ? { resources } : {}),
         ...(!shared && network ? { network } : {}),
+        ...(!shared && jailbreak ? { jailbreak: true } : {}),
       });
       setSelected(result.id);
       setArchived(false);
@@ -249,6 +259,7 @@ export function ChatShell({
       setRepository("");
       setSize(null);
       setNetwork("");
+      setJailbreak(false);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -478,6 +489,14 @@ export function ChatShell({
         <div className="chat-brand">
           <Shield size={22} />
           <span>Warden</span>
+          {instanceLabel(instance) && (
+            <span
+              className="chat-brand-instance"
+              title={`This is the ${instance?.name} instance, running ${instance?.version}`}
+            >
+              {instanceLabel(instance)}
+            </span>
+          )}
         </div>
         <button
           className="chat-new-project"
@@ -523,6 +542,14 @@ export function ChatShell({
                   }
                 />
                 <span>{c.title}</span>
+                {c.jailbroken && (
+                  <span
+                    className="jailbroken-badge"
+                    title="This workspace has host access: its agent can run commands on this computer as you"
+                  >
+                    JAILBROKEN
+                  </span>
+                )}
               </button>
               <button
                 className="chat-row-action"
@@ -630,7 +657,17 @@ export function ChatShell({
           <>
             <header className="chat-header">
               <div className="chat-title">
-                <h1>{chat.title}</h1>
+                <h1>
+                  {chat.title}
+                  {chat.jailbroken && (
+                    <span
+                      className="jailbroken-badge"
+                      title="This workspace has host access: its agent can run commands on this computer as you"
+                    >
+                      JAILBROKEN
+                    </span>
+                  )}
+                </h1>
                 <div className="chat-subtitle">
                   <span className={`status-dot ${workspaceState}`} />
                   <span>
@@ -943,6 +980,7 @@ export function ChatShell({
                   onChanges={() => setChangesOpen(true)}
                   limits={state.sandboxes}
                   owner={admin}
+                  jailbreak={state.agentOptions?.jailbreak}
                 />
               )}
             </div>
@@ -1114,6 +1152,26 @@ export function ChatShell({
                     install={installNetwork}
                     onChange={setNetwork}
                   />
+                </fieldset>
+              )}
+              {!shared && admin && state.agentOptions?.jailbreak && (
+                <fieldset className="size-fieldset">
+                  <legend>Host access</legend>
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={jailbreak}
+                      onChange={(e) => setJailbreak(e.target.checked)}
+                    />{" "}
+                    Give the agent host access{" "}
+                    {jailbreak && (
+                      <span className="jailbroken-badge">JAILBROKEN</span>
+                    )}
+                  </label>
+                  <p className="muted">
+                    The agent can run commands on this Mac as you. Every command
+                    is shown here and is subject to the permission rules.
+                  </p>
                 </fieldset>
               )}
               <p className="muted">

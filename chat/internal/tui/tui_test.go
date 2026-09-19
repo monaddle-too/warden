@@ -1395,6 +1395,11 @@ func TestReviewCardAndCommand(t *testing.T) {
 	if got := WaitingLabel(&Chat{Reviews: c.Reviews[:1]}); got != "1 review" {
 		t.Fatalf("waiting: %q", got)
 	}
+	c.Jailbroken = true
+	if got := plain(strings.Join(StatusParts(c, nil, true, time.Unix(0, 0)), " | ")); !strings.Contains(got, "| JAILBROKEN |") {
+		t.Fatalf("no JAILBROKEN mark: %s", got)
+	}
+	c.Jailbroken = false
 	if got := plain(strings.Join(StatusParts(c, nil, true, time.Unix(0, 0)), " | ")); !strings.Contains(got, "⚠ 1 approval · 4 reviews") {
 		t.Fatalf("status: %q", got)
 	}
@@ -2806,9 +2811,16 @@ func TestRenderToolEntries(t *testing.T) {
 		{ID: "n", Role: "activity", Text: "Read missing.txt", Detail: "File does not exist.", Tool: &Tool{Kind: "read", Name: "Read", Status: "failed"}},
 		{ID: "m", Role: "activity", Text: "warden · preview_attach", Detail: "https://p", Tool: &Tool{Kind: "mcp", Name: "preview_attach", Server: "warden", Status: "completed", Input: map[string]any{"port": 3000, "title": "Preview"}}},
 		{ID: "s", Role: "activity", Text: "sleep 5", Detail: "", IsStreaming: true, Tool: &Tool{Kind: "command", Name: "Bash", Status: "running"}},
+		// A jailbroken workspace's host calls (chats/host.go): the HOST
+		// mark, the command with its output and exit, the copy's paths,
+		// the exposure's URL.
+		{ID: "h1", Role: "activity", Text: "warden · host_run", Detail: `{"exitCode":3,"timedOut":false,"output":"Darwin mac 24.0\nhello-from-host\n"}`, Tool: &Tool{Kind: "mcp", Name: "host_run", Server: "warden", Status: "completed", Target: "host", Input: map[string]any{"command": "uname -a && false"}}},
+		{ID: "h2", Role: "activity", Text: "warden · host_put", Detail: `{"bytes":12,"direction":"sandbox → host"}`, Tool: &Tool{Kind: "mcp", Name: "host_put", Server: "warden", Status: "completed", Target: "host", Input: map[string]any{"from": "/home/agent/workspace/a.txt", "to": "/Users/me/a.txt"}}},
+		{ID: "h3", Role: "activity", Text: "warden · host_expose", Detail: `{"port":18830,"url":"http://x.localhost:18781/"}`, Tool: &Tool{Kind: "mcp", Name: "host_expose", Server: "warden", Status: "completed", Target: "host", Input: map[string]any{"port": 18830.0}}},
+		{ID: "h4", Role: "activity", Text: "warden · host_run", Detail: "host access is off for this workspace", Tool: &Tool{Kind: "mcp", Name: "host_run", Server: "warden", Status: "failed", Target: "host", Input: map[string]any{"command": "ls"}}},
 	}
 	collapsed := plain(strings.Join(RenderTranscript(c, 60, false), "\n"))
-	for _, want := range []string{"· $ ls -la", "    List files", "12 more lines (Tab to expand)", "│ line 20", "✗ $ false failed", "│ Exit code 1", "Edit notes.txt  +2 −1", "│ @@ -1,3 +1,3 @@", "│  alpha", "│ -gamma", "│ +GAMMA2", "Read notes.txt  2 lines", "Grep 'x' in .  3 files", "✗ Read missing.txt failed", "│ File does not exist.", "warden · preview_attach", "│ https://p", "⋯ $ sleep 5"} {
+	for _, want := range []string{"· $ ls -la", "    List files", "12 more lines (Tab to expand)", "│ line 20", "✗ $ false failed", "│ Exit code 1", "Edit notes.txt  +2 −1", "│ @@ -1,3 +1,3 @@", "│  alpha", "│ -gamma", "│ +GAMMA2", "Read notes.txt  2 lines", "Grep 'x' in .  3 files", "✗ Read missing.txt failed", "│ File does not exist.", "warden · preview_attach", "│ https://p", "⋯ $ sleep 5", "· HOST $ uname -a && false", "│ hello-from-host", "│ exit 3", "· HOST put /home/agent/workspace/a.txt → /Users/me/a.txt", "│ 12 bytes", "· HOST expose port 18830", "│ http://x.localhost:18781/", "✗ HOST $ ls failed", "│ host access is off for this workspace"} {
 		if !strings.Contains(collapsed, want) {
 			t.Fatalf("missing %q in:\n%s", want, collapsed)
 		}
@@ -5425,5 +5437,28 @@ func TestBugAndTestBugreportingCommands(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "bug TEXT,test bugreporting" || !strings.Contains(helpText, "/bug TEXT") || !strings.Contains(helpText, "/test bugreporting") {
 		t.Fatalf("%v", names)
+	}
+}
+
+// A non-default instance is named in the status line, with its build;
+// the default instance shows nothing new.
+func TestStatusLineNamesTheInstance(t *testing.T) {
+	app := &App{Now: func() time.Time { return time.Unix(0, 0) }}
+	c := sampleChat()
+	app.state = &State{Chats: []*Chat{c}, AgentOptions: AgentOptions{Instance: &InstanceInfo{Name: "dogfood-a", Version: "v0.0.0-dev.abc"}}}
+	app.ChatID = "chat1"
+	if joined := plain(strings.Join(app.statusRows(120, 30), "\n")); !strings.Contains(joined, "dogfood-a v0.0.0-dev.abc") {
+		t.Fatalf("status without the instance:\n%s", joined)
+	}
+	app.ChatID = "missing"
+	if joined := plain(strings.Join(app.statusRows(120, 30), "\n")); !strings.Contains(joined, "Warden · dogfood-a v0.0.0-dev.abc · no chat selected") {
+		t.Fatalf("no-chat status without the instance:\n%s", joined)
+	}
+	app.state.AgentOptions.Instance = nil
+	if joined := plain(strings.Join(app.statusRows(120, 30), "\n")); strings.Contains(joined, "dogfood") {
+		t.Fatalf("default instance marked:\n%s", joined)
+	}
+	if InstanceLabel(AgentOptions{Instance: &InstanceInfo{Name: "default", Version: "v1"}}) != "" {
+		t.Fatal("the default instance has a label")
 	}
 }

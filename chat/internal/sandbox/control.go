@@ -80,6 +80,8 @@ func (w *Worker) cancelManaged(r Request) error {
 	if cancel != nil {
 		cancel()
 	}
+	// A host command of the chat (host.go) dies with the run.
+	w.cancelHostExecs(r.ChatID)
 	// Cover cancellation in the gap after prepare returns but before stream opens.
 	// This must not wait behind an in-progress creation on the control lane.
 	go w.cancelPreparedReservation(r)

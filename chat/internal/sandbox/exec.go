@@ -35,6 +35,10 @@ type ExecResult struct {
 	Output   string `json:"output"`
 	ExitCode int    `json:"exitCode"`
 	TimedOut bool   `json:"timedOut,omitempty"`
+	// Bytes is the whole output's size and DurationMS the run time, both
+	// reported for host commands (host.go) for the audit.
+	Bytes      int64 `json:"bytes,omitempty"`
+	DurationMS int64 `json:"durationMS,omitempty"`
 }
 
 // execScript runs one command line with bash in the workspace, stdin

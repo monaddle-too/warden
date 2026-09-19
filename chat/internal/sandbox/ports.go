@@ -125,7 +125,7 @@ func (w *Worker) reconcileRemovedLocked(ctx context.Context, s *managedSandbox) 
 // publications). It only touches the guest when such a publication exists.
 func (w *Worker) unpublishRemovedLocked(ctx context.Context, s *managedSandbox) error {
 	for _, p := range w.managed.Publications {
-		if p.SandboxID == s.ID && p.State == "removed" && p.HostPort != 0 {
+		if p.SandboxID == s.ID && p.State == "removed" && p.HostPort != 0 && p.Upstream != UpstreamHost {
 			if err := w.unpublishIfPresentLocked(ctx, s, p); err != nil {
 				return err
 			}

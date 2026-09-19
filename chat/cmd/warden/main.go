@@ -9,6 +9,12 @@
 //	warden start   [--config PATH]
 //	warden open    [--config PATH]
 //	warden bugs    status | on | off | send "text" | test | pending
+//	warden instance list | create NAME | rm NAME
+//	warden release  list | install TARBALL | use VERSION | build [CHECKOUT]
+//
+// Every command that takes --state also takes --instance NAME (or
+// $WARDEN_INSTANCE): the default instance is the default state directory,
+// NAME is ~/.warden-NAME (docs/host-dogfood-plan.md).
 package main
 
 import (
@@ -80,6 +86,8 @@ const usageText = `usage: warden COMMAND [flags]
   menu      install | uninstall the macOS menu bar item (install does this too); feed: its model (warden-menu runs it)
   chat      terminal client: warden chat [CHAT] | list | new | send | approve
   uninstall stop Warden, unregister the service, delete its sandboxes, stop its private sbx daemon and remove the state
+  instance  list | create NAME [--dev --from SOURCE] | rm NAME: several Wardens on this machine (--instance NAME on every command)
+  release   list | install TARBALL|DIR | use VERSION | build [CHECKOUT]: the releases an instance runs from (--restart)
   bugs      bug reports: status | on | off | send "text" | test | pending (you review every report before it is sent)
   tls       bootstrap: write a deployment CA and the four service certificates for tls:// transport
   version   print the build revision and protocol number
@@ -121,6 +129,10 @@ func (c *cli) run(args []string) int {
 		err = c.menuCommand(args[1:])
 	case "uninstall":
 		err = c.uninstall(args[1:])
+	case "instance":
+		err = c.instanceCommand(args[1:])
+	case "release":
+		err = c.releaseCommand(args[1:])
 	case "bugs":
 		err = c.bugs(args[1:])
 	case "tls":

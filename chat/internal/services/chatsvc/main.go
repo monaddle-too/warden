@@ -22,6 +22,7 @@ import (
 	"warden/chat/internal/conversation"
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/imageguard"
+	"warden/chat/internal/release"
 	"warden/chat/internal/sandbox"
 	"warden/chat/internal/services"
 	"warden/chat/internal/transport"
@@ -44,6 +45,7 @@ func run(args []string) error {
 	web := fs.String("web-dir", "chat/web/dist", "Built Warden chat assets (paths.webAssets)")
 	suffix := fs.String("preview-suffix", "", "Authenticated preview hostname suffix (previews.hostSuffix); empty leaves external previews unconfigured")
 	version := fs.Bool("version", false, "print the build revision and protocol number")
+	jailbreak := fs.Bool("jailbreak", false, "offer host access to workspaces the owner opts in (dogfood.jailbreak; a local owner install only, and the runner must run with it too)")
 	if err := services.ParseFlags(fs, args); err != nil {
 		return err
 	}
@@ -124,6 +126,17 @@ func run(args []string) error {
 	// single-owner install on a machine with such directories, which the
 	// Kubernetes shape is not (the runner is a pod).
 	engine.LocalMode = s.cfg.Auth.Mode == config.AuthOwner && s.cfg.RuntimeKind() != config.RuntimeKubernetes
+	// Which Warden this is, for the sidebar header and the browser title
+	// of a non-default instance (docs/host-dogfood-plan.md).
+	engine.Instance = chats.InstanceInfo{Name: config.InstanceName(s.cfg.Paths.State), Version: release.Revision}
+	// The jailbreak (docs/host-dogfood-plan.md): the standing setting in
+	// the file or the launcher's --jailbreak, a local owner install only.
+	if *jailbreak || s.cfg.Dogfood.Jailbreak {
+		if !s.cfg.JailbreakAllowed() {
+			return config.ErrJailbreakRefused
+		}
+		engine.Jailbreak = true
+	}
 	engine.DefaultModels = map[string]string{}
 	if claude := s.cfg.Providers.Claude; claude != nil {
 		engine.AllowFastMode, engine.AllowLongContext = claude.AllowFastMode, claude.AllowLongContext
