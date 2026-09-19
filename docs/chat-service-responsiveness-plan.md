@@ -113,5 +113,19 @@ latency while a workspace stops, edge→chat connection count.
   encoded once per generation, a stream that sends on change only),
   `worker_test.go` (`health` under the held mutex), `edge_test.go`
   (upstream connections reused). `TestBugReportRetentionAndCap` in the
-  edge package fails on origin/main too (unrelated). Remaining: the live
-  check on the owner's Mac (deploy-local), then merge.
+  edge package fails on origin/main too (unrelated; main fixed it in
+  f55de51, merged in at cffa842).
+- 2026-09-18: a sixth cost found on the first live deploy: the workspace
+  panel's `GET environments` poll (5 s per tab) made three runner calls
+  per workspace, and `Engine.Runtime` decoded the whole store for each
+  (~60 decodes per poll per tab, ~17 % of a core). `Store.Chat` copies
+  one chat; every inline `Snapshot().chat(id)` reads through it
+  (14a0ec6).
+- 2026-09-18: live-verified on the owner's Mac (deploy-local
+  v0.0.0-dev.14a0ec682cf6, three browser tabs open, 673 KB state):
+  `warden serve` idle at ~1.2 % of a core (was ~28 %); a running VM
+  stopped from the panel held the runner 5.6 s while `GET state` stayed
+  at ~1 ms throughout (was 5 s per read); a 400-word streamed reply:
+  `GET state` p90 12 ms, max 38 ms, peak 30 % of a core (was 48 %); the
+  event stream idle sends keepalives only; edge→chat connections 7 for 3
+  tabs (was 280 for 6). Not merged.
