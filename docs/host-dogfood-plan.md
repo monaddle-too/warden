@@ -249,6 +249,82 @@ admitting a host upstream from the runner, audit entries. Live, on a
 cloned home with `dogfood.jailbreak` on: a chat that runs the dogfood loop
 above end to end, with the ask prompts and then an allow rule.
 
+## Part C — versions
+
+### What the owner asked
+
+`warden start --version <version_string>` starts that version; `warden
+status` lists the running things; `warden versions` lists the versions
+available for install and run.
+
+### What happens
+
+- **One release store.** Releases are unpacked once, into
+  `~/.warden/releases/<name>/` (the default state directory's `releases`,
+  so the default instance's Part A layout is already the store), and
+  every instance's `<state>/release` link points into it (`store.go`:
+  `storeDir`, `availableReleases`, `resolveRelease`). `release install`
+  and `release build` reuse a release already there (`--force` unpacks it
+  again); `release list` shows, per release, which instances are pinned
+  to it and which run it. An instance's pre-store `<state>/releases/`
+  stays readable ("older copy": listed, usable by `use` and `start
+  --version`); nothing new is written there. A version is a tag, a dev
+  version, a bare sha prefix matching one dev release, `latest`, or a
+  release-directory name.
+- **`running.json`.** Every `warden start` mode (foreground, detached
+  child, service) writes `<state>/running.json` — version
+  (`release.Revision`), release directory, binary, pid, start time, chat
+  and edge listen addresses — once the four services are up, and removes
+  it on a clean stop (`running.go`). A record whose pid is gone is stale
+  and reads as not running. Nothing else consults the pid file for the
+  version: this is the one source of "what runs".
+- **`warden start --version V [--use] [--as NAME]`** (`start.go`,
+  `startVersion`). V is resolved in the store and the instance's older
+  copies; the release's own `bin/warden start` is executed for the
+  instance with the other flags passed through and `WARDEN_RELEASE_REEXEC`
+  set so the child does not re-execute into the pinned release. Without
+  `--use` the link is untouched, a trial run; `--use` repoints it first
+  (and runs that release's `install --upgrade`, as `release use` does).
+  An instance that runs is refused: "instance X is running <version>;
+  stop it, or add --as NAME to run V beside it". `--as NAME` creates the
+  instance from the current one (`instance create NAME --from <current>
+  --dev`, the shared SBX namespace) when missing, links V into it and
+  starts it detached unless `--foreground`. A bare `--version` is a usage
+  error pointing at `warden versions`.
+- **`warden status`.** With no `--instance`/`--state`: a table of every
+  instance (NAME, RUNNING, PINNED, PID, CHAT, EDGE, SERVICE, UP), then the
+  default instance's detail lines exactly as before, so scripts reading
+  them keep working; with an instance: the detail plus a `running:` line
+  that names a trial run's pinned release; `--json` for the rows. `instance
+  list` gained RUNNING from the same rows (`describeInstance`).
+- **`warden versions [--json] [--remote]`** (`versions.go`): the store
+  (VERSION, INSTALLED, PINNED BY, RUNNING ON, WHERE, `*` for this
+  launcher's version). `--remote` adds the GitHub releases of
+  monaddle-too/warden (public API, 10 s, one line when unreachable) with
+  the tarball for this host, whether `SHA256SUMS` is attached and whether
+  the store has it. `warden release install TAG` downloads that tarball
+  into the store and verifies it against `SHA256SUMS`; a release without
+  the checksums is refused. Everything else is offline.
+
+### Decisions
+
+1. The store is the default instance's `releases/` directory rather than
+   a new path: the 79 releases the owner's `~/.warden` already held became
+   the store with no move, and the installer's `~/.warden/releases/` +
+   `~/.warden/release` convention stays true.
+2. `--remote` is a flag, never implied by an empty store: `versions`
+   stays offline unless asked.
+3. A trial run (`--version` without `--use`) under a registered service
+   is refused rather than started detached beside the unit: the service
+   manager would otherwise report a stopped unit while a stranger ran on
+   its ports. `--use` (the unit's program is the link) or `--foreground`.
+4. `running.json` is removed only by the process that wrote it, so a
+   replacement instance racing a shutting-down one never deletes the
+   newer record.
+5. The launcher test package runs under a temporary `HOME` (`TestMain`):
+   the first run of the store tests unpacked a stub into the owner's live
+   store, which is exactly the shared-state hazard the store introduces.
+
 ## Security stance
 
 Part A changes nothing in the threat model: instances are what `--state`

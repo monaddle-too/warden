@@ -548,25 +548,79 @@ refuses `default`. Removing the default instance (`warden uninstall`)
 still deletes every sandbox in its namespace and stops its daemon, the
 instances sharing that namespace included: remove those first.
 
-**Releases.** An instance keeps every release it has run under
-`<state>/releases/<name>/` (`warden-<version>-<os>-<arch>`, what
-`scripts/release.sh` builds) and runs from the one `<state>/release`
-links to, which is what the service unit and your PATH entry name.
-`warden release install TARBALL|DIR [--instance NAME] [--restart]`
-unpacks a tarball there (or copies an unpacked directory in), repoints the
-link, runs that release's own `warden install --upgrade` into the instance
-(registering nothing) and, with `--restart`, restarts what runs: the
-service, or a detached Warden by `stop` + `start --detach`. `warden
-release list` shows the versions with the current one marked; `warden
-release use VERSION [--restart]` switches the link back (and installs
-that release's pins again). `warden release build [CHECKOUT] --instance
-NAME [--restart] [--test]` builds a checkout with `scripts/release.sh
---skip-tests` (`--test` runs the tests first), versioned as the script
-does (the tag at HEAD, else `v0.0.0-dev.<12-character sha>`), and installs
-the tarball for this host; it insists on `--instance` or `--state` so a
-bare command never deploys over the default instance.
-`scripts/deploy-local.sh` is now a wrapper over it (`WARDEN_HOME` names
-the instance's `release` link; `--no-restart`, `--test` as before).
+**Releases.** Every release on the machine is unpacked once, into the
+**release store** `~/.warden/releases/<name>/` (the default state
+directory's `releases`; `warden-<version>-<os>-<arch>`, what
+`scripts/release.sh` builds), and an instance runs from the one its
+`<state>/release` link points to, which is what the service unit and your
+PATH entry name. `warden release install TARBALL|DIR|TAG [--instance
+NAME] [--restart] [--force]` puts a tarball in the store (an unpacked
+directory is copied in; a release already there is reused, `--force`
+unpacks it again), repoints the link, runs that release's own `warden
+install --upgrade` into the instance (registering nothing) and, with
+`--restart`, restarts what runs: the service, or a detached Warden by
+`stop` + `start --detach`. A `TAG` that is no file (`v0.1.0-alpha.13`)
+is downloaded from the GitHub releases of monaddle-too/warden: the
+tarball for this host, checked against the release's `SHA256SUMS` (a
+release without one is refused). `warden release list` shows the store
+and the instance's own older copies with the current one marked and, per
+release, which instances are pinned to it and which run it; `warden
+release use VERSION [--restart]` switches the link (and installs that
+release's pins again). A version is a tag, a dev version
+(`v0.0.0-dev.<sha>`), a bare sha prefix matching one dev release,
+`latest` (newest in the store) or a full release-directory name. `warden
+release build [CHECKOUT] --instance NAME [--restart] [--test] [--force]`
+builds a checkout with `scripts/release.sh --skip-tests` (`--test` runs
+the tests first), versioned as the script does (the tag at HEAD, else
+`v0.0.0-dev.<12-character sha>`), and installs the tarball for this
+host; it insists on `--instance` or `--state` so a bare command never
+deploys over the default instance. `scripts/deploy-local.sh` is a wrapper
+over it (`WARDEN_HOME` names the instance's `release` link;
+`--no-restart`, `--test` as before). An instance's `<state>/releases/`
+from before the store stays readable (listed as "older copy", usable by
+`use` and `start --version`), but nothing new is written there.
+
+**What runs, and which version.** `warden start` records
+`<state>/running.json` (version, release, binary, pid, start time, chat
+and edge addresses) once the stack is up, in every mode, and removes it
+on a clean stop; a record whose pid is gone counts as not running.
+`warden status` with no instance named prints a table of every instance
+(NAME, RUNNING — the version from `running.json`, PINNED — the release
+link's, PID, CHAT, EDGE, SERVICE — registered running / registered
+stopped / detached / foreground / not registered, UP), then the default
+instance's detail lines as before; `warden status --instance NAME` is
+the detail alone plus a `running:` line; `--json` gives the rows.
+`warden versions [--json] [--remote]` lists the store: VERSION,
+INSTALLED, PINNED BY, RUNNING ON, WHERE (the store, or an instance's
+older copy), `*` on the version this launcher is; `--remote` adds the
+GitHub releases of monaddle-too/warden (tag, date, whether a tarball for
+this host and a `SHA256SUMS` exist, `installed` when the store has it),
+one line when GitHub is unreachable. Everything but `--remote` works
+offline.
+
+**Running another version.** `warden start --version V [--use] [--as
+NAME]` starts the installed release V for the instance by executing its
+own `bin/warden start`, the other flags passed through. Without `--use`
+the release link is untouched, a trial run: `warden status` then shows
+RUNNING differing from PINNED (`running: … the pinned release is …`).
+With `--use` the link is repointed first (as `release use`). An instance
+that is running is refused ("stop it, or add --as NAME to run V beside
+it"); `--as NAME` runs V as the instance NAME beside this one, creating
+it from this instance (`instance create NAME --from … --dev`, the shared
+SBX namespace) when it does not exist, linking V into it and starting it
+detached (`--foreground` for the terminal). An instance with a
+registered service takes `--use` (the service unit runs the link) or
+`--foreground`. `--version` without a value is a usage error pointing at
+`warden versions`.
+
+```sh
+warden versions --remote                              # what is installed, what GitHub has
+warden release install v0.1.0-alpha.13 --instance dev # download into the store, link dev
+warden start --version latest --instance dev --detach # trial: dev runs it, its link stays
+warden start --version 0368f8 --as dev-b --detach     # the same build beside dev, as dev-b
+warden status                                         # who runs what
+warden stop --instance dev-b && warden instance rm dev-b --yes
+```
 
 **Which Warden is this.** A non-default instance names itself: the web
 sidebar header and the browser title show `Warden · <name> <version>`,

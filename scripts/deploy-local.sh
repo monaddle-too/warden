@@ -3,9 +3,10 @@
 # instance whose release link is $WARDEN_HOME, then restart a background
 # Warden if one is running. A thin wrapper over `warden release build`
 # (cmd/warden/release.go, docs/host-dogfood-plan.md): the launcher built
-# from this checkout runs scripts/release.sh, unpacks the tarball under
-# <state>/releases/<version>, repoints <state>/release, runs the new
-# release's own `warden install --upgrade` into the instance and restarts.
+# from this checkout runs scripts/release.sh, unpacks the tarball into the
+# shared release store (~/.warden/releases/<name>, once per version),
+# repoints <state>/release, runs the new release's own `warden install
+# --upgrade` into the instance and restarts.
 #
 #   WARDEN_HOME=~/.warden/release scripts/deploy-local.sh [--no-restart] [--test]
 #
