@@ -93,6 +93,10 @@ and are written as the diffs they produce.
   on the message's own delivery: with row writes a fake agent's turn ends
   inside the helper's 10 ms poll, so "still running" was no longer
   observable.
+- Live on `~/.warden` (build 35ddf67): the 717 KB `chats.json` (38 chats,
+  582 entries) imported into 38 chat rows, 582 entries, 58 turns, 13
+  approvals, 40 permission events, 3 ports and the catalog, exact counts;
+  a fresh chat's turn wrote its two entry rows, turn row and status.
 
 ## Decisions
 
