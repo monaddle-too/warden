@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -225,9 +226,16 @@ func (w *Worker) initializeManaged(ctx context.Context) error {
 			continue
 		}
 		if !outlives && s.State != "stopped" && (s.Created || s.Creating) {
-			// The guest died with the previous worker; stop what is left of it.
+			// The guest died with the previous worker; stop what is left of
+			// it. A stop the runtime refuses (an sbx daemon without its
+			// Docker session, a guest already gone) marks the sandbox
+			// failed instead of keeping the whole runner down: the chats of
+			// every other workspace, and the workspace panel that says what
+			// is wrong, are worth more than a clean inventory.
 			if err = w.Runtime.Stop(ctx, s.RuntimeName); err != nil {
-				return fmt.Errorf("could not stop interrupted registered sandbox: %w", err)
+				slog.Warn("could not stop interrupted registered sandbox; marked failed", "sandbox", s.ID, "runtime", s.RuntimeName, "error", err)
+				s.State = "error"
+				continue
 			}
 		}
 		s.State = "stopped"
