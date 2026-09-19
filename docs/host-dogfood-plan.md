@@ -1,7 +1,8 @@
 # Dogfooding on the host: instances and the jailbreak
 
-Status: planning, started 2026-09-19 on branch `plan/host-dogfood` from
-`plan/workspace-vm` ad03d67. No code until the owner has read this plan.
+Status: implementing, started 2026-09-19 on branch `plan/host-dogfood` from
+`plan/workspace-vm` ad03d67; Part A on `feat/warden-instances`, Part B on
+`feat/jailbreak`, both integrated here.
 Companion to [workspace-vm-plan.md](workspace-vm-plan.md), whose decisions
 1, 2 and 7 this plan revises (see "Relation to the workspace VM plan").
 
@@ -299,19 +300,26 @@ Candidate order, to be settled once the owner has read the plan:
 6. Live dogfood loop from a chat on a cloned home; known security issue 3
    entry; feature-map rows; the workspace-vm plan's decisions revised.
 
-## Open questions for the owner
+## Decisions taken with the owner (2026-09-19)
 
-1. **Name.** `dogfood.jailbreak` and "Host access" / JAILBROKEN as above,
-   or the plainer `dogfood.hostAccess`? The plan uses the owner's word.
-2. **Default permission for `host_run`.** Ask every time until a rule
-   allows it (proposed), or follow the chat's mode so **auto** runs host
-   commands unprompted?
-3. **Shared SBX namespace** (one daemon and sign-in for all instances) in
-   the first cut, or accept the two-daemon credential contention and do
-   it only if it bites?
-4. **`host_put`/`host_get` reach.** Anywhere under the home directory
-   (proposed, minus the outer instance's state), or only under the target
-   instance and a dogfood directory?
+1. The key is `dogfood.jailbreak`; the workspace option is "Host access"
+   and the mark JAILBROKEN.
+2. `host_run` follows the chat's permission mode: under **auto** it runs
+   unprompted ("yolo mode"), under **ask** it prompts, rules apply as to
+   any MCP tool. The ask-by-default proposal above is withdrawn.
+3. Instances share one SBX namespace from the first cut: a created
+   instance's `sbx.privateHome` is the default instance's, one daemon and
+   one Docker sign-in serve every instance, and sandbox runtime names
+   carry the instance so inventories do not collide.
+4. `host_put` / `host_get` reach anywhere under the owner's home except the
+   outer instance's own state directory (the proposal; the owner did not
+   object).
+5. The CLI must run several release versions at once **and a non-release
+   build**: `warden release build [CHECKOUT] --instance NAME` builds the
+   checkout (`scripts/release.sh --skip-tests`) and installs the result as
+   a release `v0.0.0-dev.<sha>` of that instance; `scripts/deploy-local.sh`
+   becomes a wrapper over it.
+6. Implement everything now and merge to main.
 
 ## Progress log
 
