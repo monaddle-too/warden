@@ -90,7 +90,28 @@ type Config struct {
 	// the person opted in at install or with `warden bugs on`; every report
 	// is shown to them before it is sent to URL.
 	Reporting Reporting `json:"reporting,omitzero"`
+	// Dogfood holds the owner's opt-ins for developing Warden from a
+	// Warden chat (docs/host-dogfood-plan.md); omitted when nothing is on.
+	Dogfood Dogfood `json:"dogfood,omitzero"`
 }
+
+// Dogfood is the dogfooding section. Jailbreak lets the owner opt a
+// workspace into host access (the agent's host_* tools: commands on this
+// machine as the owner, files each way, a host port as a preview); only a
+// local owner install may turn it on, never a server or Kubernetes.
+type Dogfood struct {
+	Jailbreak bool `json:"jailbreak,omitempty"`
+}
+
+// JailbreakAllowed reports whether this install may turn host access on:
+// a single-owner install on a local runtime (the runner runs on the
+// owner's machine, which the Kubernetes shape's pod is not).
+func (c Config) JailbreakAllowed() bool {
+	return c.Auth.Mode == AuthOwner && c.RuntimeKind() != RuntimeKubernetes
+}
+
+// ErrJailbreakRefused is why dogfood.jailbreak is refused elsewhere.
+var ErrJailbreakRefused = errors.New("dogfood.jailbreak needs auth.mode owner and a local runtime")
 
 // Paths locates Warden's data and release assets.
 type Paths struct {
@@ -778,6 +799,9 @@ func merge(c *Config, file Config) {
 		c.Reporting.Enabled = true
 	}
 	setString(&c.Reporting.URL, file.Reporting.URL)
+	if file.Dogfood.Jailbreak {
+		c.Dogfood.Jailbreak = true
+	}
 }
 
 func setString(dst *string, v string) {
@@ -884,6 +908,9 @@ func (c Config) Validate() error {
 	}
 	if s.NamePrefix != "" && (!instanceNameShape.MatchString(s.NamePrefix) || strings.EqualFold(s.NamePrefix, "spare")) {
 		return errors.New("sandboxes.namePrefix must be letters, digits and dashes, and not \"spare\"")
+	}
+	if c.Dogfood.Jailbreak && !c.JailbreakAllowed() {
+		return ErrJailbreakRefused
 	}
 	if g := c.Providers.GitHub; g != nil {
 		user, app := g.AuthFile != "" || g.Secret != "", g.AppID != 0 || g.AppSlug != "" || g.InstallationOwner != "" || g.BrokerFile != ""

@@ -469,10 +469,18 @@ type Sharing struct {
 	// Network, when set, applies owner-approved temporary host grants to a
 	// sandbox's engine (the "network_allow" operation).
 	Network NetworkGrants
+	// HostAudit, when set, records the jailbreak's host events (the
+	// "host_event" operation, chats/host.go) in the audit chains.
+	HostAudit HostAuditor
 	// PublicURL is this Warden's https origin (auth.publicURL), where
 	// attached images are briefly published for Docs inline-image edits;
 	// empty on installs Google cannot reach.
 	PublicURL string
+}
+
+// HostAuditor is the registry as the host_event operation needs it.
+type HostAuditor interface {
+	EmitHostEvent(sandbox, event string, fields map[string]any) error
 }
 
 // NetworkGrants is the registry as the sharing store needs it for
@@ -809,6 +817,36 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		// button that can only fail.
 		google := map[string]any{"configured": s.Google != nil && s.Google.Configured(), "connected": s.Google != nil && s.Google.Connected()}
 		return map[string]any{"configured": s.Google != nil && s.Google.Configured(), "connected": s.Google != nil && s.Google.Connected(), "can_write": s.Google != nil && s.Google.CanWrite(), "google": google, "github": github}, nil
+	case "host_event":
+		// A jailbroken workspace's host event (docs/host-dogfood-plan.md):
+		// what the agent ran or moved on the host, a port it exposed, the
+		// owner's switch; recorded through the policy service so it sits
+		// in the audit hash chain with everything else the sandbox did.
+		if s.HostAudit == nil {
+			return nil, errors.New("host audit unavailable")
+		}
+		event := stringField(data, "event")
+		sandbox := stringField(data, "sandboxID")
+		chat := stringField(data, "chatID")
+		if !HostEvents[event] || !validIdentifier(sandbox) || !validIdentifier(chat) {
+			return nil, errors.New("host event needs a known event, a sandbox and a chat")
+		}
+		fields := map[string]any{"sandbox_id": sandbox, "chat_id": chat, "actor": actorOf(data)}
+		for k, v := range data {
+			switch k {
+			case "event", "sandboxID", "chatID", "actor":
+				continue
+			}
+			if str, ok := v.(string); ok && len(str) > 4096 {
+				str = str[:4096] + "…"
+				v = str
+			}
+			fields[k] = v
+		}
+		if err := s.HostAudit.EmitHostEvent(sandbox, event, fields); err != nil {
+			return nil, err
+		}
+		return map[string]any{"event": event, "recorded": true}, nil
 	case "network_allow":
 		// The owner approved an agent's request_network_access: one public
 		// host, HTTP/HTTPS, for a bounded time, this sandbox only.

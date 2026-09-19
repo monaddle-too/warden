@@ -33,8 +33,12 @@ type publication struct {
 	ProxyPort  int
 	Generation string
 	State      string
-	listener   net.Listener
-	server     *http.Server
+	// Upstream is "host" when the origin is the host's own loopback port
+	// (a jailbroken workspace's host.expose; Address:HostPort is that
+	// port and the runtime knows nothing of it), "" for a sandbox port.
+	Upstream string
+	listener net.Listener
+	server   *http.Server
 }
 type savedAttachmentCall struct {
 	Fingerprint  string
@@ -196,10 +200,13 @@ func (w *Worker) removeLocked(ctx context.Context, r Request) (Response, error) 
 	a.State = "removed"
 	a.URL = ""
 	key := pubKey(a.SandboxID, a.Port)
+	if a.Upstream == UpstreamHost {
+		key = hostPubKey(a.SandboxID, a.Port)
+	}
 	p := w.managed.Publications[key]
 	refs := 0
 	for _, other := range w.managed.Attachments {
-		if other.SandboxID == a.SandboxID && other.Port == a.Port && other.State != "removed" {
+		if other.SandboxID == a.SandboxID && other.Port == a.Port && other.Upstream == a.Upstream && other.State != "removed" {
 			refs++
 		}
 	}
@@ -210,7 +217,7 @@ func (w *Worker) removeLocked(ctx context.Context, r Request) (Response, error) 
 		}
 		// Keep the availability listener bound, serving 410. Its old URL must never
 		// become a different local service while this worker is alive.
-		if p.HostPort != 0 && s.State == "running" {
+		if p.HostPort != 0 && p.Upstream != UpstreamHost && s.State == "running" {
 			if err = w.Gate.Check(ctx, s.Grant, "runtime"); err != nil {
 				return Response{}, err
 			}
@@ -328,6 +335,12 @@ func (w *Worker) servePreview(id string, rw http.ResponseWriter, r *http.Request
 	s := w.managed.Sandboxes[pub.SandboxID]
 	available := s != nil && s.State == "running" && pub.State == "available" && s.Generation == pub.Generation
 	audited := s != nil && !s.previewAuditAt.IsZero() && w.now().Before(s.previewAuditAt.Add(90*time.Second))
+	if pub.Upstream == UpstreamHost {
+		// The isolation audit attests the guest's port mappings; a host
+		// port has none. The sandbox must still be running with the
+		// publication current: the exposure is the workspace's.
+		audited = true
+	}
 	w.mu.Unlock()
 	rw.Header().Set("Cache-Control", "no-store")
 	if !available {
@@ -361,18 +374,22 @@ func (w *Worker) servePreview(id string, rw http.ResponseWriter, r *http.Request
 		response.Header.Set("Cache-Control", "no-store")
 		w.mu.Lock()
 		for _, a := range w.managed.Attachments {
-			if a.SandboxID == pub.SandboxID && a.Port == pub.Port && a.State == "unavailable" {
+			if a.SandboxID == pub.SandboxID && a.Port == pub.Port && a.Upstream == pub.Upstream && a.State == "unavailable" {
 				a.State = "available"
 			}
 		}
 		w.mu.Unlock()
 		return nil
 	}
+	key := pubKey(pub.SandboxID, pub.Port)
+	if pub.Upstream == UpstreamHost {
+		key = hostPubKey(pub.SandboxID, pub.Port)
+	}
 	proxy.Transport = &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		w.mu.Lock()
 		defer w.mu.Unlock()
 		s := w.managed.Sandboxes[pub.SandboxID]
-		current := w.managed.Publications[pubKey(pub.SandboxID, pub.Port)]
+		current := w.managed.Publications[key]
 		if s == nil || current == nil || s.State != "running" || current.State != "available" || current.Generation != pub.Generation || current.mapping() != pub.mapping() {
 			return nil, errors.New("preview generation changed")
 		}
@@ -381,7 +398,7 @@ func (w *Worker) servePreview(id string, rw http.ResponseWriter, r *http.Request
 	proxy.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, _ error) {
 		w.mu.Lock()
 		for _, a := range w.managed.Attachments {
-			if a.SandboxID == pub.SandboxID && a.Port == pub.Port && a.State == "available" {
+			if a.SandboxID == pub.SandboxID && a.Port == pub.Port && a.Upstream == pub.Upstream && a.State == "available" {
 				a.State = "unavailable"
 			}
 		}

@@ -2,7 +2,7 @@
 
 Status: implementing, started 2026-09-19 on branch `plan/host-dogfood` from
 `plan/workspace-vm` ad03d67; Part A on `feat/warden-instances`, Part B on
-`feat/jailbreak`, both integrated here.
+`feat/jailbreak` (done, live-tested, awaiting merge), both integrated here.
 Companion to [workspace-vm-plan.md](workspace-vm-plan.md), whose decisions
 1, 2 and 7 this plan revises (see "Relation to the workspace VM plan").
 
@@ -386,3 +386,87 @@ Candidate order, to be settled once the owner has read the plan:
   wants lower-case names (the prefix is lower-cased for it, kube
   otherwise out of scope); `~/.warden/instances.json` for `--state`
   directories elsewhere was not added (list scans `~/.warden*`).
+- 2026-09-19: **Part B landed on `feat/jailbreak`** (79ae544 … fbea345,
+  unit-tested, `go test ./...` and the web build/tests green):
+  - `config.Dogfood{Jailbreak}` (`dogfood.jailbreak`, refused unless owner
+    auth on a local runtime), `warden start --jailbreak` passing
+    `--jailbreak` (and `--host-home`) to the runner and the chat service.
+  - Runner `host.*` family (`sandbox/host.go`) behind `--jailbreak`:
+    `host.exec` through `$SHELL -lc` in its own process group (default
+    10 min, max 1 h, output tailed, killed on timeout, on the connection
+    closing and on the run's cancel), `host.put`/`host.get` (≤ 512 MiB,
+    under the owner's home, never the state directory), `host.expose`
+    (a publication with `Upstream: host` under the runner's loopback
+    listener, no guest publication, isolation audit not applied),
+    `host.status` (instances under `~/.warden*`).
+  - Chat service: `Chat.Jailbroken`/`Environment.Jailbroken`, `POST chats
+    {jailbreak}`, `POST|PUT environments/{id}/jailbreak`, `warden chat new
+    --jailbreak`, `agentOptions.jailbreak`; the `host_*` tools appended to
+    `dynamicTools` for a jailbroken workspace with a prompt line; each
+    call answered off the frame loop (an hour-long command does not stall
+    the session), ended by Stop, refused at once when the switch is off;
+    `Tool.Target "host"`; permission rules take
+    `mcp__warden__host_run(cmd *)` like Bash rules and "Allow always"
+    records them (`warden` is a subcommand program).
+  - Audit through `sharing/host_event` → `Registry.EmitHostEvent`: the
+    install-wide chain `<state>/policy/audit/events.jsonl` (a new file;
+    the per-sandbox chains stay per sandbox) plus the bound sandbox's own
+    chain; `host.exec` (cwd, command, exit, bytes, duration), `host.file`
+    (direction, paths, bytes), `host.expose` (port, URL),
+    `workspace.jailbreak` (on, actor). Like every audit file, each
+    process run starts a new segment (sequence 1, zero previous hash).
+  - Web: New chat "Host access" (owner, only with `agentOptions.jailbreak`),
+    red JAILBROKEN badges (sidebar, header, panel; panel Turn on/off),
+    HOST cards (`HostBody`), host ports marked in the preview list. TUI:
+    JAILBROKEN in the status line, HOST cards, `--jailbreak`.
+  - Docs: feature-map rows, known security issue 3, a paragraph in
+    `warden-local-install.md`.
+  - Decision 4 held as written: the outer instance's **own state
+    directory** is refused in both directions (the plan's earlier
+    "except `releases/`" was not implemented; a release goes through
+    `warden release install` on the host instead).
+  - Tool-list refresh: Claude Code takes the MCP tool list at session
+    start (`thread/start`/`thread/resume` → `tools/list`), so turning host
+    access off removes the tools at the next session start; every call
+    is refused immediately meanwhile (verified live, after a fix: the
+    check now reads the store, not the run's snapshot).
+- 2026-09-19: **live test** on a cloned home `~/.warden-jb` (chat :18830,
+  `dogfood.jailbreak` on; the clone's copied `runner/managed-v2.json` had
+  to go — its sandboxes belong to the other daemon — and the live
+  `warden.json`'s `vms` key from the sibling VM branch had to be dropped
+  for this branch's parser). A Claude chat created with `warden chat new
+  --jailbreak` in auto mode ran, unprompted: `host_run` `uname -a && echo
+  hello-from-host` → `Darwin … arm64 / hello-from-host`, exit 0, 12 ms;
+  `host_status` → the four instances (`default` running, `jb` this,
+  `p20`, `vm`) once the runner learned the owner's home (first run: the
+  runner's `$HOME` is the sbx namespace under the state, so every home
+  path was refused and no instance listed — fixed by `--host-home`);
+  `host_put` of `/home/agent/workspace/dogfood-test.txt` to
+  `~/dogfood-test-jb.txt` → 15 bytes, the file on the host reads
+  `dogfood put ok`; the same put to `~/.warden-jb/dogfood-test.txt` and a
+  `host_get` of `~/.warden-jb/warden.json` refused ("Warden's own state
+  directory … is not reachable", decision 4); `host_get` of the host file
+  back to `/home/agent/workspace/back.txt` → 15 bytes, `cat` matched;
+  `host_expose 18830 "jb chat port"` → `http://<id>.localhost:18831/`,
+  listed under `GET ports` with `upstream: host`, and
+  `ports/{id}/proxy/` answered with the jb instance's own sign-in page
+  (the upstream reached; the proxy strips the bearer as it must). Under
+  **ask** mode a `host_run` became an `item/tool/requestPermission` card
+  ("Allow always" offering `` `echo` host commands ``), answered with
+  `warden chat approve`, then ran. A plain chat on the same instance
+  listed its warden tools: no `host_*`. The audit chain at
+  `~/.warden-jb/policy/audit/events.jsonl` held `workspace.jailbreak`,
+  `host.exec`, `host.file` (successes and refusals with the message),
+  `host.expose`, hashes chained; the sandbox's own chain held its host
+  events too. In the browser: JAILBROKEN on the sidebar entry, the chat
+  header and the panel's Host access section, HOST on the cards and on
+  the published port ("Port 18830 on this computer"); the panel's Turn
+  off removed the marks. The switch, live: a session started before the
+  switch answered `host_run` after it (bug: the check read the run's
+  snapshot; fixed in fbea345, unit-tested), and on the fixed build a
+  fresh jailbroken chat ran `echo on-again`, was switched off with
+  `PUT environments/{id}/jailbreak {"jailbreak": false}`, and its next
+  turn had no `host_run` at all ("No such tool available") — the
+  transcript card the tool would have made never appeared. Torn down
+  afterwards (`~/.warden-jb`, the daemon, the host file); the live
+  `~/.warden` was never touched.

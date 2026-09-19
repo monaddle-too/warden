@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -548,5 +550,40 @@ func TestInstanceNameAndNamePrefix(t *testing.T) {
 		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "sandboxes.namePrefix") {
 			t.Fatalf("namePrefix %q accepted: %v", bad, err)
 		}
+	}
+}
+
+// dogfood.jailbreak (docs/host-dogfood-plan.md) is a local owner
+// install's opt-in only: off by default and not written, accepted with
+// owner auth on the sbx kind, refused on Kubernetes and with Google
+// sign-in.
+func TestDogfoodJailbreakIsLocalOwnerOnly(t *testing.T) {
+	c := Defaults("/tmp/w")
+	if c.Dogfood.Jailbreak || !c.JailbreakAllowed() {
+		t.Fatalf("defaults: %+v allowed=%v", c.Dogfood, c.JailbreakAllowed())
+	}
+	if b, _ := json.Marshal(c); strings.Contains(string(b), "dogfood") {
+		t.Fatalf("dogfood written while off: %s", b)
+	}
+	c.Dogfood.Jailbreak = true
+	if err := c.Validate(); err != nil {
+		t.Fatalf("local owner install refused: %v", err)
+	}
+	if b, _ := json.Marshal(c); !strings.Contains(string(b), `"dogfood":{"jailbreak":true}`) {
+		t.Fatalf("dogfood not written: %s", b)
+	}
+	parsed, err := Parse([]byte(`{"version":1,"paths":{"state":"/tmp/w"},"dogfood":{"jailbreak":true}}`))
+	if err != nil || !parsed.Dogfood.Jailbreak {
+		t.Fatalf("parse: %v %+v", err, parsed.Dogfood)
+	}
+	if _, err = Parse([]byte(strings.Replace(kubernetesExample, `"previews"`, `"dogfood": {"jailbreak": true}, "previews"`, 1))); err == nil || !strings.Contains(err.Error(), "dogfood.jailbreak needs auth.mode owner and a local runtime") {
+		t.Fatalf("kubernetes accepted the jailbreak: %v", err)
+	}
+	google := Defaults("/tmp/w")
+	google.Auth = Auth{Mode: AuthGoogle, PublicURL: "https://warden.example.com", Google: &GoogleSignIn{SignInClientID: "id", Owners: []string{"o@example.com"}}}
+	google.Previews.Mode, google.Previews.HostSuffix = PreviewPublic, "preview.example.com"
+	google.Dogfood.Jailbreak = true
+	if err := google.Validate(); !errors.Is(err, ErrJailbreakRefused) {
+		t.Fatalf("google sign-in accepted the jailbreak: %v", err)
 	}
 }

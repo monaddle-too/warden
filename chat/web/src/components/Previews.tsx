@@ -8,6 +8,8 @@ type Binding = {
   title: string;
   url: string;
   state: string;
+  /* "host" for a host port a jailbroken workspace exposed. */
+  upstream?: string;
 };
 export function Previews({
   chatID,
@@ -62,9 +64,24 @@ export function Previews({
       </header>
       {bindings.map((p) => (
         <section className="published-port" key={p.id}>
-          <h3>{p.title}</h3>
+          <h3>
+            {p.title}
+            {p.upstream === "host" && (
+              <>
+                {" "}
+                <span
+                  className="jailbroken-badge"
+                  title="A port on this computer, exposed by a jailbroken workspace"
+                >
+                  HOST
+                </span>
+              </>
+            )}
+          </h3>
           <p className="muted">
-            Port {p.port} · <Lock size={12} /> Warden sign-in required
+            Port {p.port}
+            {p.upstream === "host" ? " on this computer" : ""} ·{" "}
+            <Lock size={12} /> Warden sign-in required
           </p>
           <a href={p.url} target="_blank" rel="noopener noreferrer">
             Open preview <ExternalLink size={13} />

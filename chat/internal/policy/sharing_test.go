@@ -888,3 +888,69 @@ func TestAccessHistoryRecordsResolutionsAndExpiry(t *testing.T) {
 		t.Fatalf("revoked by disconnect: %v", e)
 	}
 }
+
+// fakeHostAudit records the host events the host_event operation hands
+// to the registry.
+type fakeHostAudit struct {
+	events []map[string]any
+	err    error
+}
+
+func (f *fakeHostAudit) EmitHostEvent(sandbox, event string, fields map[string]any) error {
+	if f.err != nil {
+		return f.err
+	}
+	rec := map[string]any{"sandbox": sandbox, "event": event}
+	for k, v := range fields {
+		rec[k] = v
+	}
+	f.events = append(f.events, rec)
+	return nil
+}
+
+// The host_event operation (docs/host-dogfood-plan.md) records a
+// jailbroken workspace's host events with the sandbox, chat and actor
+// named, refuses unknown events and missing identifiers, and reports the
+// registry's refusal; without the sink it is unavailable.
+func TestHostEventsAreRecorded(t *testing.T) {
+	f := newSharingFixture(t)
+	if _, err := f.s.Dispatch("host_event", map[string]any{"event": "host.exec", "sandboxID": "sbx", "chatID": "chat"}); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("without a sink: %v", err)
+	}
+	sink := &fakeHostAudit{}
+	f.s.HostAudit = sink
+	for _, bad := range []map[string]any{
+		{"event": "host.reboot", "sandboxID": "sbx", "chatID": "chat"},
+		{"event": "host.exec", "chatID": "chat"},
+		{"event": "host.exec", "sandboxID": "sbx"},
+		{"sandboxID": "sbx", "chatID": "chat"},
+	} {
+		if _, err := f.s.Dispatch("host_event", bad); err == nil {
+			t.Fatalf("accepted %v", bad)
+		}
+	}
+	r := f.dispatch("host_event", map[string]any{"event": "host.exec", "sandboxID": "sbx", "chatID": "chat", "actor": "The Owner", "command": "uname -a", "exit": 0, "bytes": 42})
+	if r["recorded"] != true || r["event"] != "host.exec" || len(sink.events) != 1 {
+		t.Fatalf("%v %v", r, sink.events)
+	}
+	ev := sink.events[0]
+	if ev["sandbox"] != "sbx" || ev["event"] != "host.exec" || ev["sandbox_id"] != "sbx" || ev["chat_id"] != "chat" || ev["actor"] != "The Owner" || ev["command"] != "uname -a" || ev["exit"] != 0 || ev["bytes"] != 42 {
+		t.Fatalf("%v", ev)
+	}
+	if _, ok := ev["sandboxID"]; ok {
+		t.Fatal("the request's own key was copied beside the audit's")
+	}
+	f.dispatch("host_event", map[string]any{"event": "workspace.jailbreak", "sandboxID": "sbx", "chatID": "chat", "on": true})
+	if len(sink.events) != 2 || sink.events[1]["on"] != true {
+		t.Fatalf("%v", sink.events)
+	}
+	// A long value is clipped, so a command line cannot bloat the chain.
+	f.dispatch("host_event", map[string]any{"event": "host.file", "sandboxID": "sbx", "chatID": "chat", "from": strings.Repeat("x", 5000)})
+	if from := sink.events[2]["from"].(string); len(from) > 4100 || !strings.HasSuffix(from, "…") {
+		t.Fatalf("not clipped: %d", len(from))
+	}
+	sink.err = errors.New("disk full")
+	if _, err := f.s.Dispatch("host_event", map[string]any{"event": "host.exec", "sandboxID": "sbx", "chatID": "chat"}); err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("sink failure: %v", err)
+	}
+}

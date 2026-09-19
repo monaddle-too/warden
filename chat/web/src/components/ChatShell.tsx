@@ -113,6 +113,9 @@ export function ChatShell({
   // "" follows the install's setting, read when the form opens.
   const [network, setNetwork] = useState<NetworkMode>("");
   const [installNetwork, setInstallNetwork] = useState<InstallNetwork>();
+  // Host access for the fresh workspace (chats/host.go): offered only
+  // when this Warden has dogfood.jailbreak, to the owner, off by default.
+  const [jailbreak, setJailbreak] = useState(false);
   useEffect(() => {
     if (!creating || !admin) return;
     api<InstallNetwork>("sharing/egress").then(setInstallNetwork, () => {});
@@ -246,6 +249,7 @@ export function ChatShell({
         model,
         ...(resources ? { resources } : {}),
         ...(!shared && network ? { network } : {}),
+        ...(!shared && jailbreak ? { jailbreak: true } : {}),
       });
       setSelected(result.id);
       setArchived(false);
@@ -255,6 +259,7 @@ export function ChatShell({
       setRepository("");
       setSize(null);
       setNetwork("");
+      setJailbreak(false);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -537,6 +542,14 @@ export function ChatShell({
                   }
                 />
                 <span>{c.title}</span>
+                {c.jailbroken && (
+                  <span
+                    className="jailbroken-badge"
+                    title="This workspace has host access: its agent can run commands on this computer as you"
+                  >
+                    JAILBROKEN
+                  </span>
+                )}
               </button>
               <button
                 className="chat-row-action"
@@ -644,7 +657,17 @@ export function ChatShell({
           <>
             <header className="chat-header">
               <div className="chat-title">
-                <h1>{chat.title}</h1>
+                <h1>
+                  {chat.title}
+                  {chat.jailbroken && (
+                    <span
+                      className="jailbroken-badge"
+                      title="This workspace has host access: its agent can run commands on this computer as you"
+                    >
+                      JAILBROKEN
+                    </span>
+                  )}
+                </h1>
                 <div className="chat-subtitle">
                   <span className={`status-dot ${workspaceState}`} />
                   <span>
@@ -957,6 +980,7 @@ export function ChatShell({
                   onChanges={() => setChangesOpen(true)}
                   limits={state.sandboxes}
                   owner={admin}
+                  jailbreak={state.agentOptions?.jailbreak}
                 />
               )}
             </div>
@@ -1128,6 +1152,26 @@ export function ChatShell({
                     install={installNetwork}
                     onChange={setNetwork}
                   />
+                </fieldset>
+              )}
+              {!shared && admin && state.agentOptions?.jailbreak && (
+                <fieldset className="size-fieldset">
+                  <legend>Host access</legend>
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={jailbreak}
+                      onChange={(e) => setJailbreak(e.target.checked)}
+                    />{" "}
+                    Give the agent host access{" "}
+                    {jailbreak && (
+                      <span className="jailbroken-badge">JAILBROKEN</span>
+                    )}
+                  </label>
+                  <p className="muted">
+                    The agent can run commands on this Mac as you. Every command
+                    is shown here and is subject to the permission rules.
+                  </p>
                 </fieldset>
               )}
               <p className="muted">

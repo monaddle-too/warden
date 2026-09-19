@@ -100,6 +100,12 @@ type Engine struct {
 	// name and the build revision), shown by the clients when it is not
 	// the default instance.
 	Instance InstanceInfo
+	// Jailbreak: dogfood.jailbreak is on (host.go): the owner may opt a
+	// workspace into host access. hostCalls are the host tool calls in
+	// flight by chat, ended by Stop.
+	Jailbreak bool
+	hostMu    sync.Mutex
+	hostCalls map[string]map[*hostCall]struct{}
 	// AllowFastMode and AllowLongContext are the operator's leave for the
 	// costlier Claude session features (config providers.claude.*): fast
 	// mode as a chat setting, the 1M-context model variants as choices.
@@ -417,6 +423,7 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 	}
 	id := cv.ID()
 	network := "" // a shared workspace's own network access comes along
+	jailbroken := false
 	err := e.Store.update(func(st *State) error {
 		title = strings.TrimSpace(title)
 		// A chat named by its creator keeps that name; one left at the
@@ -440,6 +447,7 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 					repository = c.Repository
 					resources = c.Resources
 					network = c.Network
+					jailbroken = c.Jailbroken
 					found = true
 					break
 				}
@@ -449,7 +457,7 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 			}
 		}
 		creator := actor
-		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, Titled: titled, SandboxID: sbxID, Repository: repository, Resources: resources, Network: network, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
+		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, Titled: titled, SandboxID: sbxID, Repository: repository, Resources: resources, Network: network, Jailbroken: jailbroken, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
 		return nil
 	})
 	return id, err
@@ -601,6 +609,8 @@ type AgentOptions struct {
 	// version so a person with several Wardens on one machine knows
 	// which one they are looking at. Absent for the default instance.
 	Instance *InstanceInfo `json:"instance,omitempty"`
+	// Jailbreak: the owner may give a workspace host access (host.go).
+	Jailbreak bool `json:"jailbreak"`
 }
 
 // InstanceInfo names a Warden instance and the build it runs.
@@ -613,7 +623,7 @@ func (e *Engine) View() View {
 	st := e.state()
 	models := catalogRows(st.Catalog)
 	st.Catalog = nil // clients get it as agentOptions.models
-	options := AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models, Defaults: e.defaultModels(), LocalFiles: e.LocalMode}
+	options := AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models, Defaults: e.defaultModels(), LocalFiles: e.LocalMode, Jailbreak: e.Jailbreak}
 	if e.Instance.Name != "" && e.Instance.Name != "default" {
 		instance := e.Instance
 		options.Instance = &instance
@@ -865,6 +875,9 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 		}
 		break
 	}
+	// A host command in flight (host.go) dies with the turn, whichever way
+	// the stop goes.
+	e.cancelHostCalls(id)
 	if client != nil {
 		callCtx, done := context.WithTimeout(ctx, interruptGrace)
 		_, callErr := client.Call(callCtx, "turn/interrupt", map[string]any{"threadId": threadID, "turnId": turnID})
@@ -1220,6 +1233,12 @@ func (e *Engine) run(parent context.Context, id string) {
 	params["runtimeWorkspaceRoots"] = []string{prep.Directory}
 	params["approvalsReviewer"] = "user"
 	tools := append(append(previewTools(), sharingTools()...), grantTools(e.LocalMode)...)
+	if e.Jailbreak && current.Jailbroken {
+		// Host access (host.go): the tools travel with the session it
+		// starts; a workspace turned off later refuses each call.
+		tools = append(tools, hostTools()...)
+		params["developerInstructions"] = params["developerInstructions"].(string) + " " + sandbox.HostAccessPrompt
+	}
 	params["dynamicTools"] = tools
 	if e.PublicPreviewSuffix != "" {
 		copy := agent.Map(previewTools()[0])

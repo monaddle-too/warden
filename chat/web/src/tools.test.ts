@@ -7,6 +7,8 @@ import {
   foldText,
   formatElapsed,
   hitCount,
+  hostResult,
+  hostStatus,
   inputText,
   lineCount,
   readCount,
@@ -65,6 +67,45 @@ describe("tool cards", () => {
       toolTitle(entry({ kind: "other", name: "Monitor", status: "completed" })),
     ).toBe("Monitor");
     expect(toolTitle(entry(undefined))).toBe("Agent activity");
+  });
+  it("titles a host call by what it did and reads its result", () => {
+    const host = (name: string, input: Record<string, unknown>) =>
+      entry(
+        {
+          kind: "mcp",
+          name,
+          server: "warden",
+          status: "completed",
+          target: "host",
+          input,
+        },
+        { text: "warden · " + name },
+      );
+    expect(toolTitle(host("host_run", { command: "uname -a" }))).toBe(
+      "uname -a",
+    );
+    expect(toolTitle(host("host_put", { from: "/a", to: "/b" }))).toBe(
+      "/a → /b",
+    );
+    expect(toolTitle(host("host_expose", { port: 18830 }))).toBe(
+      "Expose host port 18830",
+    );
+    expect(toolTitle(host("host_status", {}))).toBe("Host status");
+    expect(
+      hostResult('{"exitCode":3,"timedOut":false,"output":"hi\\n"}'),
+    ).toEqual({ exitCode: 3, timedOut: false, output: "hi\n" });
+    expect(hostStatus(hostResult('{"exitCode":3,"output":""}'))).toBe("exit 3");
+    expect(hostStatus(hostResult('{"exitCode":-1,"timedOut":true}'))).toBe(
+      "timed out",
+    );
+    expect(hostStatus(hostResult('{"exitCode":0,"output":"ok"}'))).toBe("");
+    expect(hostResult("host access is off for this workspace")).toEqual({
+      text: "host access is off for this workspace",
+    });
+    expect(hostResult('{"url":"http://x/","port":1}')).toEqual({
+      url: "http://x/",
+    });
+    expect(hostResult("")).toEqual({});
   });
   it("shows workspace paths relative to the workspace", () => {
     expect(shortPath("/home/agent/workspace/chat/main.go")).toBe(

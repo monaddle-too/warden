@@ -212,6 +212,11 @@ func StatusParts(c *Chat, ports []Port, live bool, now time.Time) []string {
 		}
 	}
 	parts := []string{fmt.Sprintf("%s %s%s%s", link, bold, sanitize(c.Title), reset), agent, status}
+	if c.Jailbroken {
+		// The workspace has host access (chats/host.go): a mark Warden
+		// draws, never the model.
+		parts = append(parts[:1], append([]string{bold + red + "JAILBROKEN" + reset}, parts[1:]...)...)
+	}
 	if waiting := WaitingLabel(c); waiting != "" {
 		parts = append(parts, yellow+"⚠ "+waiting+reset)
 	}

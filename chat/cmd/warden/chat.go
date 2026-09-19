@@ -31,7 +31,9 @@ Flags: --config PATH, --state DIR, --provider codex|claude, --model NAME,
        --cpus N and --memory SIZE (new: the fresh workspace's size, e.g.
        --cpus 2 --memory 4g; default: the runner's, whole CPUs on SBX),
        --network restricted|open (new: the fresh workspace's own network
-       access; default: the install's setting; the owner's choice).
+       access; default: the install's setting; the owner's choice),
+       --jailbreak (new: the fresh workspace gets host access — the agent
+       runs commands on this machine as you; needs dogfood.jailbreak).
 `
 
 // endpoint reads the running chat service's URL and capability.
@@ -69,6 +71,7 @@ func (c *cli) chat(args []string) error {
 	cpus := fs.Float64("cpus", 0, "new: CPUs for the fresh workspace (default: the runner's)")
 	memory := fs.String("memory", "", "new: memory for the fresh workspace, e.g. 4g or 2048m (default: the runner's)")
 	network := fs.String("network", "", "new: the fresh workspace's own network access, restricted or open (default: the install's setting)")
+	jailbreak := fs.Bool("jailbreak", false, "new: give the fresh workspace host access (dogfood.jailbreak must be on)")
 	wait := fs.Bool("wait", false, "send: stream the message's own turn until it ends")
 	waitAll := fs.Bool("wait-all", false, "send: stream the transcript until the agent is idle, queued messages included")
 	decline := fs.Bool("decline", false, "approve: decline instead of allowing")
@@ -129,7 +132,7 @@ func (c *cli) chat(args []string) error {
 		if *network != "" && *network != "restricted" && *network != "open" {
 			return errors.New("--network must be restricted or open")
 		}
-		id, err := client.Create(ctx, title, p, *model, "", resources, *network)
+		id, err := client.CreateChat(ctx, tui.CreateRequest{Title: title, Provider: p, Model: *model, Resources: resources, Network: *network, Jailbreak: *jailbreak})
 		if err != nil {
 			return err
 		}

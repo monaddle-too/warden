@@ -133,6 +133,18 @@ func TestToolItemsRecordTheirTool(t *testing.T) {
 	if c.Entries[2].IsStreaming {
 		t.Fatal("finish left a tool streaming")
 	}
+	n := len(c.Entries)
+	if c.Entries[10].Tool.Target != "" || c.Entries[8].Tool.Target != "" {
+		t.Fatal("a sandbox tool marked as the host's")
+	}
+	// A jailbroken workspace's host tool (chats/host.go) is marked as
+	// acting on the host, whichever agent calls it.
+	c.Upsert(map[string]any{"id": "h1", "type": "mcpToolCall", "server": "warden", "tool": "host_run", "status": "completed", "arguments": map[string]any{"command": "uname -a"}, "result": map[string]any{"content": []any{map[string]any{"type": "text", "text": "{\"exitCode\":0}"}}}}, "turn", true)
+	c.Upsert(map[string]any{"id": "h2", "type": "dynamicToolCall", "tool": "host_put", "status": "completed", "arguments": map[string]any{"from": "/a", "to": "/b"}}, "turn", true)
+	c.Upsert(map[string]any{"id": "h3", "type": "mcpToolCall", "server": "other", "tool": "host_run", "status": "completed"}, "turn", true)
+	if c.Entries[n].Tool.Target != "host" || c.Entries[n+1].Tool.Target != "host" || c.Entries[n+2].Tool.Target != "" {
+		t.Fatalf("host targets: %q %q %q", c.Entries[n].Tool.Target, c.Entries[n+1].Tool.Target, c.Entries[n+2].Tool.Target)
+	}
 }
 
 // A subagent's items name their Agent call: the entry keeps the parent's

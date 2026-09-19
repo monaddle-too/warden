@@ -236,6 +236,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write(res.Bytes)
 		return
 	}
+	if r.Method == "PUT" && len(parts) == 3 && parts[0] == "environments" && parts[2] == "jailbreak" {
+		// The host-access switch is also a PUT of its value.
+		r.Method = "POST"
+	}
 	if r.Method != "POST" {
 		http.Error(w, "not found", 404)
 		return
@@ -269,6 +273,9 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// workspace's own network access (network.go): "" follows the
 		// install, else restricted or open.
 		Network string `json:"network"`
+		// Jailbreak, on chats and environments/{id}/jailbreak, is the
+		// workspace's host access (host.go), the owner's choice.
+		Jailbreak bool `json:"jailbreak"`
 		// Attachments are upload IDs a message sends along.
 		Attachments []string `json:"attachments"`
 		// Thinking, Effort and Fast are the body of chats/{id}/settings
@@ -330,15 +337,28 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		err = h.Engine.SetWorkspaceNetwork(r.Context(), parts[1], body.Network, requester(r))
+	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "jailbreak":
+		if !isOwner(r) {
+			http.Error(w, errJailbreakOwner, 403)
+			return
+		}
+		err = h.Engine.SetWorkspaceJailbreak(r.Context(), parts[1], body.Jailbreak, requester(r))
 	case path == "chats":
 		if body.Network != "" && !isOwner(r) {
 			http.Error(w, errNetworkOwner, 403)
+			return
+		}
+		if body.Jailbreak && !isOwner(r) {
+			http.Error(w, errJailbreakOwner, 403)
 			return
 		}
 		var id string
 		id, err = h.Engine.CreateFrom(requester(r), body.Title, body.SandboxID, body.Repository, body.Resources, body.Provider, body.Model)
 		if err == nil && body.Network != "" {
 			id, err = h.Engine.createdOnNetwork(r.Context(), id, body.Network, requester(r))
+		}
+		if err == nil && body.Jailbreak {
+			id, err = h.Engine.createdJailbroken(r.Context(), id, requester(r))
 		}
 		result = map[string]string{"id": id}
 	case len(parts) == 3 && parts[0] == "chats":
@@ -467,6 +487,7 @@ func requester(r *http.Request) conversation.Actor {
 }
 
 const errNetworkOwner = "only the owner chooses a workspace's network access"
+const errJailbreakOwner = "only the owner gives a workspace host access"
 
 // isOwner reports whether the edge marked the request as the owner's
 // (X-Warden-Role, which it strips from clients), or no edge is involved

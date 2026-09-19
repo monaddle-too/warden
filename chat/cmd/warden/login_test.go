@@ -232,6 +232,16 @@ func TestLaunchURLAndServiceArgs(t *testing.T) {
 	if got := strings.Join(l.chatArgs(), " "); got != "--config "+configPath+" --web-dir /w" {
 		t.Errorf("chat args: %s", got)
 	}
+	// `warden start --jailbreak` passes the flag to the runner and the
+	// chat service for that run (docs/host-dogfood-plan.md).
+	l.jailbreak = true
+	home, _ := os.UserHomeDir()
+	if got := strings.Join(l.runnerArgs(), " "); got != "--config "+configPath+" --host-home "+home+" --jailbreak" {
+		t.Errorf("runner args with the jailbreak: %s", got)
+	}
+	if got := strings.Join(l.chatArgs(), " "); got != "--config "+configPath+" --web-dir /w --jailbreak" {
+		t.Errorf("chat args with the jailbreak: %s", got)
+	}
 }
 
 func TestStartRefusesWithoutInstall(t *testing.T) {

@@ -42,6 +42,7 @@ func (c *cli) start(args []string) error {
 	serviceMode := fs.Bool("service", false, "internal: this process is the registered service's; output goes to <state>/warden.log")
 	popupsMode := fs.String("popups", popupsNone, "how pending approvals are surfaced: none (default: they wait in the app and the terminal client), notify (desktop notification), browser (notification and the chat opened in the browser), auto (browser when detached, notify otherwise), silent (nothing at all). A review only the app can do (a pull request proposal, document suggestions, a document choice) opens the app under every mode but silent")
 	detachedChild := fs.Bool("detached-child", false, "internal: this process was started by --detach")
+	jailbreak := fs.Bool("jailbreak", false, "for this run, let the owner opt workspaces into host access (the standing setting is dogfood.jailbreak in warden.json; a local owner install only; docs/host-dogfood-plan.md)")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
@@ -52,9 +53,15 @@ func (c *cli) start(args []string) error {
 	if _, err = os.Stat(path); err != nil {
 		return fmt.Errorf("%s: %w; run `warden install` first", path, err)
 	}
+	if *jailbreak && !cfg.JailbreakAllowed() {
+		return config.ErrJailbreakRefused
+	}
 	if !*serviceMode && !*foreground && !*detachedChild {
 		// Once a service is registered, "start" means the service.
 		if svc := c.registeredService(cfg); svc != nil {
+			if *jailbreak && !cfg.Dogfood.Jailbreak {
+				return errors.New("a service is registered: set dogfood.jailbreak in warden.json and `warden restart`, or run `warden start --jailbreak --foreground`")
+			}
 			if *detach {
 				fmt.Fprintln(c.stdout, "warden: a service is registered; starting it (--detach is for hosts without one)")
 			}
@@ -86,7 +93,7 @@ func (c *cli) start(args []string) error {
 	if !slices.Contains(popupModes, *popupsMode) {
 		return fmt.Errorf("--popups must be auto, browser, notify, none or silent, not %q", *popupsMode)
 	}
-	l := &launcher{c: c, cfg: cfg, configPath: path, exe: exe, withoutEdge: *withoutEdge, popups: *popupsMode, detached: *detachedChild}
+	l := &launcher{c: c, cfg: cfg, configPath: path, exe: exe, withoutEdge: *withoutEdge, popups: *popupsMode, detached: *detachedChild, jailbreak: *jailbreak}
 	if l.assets, err = locateAssets(cfg, filepath.Dir(exe), *webDir, *vendorDir, *template); err != nil {
 		return err
 	}
@@ -154,6 +161,7 @@ type launcher struct {
 	withoutEdge bool
 	popups      string // --popups mode
 	detached    bool   // started by --detach: nobody is watching this terminal
+	jailbreak   bool   // --jailbreak: the runner and the chat service run with it
 
 	procs []*service
 	// bugs drafts the launcher's own reports (a service exiting); drafts
@@ -418,13 +426,27 @@ func (l *launcher) policyArgs() []string {
 }
 
 func (l *launcher) runnerArgs() []string {
-	return []string{"--config", l.configPath}
+	args := []string{"--config", l.configPath}
+	if l.jailbreak || l.cfg.Dogfood.Jailbreak {
+		// The runner runs with HOME set to the sbx namespace; the owner's
+		// home, where host paths must stay, is this process's.
+		if home, err := os.UserHomeDir(); err == nil {
+			args = append(args, "--host-home", home)
+		}
+	}
+	if l.jailbreak {
+		args = append(args, "--jailbreak")
+	}
+	return args
 }
 
 func (l *launcher) chatArgs() []string {
 	args := []string{"--config", l.configPath}
 	if l.cfg.Paths.WebAssets == "" && l.assets.web != "" {
 		args = append(args, "--web-dir", l.assets.web)
+	}
+	if l.jailbreak {
+		args = append(args, "--jailbreak")
 	}
 	return args
 }

@@ -111,6 +111,9 @@ export type Tool = {
   query?: string;
   input?: Record<string, unknown>;
   background?: boolean;
+  /* "host" for a jailbroken workspace's host_* tool: the call acted on
+     the owner's machine, and the card says so (chats/host.go). */
+  target?: "host";
   /* What a read of an image, a PDF or a notebook carried (conversation
      Read); absent for a text read. */
   read?: ToolRead;
@@ -298,6 +301,9 @@ export type Chat = {
   /* The workspace's own network access (network.ts); absent when it
      follows the install's setting. */
   network?: "restricted" | "open";
+  /* The workspace has host access (chats/host.go): its agent runs
+     commands on this machine as the owner. */
+  jailbroken?: boolean;
   status: string;
   archived: boolean;
   error?: string;
@@ -414,6 +420,9 @@ export type AgentOptions = {
      state directory's name and the build it runs), so a person with
      several Wardens on one machine knows which one they are looking at. */
   instance?: InstanceInfo;
+  /* The owner may give a workspace host access (dogfood.jailbreak;
+     chats/host.go). */
+  jailbreak?: boolean;
 };
 export type InstanceInfo = { name: string; version: string };
 export type State = {
@@ -561,6 +570,7 @@ export type Environment = {
   runtime: { state: string; runtimeName: string } | null;
   resources?: Resources;
   network?: "restricted" | "open";
+  jailbroken?: boolean;
   /* A resize in flight, or how the last one ended. */
   resizing?: {
     target: Resources;
