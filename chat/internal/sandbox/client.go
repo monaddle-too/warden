@@ -60,7 +60,10 @@ type Request struct {
 	Tail      int    `json:"tail,omitempty"`
 	Previous  bool   `json:"previous,omitempty"`
 	Path      string `json:"path,omitempty"`
-	Title     string `json:"title,omitempty"`
+	// Replace on a host.put removes what is at Path first, so a directory
+	// copied again lands where it was rather than inside its old self.
+	Replace bool   `json:"replace,omitempty"`
+	Title   string `json:"title,omitempty"`
 	// NewSession on a prepare drops the chat's recorded agent thread, so
 	// the next stream starts a session instead of resuming one.
 	NewSession bool `json:"newSession,omitempty"`

@@ -12,7 +12,12 @@ import (
 	"unicode/utf8"
 )
 
-const proposalLimit = 256 * 1024
+// proposalLimit caps the submitted contents of one proposal. A proposal
+// carries every touched file whole, so a two-line edit to a 90 KiB
+// document costs 90 KiB; 256 KiB refused an ordinary ~170-line change over
+// a dozen files (docs/dogfood-loop-plan.md). GitHub's contents API takes
+// files far larger than this.
+const proposalLimit = 1024 * 1024
 
 var branchShape = regexp.MustCompile(`^[A-Za-z0-9_./-]+$`)
 
@@ -380,7 +385,7 @@ func (p *PullRequests) Submit(data map[string]any) (map[string]any, error) {
 		inputs = append(inputs, input)
 	}
 	if size > proposalLimit {
-		return nil, valueErr("Proposal exceeds 256 KiB; split it into smaller pull requests")
+		return nil, valueErr("Proposal exceeds 1 MiB of file contents; split it into smaller pull requests")
 	}
 	for path := range paths {
 		for other := range paths {
@@ -551,7 +556,7 @@ func (p *PullRequests) Submit(data map[string]any) (map[string]any, error) {
 	}
 	proposal := map[string]any{"images": attachments, "repository": repo, "repository_id": rid, "owner": owner, "app_id": appID, "title": title, "body": body, "base": branch, "base_sha": base, "base_tree": tree, "head": "warden/pr-" + id[:24], "files": changes}
 	encoded := mustJSON(proposal)
-	if len(encoded) > 1024*1024 {
+	if len(encoded) > 4*proposalLimit {
 		return nil, valueErr("Rendered proposal exceeds review limit")
 	}
 	if _, err = p.active(data, repo, &rid); err != nil {

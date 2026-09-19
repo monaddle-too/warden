@@ -40,8 +40,8 @@ func hostTools() []any {
 	return []any{
 		map[string]any{"type": "function", "name": "host_run", "description": "Run a shell command on the owner's computer (the host this Warden runs on), as the owner, through their login shell. This workspace has host access: the command runs outside the sandbox with the owner's own files, tools and network. Output is stdout and stderr merged, the last 30000 characters. Use cwd for the directory (default: the home directory) and timeout in seconds (default 600, at most 3600); a Stop from the owner kills it. Every call is shown to the owner and recorded.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"command": str("the shell command line", sandbox.MaxHostCommand), "cwd": str("absolute directory on the host to run in (default: the home directory)", 1024), "timeout": map[string]any{"type": "integer", "minimum": 1, "maximum": 3600, "description": "seconds before the command is killed (default 600)"}}, "required": []string{"command"}, "additionalProperties": false}},
-		map[string]any{"type": "function", "name": "host_put", "description": "Copy a file or directory from this sandbox to the owner's computer. from is an absolute path in the sandbox, to an absolute path on the host under the owner's home directory (Warden's own state directory is refused; an existing directory at to receives the copy inside it). Up to 512 MiB.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
-			"from": str("absolute path in the sandbox", 4096), "to": str("absolute path on the host, under the home directory", 4096)}, "required": []string{"from", "to"}, "additionalProperties": false}},
+		map[string]any{"type": "function", "name": "host_put", "description": "Copy a file or directory from this sandbox to the owner's computer. from is an absolute path in the sandbox, to an absolute path on the host under the owner's home directory (Warden's own state directory is refused). An existing directory at to receives the copy inside it, as cp -R does; pass replace: true to remove what is at to first, so a checkout copied again lands in the same place. Up to 512 MiB.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+			"from": str("absolute path in the sandbox", 4096), "to": str("absolute path on the host, under the home directory", 4096), "replace": map[string]any{"type": "boolean", "description": "remove what is at to before copying (a directory put again replaces its old copy instead of nesting inside it)"}}, "required": []string{"from", "to"}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "host_get", "description": "Copy a file or directory from the owner's computer into this sandbox. from is an absolute path on the host under the owner's home directory (Warden's own state directory is refused), to an absolute path in the sandbox (its parent is created). Up to 512 MiB.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"from": str("absolute path on the host, under the home directory", 4096), "to": str("absolute path in the sandbox", 4096)}, "required": []string{"from", "to"}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "host_expose", "description": "Publish a port that a server on the owner's computer listens on (127.0.0.1:<port> on the host, for example a second Warden you started there) as a preview of this chat, so the owner opens it from the preview list. Returns the preview URL. Only for servers on the host; a server inside this sandbox uses preview_attach.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
@@ -146,6 +146,7 @@ func (e *Engine) hostCall(ctx context.Context, c *Chat, name string, raw []byte)
 		Timeout int    `json:"timeout"`
 		From    string `json:"from"`
 		To      string `json:"to"`
+		Replace bool   `json:"replace"`
 		Port    int    `json:"port"`
 		Name    string `json:"name"`
 		// Description is accepted and ignored: Claude Code adds one to
@@ -193,7 +194,7 @@ func (e *Engine) hostCall(ctx context.Context, c *Chat, name string, raw []byte)
 			return reply(nil, errors.New("from and to are required"))
 		}
 		r := request(c, "host.put")
-		r.Directory, r.Path = in.From, in.To
+		r.Directory, r.Path, r.Replace = in.From, in.To, in.Replace
 		direction := "sandbox → host"
 		if name == "host_get" {
 			r.Operation, r.Directory, r.Path = "host.get", in.To, in.From
@@ -201,6 +202,9 @@ func (e *Engine) hostCall(ctx context.Context, c *Chat, name string, raw []byte)
 		}
 		res, err := e.Worker.Call(ctx, r)
 		fields := map[string]any{"principal": who, "direction": direction, "from": in.From, "to": in.To}
+		if r.Replace {
+			fields["replace"] = true
+		}
 		if err != nil {
 			fields["error"] = err.Error()
 			e.hostAudit(c, "host.file", fields)

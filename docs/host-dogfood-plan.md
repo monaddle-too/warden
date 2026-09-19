@@ -167,7 +167,7 @@ dev --wait`, then `rm`.
     runner runs under launchd with a bare environment). Output capped and
     tailed as the sandbox `exec` op does; timeout default 10 minutes, max
     an hour; Stop kills the process group.
-  - `host_put {from, to}` / `host_get {from, to}` — a file or directory
+  - `host_put {from, to, replace?}` / `host_get {from, to}` — a file or directory
     between the sandbox and the host (`sbx cp` under the runner),
     size-capped, `to` must be absolute. (`sync_host_directory` remains for
     the bidirectional directory sync.)

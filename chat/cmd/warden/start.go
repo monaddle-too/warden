@@ -803,7 +803,15 @@ const releaseReexecEnv = "WARDEN_RELEASE_REEXEC"
 // with the running process. Without a release link (a checkout's
 // dist/chat/warden, a test) nothing happens.
 func (c *cli) execInstanceRelease(state string, args []string) error {
-	if os.Getenv(releaseReexecEnv) != "" || c.execve == nil {
+	if os.Getenv(releaseReexecEnv) != "" {
+		// Consumed here: the services, the runner and every host command
+		// a jailbroken chat runs inherit this environment, and a `warden
+		// start --instance inner` among them must re-execute inner's
+		// release rather than find the guard already set.
+		_ = os.Unsetenv(releaseReexecEnv)
+		return nil
+	}
+	if c.execve == nil {
 		return nil
 	}
 	release := filepath.Join(state, "release", "bin", "warden")

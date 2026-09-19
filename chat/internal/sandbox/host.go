@@ -483,6 +483,16 @@ func (w *Worker) hostCopy(ctx context.Context, r Request) (Response, error) {
 	if info, err := os.Stat(filepath.Dir(host)); err != nil || !info.IsDir() {
 		return Response{}, errors.New("the host directory " + filepath.Dir(host) + " does not exist")
 	}
+	if r.Replace {
+		// A copy onto an existing directory lands inside it (cp -R
+		// semantics), which turned a re-put checkout into src/src/ in the
+		// dogfood loop; replace removes the old tree first. hostPath has
+		// already refused anything outside the home or inside the state
+		// directory.
+		if err := os.RemoveAll(host); err != nil {
+			return Response{}, fmt.Errorf("could not remove %s first: %w", host, err)
+		}
+	}
 	if err := w.Runtime.CopyOut(ctx, name, guest, host); err != nil {
 		return Response{}, fmt.Errorf("copy to the host failed: %w", err)
 	}
@@ -621,10 +631,16 @@ func hostEnv(env []string, home string) []string {
 		switch key {
 		case "HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME":
 			continue
-		case "WARDEN_CONFIG", "WARDEN_INSTANCE":
+		}
+		if strings.HasPrefix(key, "WARDEN_") {
 			// The launcher hands its services the outer instance's
-			// warden.json this way; a `warden` run on the host would
-			// otherwise read (or refuse) that config for another instance.
+			// warden.json (WARDEN_CONFIG, WARDEN_INSTANCE) and its own
+			// re-exec guard (WARDEN_RELEASE_REEXEC) this way; a `warden`
+			// run on the host would otherwise read (or refuse) that
+			// config for another instance, and `warden start --instance
+			// inner` would skip re-executing inner's own release and run
+			// the caller's binary against inner's state (the second
+			// dogfood loop, docs/dogfood-loop-plan.md).
 			continue
 		}
 		out = append(out, kv)

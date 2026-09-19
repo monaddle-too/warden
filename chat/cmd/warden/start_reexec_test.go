@@ -50,4 +50,10 @@ func TestStartExecsTheInstanceRelease(t *testing.T) {
 	if err := c.execInstanceRelease(state, nil); err != nil || got != nil {
 		t.Fatalf("re-exec looped: %v %q", err, got)
 	}
+	// The guard is consumed: what this launcher starts (services, host
+	// commands) must not inherit it, or their own `warden start
+	// --instance X` would run this binary against X's state.
+	if os.Getenv(releaseReexecEnv) != "" {
+		t.Fatal("the re-exec guard leaked into the launcher's environment")
+	}
 }

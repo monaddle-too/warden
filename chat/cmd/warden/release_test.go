@@ -260,6 +260,32 @@ func TestReleaseBuildNeedsAnInstanceAndAVersionFromGit(t *testing.T) {
 	if v, err := buildVersion(repo); err != nil || v != "v1.2.3" {
 		t.Fatalf("buildVersion at a tag: %q %v", v, err)
 	}
+	// An uncommitted edit to a tracked file makes the checkout dirty (a
+	// build then replaces the store entry of the same version); untracked
+	// files do not.
+	if checkoutDirty(repo) {
+		t.Fatal("a clean checkout reads as dirty")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if checkoutDirty(repo) {
+		t.Fatal("an untracked file makes the checkout dirty")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "tracked.txt")
+	git("commit", "-q", "-m", "two")
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("two"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !checkoutDirty(repo) {
+		t.Fatal("an edited tracked file leaves the checkout clean")
+	}
+	if checkoutDirty(t.TempDir()) {
+		t.Fatal("a directory that is no checkout reads as dirty")
+	}
 	if _, err := buildVersion(t.TempDir()); err == nil {
 		t.Fatal("a directory that is no checkout has a version")
 	}

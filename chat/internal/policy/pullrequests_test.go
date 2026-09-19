@@ -326,7 +326,7 @@ func TestInputBoundariesAndUnselectedRepositories(t *testing.T) {
 	original := cloneJSON(f.data).(map[string]any)
 	for _, changed := range []map[string]any{{"repository": "other/repo"}, {"base": "../main"}, {"files": []any{map[string]any{"path": "../secret", "content": "x"}}},
 		{"files": []any{map[string]any{"path": ".github/workflows/run.yml", "content": "x"}}}, {"files": []any{map[string]any{"path": "a", "content": "\x00"}}},
-		{"files": []any{map[string]any{"path": "a", "content": strings.Repeat("x", 262145)}}}, {"files": []any{map[string]any{"path": "a", "content": "x"}, map[string]any{"path": "a/b", "content": "y"}}}} {
+		{"files": []any{map[string]any{"path": "a", "content": strings.Repeat("x", 1048577)}}}, {"files": []any{map[string]any{"path": "a", "content": "x"}, map[string]any{"path": "a/b", "content": "y"}}}} {
 		f.data = cloneJSON(original).(map[string]any)
 		for k, v := range changed {
 			f.data[k] = v

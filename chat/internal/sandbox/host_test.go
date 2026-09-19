@@ -263,6 +263,28 @@ func TestHostCopies(t *testing.T) {
 	if !strings.Contains(calls, "copyout:"+name+":/home/agent/workspace/out.txt:"+r.Path) {
 		t.Fatalf("calls: %s", calls)
 	}
+	// replace removes what is at the host path first (a directory put
+	// again would otherwise nest inside its old self); without it the
+	// old tree stays for the runtime's copy to land in.
+	old := filepath.Join(home, "tree")
+	if err := os.MkdirAll(filepath.Join(old, "stale"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.Path = old
+	if _, err := w.dispatch(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(old, "stale")); err != nil {
+		t.Fatal("a plain put removed the existing tree")
+	}
+	r.Replace = true
+	if _, err := w.dispatch(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatal("replace left the old tree in place")
+	}
+	r.Replace, r.Path = false, filepath.Join(home, "out.txt")
 	// host.get: the host side is measured, the guest directory made and
 	// the copy handed to the runtime.
 	src := filepath.Join(home, "src")
@@ -437,7 +459,7 @@ func TestHostStatus(t *testing.T) {
 // itself is pointed at (the first dogfood run resolved `~/.warden` under
 // the namespace).
 func TestHostEnvRestoresTheOwnersHome(t *testing.T) {
-	env := hostEnv([]string{"PATH=/bin", "HOME=/Users/o/.warden/sbx/home", "XDG_DATA_HOME=/Users/o/.warden/sbx/data", "WARDEN_CONFIG=/Users/o/.warden-x/warden.json", "WARDEN_INSTANCE=x", "SHELL=/bin/zsh"}, "/Users/o")
+	env := hostEnv([]string{"PATH=/bin", "HOME=/Users/o/.warden/sbx/home", "XDG_DATA_HOME=/Users/o/.warden/sbx/data", "WARDEN_CONFIG=/Users/o/.warden-x/warden.json", "WARDEN_INSTANCE=x", "WARDEN_RELEASE_REEXEC=1", "SHELL=/bin/zsh"}, "/Users/o")
 	want := []string{"PATH=/bin", "SHELL=/bin/zsh", "HOME=/Users/o"}
 	if strings.Join(env, " ") != strings.Join(want, " ") {
 		t.Fatalf("hostEnv = %q, want %q", env, want)

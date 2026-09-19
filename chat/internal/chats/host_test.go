@@ -199,7 +199,14 @@ func TestHostCallsRunOnTheRunnerAndAreAudited(t *testing.T) {
 		t.Fatalf("%v %v", out, err)
 	}
 	puts := w.requestsOf("host.put")
-	if len(puts) != 1 || puts[0].Directory != "/home/agent/workspace/out.txt" || puts[0].Path != "/Users/me/out.txt" {
+	if len(puts) != 1 || puts[0].Directory != "/home/agent/workspace/out.txt" || puts[0].Path != "/Users/me/out.txt" || puts[0].Replace {
+		t.Fatalf("%+v", puts)
+	}
+	// replace reaches the runner and the audit entry.
+	if _, err = call(c, "host_put", `{"from":"/home/agent/workspace/tree","to":"/Users/me/tree","replace":true}`); err != nil {
+		t.Fatal(err)
+	}
+	if puts = w.requestsOf("host.put"); len(puts) != 2 || !puts[1].Replace || puts[1].Path != "/Users/me/tree" {
 		t.Fatalf("%+v", puts)
 	}
 	out, err = call(c, "host_get", `{"from":"/Users/me/src","to":"/home/agent/workspace/src"}`)
@@ -211,7 +218,7 @@ func TestHostCallsRunOnTheRunnerAndAreAudited(t *testing.T) {
 		t.Fatalf("%+v", gets)
 	}
 	events = sharing.actions("host_event")
-	if len(events) != 3 || agent.Map(events[1]["data"])["event"] != "host.file" || agent.Map(events[1]["data"])["direction"] != "sandbox → host" || agent.Map(events[2]["data"])["from"] != "/Users/me/src" || agent.Map(events[2]["data"])["bytes"] != 12.0 {
+	if len(events) != 4 || agent.Map(events[1]["data"])["event"] != "host.file" || agent.Map(events[1]["data"])["direction"] != "sandbox → host" || agent.Map(events[2]["data"])["replace"] != true || agent.Map(events[3]["data"])["from"] != "/Users/me/src" || agent.Map(events[3]["data"])["bytes"] != 12.0 {
 		t.Fatalf("host.file audit: %v", events)
 	}
 	// host_status: the runner's answer as is.

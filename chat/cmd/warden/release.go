@@ -498,7 +498,25 @@ func (c *cli) releaseBuild(cfg config.Config, checkout string, restart, test, fo
 	if _, err := os.Stat(tarball); err != nil {
 		return fmt.Errorf("no tarball for this host: %w", err)
 	}
+	if !force && checkoutDirty(checkout) {
+		// The version is the commit's, so an edited-but-uncommitted tree
+		// builds the same name as before; reusing the store entry would
+		// silently run the previous build (the dogfood loop found a
+		// rebuilt tarball that never reached the instance).
+		fmt.Fprintf(c.stdout, "%s has uncommitted changes: replacing %s in the store\n", checkout, version)
+		force = true
+	}
 	return c.releaseInstall(cfg, tarball, restart, force)
+}
+
+// checkoutDirty says whether tracked files in the checkout differ from
+// HEAD (git status --porcelain, untracked files ignored: dist/ and
+// node_modules/ are always there). A checkout git cannot read is clean.
+func checkoutDirty(checkout string) bool {
+	cmd := exec.Command("git", "status", "--porcelain", "--untracked-files=no")
+	cmd.Dir = checkout
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
 // buildVersion is the version scripts/release.sh gives a checkout: the
