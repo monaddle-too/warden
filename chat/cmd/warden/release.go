@@ -369,12 +369,44 @@ func relink(state, path string) error {
 // instance: its pins may differ from this launcher's, and it registers
 // nothing (the service is restarted separately, by --restart or the
 // person). The instance's sbx and its bug-reporting answer are reused.
+// A release from before a flag existed (v0.1.0-alpha.13 has no
+// --service / --menu) is given only the flags its install knows.
 func (c *cli) installWith(cfg config.Config, bin string) error {
-	args := []string{"install", "--state", cfg.Paths.State, "--upgrade", "--service=false", "--menu=false"}
-	if cfg.SBX.Executable != "" {
+	known := installFlagsOf(bin)
+	args := []string{"install", "--state", cfg.Paths.State, "--upgrade"}
+	for _, f := range []string{"--service=false", "--menu=false"} {
+		if known[strings.TrimSuffix(strings.TrimPrefix(f, "--"), "=false")] {
+			args = append(args, f)
+		}
+	}
+	if cfg.SBX.Executable != "" && known["sbx"] {
 		args = append(args, "--sbx", cfg.SBX.Executable)
 	}
 	return c.runRelease(bin, args...)
+}
+
+// installFlagsOf reads the flags a release's `warden install -h` lists.
+// When the usage cannot be read or names no --state flag (a stub, an
+// unexpected format) every flag is assumed known.
+func installFlagsOf(bin string) map[string]bool {
+	all := map[string]bool{"service": true, "menu": true, "sbx": true, "state": true}
+	cmd := exec.Command(bin, "install", "-h")
+	cmd.Stdin = nil
+	out, _ := cmd.CombinedOutput()
+	known := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "-") {
+			continue
+		}
+		name := strings.TrimLeft(strings.Fields(line)[0], "-")
+		name, _, _ = strings.Cut(name, "=")
+		known[name] = true
+	}
+	if !known["state"] {
+		return all
+	}
+	return known
 }
 
 // runRelease runs the release's launcher with the person's terminal.

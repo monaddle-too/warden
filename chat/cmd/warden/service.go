@@ -369,7 +369,13 @@ func (c *cli) status(args []string) error {
 	default:
 		fmt.Fprintln(c.stdout, "warden:  no background instance (a foreground `warden start` does not record a pid)")
 	}
-	fmt.Fprintf(c.stdout, "running: %s\n", runningLine(cfg.Paths.State, time.Now()))
+	livePID := 0
+	if alive {
+		livePID = pid
+	} else if svc != nil && svc.registered() && svc.status().Running {
+		livePID = svc.status().PID
+	}
+	fmt.Fprintf(c.stdout, "running: %s\n", runningLine(cfg.Paths.State, time.Now(), livePID))
 	if base, _, err := endpoint(cfg.OwnerTokenFile()); err == nil {
 		fmt.Fprintf(c.stdout, "chat:    %s (capability in %s)\n", base, cfg.OwnerTokenFile())
 	} else {
@@ -382,13 +388,22 @@ func (c *cli) status(args []string) error {
 // runningLine describes running.json for the detail view: the version,
 // pid, uptime and binary, whether it differs from the pinned release, or
 // that nothing runs.
-func runningLine(state string, now time.Time) string {
+func runningLine(state string, now time.Time, pid int) string {
 	r, alive, err := readRunning(state)
 	switch {
 	case err != nil:
 		return "unreadable " + runningPath(state) + ": " + err.Error()
 	case !alive && r.PID != 0:
 		return fmt.Sprintf("nothing (stale %s for pid %d)", runningFile, r.PID)
+	case !alive && pid != 0:
+		// A launcher from before running.json: the process table's word.
+		if bin := processBinary(pid); bin != "" {
+			if v := releaseVersionOf(bin); v != "" {
+				return fmt.Sprintf("%s (pid %d, %s; from the process table, a launcher from before %s)", v, pid, bin, runningFile)
+			}
+			return fmt.Sprintf("a version this launcher cannot tell (pid %d, %s; no %s)", pid, bin, runningFile)
+		}
+		return fmt.Sprintf("a version this launcher cannot tell (pid %d, no %s)", pid, runningFile)
 	case !alive:
 		return "nothing (no " + runningFile + ")"
 	}

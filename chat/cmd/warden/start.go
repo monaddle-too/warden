@@ -763,10 +763,14 @@ func (c *cli) runningVersion(cfg config.Config) (bool, string) {
 	if r, alive, _ := readRunning(cfg.Paths.State); alive {
 		return true, r.Version
 	}
-	if running, how := c.runningShape(cfg); running {
-		return true, "an unknown version (as a " + how + ")"
+	running, how := c.runningShape(cfg)
+	if !running {
+		return false, ""
 	}
-	return false, ""
+	if info := c.describeInstance(cfg.Paths.State); info.Running != "" && info.Running != "running" {
+		return true, info.Running + " (as a " + how + ", from before running.json)"
+	}
+	return true, "an unknown version (as a " + how + ")"
 }
 
 // isInstanceDir says whether state is the default instance's directory or

@@ -3,8 +3,13 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -68,4 +73,31 @@ func readRunning(state string) (runningInfo, bool, error) {
 // processAlive is nil when pid exists (signal 0).
 func processAlive(pid int) error {
 	return syscall.Kill(pid, 0)
+}
+
+// processBinary is the executable of a live process, resolved to its real
+// path: /proc/<pid>/exe on Linux, the first txt file lsof lists on macOS
+// (ps would report the symlink the process was started through, which a
+// `release use` since may have repointed). "" when it cannot be told. It
+// serves an instance whose launcher predates running.json.
+func processBinary(pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	if exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid)); err == nil {
+		return exe
+	}
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	out, err := exec.Command("lsof", "-p", strconv.Itoa(pid), "-a", "-d", "txt", "-Fn").Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "n/") {
+			return line[1:]
+		}
+	}
+	return ""
 }

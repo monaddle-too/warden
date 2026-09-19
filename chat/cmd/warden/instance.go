@@ -181,8 +181,16 @@ func (c *cli) describeInstance(state string) instanceInfo {
 			info.Shape = "foreground"
 		}
 	} else if info.PID != 0 {
-		// A launcher from before running.json: running, version unknown.
+		// A launcher from before running.json: the version of the release
+		// its binary lies in, when the process table tells; else just
+		// "running".
 		info.Running = "running"
+		if bin := processBinary(info.PID); bin != "" {
+			info.RunningBinary = bin
+			if v := releaseVersionOf(bin); v != "" {
+				info.Running = v
+			}
+		}
 	}
 	return info
 }

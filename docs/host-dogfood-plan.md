@@ -324,6 +324,20 @@ available for install and run.
 5. The launcher test package runs under a temporary `HOME` (`TestMain`):
    the first run of the store tests unpacked a stub into the owner's live
    store, which is exactly the shared-state hazard the store introduces.
+6. A launcher from before `running.json` (the owner's live `~/.warden`,
+   every release before this branch) is still shown with its version:
+   `status` reads the live pid's real executable from the process table
+   (`lsof -d txt` on macOS, `/proc/<pid>/exe` on Linux; `ps` would
+   report the `release` symlink, which may have moved since) and takes
+   the version from the release directory it lies in (`processBinary`).
+   `running.json` stays the authority whenever it exists.
+7. `installWith` passes a release's `install` only the flags its `-h`
+   lists (`installFlagsOf`): `v0.1.0-alpha.13` has no `--service` /
+   `--menu` and refused them. What it cannot bridge: a release older than
+   the instance's configuration refuses that configuration (alpha.13
+   does not know `sandboxes.namePrefix`, a Part A field), so a GitHub
+   release from before Part A downloads and lists fine but installs only
+   into an instance whose `warden.json` it can read.
 
 ## Security stance
 
@@ -585,3 +599,65 @@ Candidate order, to be settled once the owner has read the plan:
      inner process is `…/releases/warden-v0.0.0-dev.0c4bc1ad4979…/bin/warden`.
   The default instance was never touched. `inner` removed afterwards;
   `dogfood` kept, stopped, for the next loop.
+- 2026-09-19: **Part C landed on `feat/start-version`** (the release store,
+  `running.json`, `start --version`, the `status` table, `warden
+  versions`; unit tests in `cmd/warden/versions_test.go`,
+  `start_version_test.go`, `release_test.go`; `go test ./...` green).
+  **Live test on this Mac** with the launcher built from the branch
+  (`dist/chat/warden`), the owner's `~/.warden` (launchd service, pid
+  87311, link `a62e0c835e88`) never touched — its pid, link and
+  service state identical before and after:
+  - `warden status` (bare) before anything: the table showed `default`
+    running `v0.0.0-dev.a62e0c835e88` (pinned the same, registered
+    running, from the process table since that launcher predates
+    `running.json`), `dogfood` and `p20` not running with their pins;
+    then the default's detail lines — which end in `warden.json: json:
+    unknown field "vms"`, this branch's config package against the
+    owner's live build (the same gap Part A hit; the table is printed
+    first, the exit status is 1).
+  - `dist/chat/warden release build . --instance dogfood` (17.8 s): the
+    tarball `warden-v0.0.0-dev.f61f7cc78ffb-darwin-arm64` unpacked to
+    `~/.warden/releases/`, `~/.warden-dogfood/release` relinked there
+    (its four Part A copies under `~/.warden-dogfood/releases/` left as
+    "older copy" rows), the release's `install --upgrade --service=false
+    --menu=false --sbx …` run into dogfood. `warden versions` listed it
+    first, `PINNED BY dogfood`.
+  - `start --instance dogfood --detach` → re-executed into the store's
+    binary, pid 38029, `~/.warden-dogfood/running.json` written with
+    version, release, binary, pid, `startedAt`, chat `127.0.0.1:18782`,
+    edge `:18783`; `status` showed `dogfood v0.0.0-dev.f61f7cc78ffb …
+    detached 0s`.
+  - `start --instance dogfood --version 0368f857 --as dogfood-b --detach`
+    (8.8 s): resolved the sha prefix to dogfood's older copy
+    `v0.0.0-dev.0368f857c63c`, created `dogfood-b` from dogfood (shared
+    namespace, ports 18784/18785, dev), linked the older copy into it,
+    ran that release's install, and exec'd its launcher: pid 38193,
+    `lsof` confirmed the process's binary under
+    `~/.warden-dogfood/releases/warden-v0.0.0-dev.0368f857c63c…`.
+    `status` then showed three different RUNNING values (default
+    `a62e0c835e88`, dogfood `f61f7cc78ffb`, dogfood-b `0368f857c63c`);
+    `versions` showed `RUNNING ON` for each; `release list --instance
+    dogfood-b` said `pinned by dogfood-b; running on dogfood-b`.
+  - The refusal: `start --instance dogfood-b --version f61f7cc` while it
+    ran → "instance dogfood-b is running …; stop it, or add --as NAME to
+    run v0.0.0-dev.f61f7cc78ffb beside it", exit 1. After `stop
+    --instance dogfood-b`, the same command (no `--use`) started the new
+    build as a trial: `status` showed `dogfood-b RUNNING f61f7cc78ffb
+    PINNED 0368f857c63c`, the `running:` detail line named the pinned
+    release and the `--use` that makes it stick, the link untouched.
+  - Teardown: `stop --instance dogfood-b`, `instance rm dogfood-b --yes`
+    (directory gone), `stop --instance dogfood` → `running.json` removed
+    on the clean stop, `status` back to dogfood not running, pinned
+    `f61f7cc78ffb`.
+  - `warden versions --remote` (sandbox off, 0.37 s): the 13 GitHub
+    pre-releases `v0.1.0-alpha.1` … `alpha.13`, each with a tarball for
+    darwin/arm64 and `SHA256SUMS`, `installed` where the store already
+    held the tag (alpha.1–7, 11, 12).
+  - `release install v0.1.0-alpha.13 --instance dogfood`: downloaded the
+    9 MiB tarball, `SHA256 verified`, unpacked into the store, dogfood
+    relinked. Its own `install --upgrade` step failed twice, each a
+    finding: first `flag provided but not defined: -service` (fixed:
+    `installFlagsOf`, decision 7), then `unknown field "namePrefix"` in
+    dogfood's `warden.json` (alpha.13 predates Part A; not bridgeable,
+    recorded in decision 7). `release use f61f7cc --instance dogfood`
+    put dogfood back (its install run again).

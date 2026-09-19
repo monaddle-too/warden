@@ -36,7 +36,9 @@ func releaseTarball(t *testing.T, dir, version, goos, goarch, log string) string
 			t.Fatal(err)
 		}
 	}
-	add("bin/warden", 0o755, "#!/bin/sh\necho \"$*\" >> "+shellQuote(log)+"\n")
+	// The usage probe (`install -h`) is not logged: a stub says nothing
+	// about its flags, so every flag is passed.
+	add("bin/warden", 0o755, "#!/bin/sh\n[ \"$2\" = -h ] && exit 0\necho \"$*\" >> "+shellQuote(log)+"\n")
 	add("web/index.html", 0o644, "<html>"+version+"</html>")
 	add("config/policy.template.json", 0o644, "{}")
 	add("vendor/README", 0o644, "catalog")
@@ -266,5 +268,33 @@ func TestReleaseBuildNeedsAnInstanceAndAVersionFromGit(t *testing.T) {
 	}
 	if _, _, _, ok := parseReleaseName("release"); ok {
 		t.Fatal("parseReleaseName accepted a bare name")
+	}
+}
+
+// A release from before `install --service` / `--menu` existed is given
+// only the flags its own install lists; a launcher whose usage cannot be
+// read gets them all.
+func TestInstallWithPassesOnlyTheFlagsTheReleaseKnows(t *testing.T) {
+	state := installedState(t)
+	log := filepath.Join(filepath.Dir(state), "warden.log")
+	old := filepath.Join(filepath.Dir(state), "warden-v0.1.0-alpha.13-"+runtime.GOOS+"-"+runtime.GOARCH)
+	os.MkdirAll(filepath.Join(old, "bin"), 0o755)
+	script := "#!/bin/sh\nif [ \"$1 $2\" = \"install -h\" ]; then\n  printf 'Usage of warden install:\\n  -sbx string\\n    \\tsbx\\n  -state string\\n    \\tstate\\n  -upgrade\\n' >&2\n  exit 0\nfi\necho \"$*\" >> " + shellQuote(log) + "\n"
+	if err := os.WriteFile(filepath.Join(old, "bin", "warden"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if known := installFlagsOf(filepath.Join(old, "bin", "warden")); !known["state"] || !known["sbx"] || known["service"] || known["menu"] {
+		t.Fatalf("installFlagsOf = %v", known)
+	}
+	var out bytes.Buffer
+	c := &cli{stdin: strings.NewReader(""), stdout: &out, stderr: &out}
+	if code := c.run([]string{"release", "install", old, "--state", state}); code != 0 {
+		t.Fatalf("install (%d):\n%s", code, out.String())
+	}
+	if raw, _ := os.ReadFile(log); strings.TrimSpace(string(raw)) != "install --state "+state+" --upgrade --sbx /opt/fake/sbx" {
+		t.Fatalf("old release ran:\n%s", raw)
+	}
+	if known := installFlagsOf(filepath.Join(state, "no-such-launcher")); !known["service"] || !known["menu"] {
+		t.Fatalf("unreadable usage: %v", known)
 	}
 }
