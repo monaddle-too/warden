@@ -30,12 +30,14 @@ sandboxes:
   keepStopped: 4
   # One zone for every sandbox pod, so the spare, new workspace disks
   # (zonal, created where the first pod schedules) and the GKE Sandbox
-  # nodes they need share it: a resume then finds a node that is already
-  # up instead of booting one in the disk's zone (~45 s each time, since
-  # Autopilot drains gVisor nodes per zone and holds the others' slack in
-  # a balloon pod nothing preempts). The runner drops this key for a pod
-  # whose claim is already bound, so disks in other zones keep resuming
-  # where they are; change the zone freely, it only moves new disks.
+  # nodes they need share it instead of each resume needing a node in
+  # its own disk's zone. It removes the zone barrier only: Autopilot's
+  # balloon pod takes a settled node's slack for good (a pending pod
+  # never shrinks it; measured 2026-09-19), so a pod that does not fit
+  # the headroom beside the balloon still boots a node (~40–90 s). The
+  # runner drops this key for a pod whose claim is already bound, so
+  # disks in other zones keep resuming where they are; change the zone
+  # freely, it only moves new disks.
   nodeSelector:
     topology.kubernetes.io/zone: us-central1-c
 

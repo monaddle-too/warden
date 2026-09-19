@@ -102,4 +102,15 @@ the startup detail says the scheduler's verdict in the owner's words.
   zone-b gVisor node ("not for sandboxes"), triggered a zone-c scale-up
   and ran there 118 s later with its disk in us-central1-c. The two
   pre-pin workspace disks (zones a and c) are untouched and resume as
-  before through `Placement`. Step 5 done; nothing remains.
+  before through `Placement`. Step 5 done.
+- 2026-09-19, probed whether the pin also ends "a node per pod": no. A
+  1-CPU gVisor probe in zone c landed on the spare's 5-minute-old node
+  at once (balloon still 0); the balloon then grew to 3990m / 16.5 GB
+  (~1.3 CPU headroom left); a 2-CPU probe got `Insufficient cpu` on it
+  and `TriggeredScaleUp` two seconds later, Running on a new zone-c node
+  at 90 s, the old node's balloon unchanged. The balloon is one-way, so
+  the pin's win is the zone (spare, disks and nodes together) and the
+  headroom stage; an arrival after a node has settled still boots one.
+  Docs and the values comment corrected (they claimed GKE regrows the
+  node). Left: whether a compute class without the balloon (conventional
+  bin-packing nodes) works with GKE Sandbox — decision for the owner.

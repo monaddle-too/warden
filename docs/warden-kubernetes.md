@@ -1056,12 +1056,22 @@ node running one 1-CPU sandbox). Every resume after a long idle then
 boots a node in the disk's zone (~45 s, plus attach and pull). The
 values pin sandbox pods to one zone (`sandboxes.nodeSelector:
 topology.kubernetes.io/zone`), so spares, new disks and the nodes they
-need share it and a resume can land on a node that is already up (GKE
-regrows it in seconds); the runner leaves the zone key off a pod whose
-claim is already bound (`Placement` in `sandbox/kube/spec.go`), since
-the disk's own node affinity places it and a disk from before the pin
-would otherwise never schedule. Changing the pinned zone strands no
-disk for the same reason; it only moves where new ones go.
+need share it; the runner leaves the zone key off a pod whose claim is
+already bound (`Placement` in `sandbox/kube/spec.go`), since the disk's
+own node affinity places it and a disk from before the pin would
+otherwise never schedule. Changing the pinned zone strands no disk for
+the same reason; it only moves where new ones go. The pin removes the
+zone barrier only: measured on 2026-09-19, the balloon is one-way. A
+fresh node's balloon is 0; it grows in stages (3990m / 16.5 GB about a
+minute after the first pod lands, 5980m / 26 GB later) and a pending pod
+never shrinks it — a 2-CPU probe that did not fit the ~1.3 CPU left
+beside the balloon got a new node in 40 s while the old one kept its
+balloon. So a pod fits an existing node only while it is in the
+headroom stage; otherwise every pod that arrives after a node has
+settled boots a node (~40–90 s to Running), which Autopilot does not
+bill (requests are the bill) but the owner waits for. The warm spare
+covers a fresh chat; a resume, or a second chat in quick succession,
+still pays the boot.
 
 The domain is one delegated zone: the app is `https://<domain>/` and
 previews are `https://<binding-id>.<domain>/`, so `auth.publicURL` and
