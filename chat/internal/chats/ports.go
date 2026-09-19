@@ -30,11 +30,15 @@ type PortBinding struct {
 	Title        string `json:"title"`
 	URL          string `json:"url"`
 	State        string `json:"state"`
+	// Upstream is "host" for a host port a jailbroken workspace exposed
+	// (host.go), "" for a sandbox port.
+	Upstream string `json:"upstream,omitempty"`
 }
 type portInput struct {
-	Port  int    `json:"port"`
-	Path  string `json:"path"`
-	Title string `json:"title"`
+	Port     int    `json:"port"`
+	Path     string `json:"path"`
+	Title    string `json:"title"`
+	Upstream string `json:"-"`
 }
 
 func decodePort(value any) (portInput, error) {
@@ -77,7 +81,7 @@ func (e *Engine) requestPort(c *Chat, client *agent.Client, f agent.Frame) error
 	// revoked binding requires a new human approval and receives a fresh URL.
 	st := e.Store.Snapshot()
 	for _, p := range st.Ports {
-		if p.ChatID == c.ID && p.SandboxID == c.SandboxID && p.Port == input.Port && p.State == "approved" {
+		if p.ChatID == c.ID && p.SandboxID == c.SandboxID && p.Port == input.Port && p.Upstream == "" && p.State == "approved" {
 			value, err := e.bindPort(c, input, p.ID)
 			return client.Reply(f.ID, toolResult(value, err))
 		}
@@ -94,7 +98,11 @@ func (e *Engine) requestPort(c *Chat, client *agent.Client, f agent.Frame) error
 func (e *Engine) bindPort(c *Chat, input portInput, id string) (PortBinding, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	r := request(c, "preview.attach")
+	op := "preview.attach"
+	if input.Upstream == sandbox.UpstreamHost {
+		op = "host.expose" // a host port (host.go), minted by the runner as well
+	}
+	r := request(c, op)
 	r.Port = input.Port
 	r.Path = "/"
 	r.Title = input.Title
@@ -104,7 +112,7 @@ func (e *Engine) bindPort(c *Chat, input portInput, id string) (PortBinding, err
 		return PortBinding{}, err
 	}
 	a := res.Attachment
-	if a == nil || a.ChatID != c.ID || a.SandboxID != c.SandboxID || a.Port != input.Port {
+	if a == nil || a.ChatID != c.ID || a.SandboxID != c.SandboxID || a.Port != input.Port || a.Upstream != input.Upstream {
 		return PortBinding{}, errors.New("worker port binding mismatch")
 	}
 	if err = e.validateAttachment(*a); err != nil {
@@ -113,7 +121,7 @@ func (e *Engine) bindPort(c *Chat, input portInput, id string) (PortBinding, err
 	if id == "" {
 		id = cv.ID()
 	}
-	p := PortBinding{ID: id, ChatID: c.ID, SandboxID: c.SandboxID, AttachmentID: a.ID, Port: input.Port, Title: input.Title, URL: e.previewURL(id, input.Path), State: "approved"}
+	p := PortBinding{ID: id, ChatID: c.ID, SandboxID: c.SandboxID, AttachmentID: a.ID, Port: input.Port, Title: input.Title, URL: e.previewURL(id, input.Path), State: "approved", Upstream: input.Upstream}
 	err = e.Store.update(func(st *State) error {
 		current := st.chat(c.ID)
 		if current.Status != "running" || current.RunID != c.RunID {
@@ -199,7 +207,7 @@ func (e *Engine) ServePort(id, path string, w http.ResponseWriter, r *http.Reque
 	}
 	var a *sandbox.PreviewAttachment
 	for _, p := range res.Attachments {
-		if p.ID == binding.AttachmentID && p.Port == binding.Port && p.State == "available" {
+		if p.ID == binding.AttachmentID && p.Port == binding.Port && p.Upstream == binding.Upstream && p.State == "available" {
 			copy := p
 			a = &copy
 			break

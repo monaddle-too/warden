@@ -39,8 +39,12 @@ type fakeWorker struct {
 	exec *sandbox.ExecResult
 	// memory is what a "memory-list" answers (nil: an empty listing).
 	memory *sandbox.MemoryListing
-	// developer is the developerInstructions of the last thread/start.
+	// developer is the developerInstructions of the last thread/start;
+	// tools the names of its dynamicTools.
 	developer string
+	tools     []string
+	// host is what a "host.status" answers.
+	host *sandbox.HostStatus
 	// prepareGate, when set, holds prepare until it is closed; progress is
 	// what the progress operation answers meanwhile (startup_test.go).
 	prepareGate chan struct{}
@@ -95,6 +99,20 @@ func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 		return sandbox.Response{Version: 2, Paths: f.paths}, nil
 	}
 	switch r.Operation {
+	case "host.exec":
+		// A host command (host.go): what exec answers, with its size.
+		result := f.exec
+		if result == nil {
+			result = &sandbox.ExecResult{Output: "hello-from-host\n", ExitCode: 0, Bytes: 16, DurationMS: 5}
+		}
+		return sandbox.Response{Version: 2, Exec: result}, nil
+	case "host.put", "host.get":
+		return sandbox.Response{Version: 2, Directory: r.Directory, Output: r.Path, Size: 12}, nil
+	case "host.status":
+		return sandbox.Response{Version: 2, Host: f.host}, nil
+	case "host.expose":
+		a := sandbox.PreviewAttachment{ID: "host-attachment", ChatID: r.ChatID, SandboxID: r.SandboxID, Port: r.Port, Path: r.Path, Title: r.Title, URL: "http://127.0.0.1:34567" + r.Path, State: "available", Upstream: sandbox.UpstreamHost}
+		return sandbox.Response{Version: 2, Attachment: &a}, nil
 	case "checkpoint":
 		cp := sandbox.Checkpoint{ID: r.CallID, ChatID: r.ChatID, Commit: "commit-" + r.CallID[:4], Tree: "tree-" + r.CallID[:4], Store: "repository", Changed: true}
 		f.checkpoints = append(f.checkpoints, cp)
@@ -181,6 +199,10 @@ func (f *fakeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWriteC
 				f.mu.Lock()
 				gate := f.threadGate
 				f.developer = agent.String(frame.Params["developerInstructions"])
+				f.tools = nil
+				for _, tool := range agent.Array(frame.Params["dynamicTools"]) {
+					f.tools = append(f.tools, agent.String(agent.Map(tool)["name"]))
+				}
 				f.mu.Unlock()
 				if gate != nil {
 					<-gate

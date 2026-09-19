@@ -53,11 +53,11 @@ func (c *Conversation) Upsert(item map[string]any, turn string, completed bool) 
 	case "dynamicToolCall":
 		// Codex calling a Warden tool: the counterpart of Claude's MCP call.
 		e.Text = agent.String(item["tool"])
-		e.Tool = &Tool{Kind: "mcp", Name: agent.String(item["tool"]), Server: "warden", Status: toolStatus(item), Input: agent.Map(item["arguments"])}
+		e.Tool = &Tool{Kind: "mcp", Name: agent.String(item["tool"]), Server: "warden", Status: toolStatus(item), Input: agent.Map(item["arguments"]), Target: toolTarget("warden", agent.String(item["tool"]))}
 	case "mcpToolCall":
 		e.Text = agent.String(item["server"]) + " · " + agent.String(item["tool"])
 		e.Detail = tail(mcpResultText(item), 30000)
-		e.Tool = &Tool{Kind: "mcp", Name: agent.String(item["tool"]), Server: agent.String(item["server"]), Status: toolStatus(item), Input: agent.Map(item["arguments"])}
+		e.Tool = &Tool{Kind: "mcp", Name: agent.String(item["tool"]), Server: agent.String(item["server"]), Status: toolStatus(item), Input: agent.Map(item["arguments"]), Target: toolTarget(agent.String(item["server"]), agent.String(item["tool"]))}
 	case "webSearch":
 		e.Text = "Search: " + agent.String(item["query"])
 		e.Detail = tail(agent.String(item["output"]), 30000)
@@ -200,6 +200,15 @@ func mcpResultText(item map[string]any) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// toolTarget is where a Warden tool acts: "host" for the jailbreak's
+// host_* tools on the warden server (chats/host.go), "" otherwise.
+func toolTarget(server, tool string) string {
+	if server == "warden" && strings.HasPrefix(tool, "host_") {
+		return "host"
+	}
+	return ""
 }
 
 // todoTitle names the todo list by its progress: "Todo list · 2 of 5

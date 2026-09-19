@@ -232,6 +232,10 @@ type Tool struct {
 	Query       string         `json:"query,omitempty"`
 	Input       map[string]any `json:"input,omitempty"`
 	Background  bool           `json:"background,omitempty"`
+	// Target is "host" for a jailbroken workspace's host_* tool (the
+	// call acts on the owner's machine, and the cards say so); "" for
+	// everything that acts in the sandbox.
+	Target string `json:"target,omitempty"`
 	// Read is what a read of something other than text carried (an
 	// image, a PDF, a notebook); nil for a text read.
 	Read     *Read     `json:"read,omitempty"`

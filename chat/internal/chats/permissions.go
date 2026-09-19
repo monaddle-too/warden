@@ -48,7 +48,7 @@ func ValidMode(mode string) bool {
 
 // multiWordPrograms are the programs whose first argument is the command
 // the person means when allowing "these" always: `git commit`, not `git`.
-var multiWordPrograms = map[string]bool{"git": true, "npm": true, "pnpm": true, "yarn": true, "go": true, "cargo": true, "docker": true, "kubectl": true, "gh": true, "pip": true, "pip3": true, "make": true, "bundle": true, "poetry": true, "uv": true, "brew": true, "apt": true, "apt-get": true, "systemctl": true, "helm": true, "gcloud": true, "aws": true}
+var multiWordPrograms = map[string]bool{"git": true, "npm": true, "pnpm": true, "yarn": true, "go": true, "cargo": true, "docker": true, "kubectl": true, "gh": true, "pip": true, "pip3": true, "make": true, "bundle": true, "poetry": true, "uv": true, "brew": true, "apt": true, "apt-get": true, "systemctl": true, "helm": true, "gcloud": true, "aws": true, "warden": true}
 
 // shellControl is what makes a command more than one program: chaining,
 // piping, substitution. Such a command is remembered whole.
@@ -63,18 +63,18 @@ func RuleFor(tool string, input map[string]any) string {
 	if fileTools[tool] {
 		return "Edit"
 	}
-	if tool != "Bash" {
+	if tool != "Bash" && tool != hostRunTool {
 		return tool
 	}
 	command := strings.TrimSpace(agent.String(input["command"]))
 	for _, c := range shellControl {
 		if strings.Contains(command, c) {
-			return "Bash(" + command + ")"
+			return tool + "(" + command + ")"
 		}
 	}
 	words := strings.Fields(command)
 	if len(words) == 0 {
-		return "Bash"
+		return tool
 	}
 	// A leading assignment (FOO=1 make) is not the program.
 	for len(words) > 1 && strings.Contains(words[0], "=") && !strings.HasPrefix(words[0], "=") {
@@ -84,7 +84,7 @@ func RuleFor(tool string, input map[string]any) string {
 	if multiWordPrograms[words[0]] && len(words) > 1 && !strings.HasPrefix(words[1], "-") {
 		prefix = words[0] + " " + words[1]
 	}
-	return "Bash(" + prefix + " *)"
+	return tool + "(" + prefix + " *)"
 }
 
 // RuleLabel says what a rule pattern covers, for the card's button: "`git
@@ -99,8 +99,12 @@ func RuleLabel(pattern string) string {
 		return "file edits"
 	case tool == "Bash" && spec == "":
 		return "commands"
+	case tool == hostRunTool && spec == "":
+		return "host commands"
 	case tool == "Bash":
 		return "`" + strings.TrimSuffix(strings.TrimSuffix(spec, " *"), ":*") + "` commands"
+	case tool == hostRunTool:
+		return "`" + strings.TrimSuffix(strings.TrimSuffix(spec, " *"), ":*") + "` host commands"
 	case spec != "":
 		return tool + " " + spec
 	}

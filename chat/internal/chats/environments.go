@@ -31,6 +31,8 @@ type Environment struct {
 	// Network is the workspace's own network access ("" follows the
 	// install; network.go).
 	Network string `json:"network,omitempty"`
+	// Jailbroken: the workspace has host access (host.go).
+	Jailbroken bool `json:"jailbroken,omitempty"`
 	// Resizing is a resize in flight or how the last one ended.
 	Resizing     *Resizing        `json:"resizing,omitempty"`
 	Documents    []map[string]any `json:"documents"`
@@ -108,7 +110,7 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		}
 		seen[c.SandboxID] = true
 		chats := st.environmentChats(c.SandboxID)
-		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Resources: chats[0].Resources, Network: chats[0].Network, Resizing: e.resizingOf(c.SandboxID), Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Rules: []Rule{}, Deleted: st.deleted(c.SandboxID)}
+		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Resources: chats[0].Resources, Network: chats[0].Network, Jailbroken: chats[0].Jailbroken, Resizing: e.resizingOf(c.SandboxID), Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Rules: []Rule{}, Deleted: st.deleted(c.SandboxID)}
 		if rec := st.Environments[c.SandboxID]; rec != nil && len(rec.Rules) > 0 {
 			env.Rules = rec.Rules
 		}
