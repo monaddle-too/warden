@@ -118,3 +118,10 @@ To be ordered once the owner has read the plan. Candidate order:
 - 2026-09-19: plan opened; decisions 1–7 taken in conversation with the
   owner; [known-security-issues.md](known-security-issues.md) created with
   the two entries the owner asked for.
+- 2026-09-19: decisions 1, 2 and 7 are revised by
+  [host-dogfood-plan.md](host-dogfood-plan.md) (branch `plan/host-dogfood`):
+  a Warden chat must be able to deploy and drive Warden on the host, so the
+  host deploy mode becomes a per-workspace, owner-enabled **jailbreak**
+  (`dogfood.jailbreak`, `host_*` tools sharing the `vm_*` shape) and
+  Warden gains first-class instances and releases. To be folded into the
+  decisions above once the owner has read that plan.
