@@ -55,6 +55,14 @@ renamed `cancelled-runs.migrated`. Neither backup is read again.
   read the database (`savedManaged`, `json_remove` on a row for the
   legacy-record case). The runner worker root is created by the store when
   missing (the JSON writer used to create it on the first save).
+- Live on `~/.warden` (build 02c6c3a): `managed-v2.json` (32 sandboxes,
+  34 bindings, 3 attachments, 3 publications, 4 calls, 1 spare) and the
+  220 marker files imported with exact counts; deleting two workspaces
+  removed their sandbox and binding rows; a fresh chat's turn wrote its
+  binding and the adopted spare's row. The first send after the deploy
+  failed with "worker has 32 retained sandboxes": a pre-existing hard cap
+  in `bindLocked` (the `--retained` flag / `sandboxes.keepStopped` is read
+  into `Worker.Retained` but never consulted), not the store.
 
 ## Decisions
 
