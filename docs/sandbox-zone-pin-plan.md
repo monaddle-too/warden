@@ -94,5 +94,12 @@ the startup detail says the scheduler's verdict in the owner's words.
   `go vet`, `go test ./...` green (one `chats` flake on the first run,
   clean on the rerun). `helm template` with the GKE values renders the
   zone into `warden.json`.
-- 2026-09-19: merged to main e7233aa (fast-forward). Remains: GKE deploy,
-  watch a resume of a pinned-zone workspace land on a node already up.
+- 2026-09-19: merged to main e7233aa (fast-forward).
+- 2026-09-19: deployed to GKE with `feat/startup-detail-events` (main
+  daf0bce, image `v0.1.0-alpha.13-82-gdaf0bce`). The zone renders into
+  `warden.json`; the first pod created after the deploy (the warm spare)
+  carried `topology.kubernetes.io/zone: us-central1-c`, refused the
+  zone-b gVisor node ("not for sandboxes"), triggered a zone-c scale-up
+  and ran there 118 s later with its disk in us-central1-c. The two
+  pre-pin workspace disks (zones a and c) are untouched and resume as
+  before through `Placement`. Step 5 done; nothing remains.

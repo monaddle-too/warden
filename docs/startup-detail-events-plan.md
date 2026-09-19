@@ -100,5 +100,14 @@ Two gaps the owner hit watching a chat start on GKE:
   is appended to: `waiting for a node: none of the 2 nodes can take the
   sandbox: 2 full (cpu) · a node is being added`). Step 7 done (feature
   map rows for startup stage and cluster visibility). Go, web and chart
-  suites green on the merged tree. Remains: step 8's GKE deploy and a
-  watched cold start.
+  suites green on the merged tree.
+- 2026-09-19: step 8 done. Deployed to GKE (image
+  `v0.1.0-alpha.13-82-gdaf0bce`, all four services rolled out; the runner
+  Roles carry `events get/list`, `warden.json` carries the zone pin).
+  Watched the runner's fresh warm spare start with no gVisor node in the
+  pinned zone: `TriggeredScaleUp` 2 s after creation, a zone-c node up in
+  ~60 s, Scheduled at 108 s, Running at 118 s; its disk was created in
+  us-central1-c. The status line for that wait reads `waiting for a
+  node: none of the 5 nodes can take the sandbox: 1 still starting or
+  reserved, 1 cordoned, 3 not for sandboxes · a node is being added`.
+  Nothing remains; the worktree can go.
