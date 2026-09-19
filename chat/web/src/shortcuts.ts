@@ -18,7 +18,7 @@ export const AREAS: { id: Area; title: string }[] = [
 
 /* One key combination: `key` is KeyboardEvent.key ("k", "Enter",
    "ArrowUp", "?"); `mod` is ⌘ on a Mac and Ctrl elsewhere (a handler
-   accepts either, so ⌘R and Ctrl+R both search the history); `shift`
+   accepts either, so ⌘K and Ctrl+K both open the search); `shift`
    and `alt` must be held when true, released when false or absent, and
    are ignored when "any" (the `?` key itself needs Shift on most
    layouts). */
@@ -47,7 +47,6 @@ export const SHORTCUTS: Shortcut[] = [
   // Composer
   { id: "send", area: "composer", keys: [{ key: "Enter", mod: true }], what: "Send the message (or run the command, or ask the side question)" },
   { id: "newline", area: "composer", keys: [{ key: "Enter" }], what: "New line", native: true },
-  { id: "history-search", area: "composer", keys: [{ key: "r", mod: true }], what: "Search your earlier prompts" },
   { id: "history-older", area: "composer", keys: [{ key: "ArrowUp" }], what: "Recall the previous prompt", when: "the caret is on the draft's first line" },
   { id: "history-newer", area: "composer", keys: [{ key: "ArrowDown" }], what: "The next prompt, then the draft again", when: "the caret is on the draft's last line" },
   { id: "edit-queued", area: "composer", keys: [{ key: "ArrowUp" }], what: "Edit your last queued message on its card", when: "the composer is empty and a message of yours is queued" },
@@ -61,10 +60,6 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "prefix-file", area: "composer", keys: [{ key: "@" }], what: "Mention a workspace file", native: true },
   { id: "prefix-shell", area: "composer", keys: [{ key: "!" }], what: "Run a shell command in the workspace yourself (not the agent)", native: true },
   { id: "prefix-note", area: "composer", keys: [{ key: "#" }], what: "Append a note to the workspace's CLAUDE.md", native: true },
-  { id: "history-next", area: "composer", keys: [{ key: "ArrowDown" }, { key: "r", mod: true }], what: "Further back in the matching prompts", when: "the prompt search is open" },
-  { id: "history-prev", area: "composer", keys: [{ key: "ArrowUp" }], what: "Forward again", when: "the prompt search is open" },
-  { id: "history-pick", area: "composer", keys: [{ key: "Enter" }, { key: "Tab" }], what: "Put the highlighted prompt in the composer", when: "the prompt search is open" },
-  { id: "history-close", area: "composer", keys: [{ key: "Escape" }], what: "Close the prompt search", when: "the prompt search is open" },
   // Transcript
   { id: "find", area: "transcript", keys: [{ key: "f", mod: true }], what: "Find in the transcript", when: "the transcript or the composer has focus" },
   { id: "find-next", area: "transcript", keys: [{ key: "Enter" }], what: "Next match", when: "in the find bar" },

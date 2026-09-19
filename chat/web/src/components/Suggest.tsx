@@ -5,7 +5,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { chatResources, workspacePaths } from "../api";
+import { chatResources, localPaths, workspacePaths } from "../api";
 import { EMPTY_RESOURCES, type Resources } from "../composer";
 
 /* One row of the composer's suggestion list. */
@@ -94,7 +94,13 @@ const DEBOUNCE = 120;
    remembered per chat so backspacing through a path does not ask again
    (a bounded cache; a failure is not remembered, so the next keystroke
    retries once the workspace is running). */
-export function usePathCompletion(chatID: string, query: string | undefined) {
+export function usePathCompletion(
+  chatID: string,
+  query: string | undefined,
+  /* Where the paths are: the workspace, or this computer (a local
+     mention's prefix, an /attach word; chats/localfiles.go). */
+  source: "workspace" | "local" = "workspace",
+) {
   const cache = useRef(new Map<string, string[]>());
   const [state, setState] = useState<{
     query: string;
@@ -106,20 +112,22 @@ export function usePathCompletion(chatID: string, query: string | undefined) {
   }, [chatID]);
   useEffect(() => {
     if (query === undefined) return;
-    const known = cache.current.get(query);
+    const key = source + ":" + query;
+    const known = cache.current.get(key);
     if (known) {
       setState({ query, paths: known });
       return;
     }
     let stale = false;
     const timer = setTimeout(() => {
-      void workspacePaths(chatID, query).then(
+      const lookup = source === "local" ? localPaths : workspacePaths;
+      void lookup(chatID, query).then(
         (paths) => {
           if (stale) return;
           const store = cache.current;
           if (store.size >= CACHE_LIMIT)
             store.delete(store.keys().next().value as string);
-          store.set(query, paths);
+          store.set(key, paths);
           setState({ query, paths });
         },
         (e: unknown) => {
@@ -135,7 +143,7 @@ export function usePathCompletion(chatID: string, query: string | undefined) {
       stale = true;
       clearTimeout(timer);
     };
-  }, [chatID, query]);
+  }, [chatID, query, source]);
   if (query === undefined) return { paths: undefined, error: undefined };
   // While a lookup is in flight the last answer stays up, so the list does
   // not blink between keystrokes.

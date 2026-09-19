@@ -528,13 +528,17 @@ type AgentOptions struct {
 	// Defaults is the model a chat of each provider starts with
 	// (defaults.go), the row the pickers show first.
 	Defaults map[string]string `json:"defaults"`
+	// LocalFiles: the composer may attach files from this machine by
+	// path (localfiles.go; a local install, where the service runs on the
+	// owner's machine).
+	LocalFiles bool `json:"localFiles"`
 }
 
 func (e *Engine) View() View {
 	st := e.state()
 	models := catalogRows(st.Catalog)
 	st.Catalog = nil // clients get it as agentOptions.models
-	return View{State: st, Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models, Defaults: e.defaultModels()}}
+	return View{State: st, Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models, Defaults: e.defaultModels(), LocalFiles: e.LocalMode}}
 }
 
 // state is the store with typing indicators and each chat's spend filled
@@ -893,7 +897,13 @@ func (e *Engine) run(parent context.Context, id string) {
 		if err != nil && a.ending.Load() {
 			err = nil // Stop ended a run that had no turn in flight
 		}
-		if err != nil {
+		if err != nil && parent.Err() == nil {
+			// A run that failed is tombstoned so the runner stops its
+			// sandbox. A run cut short by the service's own shutdown is
+			// not: the disconnect is a normal end to the runner, the
+			// sandbox stays resident, and on Kubernetes the pod outlives
+			// the restart (docs/workspace-keepalive-plan.md) for the run
+			// that resumes the chat.
 			cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
 			_, _ = e.Worker.Call(cleanup, request(&current, "cancel"))
 			done()

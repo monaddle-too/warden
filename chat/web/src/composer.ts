@@ -89,6 +89,11 @@ export const COMMANDS: Command[] = [
     hint: "Claude's output style for the next session: default, Explanatory or Learning",
   },
   {
+    name: "attach",
+    label: "Attach files…",
+    hint: "From this computer: /attach PATH… (~ and globs; quote a space), or pick them",
+  },
+  {
     name: "clear",
     label: "Clear draft",
     hint: "Discard the draft and its attachments",
@@ -550,4 +555,131 @@ export function resourceQuery(query: string) {
    lines after it keep their place. */
 export function withoutCommand(text: string, trigger: Trigger) {
   return text.slice(trigger.end).replace(/^\n/, "");
+}
+
+/* Files from this computer (docs/web-attach-from-disk-plan.md; the TUI's
+   tui/attach.go): "/attach PATH…" and a local mention in the draft name a
+   path the chat service reads on the owner's machine (a local install
+   only: agentOptions.localFiles). A local mention starts with "./",
+   "../" or "~/" — a workspace mention never does — and is attached when
+   the message is sent, the mention rewritten to the upload's workspace
+   path so the agent reads the file where it landed. */
+
+export function isLocalPath(p: string) {
+  return p.startsWith("./") || p.startsWith("../") || p.startsWith("~/");
+}
+
+const LOCAL_MENTION = /(^|\s)@((?:\.\/|\.\.\/|~\/)\S+)/g;
+const MENTION_TRAIL = /[,.;:!?)\]}'"]+$/;
+
+/* The local mentions in a draft, as written, in order, once each. */
+export function localMentions(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(LOCAL_MENTION)) {
+    const p = m[2].replace(MENTION_TRAIL, "");
+    if (p && !out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
+/* The draft with each local mention replaced by the workspace paths of
+   what it attached ("@~/a.log" → "@.warden/attachments/….log"; a glob
+   that matched several becomes several mentions). A mention that
+   attached nothing stays. */
+export function rewriteMentions(
+  text: string,
+  attached: { typed: string; path: string }[],
+): string {
+  for (const typed of localMentions(text)) {
+    const paths = attached.filter((a) => a.typed === typed).map((a) => a.path);
+    if (!paths.length) continue;
+    const token = "@" + typed;
+    const insert = paths.map((p) => "@" + p).join(" ");
+    text = text.split(token).join(insert);
+  }
+  return text;
+}
+
+/* A word of an "/attach" line with where it sits: bare, or quoted with
+   ' or " for a path with spaces (the quotes are not part of the word).
+   `end` is past the closing quote. */
+type Word = { word: string; start: number; end: number; quote: string };
+
+function words(line: string, from: number): Word[] {
+  const out: Word[] = [];
+  let i = from;
+  while (i < line.length) {
+    if (/\s/.test(line[i])) {
+      i++;
+      continue;
+    }
+    const start = i;
+    let quote = "";
+    let word = "";
+    while (i < line.length) {
+      const c = line[i];
+      if (quote) {
+        if (c === quote) quote = "";
+        else word += c;
+      } else if (c === '"' || c === "'") quote = c;
+      else if (/\s/.test(c)) break;
+      else word += c;
+      i++;
+    }
+    out.push({ word, start, end: i, quote });
+  }
+  return out;
+}
+
+/* The paths an "/attach" line names (the text after the command). Globs
+   and ~ are the service's to expand. */
+export function attachArgs(rest: string): string[] {
+  return words(rest, 0)
+    .map((w) => w.word)
+    .filter(Boolean);
+}
+
+/* The paths of a draft that is an "/attach …" command, or undefined when
+   the draft is something else (a bare "/attach" is the command itself,
+   which opens the picker; it is undefined here too). One line only, as
+   the other exact commands. */
+export function attachCommand(text: string): string[] | undefined {
+  const trimmed = text.trim();
+  const m = /^\/attach\s+([^\n]*)$/i.exec(trimmed);
+  if (!m) return undefined;
+  const paths = attachArgs(m[1]);
+  return paths.length ? paths : undefined;
+}
+
+/* The path being typed on an "/attach" line at the caret: the word the
+   caret is in (or a new, empty one where the caret sits between words),
+   its text up to the caret as the query and the range a pick replaces.
+   Undefined while the caret is still on the command name. */
+export function attachQuery(
+  text: string,
+  caret: number,
+): { query: string; start: number; end: number } | undefined {
+  const line = text.indexOf("\n") === -1 ? text : text.slice(0, text.indexOf("\n"));
+  const m = /^\/attach(\s|$)/i.exec(line);
+  if (!m || caret > line.length) return undefined;
+  const after = "/attach".length;
+  if (caret <= after) return undefined;
+  for (const w of words(line, after)) {
+    if (caret < w.start) break;
+    if (caret <= w.end) {
+      // The word's text up to the caret, its opening quote dropped.
+      let typed = line.slice(w.start, caret);
+      if (typed.startsWith('"') || typed.startsWith("'")) typed = typed.slice(1);
+      return { query: typed, start: w.start, end: w.end };
+    }
+  }
+  return { query: "", start: caret, end: caret };
+}
+
+/* What a picked local path becomes on an "/attach" line: quoted when it
+   has a space; a file ends the word with a space, a directory keeps the
+   caret after its slash for the next segment. */
+export function attachInsert(path: string) {
+  const quoted = /\s/.test(path) ? '"' + path + '"' : path;
+  return path.endsWith("/") ? (/\s/.test(path) ? '"' + path : path) : quoted + " ";
 }
