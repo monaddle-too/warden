@@ -70,6 +70,15 @@ type Config struct {
 	// BugReports turns on POST /api/bug-reports (bugreports.go); nil or
 	// disabled, the route answers 404.
 	BugReports *BugReportsConfig `json:"bugReports,omitempty"`
+	// InstanceName and InstanceVersion say which Warden this is and the
+	// build it runs (docs/host-dogfood-plan.md Part A), the pair the chat
+	// reports as agentOptions.instance. Owner mode hands them to a browser
+	// that has not signed in yet, so several instances on one machine tell
+	// themselves apart on the signed-out page; a public install never
+	// reveals its version to an anonymous visitor, so only ownerAuth is
+	// given them.
+	InstanceName    string `json:"instanceName,omitempty"`
+	InstanceVersion string `json:"instanceVersion,omitempty"`
 }
 type previewSession struct {
 	Parent, Binding string
@@ -221,7 +230,7 @@ func New(c Config) (*Server, error) {
 		if s.mint = upstreamTLS != nil; s.mint && !filepath.IsAbs(c.OwnerTokenFile) {
 			return nil, errors.New("owner mode over a tls:// upstream keeps its capability in an absolute ownerTokenFile")
 		}
-		s.Auth = newOwnerAuth(s.token, false, ownerCookie+"-"+s.previewPort)
+		s.Auth = newOwnerAuth(s.token, false, ownerCookie+"-"+s.previewPort, instanceOf(c))
 		s.logins, _ = newLedger("")
 	default:
 		return nil, errors.New("https origins use Google sign-in; owner mode is loopback http only")

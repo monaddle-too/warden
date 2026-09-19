@@ -2,6 +2,7 @@ package edge
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -457,6 +458,50 @@ func TestLoopbackModeConfiguration(t *testing.T) {
 		if _, err := New(c); err == nil {
 			t.Fatal("accepted:", name)
 		}
+	}
+}
+
+// The signed-out reply names which Warden this is (docs/host-dogfood-plan.md
+// Part A): a loopback owner install reports its instance and build so a
+// browser can tell `inner` from the default install, especially when the
+// page is opened through another Warden's preview proxy. The same settings
+// in public mode reveal nothing: the Google authenticator is never given
+// them, so an anonymous visitor cannot read the version off a sign-in page.
+func TestSignedOutSessionNamesTheInstanceInOwnerModeOnly(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(up.Close)
+	path := filepath.Join(t.TempDir(), "endpoint.json")
+	os.WriteFile(path, []byte(`{"url":"http://127.0.0.1:18780","token":"`+strings.Repeat("t", 64)+`"}`), 0600)
+	owner, err := New(Config{Mode: ModeOwner, Origin: "http://127.0.0.1:18781", PreviewSuffix: "localhost", Upstream: up.URL, UpstreamHost: "127.0.0.1:18780", OwnerTokenFile: path, Listen: "127.0.0.1:18781", InstanceName: "inner", InstanceVersion: "v0.0.0-dev.abc123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := invoke(owner, "http://127.0.0.1:18781/auth/session")
+	var body struct {
+		Enabled  bool `json:"enabled"`
+		Instance *struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"instance"`
+	}
+	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &body) != nil {
+		t.Fatal("owner session reply unreadable", r.Code, r.Body.String())
+	}
+	if body.Enabled || body.Instance == nil || body.Instance.Name != "inner" || body.Instance.Version != "v0.0.0-dev.abc123" {
+		t.Fatal("owner mode must name the instance and its build:", r.Body.String())
+	}
+	// An install that names neither says only that sign-in is disabled.
+	plain, _ := loopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	if got := invoke(plain, "http://127.0.0.1:18781/auth/session").Body.String(); strings.Contains(got, "instance") {
+		t.Fatal("nothing configured, nothing reported:", got)
+	}
+	public, err := New(Config{Origin: "https://warden.example.com", PreviewSuffix: "preview.example.com", ClientID: "test-client", OwnerEmails: "owner@gmail.com", Upstream: up.URL, UpstreamHost: "127.0.0.1:18780", OwnerTokenFile: path, InstanceName: "inner", InstanceVersion: "v0.0.0-dev.abc123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := invoke(public, "https://warden.example.com/auth/session").Body.String()
+	if strings.Contains(got, "inner") || strings.Contains(got, "v0.0.0-dev.abc123") || strings.Contains(got, "instance") {
+		t.Fatal("a public install must not reveal its build to an anonymous visitor:", got)
 	}
 }
 

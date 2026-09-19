@@ -10,6 +10,7 @@ import (
 
 	"warden/chat/internal/config"
 	"warden/chat/internal/edge"
+	"warden/chat/internal/release"
 	"warden/chat/internal/transport"
 )
 
@@ -81,6 +82,12 @@ func edgeConfig(cfg config.Config) edge.Config {
 		UpstreamHost:   config.HostOf(cfg.ChatAddress()),
 		OwnerTokenFile: cfg.OwnerTokenFile(),
 		Listen:         cfg.Previews.EdgeListen,
+	}
+	// Which Warden this is, for the signed-out page (edge/owner.go); the
+	// same pair the chat reports as agentOptions.instance. Owner mode only:
+	// a public install tells an anonymous visitor nothing about its build.
+	if cfg.Auth.Mode == config.AuthOwner {
+		c.InstanceName, c.InstanceVersion = config.InstanceName(cfg.Paths.State), release.Revision
 	}
 	if transport.IsTLS(c.Upstream) {
 		c.UpstreamTLS = cfg.TransportTLS()

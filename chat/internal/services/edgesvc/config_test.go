@@ -10,6 +10,7 @@ import (
 
 	"warden/chat/internal/config"
 	"warden/chat/internal/edge"
+	"warden/chat/internal/release"
 	"warden/chat/internal/transport"
 )
 
@@ -28,7 +29,9 @@ func TestEdgeLoadsBothConfigShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := edge.Config{Mode: edge.ModeOwner, Origin: "http://127.0.0.1:18781", PreviewSuffix: "localhost", Upstream: "http://127.0.0.1:18780", UpstreamHost: "127.0.0.1:18780", OwnerTokenFile: "/tmp/w/app/endpoint.json", Listen: "127.0.0.1:18781"}
+	// Owner mode carries the instance and the build for the signed-out page
+	// (edge/owner.go); the state directory's basename names the instance.
+	want := edge.Config{Mode: edge.ModeOwner, Origin: "http://127.0.0.1:18781", PreviewSuffix: "localhost", Upstream: "http://127.0.0.1:18780", UpstreamHost: "127.0.0.1:18780", OwnerTokenFile: "/tmp/w/app/endpoint.json", Listen: "127.0.0.1:18781", InstanceName: "w", InstanceVersion: release.Revision}
 	if c != want {
 		t.Fatalf("%+v", c)
 	}
@@ -43,6 +46,7 @@ func TestEdgeLoadsBothConfigShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A public install reveals no instance or version to anyone signed out.
 	want = edge.Config{Mode: edge.ModeGoogle, Origin: "https://warden.monaddle.com", PreviewSuffix: "preview.monaddle.com", ClientID: "client", OwnerEmails: "owner@gmail.com", DemoDomains: "example.com", Upstream: "http://127.0.0.1:18780", UpstreamHost: "127.0.0.1:18780", OwnerTokenFile: "/var/lib/warden/app/endpoint.json", LoginsFile: "/var/lib/warden/edge/logins.json", Listen: "172.18.0.1:19081"}
 	if c != want {
 		t.Fatalf("%+v", c)
@@ -123,7 +127,7 @@ func TestEdgeDerivesKubernetesOwnerShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := edge.Config{Mode: edge.ModeOwner, Origin: "http://127.0.0.1:18781", PreviewSuffix: "localhost", Upstream: "tls://warden-chat:7445", UpstreamHost: "warden-chat:7445", UpstreamTLS: c.UpstreamTLS, OwnerTokenFile: "/var/lib/warden/edge/endpoint.json", Listen: "0.0.0.0:18781"}
+	want := edge.Config{Mode: edge.ModeOwner, Origin: "http://127.0.0.1:18781", PreviewSuffix: "localhost", Upstream: "tls://warden-chat:7445", UpstreamHost: "warden-chat:7445", UpstreamTLS: c.UpstreamTLS, OwnerTokenFile: "/var/lib/warden/edge/endpoint.json", Listen: "0.0.0.0:18781", InstanceName: config.DefaultInstance, InstanceVersion: release.Revision}
 	if c != want || c.UpstreamTLS == nil || c.UpstreamTLS.CertFile != "/etc/warden/tls/tls.crt" {
 		t.Fatalf("%+v %+v", c, c.UpstreamTLS)
 	}

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
@@ -34,12 +35,32 @@ const ownerSessionTTL = 8 * time.Hour
 // 127.0.0.1:28781 next to a local `warden start` on 127.0.0.1:18781 would
 // otherwise overwrite the other's cookie at every API call.
 type ownerAuth struct {
-	token    func() (string, error)
+	token func() (string, error)
+	// instance names this Warden and its build for the signed-out page,
+	// nil when the install reports neither.
+	instance *instanceInfo
 	secure   bool
 	cookie   string
 	mu       sync.Mutex
 	sessions map[string]ownerSession
 }
+
+// instanceInfo is which Warden this is, the same shape the chat reports as
+// agentOptions.instance (chats.InstanceInfo) so the web app reads one type.
+type instanceInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// instanceOf is the pair to reveal, or nil when the config names neither.
+// Only owner mode calls it: a Google install keeps its version to itself.
+func instanceOf(c Config) *instanceInfo {
+	if c.InstanceName == "" && c.InstanceVersion == "" {
+		return nil
+	}
+	return &instanceInfo{Name: c.InstanceName, Version: c.InstanceVersion}
+}
+
 type ownerSession struct {
 	Capability string // hash of the capability the session was minted from
 	Minted     time.Time
@@ -48,8 +69,8 @@ type ownerSession struct {
 
 const ownerSessionBound = 64
 
-func newOwnerAuth(token func() (string, error), secure bool, cookie string) *ownerAuth {
-	return &ownerAuth{token: token, secure: secure, cookie: cookie, sessions: map[string]ownerSession{}}
+func newOwnerAuth(token func() (string, error), secure bool, cookie string, instance *instanceInfo) *ownerAuth {
+	return &ownerAuth{token: token, instance: instance, secure: secure, cookie: cookie, sessions: map[string]ownerSession{}}
 }
 
 // current returns the hash of the live capability, or "" when the chat is
@@ -168,12 +189,19 @@ func (a *ownerAuth) Establish(w http.ResponseWriter, r *http.Request) {
 }
 
 // Handler serves the /auth/ surface the web app expects: sign-in is not a
-// browser flow in owner mode, and logout drops the cookie session.
+// browser flow in owner mode, and logout drops the cookie session. The
+// session reply carries the instance, which is what the web app puts on the
+// signed-out page and in the browser title (AuthRoot.tsx, instance.ts): a
+// local install has nothing to hide from whoever reaches its loopback port,
+// and an unnamed page is the confusing one when a machine runs several.
 func (a *ownerAuth) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /auth/session", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"enabled":false}` + "\n"))
+		_ = json.NewEncoder(w).Encode(struct {
+			Enabled  bool          `json:"enabled"`
+			Instance *instanceInfo `json:"instance,omitempty"`
+		}{Enabled: false, Instance: a.instance})
 	})
 	mux.HandleFunc("POST /auth/logout", func(w http.ResponseWriter, r *http.Request) {
 		if c, err := r.Cookie(a.cookie); err == nil {
