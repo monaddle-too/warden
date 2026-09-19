@@ -196,4 +196,6 @@ mainline's record of progress is
 Kubernetes shape: design and progress in
 [warden-kubernetes-plan.md](warden-kubernetes-plan.md), operator guide
 [warden-kubernetes.md](warden-kubernetes.md). Architecture and security scope:
-[architecture.md](architecture.md). Local install: [warden-local-install.md](warden-local-install.md).
+[architecture.md](architecture.md); accepted gaps, each with what bounds it
+and what would close it: [known-security-issues.md](known-security-issues.md).
+Local install: [warden-local-install.md](warden-local-install.md).
