@@ -3,6 +3,7 @@ package chats
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"warden/chat/internal/conversation"
 	"warden/chat/internal/sandbox"
 )
@@ -214,7 +216,26 @@ type Store struct {
 	state  State
 	failed error
 	unlock func()
+	// version counts accepted mutations; encoded is the JSON of state at
+	// encodedVersion, kept so a snapshot, the before-image of an update
+	// and the bytes a save writes cost one marshal per version, not one
+	// per reader.
+	version        uint64
+	encoded        []byte
+	encodedVersion uint64
+	// dirty is set by stream: the state in memory is newer than chats.json
+	// and flush is scheduled (or a durable update writes it first).
+	dirty     bool
+	flushing  *time.Timer
+	saveDelay time.Duration
+	// changed is closed and replaced on every mutation, so Wait can block
+	// without polling.
+	changed chan struct{}
 }
+
+// streamDelay is how long stream coalesces writes: a streamed token
+// reaches the disk within this after it reached the state.
+const streamDelay = 250 * time.Millisecond
 
 func Open(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
@@ -234,7 +255,7 @@ func Open(root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{path: filepath.Join(root, "chats.json"), state: State{Version: 1, Chats: []*Chat{}}, unlock: unlock}
+	s := &Store{path: filepath.Join(root, "chats.json"), state: State{Version: 1, Chats: []*Chat{}}, unlock: unlock, changed: make(chan struct{}), saveDelay: streamDelay}
 	b, err := os.ReadFile(s.path)
 	if err == nil {
 		err = json.Unmarshal(b, &s.state)
@@ -273,21 +294,47 @@ func Open(root string) (*Store, error) {
 			}
 		}
 	}
-	if err = s.save(); err != nil {
+	if err = s.save(s.encode()); err != nil {
 		unlock()
 		return nil, err
 	}
 	return s, nil
 }
-func (s *Store) Close() { s.unlock() }
+
+// Close writes what stream left in memory, then releases the directory.
+func (s *Store) Close() {
+	s.mu.Lock()
+	if s.flushing != nil {
+		s.flushing.Stop()
+	}
+	s.flushLocked()
+	s.mu.Unlock()
+	s.unlock()
+}
 
 // dir is the private state directory; attachments live beside chats.json.
 func (s *Store) dir() string { return filepath.Dir(s.path) }
-func (s *Store) save() error {
-	b, err := json.Marshal(s.state)
-	if err != nil {
-		return err
+
+// encode is the JSON of the state, marshalled once per version.
+func (s *Store) encode() []byte {
+	if s.encoded == nil || s.encodedVersion != s.version {
+		s.encoded, _ = json.Marshal(s.state)
+		s.encodedVersion = s.version
 	}
+	return s.encoded
+}
+
+// bump records an accepted mutation: the encoding is stale and waiters
+// wake.
+func (s *Store) bump() {
+	s.version++
+	close(s.changed)
+	s.changed = make(chan struct{})
+}
+
+// save writes b as chats.json: a temp file beside it, fsynced, renamed
+// over it, the directory fsynced.
+func (s *Store) save(b []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(s.path), ".chats-")
 	if err != nil {
 		return err
@@ -313,35 +360,131 @@ func (s *Store) save() error {
 	}
 	return err
 }
+
+// update applies fn and persists the result before returning: a message,
+// an approval or a setting is on disk when its caller acknowledges it. A
+// mutation that changes nothing is not written. A failed write puts the
+// state back and marks the store failed.
 func (s *Store) update(fn func(*State) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.failed != nil {
 		return fmt.Errorf("chat storage unavailable: %w", s.failed)
 	}
-	// Mutations validate first; persist before acknowledging or dispatching work.
-	before, _ := json.Marshal(s.state)
+	before := s.encode()
 	if err := fn(&s.state); err != nil {
 		return err
 	}
-	after, _ := json.Marshal(s.state)
+	after, err := json.Marshal(s.state)
+	if err != nil {
+		return err
+	}
 	if bytes.Equal(before, after) {
+		if s.dirty {
+			// Nothing new, but what stream left is due; a durable update
+			// covers it.
+			return s.writeLocked(after)
+		}
 		return nil
 	}
-	if err := s.save(); err != nil {
+	s.bump()
+	s.encoded, s.encodedVersion = after, s.version
+	if err := s.writeLocked(after); err != nil {
 		_ = json.Unmarshal(before, &s.state)
-		s.failed = err
+		s.bump()
+		s.encoded, s.encodedVersion = before, s.version
 		return err
 	}
 	return nil
 }
-func (s *Store) Snapshot() State {
+
+// writeLocked saves b as the current state and clears what stream left.
+func (s *Store) writeLocked(b []byte) error {
+	if err := s.save(b); err != nil {
+		s.failed = err
+		return err
+	}
+	s.dirty = false
+	if s.flushing != nil {
+		s.flushing.Stop()
+		s.flushing = nil
+	}
+	return nil
+}
+
+// stream applies fn in memory and writes it within streamDelay, together
+// with whatever else streams meanwhile: a streamed token is shown at once
+// and reaches the disk shortly after, instead of each token marshalling
+// and fsyncing the whole state. The next durable update writes it sooner.
+// A restart loses at most the last streamDelay of streamed text, and a
+// restart already marks a running chat interrupted.
+func (s *Store) stream(fn func(*State) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, _ := json.Marshal(s.state)
+	if s.failed != nil {
+		return fmt.Errorf("chat storage unavailable: %w", s.failed)
+	}
+	if err := fn(&s.state); err != nil {
+		return err
+	}
+	s.bump()
+	s.dirty = true
+	if s.flushing == nil {
+		s.flushing = time.AfterFunc(s.saveDelay, s.flush)
+	}
+	return nil
+}
+
+// flush writes what stream left in memory.
+func (s *Store) flush() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flushing = nil
+	s.flushLocked()
+}
+func (s *Store) flushLocked() {
+	if !s.dirty || s.failed != nil {
+		return
+	}
+	if err := s.save(s.encode()); err != nil {
+		s.failed = err
+		return
+	}
+	s.dirty = false
+}
+
+// Snapshot is an independent copy of the state, decoded from the encoding
+// of the current version outside the lock: the lock is held to fetch the
+// bytes, not for the decode, and the encoding is shared until the next
+// mutation.
+func (s *Store) Snapshot() State {
+	s.mu.Lock()
+	b := s.encode()
+	s.mu.Unlock()
 	var st State
 	_ = json.Unmarshal(b, &st)
 	return st
+}
+
+// Version is the count of mutations so far; Wait returns once it exceeds
+// since, or ctx ends.
+func (s *Store) Version() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.version
+}
+func (s *Store) Wait(ctx context.Context, since uint64) uint64 {
+	s.mu.Lock()
+	v, ch := s.version, s.changed
+	s.mu.Unlock()
+	if v > since {
+		return v
+	}
+	select {
+	case <-ch:
+	case <-ctx.Done():
+	}
+	return s.Version()
 }
 func (s State) chat(id string) *Chat {
 	for _, c := range s.Chats {

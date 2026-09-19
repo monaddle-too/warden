@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -110,11 +111,25 @@ type Engine struct {
 	// NormalizeImage replaces the imageguard subprocess (images.go) in
 	// tests; nil runs it.
 	NormalizeImage func(context.Context, []byte) ([]byte, error)
-	// limits is the runner's size offer, asked for on demand and kept for
-	// limitsTTL: the form and validation need it before any chat exists.
-	limitsMu sync.Mutex
-	limits   *sandbox.ResourceLimits
-	limitsAt time.Time
+	// limits is the runner's size offer, refreshed in the background every
+	// limitsTTL by Serve (refreshLimits) and fetched once on demand before
+	// the first refresh: the form and validation need it before any chat
+	// exists. limitsMu guards the value, never the fetch, so a view never
+	// waits on the runner.
+	limitsMu    sync.Mutex
+	limits      *sandbox.ResourceLimits
+	limitsAt    time.Time
+	limitsFetch sync.Mutex
+	// view is the encoded view of the current generation (ViewJSON),
+	// shared by every event stream and state read; viewGen counts the
+	// changes outside the store that the view shows (typing, startup
+	// stages, the size offer), touch bumps it and wakes viewWait.
+	viewMu      sync.Mutex
+	view        []byte
+	viewKey     viewKey
+	viewTyping  bool
+	viewGen     uint64
+	viewChanged chan struct{}
 	// capacity is the runner's last capacity answer (capacity.go), kept
 	// for capacityTTL so an open size picker's polling shares one read.
 	capacityMu sync.Mutex
@@ -229,6 +244,9 @@ func (e *Engine) Serve(ctx context.Context) {
 	defer e.background.Wait() // after the runs, which spawn them
 	defer e.Bugs.Recover("engine serve loop")
 	e.fillDefaultModels()
+	if e.Worker != nil {
+		go func() { defer e.Bugs.Recover("limits refresh"); e.refreshLimits(ctx) }()
+	}
 	if e.PolicyAddress != "" {
 		deliveryCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
@@ -290,21 +308,62 @@ func (e *Engine) Serve(ctx context.Context) {
 const limitsTTL = 30 * time.Second
 
 // Limits is the runner's size offer (default, ceiling, CPU step, whether
-// a resize restarts), or nil when the runner cannot be reached.
+// a resize restarts), or nil when the runner cannot be reached. It is
+// the offer refreshLimits last got; only before the first refresh does
+// it ask the runner itself, once per limitsTTL, so a runner busy stopping
+// a workspace never stalls the views that show the offer.
 func (e *Engine) Limits(ctx context.Context) *sandbox.ResourceLimits {
 	e.limitsMu.Lock()
-	defer e.limitsMu.Unlock()
-	if e.Worker == nil || (e.limits != nil && e.now().Before(e.limitsAt.Add(limitsTTL))) {
-		return e.limits
+	limits, at := e.limits, e.limitsAt
+	e.limitsMu.Unlock()
+	if e.Worker == nil || limits != nil || e.now().Before(at.Add(limitsTTL)) {
+		return limits
+	}
+	return e.fetchLimits(ctx)
+}
+
+// fetchLimits asks the runner for its offer and keeps the answer; a
+// failed ask keeps the previous offer and is not repeated for limitsTTL.
+func (e *Engine) fetchLimits(ctx context.Context) *sandbox.ResourceLimits {
+	e.limitsFetch.Lock()
+	defer e.limitsFetch.Unlock()
+	e.limitsMu.Lock()
+	limits, at := e.limits, e.limitsAt
+	e.limitsMu.Unlock()
+	if e.now().Before(at.Add(limitsTTL)) {
+		return limits // fetched meanwhile
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	res, err := e.Worker.Call(ctx, sandbox.Request{Operation: "health"})
-	if err != nil || res.Limits == nil {
-		return e.limits
+	e.limitsMu.Lock()
+	defer e.limitsMu.Unlock()
+	e.limitsAt = e.now()
+	if err == nil && res.Limits != nil && !reflect.DeepEqual(e.limits, res.Limits) {
+		e.limits = res.Limits
+		e.touch()
 	}
-	e.limits, e.limitsAt = res.Limits, e.now()
 	return e.limits
+}
+
+// refreshLimits keeps the offer current while the engine serves: every
+// limitsTTL, sooner after a failure while nothing is known yet.
+func (e *Engine) refreshLimits(ctx context.Context) {
+	for {
+		limits := e.fetchLimits(ctx)
+		wait := limitsTTL
+		if limits == nil {
+			wait = 5 * time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		e.limitsMu.Lock()
+		e.limitsAt = time.Time{} // due
+		e.limitsMu.Unlock()
+	}
 }
 
 // Create starts a chat: on a fresh workspace of the given size (nil is the
@@ -480,6 +539,7 @@ func (e *Engine) Typing(id string, actor cv.Actor) error {
 	if e.typing[id] == nil {
 		e.typing[id] = map[string]Typist{}
 	}
+	defer e.touch()
 	e.typing[id][actor.PrincipalID] = Typist{PrincipalID: actor.PrincipalID, Name: label, Until: float64(e.now().Add(TypingTTL).UnixNano()) / 1e9}
 	return nil
 }
@@ -539,6 +599,80 @@ func (e *Engine) View() View {
 	models := catalogRows(st.Catalog)
 	st.Catalog = nil // clients get it as agentOptions.models
 	return View{State: st, Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models, Defaults: e.defaultModels(), LocalFiles: e.LocalMode}}
+}
+
+// viewKey names a generation of the view: the store's version and the
+// engine's own changes (touch).
+type viewKey struct{ store, engine uint64 }
+
+// key is the current generation.
+func (e *Engine) key() viewKey {
+	e.viewMu.Lock()
+	gen := e.viewGen
+	e.viewMu.Unlock()
+	return viewKey{e.Store.Version(), gen}
+}
+
+// touch records a change the view shows that the store does not hold
+// (typing, a startup stage, the size offer) and wakes viewWait.
+func (e *Engine) touch() {
+	e.viewMu.Lock()
+	defer e.viewMu.Unlock()
+	e.viewGen++
+	if e.viewChanged != nil {
+		close(e.viewChanged)
+		e.viewChanged = nil
+	}
+}
+
+// ViewJSON is the encoded view of the current generation, built once per
+// generation and shared by every event stream and state read (the slice
+// is never written to), and whether it shows typists: a view with
+// typists is rebuilt on every read, since they expire with time.
+func (e *Engine) ViewJSON() ([]byte, viewKey, bool) {
+	key := e.key()
+	e.viewMu.Lock()
+	if e.view != nil && e.viewKey == key && !e.viewTyping {
+		b := e.view
+		e.viewMu.Unlock()
+		return b, key, false
+	}
+	e.viewMu.Unlock()
+	view := e.View()
+	b, _ := json.Marshal(view)
+	typing := false
+	for _, c := range view.Chats {
+		typing = typing || len(c.Typing) > 0
+	}
+	e.viewMu.Lock()
+	defer e.viewMu.Unlock()
+	if e.view == nil || (key.store >= e.viewKey.store && key.engine >= e.viewKey.engine) {
+		e.view, e.viewKey, e.viewTyping = b, key, typing
+	}
+	return b, key, typing
+}
+
+// viewWait returns when the generation is past since, or ctx ends.
+func (e *Engine) viewWait(ctx context.Context, since viewKey) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	e.viewMu.Lock()
+	if e.viewGen > since.engine {
+		e.viewMu.Unlock()
+		return
+	}
+	if e.viewChanged == nil {
+		e.viewChanged = make(chan struct{})
+	}
+	touched := e.viewChanged
+	e.viewMu.Unlock()
+	stored := make(chan struct{})
+	go func() { defer close(stored); e.Store.Wait(ctx, since.store) }()
+	select {
+	case <-touched:
+	case <-stored:
+	case <-ctx.Done():
+	}
 }
 
 // state is the store with typing indicators and each chat's spend filled
@@ -1598,7 +1732,15 @@ func (e *Engine) notification(ctx context.Context, id string, f agent.Frame) err
 		// (images.go keepReadImage): the store keeps an id, never bytes.
 		e.keepReadImage(ctx, id, agent.Map(f.Params["item"]))
 	}
-	return e.Store.update(func(st *State) error {
+	// A streamed token is applied in memory and written shortly after with
+	// the tokens around it (Store.stream); every other frame is on disk
+	// before the adapter gets its acknowledgement.
+	apply := e.Store.update
+	switch f.Method {
+	case "item/agentMessage/delta", "item/commandExecution/outputDelta", "item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded", "thread/tokenUsage/updated", "thread/context/updated":
+		apply = e.Store.stream
+	}
+	return apply(func(st *State) error {
 		chat := st.chat(id)
 		if f.Method == "permissions/modeChanged" {
 			chat.applyMode(agent.String(f.Params["mode"]))

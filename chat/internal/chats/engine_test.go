@@ -325,6 +325,9 @@ func TestRunStreamingSteeringResume(t *testing.T) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, r := range w.requests {
+		if r.Operation == "health" {
+			continue // the size offer (refreshLimits) is no chat's request
+		}
 		if r.ProjectID != "warden-local" || r.PrincipalID != "owner" || r.ChatID != id || r.SandboxID == "" {
 			t.Fatalf("missing trusted binding: %+v", r)
 		}
