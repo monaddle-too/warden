@@ -2,8 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -53,8 +51,7 @@ func (w *Worker) cloneLocked(ctx context.Context, r Request) (Response, error) {
 	if len(w.managed.Sandboxes) >= 32 {
 		return Response{}, errors.New("worker has 32 retained sandboxes")
 	}
-	hash := sha256.Sum256([]byte(r.SandboxID))
-	s := &managedSandbox{SandboxInfo: SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID, RuntimeName: "wc-" + hex.EncodeToString(hash[:12]), Directory: src.Directory, State: "stopped", Resources: w.resourcesOf(src)}, PrincipalID: r.PrincipalID, Source: src.RuntimeName, Repository: src.Repository, RepositoryCheckout: src.RepositoryCheckout, RepositoryReady: src.RepositoryReady, Checkpoints: append([]Checkpoint(nil), src.Checkpoints...), LastActivity: w.now()}
+	s := &managedSandbox{SandboxInfo: SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID, RuntimeName: RuntimeName(w.Instance, r.SandboxID), Directory: src.Directory, State: "stopped", Resources: w.resourcesOf(src)}, PrincipalID: r.PrincipalID, Source: src.RuntimeName, Repository: src.Repository, RepositoryCheckout: src.RepositoryCheckout, RepositoryReady: src.RepositoryReady, Checkpoints: append([]Checkpoint(nil), src.Checkpoints...), LastActivity: w.now()}
 	c := &chatBinding{ID: r.ChatID, ProjectID: r.ProjectID, SandboxID: r.SandboxID}
 	// The source as the driver needs it: SBX snapshots a stopped sandbox
 	// (its residency would be cut by the stop, so it goes first); a pod

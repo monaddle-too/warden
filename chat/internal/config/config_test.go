@@ -520,3 +520,33 @@ func TestReportingDefaultsOptInAndURL(t *testing.T) {
 		}
 	}
 }
+
+func TestInstanceNameAndNamePrefix(t *testing.T) {
+	for state, want := range map[string]string{
+		"/Users/o/.warden":            DefaultInstance,
+		"/home/o/.local/share/warden": DefaultInstance,
+		"/Users/o/.warden-dev":        "dev",
+		"/Users/o/.warden-dogfood-a/": "dogfood-a",
+		"/tmp/wd123/state":            "state",
+	} {
+		if got := InstanceName(state); got != want {
+			t.Errorf("InstanceName(%q) = %q, want %q", state, got, want)
+		}
+	}
+	for name, ok := range map[string]bool{"dev": true, "dogfood-a": true, "A1": true, "": false, "spare": false, "Spare": false, "a.b": false, "a b": false} {
+		if got := ValidInstanceName(name); got != ok {
+			t.Errorf("ValidInstanceName(%q) = %v, want %v", name, got, ok)
+		}
+	}
+	c := Defaults("/tmp/wd/state")
+	c.Sandboxes.NamePrefix = "dev"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("namePrefix dev: %v", err)
+	}
+	for _, bad := range []string{"spare", "a.b"} {
+		c.Sandboxes.NamePrefix = bad
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "sandboxes.namePrefix") {
+			t.Fatalf("namePrefix %q accepted: %v", bad, err)
+		}
+	}
+}

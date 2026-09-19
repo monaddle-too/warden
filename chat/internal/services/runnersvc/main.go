@@ -43,6 +43,7 @@ func run(args []string) error {
 	memoryMB := fs.Int("sandbox-memory-mb", 1536, "Memory in MiB for newly created chat sandboxes, 512–16384 (sandboxes.memoryMB)")
 	residents := fs.Int("max-resident", 2, "Maximum resident sandbox environments (sandboxes.maxRunning)")
 	spares := fs.Int("spare-sandboxes", 1, "Booted spare guests kept ready for new environments, beside max-resident (sandboxes.warmSpares)")
+	namePrefix := fs.String("sandbox-name-prefix", "", "The instance whose sandboxes these are, carried in every runtime name so instances sharing one SBX namespace keep apart (sandboxes.namePrefix; empty: the default instance's wc-<hex>)")
 	parallel := fs.Int("parallel", sandbox.MaxParallelSessions, "Maximum simultaneous task sandboxes")
 	retained := fs.Int("retained", 32, "Maximum retained task sandboxes (sandboxes.keepStopped)")
 	tlsListen := fs.String("tls-listen", "", "Mutual-TLS host:port to listen on instead of the Unix socket (services.runner.listen as tls://)")
@@ -57,7 +58,7 @@ func run(args []string) error {
 		fmt.Println(handshake.Self("warden-runner"))
 		return nil
 	}
-	s, err := resolveSettings(fs, runnerFlags{configPath: configPath, root: root, socket: socket, wardenSocket: wardenSocket, tlsListen: tlsListen, tlsCA: tlsCA, tlsCert: tlsCert, tlsKey: tlsKey, sbx: sbx, template: template, runtimeDir: runtimeDir, claudePath: claudePath, idle: idle, memoryMB: memoryMB, residents: residents, spares: spares, retained: retained})
+	s, err := resolveSettings(fs, runnerFlags{configPath: configPath, root: root, socket: socket, wardenSocket: wardenSocket, tlsListen: tlsListen, tlsCA: tlsCA, tlsCert: tlsCert, tlsKey: tlsKey, sbx: sbx, template: template, runtimeDir: runtimeDir, claudePath: claudePath, idle: idle, memoryMB: memoryMB, residents: residents, spares: spares, retained: retained, namePrefix: namePrefix})
 	if err != nil {
 		slog.Error("configuration", "error", err)
 		return services.ExitCode(1)
@@ -121,6 +122,7 @@ func run(args []string) error {
 	w.RuntimeDir = *runtimeDir
 	w.ClaudePath = *claudePath
 	w.Spares = *spares
+	w.Instance = s.namePrefix
 	w.Gate = &sandbox.PolicyEnforcement{Address: s.policy, TLS: s.tls}
 	w.IdleTimeout = *idle
 	w.MaxResident = *residents

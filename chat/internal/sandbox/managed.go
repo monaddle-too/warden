@@ -307,8 +307,7 @@ func (w *Worker) bindLocked(r Request) (Response, error) {
 		if len(w.managed.Sandboxes) >= 32 {
 			return Response{}, errors.New("worker has 32 retained sandboxes")
 		}
-		hash := sha256.Sum256([]byte(r.SandboxID))
-		s = &managedSandbox{SandboxInfo: SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID, RuntimeName: "wc-" + hex.EncodeToString(hash[:12]), Directory: "/home/agent/workspace", State: "stopped", Resources: w.Limits.Default}, PrincipalID: r.PrincipalID, LastActivity: w.now()}
+		s = &managedSandbox{SandboxInfo: SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID, RuntimeName: RuntimeName(w.Instance, r.SandboxID), Directory: "/home/agent/workspace", State: "stopped", Resources: w.Limits.Default}, PrincipalID: r.PrincipalID, LastActivity: w.now()}
 		if r.Resources != nil {
 			// The size a fresh workspace was created with; a size on a
 			// later request is ignored, the sandbox has its own by then.
@@ -1580,7 +1579,7 @@ func (w *Worker) maintainSpares(ctx context.Context) {
 	}
 	w.spareBusy = true
 	w.mu.Unlock()
-	name := "wc-spare-" + randomID()[:16]
+	name := SpareName(w.Instance)
 	go func() {
 		createCtx, done := context.WithTimeout(ctx, w.operationTimeout("prepare"))
 		defer done()

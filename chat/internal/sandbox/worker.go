@@ -43,6 +43,11 @@ type Worker struct {
 	// are the pinned SBX executable and guest template; only the SBX runtime
 	// driver reads them.
 	Root, Executable, Template string
+	// Instance is the Warden instance these sandboxes belong to
+	// (sandboxes.namePrefix): every runtime name carries it, so instances
+	// sharing one SBX namespace keep out of each other's inventory
+	// (names.go). "" is the default instance.
+	Instance string
 	// Spares is how many booted, unbound guests to keep ready so a new
 	// environment skips sandbox creation. They sit beside MaxResident.
 	Spares       int
