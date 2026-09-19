@@ -17,3 +17,6 @@ chat/web/node_modules/
 
 # The GKE test cluster settings name the owner (scripts/k8s-gke.sh).
 deploy/k8s/gke/env
+
+# Local build output of `go -C chat build ./cmd/warden`; releases use dist/.
+chat/warden
