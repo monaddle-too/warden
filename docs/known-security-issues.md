@@ -81,6 +81,58 @@ sandboxes too, since they NAT through the VM. Deferred by the owner on
 
 Recorded 2026-09-19.
 
+### 3. A jailbroken workspace's agent is the owner on the Mac
+
+**What.** The jailbreak ([host-dogfood-plan.md](host-dogfood-plan.md),
+Part B) lets a local owner give one workspace host access. Its agent then
+holds `host_run` (a shell command on this machine, as the owner, through
+their login shell), `host_put` / `host_get` (files each way under the
+home directory) and `host_expose` (a host port as a preview). Inside that
+fence the agent is the owner: anything in the home directory, `~/.ssh`,
+what the keychain gives a launchd agent, the outer Warden's own state and
+provider sign-ins (the copies refuse that directory; a command does not),
+every other Warden instance, the LAN and the internet with the owner's
+network position. A prompt injection carried into a jailbroken workspace
+(a repository, a document, a page the agent reads) can do what the owner
+can do, subject only to the permission mode and rules. The register's
+invariant — the agent never holds a credential of the owner's and never
+has a path to the host — is suspended for that workspace, by the owner,
+visibly.
+
+**Why it matters.** The rest of Warden's design assumes a sandbox is the
+security boundary. One jailbroken workspace makes that boundary the
+owner's judgement about what they ask the agent to do and what the agent
+reads while doing it.
+
+**What bounds it today.** Off by default, absent from every UI and API
+unless the owner writes `dogfood.jailbreak` into `warden.json` (or runs
+`warden start --jailbreak`), refused at config validation outside a local
+owner install, never on a server or Kubernetes, and refused by the runner
+unless it was started with the flag, so a chat-service bug cannot reach
+it. Per workspace, the owner's opt-in at creation or from the panel,
+turned off at once. Marked: a red JAILBROKEN badge Warden draws in the
+sidebar, the chat header, the workspace panel and the TUI status line
+(known issue 1 applies to everything else in the transcript, not to the
+badge). Runner-mediated, never a network path: the sandbox stays
+`--deny-network **`, the gateway still refuses loopback; the agent holds
+tools, not a shell, and each call is a HOST card in the transcript, a
+decision under the chat's permission mode and rules (`deny
+mcp__warden__host_run(rm *)` and the like), and an audit entry in the
+install-wide chain and the sandbox's own, with the command, cwd, exit,
+bytes and duration. Stop kills the command's process group. Copies are
+size-capped and stay under the home directory, outside the outer
+instance's state.
+
+**What would close it.**
+- A dedicated macOS user for `host_run`: the runner would run the command
+  as that user (a `sudo` rule, or a second runner process under it), so a
+  jailbroken agent owns a scratch account rather than the owner's.
+- The `pf` anchor of known issue 2 applied to host commands' network.
+- An allowlist of command prefixes in `dogfood.jailbreak` itself, enforced
+  by the runner, instead of only in permission rules the model can see.
+
+Recorded 2026-09-19.
+
 ## Closed
 
 None yet.

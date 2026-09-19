@@ -546,6 +546,35 @@ answer and who gave it land in the workspace's Access history.
   a reason, up to the ceiling in `warden.json`; only growth, never less.
   See "Workspace size" below for what happens when you approve.
 
+## Host access for one workspace (dogfooding)
+
+By default no workspace has any path to this Mac: the sandbox's network is
+denied, the gateway refuses loopback, and an agent's commands run in the
+guest. For developing Warden from a Warden chat, a local owner install can
+turn on the **jailbreak**: add to `warden.json`
+
+```json
+"dogfood": { "jailbreak": true }
+```
+
+and restart (or run `warden start --jailbreak` for one run). It is refused
+outside owner mode on a local runtime, so a server or Kubernetes install
+cannot have it. With it on, the New chat form offers **Host access** (off
+by default; `warden chat new --jailbreak` does the same) and the workspace
+panel's Host access section turns it on or off later. A workspace with
+host access wears a red **JAILBROKEN** mark, and its agent gets
+`host_run` (a command on this Mac as you, through your login shell),
+`host_put` / `host_get` (files each way under your home directory, never
+Warden's own state), `host_expose` (a port on this Mac as a preview) and
+`host_status` (the Warden instances installed here). Each call follows
+the chat's permission mode and rules like any other tool — in ask mode it
+is a card, a rule such as `deny mcp__warden__host_run(rm *)` or `allow
+mcp__warden__host_run(warden *)` decides first — appears as a HOST card in
+the transcript, and is written to the audit log
+(`<state>/policy/audit/events.jsonl`). Inside that workspace the agent is
+you on this machine; read
+[known security issue 3](known-security-issues.md) before turning it on.
+
 ## Workspace size
 
 A workspace has a CPU and memory size of its own. The new-chat form's
