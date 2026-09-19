@@ -156,20 +156,19 @@ func (w *Worker) resourcesOf(s *managedSandbox) Resources {
 func (w *Worker) specOf(s *managedSandbox) RuntimeSpec {
 	return RuntimeSpec{Name: s.RuntimeName, Directory: s.Directory, Source: s.Source, SandboxID: s.ID, Generation: s.Generation, Resources: w.resourcesOf(s)}
 }
+
+// saveManagedLocked persists the inventory: the rows that changed since
+// the last save (store.go).
 func (w *Worker) saveManagedLocked() error {
 	w.refreshSnapshotsLocked()
-	return atomicJSON(filepath.Join(w.Root, "managed-v2.json"), w.managed)
+	return w.writeManagedLocked()
 }
 func (w *Worker) initializeManaged(ctx context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.defaultsLocked()
-	b, err := os.ReadFile(filepath.Join(w.Root, "managed-v2.json"))
-	if err == nil {
-		if err = json.Unmarshal(b, w.managed); err != nil {
-			return fmt.Errorf("invalid worker registry: %w", err)
-		}
-	} else if !os.IsNotExist(err) {
+	err := w.loadManagedLocked()
+	if err != nil {
 		return err
 	}
 	for _, c := range w.managed.Chats {

@@ -28,6 +28,11 @@ const MaxParallelSessions = 2
 // Worker is the protocol 2 sandbox worker: every guest operation goes through
 // Runtime (RuntimeDriver) and every network grant through Gate (Enforcement).
 type Worker struct {
+	// store is the inventory database (store.go), opened once on demand.
+	store     *runnerStore
+	storeOnce sync.Once
+	storeErr  error
+
 	ordinarySlots chan struct{}
 	controlSlots  chan struct{}
 	execSlots     chan struct{} // a person's own commands (exec.go)
@@ -125,6 +130,7 @@ func (w *Worker) Serve(ctx context.Context, l net.Listener) error {
 	if err := w.initializeManaged(ctx); err != nil {
 		return err
 	}
+	defer w.closeStore()
 	var previews *http.Server
 	if w.PreviewListener != nil {
 		// Started only once the registry is loaded, so a request racing the

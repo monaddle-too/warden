@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -28,9 +26,11 @@ func (w *Worker) registerControlBinding(r Request) {
 	defer c.mu.Unlock()
 	c.bindings[r.ChatID] = r
 }
-func (w *Worker) cancelPath(key string) string {
+
+// runHash names a run's tombstone row (store.go, cancelled_runs).
+func runHash(key string) string {
 	h := sha256.Sum256([]byte(key))
-	return filepath.Join(w.Root, "cancelled-runs", hex.EncodeToString(h[:])+".json")
+	return hex.EncodeToString(h[:])
 }
 func (w *Worker) registerRunControl(parent context.Context, r Request) (context.Context, func(), error) {
 	c := w.control()
@@ -40,10 +40,10 @@ func (w *Worker) registerRunControl(parent context.Context, r Request) (context.
 	if c.cancelled[key] {
 		return nil, nil, errors.New("run was cancelled")
 	}
-	if _, err := os.Stat(w.cancelPath(key)); err == nil {
-		return nil, nil, errors.New("run was cancelled")
-	} else if !os.IsNotExist(err) {
+	if recorded, err := w.cancelledRunRecorded(runHash(key)); err != nil {
 		return nil, nil, err
+	} else if recorded {
+		return nil, nil, errors.New("run was cancelled")
 	}
 	ctx, cancel := context.WithCancel(parent)
 	c.cancel[key] = cancel
@@ -56,8 +56,8 @@ func (w *Worker) wasExplicitlyCancelled(r Request) bool {
 	if c.cancelled[runKey(r)] {
 		return true
 	}
-	_, err := os.Stat(w.cancelPath(runKey(r)))
-	return err == nil
+	recorded, _ := w.cancelledRunRecorded(runHash(runKey(r)))
+	return recorded
 }
 func (w *Worker) cancelManaged(r Request) error {
 	c := w.control()
@@ -70,7 +70,7 @@ func (w *Worker) cancelManaged(r Request) error {
 	key := runKey(r)
 	// Commit cancellation before signaling. A stale run's tombstone can never
 	// authorize stopping a different active run in this shared sandbox.
-	if err := atomicJSON(w.cancelPath(key), true); err != nil {
+	if err := w.recordCancelledRun(runHash(key)); err != nil {
 		c.mu.Unlock()
 		return err
 	}

@@ -477,7 +477,7 @@ namespace was started detached and keeps running.
 | `warden.json` | Detected facts and paths (mode 0600, no secrets). |
 | `install.json` | Which release installed this directory. |
 | `policy/` | Policy service state: `sbx-control.sock`, bindings, runtime identities, `sharing.sqlite`, `google.sqlite`, the gateway CA. |
-| `runner/` | Runner state: `worker.sock`, `managed-v2.json`, sandbox metadata. |
+| `runner/` | Runner state: `worker.sock`, `runner.sqlite` (the sandbox inventory and cancelled-run tombstones, a row each; `managed-v2.json.migrated` and `cancelled-runs.migrated/` are the pre-database files, kept after the one-time import), sandbox metadata. |
 | `app/` | Chat state: `chats.sqlite` (every chat, transcript, approval, port, instruction set and catalog, a row each; `chats.json.migrated` is the pre-database file, kept as a backup after the one-time import), `endpoint.json` (the owner capability). |
 | `edge/` | Edge state. |
 | `provider/` | The 0600 login files (`auth.json`, `claude.json`, `github.json`). |

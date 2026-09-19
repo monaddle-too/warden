@@ -900,22 +900,15 @@ func TestRevokedMappingIdentitySurvivesRuntimeRestoration(t *testing.T) {
 	if _, err := w.dispatch(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(filepath.Join(w.Root, "managed-v2.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var saved managedState
-	if err = json.Unmarshal(raw, &saved); err != nil {
-		t.Fatal(err)
-	}
+	saved := savedManaged(t, w)
 	if got := saved.Publications[pubKey(r.SandboxID, 3000)]; got.State != "removed" || got.HostPort != host {
 		t.Fatal("revoked mapping identity forgotten", got)
 	}
 	// SBX can restore its saved loopback publication when the VM starts again.
-	if err = d.publishAt(PortMapping{Address: "127.0.0.1", Port: host, GuestPort: 3000}); err != nil {
+	if err := d.publishAt(PortMapping{Address: "127.0.0.1", Port: host, GuestPort: 3000}); err != nil {
 		t.Fatal(err)
 	}
-	if err = w.reconcileRemovedLocked(context.Background(), w.managed.Sandboxes[r.SandboxID]); err != nil {
+	if err := w.reconcileRemovedLocked(context.Background(), w.managed.Sandboxes[r.SandboxID]); err != nil {
 		t.Fatal(err)
 	}
 	mappings, err := d.Mappings(context.Background(), "")
@@ -2000,20 +1993,8 @@ func TestPublicationAddressBackfilledFromDriverOnLoad(t *testing.T) {
 	if a.State != "available" {
 		t.Fatal(a)
 	}
-	path := filepath.Join(w.Root, "managed-v2.json")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var saved map[string]any
-	if err = json.Unmarshal(raw, &saved); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range saved["Publications"].(map[string]any) {
-		delete(p.(map[string]any), "Address")
-	}
-	raw, _ = json.Marshal(saved)
-	if err = os.WriteFile(path, raw, 0o600); err != nil {
+	// A record written before publications recorded their address.
+	if _, err := w.store.db.Exec(`UPDATE publications SET record = json_remove(record, '$.Address')`); err != nil {
 		t.Fatal(err)
 	}
 	fresh := NewWorker(w.Root, "/never-host-exec", "template")
@@ -2231,4 +2212,17 @@ func TestRestartResetsAnInterruptedCreationWhoseStopIsRefused(t *testing.T) {
 	if !created {
 		t.Fatal("the reset sandbox was not created afresh", d.created())
 	}
+}
+
+// savedManaged is the inventory as the database holds it, loaded by a
+// worker of its own.
+func savedManaged(t *testing.T, w *Worker) *managedState {
+	t.Helper()
+	other := NewWorker(w.Root, w.Executable, w.Template)
+	other.managed = newManagedState()
+	if err := other.loadManagedLocked(); err != nil {
+		t.Fatal(err)
+	}
+	other.closeStore()
+	return other.managed
 }
