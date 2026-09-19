@@ -610,15 +610,21 @@ const UpstreamHost = "host"
 // its tools (chats/host.go adds it to the developer instructions).
 const HostAccessPrompt = "This workspace has host access: the host_run, host_put, host_get, host_expose and host_status tools act on the owner's own computer, outside the sandbox, as the owner. Use them only for what the owner asked that needs the host (building and running Warden there, driving a second Warden instance, reading its logs); everything else stays in the sandbox. Each host call is shown to the owner and subject to their permission rules."
 
-// hostEnv is env with HOME set to home and the XDG_*_HOME variables the
-// sbx namespace wrapper exports removed, so a host command sees the
-// owner's account the way a terminal does.
+// hostEnv is env with HOME set to home, the XDG_*_HOME variables the sbx
+// namespace wrapper exports removed and the launcher's WARDEN_* selection
+// of this instance dropped, so a host command sees the owner's account the
+// way a terminal does.
 func hostEnv(env []string, home string) []string {
 	out := make([]string, 0, len(env)+1)
 	for _, kv := range env {
 		key, _, _ := strings.Cut(kv, "=")
 		switch key {
 		case "HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME":
+			continue
+		case "WARDEN_CONFIG", "WARDEN_INSTANCE":
+			// The launcher hands its services the outer instance's
+			// warden.json this way; a `warden` run on the host would
+			// otherwise read (or refuse) that config for another instance.
 			continue
 		}
 		out = append(out, kv)

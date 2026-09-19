@@ -20,6 +20,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"golang.org/x/term"
 	"io"
 	"os"
 
@@ -179,6 +180,9 @@ func isTerminal(r io.Reader) bool {
 	if !ok {
 		return false
 	}
-	info, err := f.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	// A character device is not enough: /dev/null is one, and a command
+	// the runner runs on the host (host_run) has /dev/null for stdin. The
+	// first dogfood loop's `instance create` then waited for a bug-report
+	// review nobody could give.
+	return term.IsTerminal(int(f.Fd()))
 }

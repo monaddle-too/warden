@@ -437,7 +437,7 @@ func TestHostStatus(t *testing.T) {
 // itself is pointed at (the first dogfood run resolved `~/.warden` under
 // the namespace).
 func TestHostEnvRestoresTheOwnersHome(t *testing.T) {
-	env := hostEnv([]string{"PATH=/bin", "HOME=/Users/o/.warden/sbx/home", "XDG_DATA_HOME=/Users/o/.warden/sbx/data", "SHELL=/bin/zsh"}, "/Users/o")
+	env := hostEnv([]string{"PATH=/bin", "HOME=/Users/o/.warden/sbx/home", "XDG_DATA_HOME=/Users/o/.warden/sbx/data", "WARDEN_CONFIG=/Users/o/.warden-x/warden.json", "WARDEN_INSTANCE=x", "SHELL=/bin/zsh"}, "/Users/o")
 	want := []string{"PATH=/bin", "SHELL=/bin/zsh", "HOME=/Users/o"}
 	if strings.Join(env, " ") != strings.Join(want, " ") {
 		t.Fatalf("hostEnv = %q, want %q", env, want)

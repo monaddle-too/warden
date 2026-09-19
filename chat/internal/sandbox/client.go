@@ -236,9 +236,20 @@ func (c *Client) Open(ctx context.Context, r Request) (io.ReadWriteCloser, Respo
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 	deadline := 5 * time.Minute
-	if r.Operation == "prepare" {
+	switch r.Operation {
+	case "prepare":
 		// Creation may wait for a node to join (the runner's PrepareTimeout).
 		deadline = 15 * time.Minute
+	case "host.exec":
+		// The host command's own timeout (host.go) plus room to report it;
+		// the first dogfood loop lost a five-minute build to this deadline.
+		timeout := time.Duration(r.Timeout) * time.Second
+		if timeout <= 0 {
+			timeout = HostExecDefaultTimeout
+		}
+		deadline = min(timeout, HostExecMaxTimeout) + time.Minute
+	case "host.put", "host.get":
+		deadline = 12 * time.Minute
 	}
 	_ = conn.SetDeadline(time.Now().Add(deadline))
 	if err = json.NewEncoder(conn).Encode(r); err != nil {
