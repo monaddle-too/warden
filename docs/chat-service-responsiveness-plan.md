@@ -63,10 +63,8 @@ with a symbolised build of the live release (`sample` on the process):
    (the New chat form before the first refresh); a failed fetch still
    sets `limitsAt`, so it is retried at most once per TTL; the RPC is
    made outside `limitsMu`.
-2. Runner: `health` answers from `w.Limits` without `w.mu` once the
-   registry is loaded; `SweepIdle` marks the sandbox `stopping` under
-   `w.mu`, stops it with the lock released, then records the result;
-   `maintainSpares`' cleanup `Remove` runs outside the lock.
+2. Runner: `health` answers from an atomic copy of the offer
+   (`Worker.offer`, settled by `defaultsLocked`) without `w.mu`.
 3. Store: a version counter and a cached encoding per version. `update`
    marshals once (the previous encoding is the "before"), `save` writes
    the bytes it is given; `Snapshot` decodes the cached encoding outside
@@ -95,11 +93,23 @@ latency while a workspace stops, edge→chat connection count.
 2. `Snapshot` keeps returning an independent copy (its callers mutate
    what they get, `state` in particular), decoded from the cached bytes
    outside the lock; the lock is held only to fetch the slice.
-3. The runner's mutex discipline is left as it is except for the two
-   timer-driven paths that stall it for seconds; `health` simply stops
-   needing it.
+3. The runner's mutex discipline is left as it is. Reading further, it
+   holds `w.mu` across every long operation, `prepare` for the whole VM
+   boot included, not only the idle stop; the chat's views therefore
+   stalled on every workspace start too. Moving one stop out from under
+   the lock would have been partial and unsafe (a stop running unlocked
+   beside a prepare of the same sandbox running locked); `health` not
+   needing the lock removes the coupling for all of them.
 
 ## Progress log
 
 - 2026-09-18: diagnosed on the owner's Mac (see Objective); worktree and
   plan opened.
+- 2026-09-18: steps 1, 3, 4 (a004c7e) and 2, 5 (99d4168) done, with
+  tests: `store_test.go` (coalesced streaming writes, one encoding per
+  version, `Wait`, a view that does not wait on a stalled runner and is
+  encoded once per generation, a stream that sends on change only),
+  `worker_test.go` (`health` under the held mutex), `edge_test.go`
+  (upstream connections reused). `TestBugReportRetentionAndCap` in the
+  edge package fails on origin/main too (unrelated). Remaining: the live
+  check on the owner's Mac (deploy-local), then merge.
