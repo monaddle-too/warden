@@ -136,6 +136,8 @@ func (w *Worker) defaultsLocked() {
 	if _, isSBX := w.Runtime.(*sbxRuntime); isSBX {
 		w.Limits.Restart = true
 	}
+	offer := w.Limits
+	w.offer.Store(&offer)
 }
 
 // defaultMemoryMB sizes a sandbox when the configuration does not.
@@ -877,11 +879,17 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	if r.Operation == "health" {
 		// The size offer travels with the health answer so the chat can
 		// validate a size and fill its form without a second operation.
-		w.mu.Lock()
-		w.defaultsLocked()
-		limits := w.Limits
-		w.mu.Unlock()
-		send(Response{Output: "sbx protocol 2; execution requires verified Warden readiness", Revision: w.Revision, Limits: &limits})
+		// It is read without w.mu (settled at initializeManaged, before
+		// the first request): the answer must not wait behind a prepare
+		// or a stop, which hold the mutex for their whole subprocess.
+		limits := w.offer.Load()
+		if limits == nil {
+			w.mu.Lock()
+			w.defaultsLocked()
+			limits = w.offer.Load()
+			w.mu.Unlock()
+		}
+		send(Response{Output: "sbx protocol 2; execution requires verified Warden readiness", Revision: w.Revision, Limits: limits})
 		return
 	}
 	if r.Operation == "capacity" {

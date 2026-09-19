@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"warden/chat/internal/hoststats"
@@ -30,9 +31,14 @@ type Worker struct {
 	ordinarySlots chan struct{}
 	controlSlots  chan struct{}
 	execSlots     chan struct{} // a person's own commands (exec.go)
-	Revision      string
-	Parallel      int
-	Retained      int
+	// offer is Limits as defaultsLocked last settled it, for health to
+	// answer without w.mu: the chat service asks for the offer while a
+	// prepare or a stop holds the mutex for as long as its subprocess
+	// runs, and its views must not wait for that.
+	offer    atomic.Pointer[ResourceLimits]
+	Revision string
+	Parallel int
+	Retained int
 	// Root is the private worker state directory. Executable and Template
 	// are the pinned SBX executable and guest template; only the SBX runtime
 	// driver reads them.

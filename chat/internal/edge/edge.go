@@ -115,7 +115,12 @@ type Server struct {
 	secure      bool   // Secure, __Host- cookies (https only)
 	target      *url.URL
 	upstreamTLS *tls.Config // mutual TLS to a tls:// upstream; nil for loopback http
-	mint        bool        // owner mode over tls://: the edge holds the capability (capability.go)
+	// upstream carries every proxied request: one transport, so the
+	// keep-alive connections to the chat service are pooled and reused
+	// (a transport per request left each connection in a pool nothing
+	// read again, hundreds of them until the chat service's idle timeout).
+	upstream *http.Transport
+	mint     bool // owner mode over tls://: the edge holds the capability (capability.go)
 	// Logf receives the edge's one-line notices, the launch URL among
 	// them; log.Printf unless replaced.
 	Logf        func(format string, args ...any)
@@ -164,10 +169,8 @@ func New(c Config) (*Server, error) {
 	if c.UpstreamHost == "" || strings.ContainsAny(c.PreviewSuffix, "/:@?#*") {
 		return nil, errors.New("upstream host and preview suffix required")
 	}
-	s := &Server{Config: c, host: origin.Host, scheme: origin.Scheme, secure: origin.Scheme == "https", target: target, upstreamTLS: upstreamTLS, Logf: log.Printf, sessions: map[string]previewSession{}, tickets: map[string]ticket{}, bindings: map[string]bool{}, Client: &http.Client{Timeout: 5 * time.Second}}
-	if upstreamTLS != nil {
-		s.Client.Transport = &http.Transport{Proxy: nil, TLSClientConfig: upstreamTLS}
-	}
+	upstream := &http.Transport{Proxy: nil, ResponseHeaderTimeout: 30 * time.Second, TLSClientConfig: upstreamTLS, MaxIdleConns: 32, MaxIdleConnsPerHost: 32, IdleConnTimeout: 90 * time.Second}
+	s := &Server{Config: c, host: origin.Host, scheme: origin.Scheme, secure: origin.Scheme == "https", target: target, upstreamTLS: upstreamTLS, upstream: upstream, Logf: log.Printf, sessions: map[string]previewSession{}, tickets: map[string]ticket{}, bindings: map[string]bool{}, Client: &http.Client{Timeout: 5 * time.Second, Transport: upstream}}
 	mode := c.Mode
 	if mode == "" {
 		mode = ModeGoogle
@@ -691,7 +694,7 @@ func (s *Server) proxy(binding string, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	proxy.FlushInterval = -1
-	proxy.Transport = &http.Transport{Proxy: nil, ResponseHeaderTimeout: 30 * time.Second, TLSClientConfig: s.upstreamTLS}
+	proxy.Transport = s.upstream
 	proxy.ModifyResponse = func(res *http.Response) error {
 		res.Header.Del("Set-Cookie")
 		res.Header.Del("Content-Security-Policy")
