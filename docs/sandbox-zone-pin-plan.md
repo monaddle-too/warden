@@ -93,4 +93,6 @@ the startup detail says the scheduler's verdict in the owner's words.
   cordons, an empty cluster, unbound claims; unknown tallies verbatim.
   `go vet`, `go test ./...` green (one `chats` flake on the first run,
   clean on the rerun). `helm template` with the GKE values renders the
-  zone into `warden.json`. Remains: merge, GKE deploy, watch a resume.
+  zone into `warden.json`.
+- 2026-09-19: merged to main e7233aa (fast-forward). Remains: GKE deploy,
+  watch a resume of a pinned-zone workspace land on a node already up.
