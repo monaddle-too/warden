@@ -54,3 +54,43 @@ widening what the jailbreak already allows.
   `runtimes.opencode` and `providers.deepinfra` from unmerged branches
   (dropped, backup `warden.json.pre-main-*.bak`); main 1658a41 built into
   the instance.
+- 2026-09-19: **the loop ran end to end.** A jailbroken Claude chat on the
+  `dogfood` instance (main 1658a41, auto mode) was given the change "the
+  signed-out page names the instance and its build (owner mode only)".
+  Unprompted it: got `monaddle-too/warden` shared (one approval), cloned,
+  made the change on a branch, `host_put` the checkout to
+  `~/dogfood/warden-src`, created `inner` from `default`, built it there
+  (`release build … --instance inner --restart`, ~18 s), started it, exposed
+  its app port (`host_expose 18785` → a host-upstream binding in the chat's
+  preview list), verified `/auth/session` reports `{name: inner, version}`
+  on inner and nothing on the default instance, ran the Go and web tests on
+  the host, and submitted the proposal; the owner approved it from the
+  API (`sharing/pr_resolve` with the reviewed body) and Warden published
+  [PR #1](https://github.com/monaddle-too/warden/pull/1) from the stored
+  snapshot. Four obstacles it reported, fixed here (8484746) and verified
+  live by the same chat on the rebuilt `dogfood`:
+  1. `warden start --instance inner` through the default launcher ran the
+     default's binary against inner's state: the launcher that re-executed
+     into its release passed `WARDEN_RELEASE_REEXEC=1` to the runner and so
+     to every `host_run`; the guard is now consumed where it is read and
+     `hostEnv` drops every `WARDEN_*` variable. Verified: "running the
+     instance's release warden-v0.0.0-dev.bad7b134be09".
+  2. `host_put` onto an existing directory nested the copy (`src/src/`);
+     `replace: true` removes the host tree first (audited). Verified.
+  3. `release build` after an uncommitted edit reused the store entry of
+     the same version, so the rebuilt tarball never reached the instance;
+     a dirty checkout now replaces it ("has uncommitted changes: replacing
+     …"). Verified with the fixed launcher (the default instance's older
+     launcher of course lacks it until the release below is installed).
+  4. `request_pull_request` refused ~170 changed lines because it carries
+     whole files and `docs/feature-map.md` alone is 92 KiB: the cap is
+     1 MiB of contents (rendered proposal 4 MiB). The agent had dropped the
+     `docs/host-dogfood-plan.md` paragraph from the PR to fit; the
+     description now says 1 MiB.
+  Also noted, not changed: `~/.warden-inner/release/bin/warden` without
+  `--instance` acts on the default instance (the store is shared, so the
+  binary's path carries no instance; `--instance` is the contract); the
+  inner edge answers 403 `unknown Warden host` unless the preview hop
+  rewrites `Host`, which it does. Merged to main 57f46e1 (the PR merge and
+  the fixes; `go test ./...`, web build and 298 web tests green), tagged
+  `v0.1.0-alpha.14` for `release.yml` on the Mac runner.
