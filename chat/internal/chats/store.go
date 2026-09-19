@@ -1,12 +1,14 @@
-// Package chats owns Warden's local chat state. No Panta service or database is used.
+// Package chats owns Warden's local chat state, kept in memory and persisted
+// row by row in a private SQLite database (storedb.go). No Panta service is used.
 package chats
 
 import (
-	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,24 +216,36 @@ type State struct {
 	// it (catalog.go); clients get it as agentOptions.models.
 	Catalog map[string]*Catalog `json:"catalog,omitempty"`
 }
+
+// Store is the chat state: the working set in memory, persisted in
+// app/chats.sqlite row by row (storedb.go). Every mutation goes through
+// update / updateChat (durable before it returns) or stream / streamChat
+// (written within saveDelay together with what streams meanwhile).
 type Store struct {
 	mu     sync.Mutex
-	path   string
+	root   string
+	db     *sql.DB
 	state  State
 	failed error
 	unlock func()
+	// shadow is what the database holds, as the encodings the rows were
+	// written from, so a mutation writes the rows whose encoding changed.
+	shadow shadow
 	// version counts accepted mutations; encoded is the JSON of state at
-	// encodedVersion, kept so a snapshot, the before-image of an update
-	// and the bytes a save writes cost one marshal per version, not one
-	// per reader.
+	// encodedVersion, kept so a snapshot and the bytes a client view is
+	// built from cost one marshal per version, not one per reader.
 	version        uint64
 	encoded        []byte
 	encodedVersion uint64
-	// dirty is set by stream: the state in memory is newer than chats.json
-	// and flush is scheduled (or a durable update writes it first).
-	dirty     bool
+	// dirty names the chats stream left newer in memory than in the
+	// database (dirtyAll: everything); flush writes them, or a durable
+	// update writes them first.
+	dirty     map[string]bool
+	dirtyAll  bool
 	flushing  *time.Timer
 	saveDelay time.Duration
+	// writes counts the transactions that wrote rows (for tests).
+	writes uint64
 	// changed is closed and replaced on every mutation, so Wait can block
 	// without polling.
 	changed chan struct{}
@@ -240,6 +254,10 @@ type Store struct {
 // streamDelay is how long stream coalesces writes: a streamed token
 // reaches the disk within this after it reached the state.
 const streamDelay = 250 * time.Millisecond
+
+// legacyFile is the whole-state JSON file of installs before the
+// database; Open imports it once and leaves it renamed as a backup.
+const legacyFile = "chats.json"
 
 func Open(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
@@ -259,19 +277,41 @@ func Open(root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{path: filepath.Join(root, "chats.json"), state: State{Version: 1, Chats: []*Chat{}}, unlock: unlock, changed: make(chan struct{}), saveDelay: streamDelay}
-	b, err := os.ReadFile(s.path)
-	if err == nil {
-		err = json.Unmarshal(b, &s.state)
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	s := &Store{root: root, state: State{Version: 1, Chats: []*Chat{}}, unlock: unlock, changed: make(chan struct{}), saveDelay: streamDelay, dirty: map[string]bool{}, shadow: newShadow()}
+	fail := func(err error) (*Store, error) {
+		if s.db != nil {
+			s.db.Close()
+		}
 		unlock()
 		return nil, err
 	}
-	if s.state.Version != 1 {
-		unlock()
-		return nil, fmt.Errorf("unsupported chat data version")
+	dbPath := filepath.Join(root, dbFile)
+	legacy := filepath.Join(root, legacyFile)
+	_, dbErr := os.Stat(dbPath)
+	fresh := errors.Is(dbErr, os.ErrNotExist)
+	if s.db, err = openChatDB(dbPath); err != nil {
+		return fail(err)
 	}
+	imported := false
+	if fresh {
+		// The first start on the database: what the JSON file holds is the
+		// state, written below as the rows it becomes.
+		b, err := os.ReadFile(legacy)
+		if err == nil {
+			if err = json.Unmarshal(b, &s.state); err != nil {
+				return fail(fmt.Errorf("%s: %w", legacyFile, err))
+			}
+			if s.state.Version != 1 {
+				return fail(fmt.Errorf("unsupported chat data version"))
+			}
+			imported = true
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fail(err)
+		}
+	} else if err = s.load(); err != nil {
+		return fail(err)
+	}
+	s.state.Version = 1
 	// A restart never replays a message whose delivery might have reached the agent.
 	for _, c := range s.state.Chats {
 		if len(c.Allowed) > 0 {
@@ -298,26 +338,32 @@ func Open(root string) (*Store, error) {
 			}
 		}
 	}
-	if err = s.save(s.encode()); err != nil {
-		unlock()
-		return nil, err
+	if _, err = s.writeLocked(scopeAll); err != nil {
+		return fail(err)
+	}
+	if imported {
+		if err = os.Rename(legacy, legacy+".migrated"); err != nil {
+			return fail(err)
+		}
 	}
 	return s, nil
 }
 
-// Close writes what stream left in memory, then releases the directory.
+// Close writes what stream left in memory, then releases the database and
+// the directory.
 func (s *Store) Close() {
 	s.mu.Lock()
 	if s.flushing != nil {
 		s.flushing.Stop()
 	}
 	s.flushLocked()
+	s.db.Close()
 	s.mu.Unlock()
 	s.unlock()
 }
 
-// dir is the private state directory; attachments live beside chats.json.
-func (s *Store) dir() string { return filepath.Dir(s.path) }
+// dir is the private state directory; attachments live beside the database.
+func (s *Store) dir() string { return s.root }
 
 // encode is the JSON of the state, marshalled once per version.
 func (s *Store) encode() []byte {
@@ -336,39 +382,13 @@ func (s *Store) bump() {
 	s.changed = make(chan struct{})
 }
 
-// save writes b as chats.json: a temp file beside it, fsynced, renamed
-// over it, the directory fsynced.
-func (s *Store) save(b []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(s.path), ".chats-")
-	if err != nil {
-		return err
-	}
-	name := f.Name()
-	defer os.Remove(name)
-	if _, err = f.Write(b); err == nil {
-		err = f.Sync()
-	}
-	if e := f.Close(); err == nil {
-		err = e
-	}
-	if err == nil {
-		err = os.Rename(name, s.path)
-	}
-	if err == nil {
-		var d *os.File
-		d, err = os.Open(filepath.Dir(s.path))
-		if err == nil {
-			err = d.Sync()
-			d.Close()
-		}
-	}
-	return err
-}
+// scopeAll is the chat id that means "diff the whole state".
+const scopeAll = ""
 
 // update applies fn and persists the result before returning: a message,
 // an approval or a setting is on disk when its caller acknowledges it. A
-// mutation that changes nothing is not written. A failed write puts the
-// state back and marks the store failed.
+// mutation that changes nothing is not written and not counted. A failed
+// write puts the state back and marks the store failed.
 func (s *Store) update(fn func(*State) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -379,49 +399,89 @@ func (s *Store) update(fn func(*State) error) error {
 	if err := fn(&s.state); err != nil {
 		return err
 	}
-	after, err := json.Marshal(s.state)
+	changed, err := s.writeLocked(scopeAll)
 	if err != nil {
-		return err
-	}
-	if bytes.Equal(before, after) {
-		if s.dirty {
-			// Nothing new, but what stream left is due; a durable update
-			// covers it.
-			return s.writeLocked(after)
+		var restored State
+		if json.Unmarshal(before, &restored) == nil {
+			s.state = restored
 		}
-		return nil
-	}
-	s.bump()
-	s.encoded, s.encodedVersion = after, s.version
-	if err := s.writeLocked(after); err != nil {
-		_ = json.Unmarshal(before, &s.state)
-		s.bump()
-		s.encoded, s.encodedVersion = before, s.version
 		return err
+	}
+	if changed {
+		s.bump()
 	}
 	return nil
 }
 
-// writeLocked saves b as the current state and clears what stream left.
-func (s *Store) writeLocked(b []byte) error {
-	if err := s.save(b); err != nil {
-		s.failed = err
+// updateChat is update for one chat: fn sees that chat, and only its rows
+// are compared and written, so a mutation of one chat costs that chat's
+// size, not the store's.
+func (s *Store) updateChat(id string, fn func(*Chat) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failed != nil {
+		return fmt.Errorf("chat storage unavailable: %w", s.failed)
+	}
+	c := s.state.chat(id)
+	if c == nil {
+		return fmt.Errorf("unknown chat %s", id)
+	}
+	before, _ := json.Marshal(c)
+	if err := fn(c); err != nil {
 		return err
 	}
-	s.dirty = false
+	changed, err := s.writeLocked(id)
+	if err != nil {
+		var restored Chat
+		if json.Unmarshal(before, &restored) == nil {
+			*c = restored
+		}
+		return err
+	}
+	if changed {
+		s.bump()
+	}
+	return nil
+}
+
+// writeLocked persists what the state holds beyond the database for the
+// scope (a chat id, or scopeAll) together with what stream left dirty,
+// and reports whether any row was written. A failed transaction marks the
+// store failed.
+func (s *Store) writeLocked(scope string) (bool, error) {
+	if s.dirtyAll {
+		scope = scopeAll
+	}
+	scopes := map[string]bool{}
+	if scope == scopeAll {
+		scopes[scopeAll] = true
+	} else {
+		scopes[scope] = true
+		for id := range s.dirty {
+			scopes[id] = true
+		}
+	}
+	changed, err := s.persist(scopes)
+	if err != nil {
+		log.Printf("chat store: write failed; the store is read-only until a restart: %v", err)
+		s.failed = err
+		return false, err
+	}
+	s.dirty = map[string]bool{}
+	s.dirtyAll = false
 	if s.flushing != nil {
 		s.flushing.Stop()
 		s.flushing = nil
 	}
-	return nil
+	return changed, nil
 }
 
 // stream applies fn in memory and writes it within streamDelay, together
 // with whatever else streams meanwhile: a streamed token is shown at once
-// and reaches the disk shortly after, instead of each token marshalling
-// and fsyncing the whole state. The next durable update writes it sooner.
-// A restart loses at most the last streamDelay of streamed text, and a
-// restart already marks a running chat interrupted.
+// and reaches the disk shortly after, instead of each token opening a
+// transaction. The next durable update writes it sooner. A restart loses
+// at most the last streamDelay of streamed text, and a restart already
+// marks a running chat interrupted.
 func (s *Store) stream(fn func(*State) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -431,12 +491,35 @@ func (s *Store) stream(fn func(*State) error) error {
 	if err := fn(&s.state); err != nil {
 		return err
 	}
+	s.dirtyAll = true
+	s.streamedLocked()
+	return nil
+}
+
+// streamChat is stream for one chat.
+func (s *Store) streamChat(id string, fn func(*Chat) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failed != nil {
+		return fmt.Errorf("chat storage unavailable: %w", s.failed)
+	}
+	c := s.state.chat(id)
+	if c == nil {
+		return fmt.Errorf("unknown chat %s", id)
+	}
+	if err := fn(c); err != nil {
+		return err
+	}
+	s.dirty[id] = true
+	s.streamedLocked()
+	return nil
+}
+
+func (s *Store) streamedLocked() {
 	s.bump()
-	s.dirty = true
 	if s.flushing == nil {
 		s.flushing = time.AfterFunc(s.saveDelay, s.flush)
 	}
-	return nil
 }
 
 // flush writes what stream left in memory.
@@ -447,14 +530,18 @@ func (s *Store) flush() {
 	s.flushLocked()
 }
 func (s *Store) flushLocked() {
-	if !s.dirty || s.failed != nil {
+	if s.failed != nil || (!s.dirtyAll && len(s.dirty) == 0) {
 		return
 	}
-	if err := s.save(s.encode()); err != nil {
-		s.failed = err
-		return
+	scope := scopeAll
+	if !s.dirtyAll {
+		// Any one dirty chat; writeLocked adds the rest.
+		for id := range s.dirty {
+			scope = id
+			break
+		}
 	}
-	s.dirty = false
+	_, _ = s.writeLocked(scope)
 }
 
 // Snapshot is an independent copy of the state, decoded from the encoding

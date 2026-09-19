@@ -69,7 +69,8 @@ for all five.
   with `maxRunning` sized by `warden install` from the host's memory and
   cores) or the equivalent runner flags.
 - Messages, streaming transcript, provider thread IDs and approval decisions
-  persist in a private atomically replaced `chats.json`. The state directory has
+  persist in a private SQLite database, `chats.sqlite`, a row per chat, entry,
+  approval and setting (docs/chat-sqlite-store-plan.md). The state directory has
   a single-writer lock. Restart marks unfinished work interrupted; it never
   automatically resends uncertain messages.
 - Send during a run steers its current turn. A delivery attempt is persisted

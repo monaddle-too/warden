@@ -662,7 +662,7 @@ snapshot or copy mechanism your StorageClass has. What each holds:
 |---|---|---|
 | `warden-policy-state` | release | `bindings.json`, `runtime-identities.json`, `sandboxes/<digest>/`, `sharing.sqlite`, `google.sqlite` (the Google Docs connection), `egress.json` (the Admin console's network-access choice), `gateway-ca/` (the gateway CA key) |
 | `warden-runner-state` | release | `managed-v2.json` and the sandbox registry |
-| `warden-app-state` | release | `chats.json` (every chat and transcript) |
+| `warden-app-state` | release | `chats.sqlite` (every chat and transcript; imported from `chats.json` on the first start after the database landed) |
 | `warden-edge-state` | release | `logins.json` (the Google sign-in ledger); in owner mode `endpoint.json` (the launch capability; regenerated at start) |
 | one per sandbox, labelled `warden.monaddle.com/sandbox=<runtime name>` | sandbox | `/home/agent` of that sandbox (the suite's stop/resume row proves it persists) |
 

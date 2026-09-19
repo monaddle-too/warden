@@ -478,7 +478,7 @@ namespace was started detached and keeps running.
 | `install.json` | Which release installed this directory. |
 | `policy/` | Policy service state: `sbx-control.sock`, bindings, runtime identities, `sharing.sqlite`, `google.sqlite`, the gateway CA. |
 | `runner/` | Runner state: `worker.sock`, `managed-v2.json`, sandbox metadata. |
-| `app/` | Chat state: `chats.json`, `endpoint.json` (the owner capability). |
+| `app/` | Chat state: `chats.sqlite` (every chat, transcript, approval, port, instruction set and catalog, a row each; `chats.json.migrated` is the pre-database file, kept as a backup after the one-time import), `endpoint.json` (the owner capability). |
 | `edge/` | Edge state. |
 | `provider/` | The 0600 login files (`auth.json`, `claude.json`, `github.json`). |
 | `sbx/` | The private SBX namespace (`home`, `cache`, `state`, `config`, `data`, `login.json`); sandboxes and templates live here. |

@@ -7,8 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -323,7 +321,15 @@ func pendingApproval(t *testing.T, e *Engine, id string) Approval {
 
 func idle(t *testing.T, e *Engine, id string) {
 	t.Helper()
-	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if e.Store.Snapshot().chat(id).Status == "idle" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	c := e.Store.Snapshot().chat(id)
+	t.Fatalf("chat not idle: status %q, error %q, %d entries, %d approvals", c.Status, c.Error, len(c.Conversation.Entries), len(c.Approvals))
 }
 
 func notices(c *Chat) []string {
@@ -557,7 +563,7 @@ func TestPermissionAsksPerMode(t *testing.T) {
 		t.Fatalf("rule: %+v", answers)
 	}
 	// Rules and mode are on the chat record.
-	b, err := os.ReadFile(filepath.Join(e.Store.dir(), "chats.json"))
+	b, err := json.Marshal(onDisk(t, e.Store).chat(id))
 	if err != nil || !strings.Contains(string(b), `"kind":"allow","pattern":"Bash(touch *)","origin":"always"`) || !strings.Contains(string(b), `"mode":"ask"`) {
 		t.Fatalf("%v %s", err, b)
 	}

@@ -380,7 +380,7 @@ func TestFailClosedAndRecovery(t *testing.T) {
 		c.Conversation.Entries[0].Detail = ""
 		return nil
 	})
-	root := filepath.Dir(s.path)
+	root := s.root
 	s.Close()
 	s, err = Open(root)
 	if err != nil {
@@ -391,7 +391,7 @@ func TestFailClosedAndRecovery(t *testing.T) {
 	if c.Status != "interrupted" || c.Conversation.Entries[0].Delivery != "failed" || c.Conversation.Entries[0].Detail != "Interrupted before confirmed delivery" {
 		t.Fatalf("replayed unconfirmed delivery: %+v", c.Conversation.Entries[0])
 	}
-	info, _ := os.Stat(s.path)
+	info, _ := os.Stat(filepath.Join(s.root, dbFile))
 	if info.Mode().Perm() != 0600 {
 		t.Fatal("transcript is not private")
 	}

@@ -1771,15 +1771,15 @@ func (e *Engine) notification(ctx context.Context, id string, f agent.Frame) err
 		e.keepReadImage(ctx, id, agent.Map(f.Params["item"]))
 	}
 	// A streamed token is applied in memory and written shortly after with
-	// the tokens around it (Store.stream); every other frame is on disk
-	// before the adapter gets its acknowledgement.
-	apply := e.Store.update
+	// the tokens around it (Store.streamChat); every other frame is on disk
+	// before the adapter gets its acknowledgement. Both write this chat's
+	// rows only.
+	apply := e.Store.updateChat
 	switch f.Method {
 	case "item/agentMessage/delta", "item/commandExecution/outputDelta", "item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded", "thread/tokenUsage/updated", "thread/context/updated":
-		apply = e.Store.stream
+		apply = e.Store.streamChat
 	}
-	return apply(func(st *State) error {
-		chat := st.chat(id)
+	return apply(id, func(chat *Chat) error {
 		if f.Method == "permissions/modeChanged" {
 			chat.applyMode(agent.String(f.Params["mode"]))
 			return nil

@@ -2,6 +2,7 @@ package chats
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 	"warden/chat/internal/agent"
@@ -50,14 +51,29 @@ func completeTurn(t *testing.T, e *Engine, w *fakeWorker, id string) {
 }
 func sendAndDeliver(t *testing.T, e *Engine, id, text string) {
 	t.Helper()
-	if err := e.Message(id, text, cv.ID()); err != nil {
+	mid := cv.ID()
+	if err := e.Message(id, text, mid); err != nil {
 		t.Fatal(err)
 	}
-	until(t, func() bool {
+	// Delivered: the message is "sent" and the run took it (running, or
+	// already idle when the fake agent answered within the poll interval).
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
 		c := e.Store.Snapshot().chat(id)
-		entries := c.Conversation.Entries
-		return c.Status == "running" && len(entries) > 0 && entries[len(entries)-1].Delivery == "sent"
-	})
+		for _, e := range c.Conversation.Entries {
+			if e.ID == mid && e.Delivery == "sent" && (c.Status == "running" || c.Status == "idle") {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	c := e.Store.Snapshot().chat(id)
+	var last string
+	if n := len(c.Conversation.Entries); n > 0 {
+		e := c.Conversation.Entries[n-1]
+		last = fmt.Sprintf("%s/%s/%q", e.Role, e.Delivery, e.Text)
+	}
+	t.Fatalf("message not delivered: status %q, error %q, %d entries, last %s", c.Status, c.Error, len(c.Conversation.Entries), last)
 }
 
 // Every turn's end is reported to the runner as chat activity, stamped

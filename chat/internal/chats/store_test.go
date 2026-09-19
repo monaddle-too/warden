@@ -2,10 +2,9 @@ package chats
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,17 +13,20 @@ import (
 	"warden/chat/internal/sandbox"
 )
 
+// onDisk is the state as the database holds it, read over a connection of
+// its own (WAL lets it read beside the store's).
 func onDisk(t *testing.T, s *Store) State {
 	t.Helper()
-	b, err := os.ReadFile(s.path)
+	db, err := openChatDB(filepath.Join(s.root, dbFile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var st State
-	if err := json.Unmarshal(b, &st); err != nil {
+	defer db.Close()
+	other := &Store{db: db}
+	if err := other.load(); err != nil {
 		t.Fatal(err)
 	}
-	return st
+	return other.state
 }
 
 // A durable update is on disk when it returns; a streamed one is in every
@@ -68,13 +70,11 @@ func TestStoreStreamCoalescesWrites(t *testing.T) {
 	if got := onDisk(t, s); got.Chats[0].Title != "tHello!" || !got.Chats[0].Archived {
 		t.Fatalf("the durable update did not carry the streamed text: %+v", got.Chats[0])
 	}
-	before, _ := os.Stat(s.path)
-	time.Sleep(10 * time.Millisecond)
+	writes := s.writes
 	if err := s.update(func(st *State) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	after, _ := os.Stat(s.path)
-	if !after.ModTime().Equal(before.ModTime()) || s.Version() != v+4 {
+	if s.writes != writes || s.Version() != v+4 {
 		t.Fatal("a mutation that changed nothing was written or counted")
 	}
 }
