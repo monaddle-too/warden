@@ -106,6 +106,13 @@ the service included. Logs are in `~/.warden/warden.log` and
 --service=false` skips the service; `warden start` then runs the stack in
 your terminal and `warden start --detach` in the background.
 
+On macOS install also put Warden in the menu bar: a shield that says
+whether Warden runs, whether an agent is working and how many things
+wait on you, with a dropdown that opens the app on the chat that needs
+you, lists the running chats, starts a new one, and stops, starts or
+restarts Warden (`--menu=false` skips it; `warden menu install` adds it
+later).
+
 The first message of a new chat takes longer than later ones: the runner
 boots a sandbox and copies the agent runtime into it.
 

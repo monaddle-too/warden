@@ -139,6 +139,38 @@ func (c *cli) registeredService(cfg config.Config) serviceManager {
 	return svc
 }
 
+// registeredMenu is the menu bar item's manager with its unit registered,
+// or nil.
+func (c *cli) registeredMenu(cfg config.Config) serviceManager {
+	m, _ := c.menu(cfg.Paths.State)
+	if m == nil || !m.registered() {
+		return nil
+	}
+	return m
+}
+
+// registerMenu installs the menu bar item's unit for this launcher and
+// waits a moment for it to run. It reports what it did, or why the item
+// is not registered (no build of it beside the launcher), as one phrase.
+func (c *cli) registerMenu(m serviceManager, configPath string) (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if menuExecutable(exe) == "" {
+		return "not registered: no warden-menu beside " + exe + " (a release built without swiftc)", nil
+	}
+	result, err := m.install(m.unit(exe, configPath))
+	if err != nil {
+		return "", err
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !m.status().Running && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	return m.label() + ": " + result + " (" + m.status().String() + ")", nil
+}
+
 // startService starts the registered service and waits for the chat
 // endpoint.
 func (c *cli) startService(cfg config.Config, svc serviceManager) error {
@@ -227,6 +259,12 @@ func (c *cli) restartService(args []string) error {
 			return err
 		}
 		fmt.Fprintf(c.stdout, "Warden restarted as a %s (%s). `warden open` to open it again: the owner session rotates with the chat service.\n", svc.kind(), svc.status())
+		// The menu bar item too, so a new release's runs.
+		if m := c.registeredMenu(cfg); m != nil {
+			if err := m.restart(); err != nil {
+				fmt.Fprintf(c.stdout, "menu bar item: not restarted: %v\n", err)
+			}
+		}
 		return nil
 	}
 	if pid, alive := runningPID(cfg); alive {
@@ -267,6 +305,16 @@ func (c *cli) status(args []string) error {
 		fmt.Fprintf(c.stdout, "service: not registered; `warden service install` registers a %s\n", svc.kind())
 	default:
 		fmt.Fprintf(c.stdout, "service: %s %s: %s (%s)\n", svc.kind(), svc.label(), svc.status(), svc.unitPath())
+	}
+	if m, reason := c.menu(cfg.Paths.State); m != nil || reason != "" {
+		switch {
+		case m == nil:
+			fmt.Fprintf(c.stdout, "menu:    none (%s)\n", reason)
+		case !m.registered():
+			fmt.Fprintln(c.stdout, "menu:    not registered; `warden menu install` registers the menu bar item")
+		default:
+			fmt.Fprintf(c.stdout, "menu:    %s: %s (%s)\n", m.label(), m.status(), m.unitPath())
+		}
 	}
 	pid, alive := runningPID(cfg)
 	switch {
@@ -309,6 +357,9 @@ func (c *cli) serviceCommand(args []string) error {
 		return fmt.Errorf("no user service manager here (%s); `warden start --detach` runs Warden in the background", reason)
 	}
 	if args[0] == "uninstall" {
+		if err := c.unregisterMenu(cfg); err != nil {
+			return err
+		}
 		if !svc.registered() {
 			fmt.Fprintf(c.stdout, "no %s registered for %s\n", svc.kind(), cfg.Paths.State)
 			return nil
@@ -333,6 +384,65 @@ func (c *cli) serviceCommand(args []string) error {
 	for _, h := range svc.hints() {
 		fmt.Fprintf(c.stdout, "note:    %s\n", h)
 	}
+	if m, _ := c.menu(cfg.Paths.State); m != nil {
+		result, err := c.registerMenu(m, path)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(c.stdout, "menu:    %s\n", result)
+	}
+	return nil
+}
+
+// unregisterMenu stops and unregisters the menu bar item when it is
+// registered, saying so.
+func (c *cli) unregisterMenu(cfg config.Config) error {
+	m := c.registeredMenu(cfg)
+	if m == nil {
+		return nil
+	}
+	if err := m.uninstall(); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stdout, "menu:    stopped and unregistered the menu bar item (%s removed)\n", m.unitPath())
+	return nil
+}
+
+// menuSubcommand: `warden menu install` registers the menu bar item for
+// this launcher and starts it (what `warden install` and `warden service
+// install` do too; the way back after "Quit Menu Bar Item"); `warden
+// menu uninstall` stops and unregisters it.
+func (c *cli) menuSubcommand(args []string) error {
+	fs, configPath, state := serviceFlags("warden menu "+args[0], c)
+	if err := fs.Parse(args[1:]); err != nil {
+		return errUsage
+	}
+	cfg, path, err := loadConfig(*configPath, *state)
+	if err != nil {
+		return err
+	}
+	m, reason := c.menu(cfg.Paths.State)
+	if m == nil {
+		if reason == "" {
+			reason = "the menu bar item is macOS only"
+		}
+		return fmt.Errorf("no menu bar item here (%s)", reason)
+	}
+	if args[0] == "uninstall" {
+		if !m.registered() {
+			fmt.Fprintf(c.stdout, "no menu bar item registered for %s\n", cfg.Paths.State)
+			return nil
+		}
+		return c.unregisterMenu(cfg)
+	}
+	if _, err = os.Stat(path); err != nil {
+		return fmt.Errorf("%s: %w; run `warden install` first", path, err)
+	}
+	result, err := c.registerMenu(m, path)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stdout, "menu:    %s\n", result)
 	return nil
 }
 

@@ -608,6 +608,19 @@
   background: var(--del-soft);
   color: var(--del-text);
 }
+.doc-failure {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--del-soft);
+}
+.doc-failure p {
+  margin: 0;
+}
+.doc-failure p + p {
+  margin-top: 6px;
+  font-size: 12px;
+}
 .pr-branches {
   display: flex;
   flex-wrap: wrap;

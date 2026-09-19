@@ -95,7 +95,10 @@ export function ChatShell({
       sessionStorage.getItem("warden-selected-chat") ||
       "",
   );
-  const [creating, setCreating] = useState(false);
+  // ?new=1 (`warden open --new`, the menu bar's New chat…) opens the form.
+  const [creating, setCreating] = useState(
+    () => new URLSearchParams(location.search).get("new") === "1",
+  );
   const [adminOpen, setAdminOpen] = useState(false);
   const [archived, setArchived] = useState(false);
   const [title, setTitle] = useState("");

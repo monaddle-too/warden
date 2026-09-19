@@ -64,7 +64,10 @@ type Review = {
     comments: DocComment[];
   };
   feedback?: string;
+  /* What a failed write says to the owner, and what actually happened
+     when the headline is the generic one (policy Apply). */
   error?: string;
+  detail?: string;
   conflicts?: DocConflict[];
   revision_id?: string;
   written?: number;
@@ -241,7 +244,11 @@ export function DocumentReview({
                     ? "Document changed — review the merged draft"
                     : status === "applying"
                       ? "Writing to Google Docs…"
-                      : status}
+                      : status === "applied"
+                        ? "Written to the document"
+                        : status === "failed"
+                          ? "Writing failed"
+                          : status}
               </span>
               <p className="muted">
                 {current?.title || p?.title}
@@ -282,6 +289,14 @@ export function DocumentReview({
             <p role="alert" className="error">
               {error}
             </p>
+          )}
+          {status === "failed" && preview?.error && (
+            /* On every tab: the review opens on Suggestions, and a failure
+               only under Summary was a bare "failed" badge. */
+            <div role="alert" className="error doc-failure">
+              <p>{preview.error}</p>
+              {preview.detail && <p className="muted">{preview.detail}</p>}
+            </div>
           )}
           {!p && !error && <p>Loading the saved proposal…</p>}
           {p && view && (
@@ -369,7 +384,7 @@ export function DocumentReview({
                         ))}
                       </>
                     )}
-                    {preview?.error && (
+                    {preview?.error && status !== "failed" && (
                       <p role="alert" className="error">
                         {preview.error}
                       </p>

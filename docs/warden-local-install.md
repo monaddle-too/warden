@@ -201,6 +201,16 @@ never replaces a provider login. What it does, in order:
    you). A state directory other than the default gets its own label
    (`com.monaddle.warden.<basename>`, `warden-<basename>.service`).
 
+10. **Menu bar** (macOS). Registers a second launchd agent,
+   `~/Library/LaunchAgents/com.monaddle.warden.menu.plist`, running
+   `bin/warden-menu` from beside the launcher, and starts it: Warden's
+   item in the menu bar (§5). It runs in the GUI session only
+   (`LimitLoadToSessionType Aqua`), at every login, restarted after a
+   crash; an upgrade install restarts a running one. `--menu=false`
+   skips the step (`warden menu install` does it later); a release built
+   without `swiftc` has no `bin/warden-menu` and the step says so. No
+   row on Linux.
+
 The last line is `Installed. Next: `warden login codex` (and `warden login
 claude`, `warden login github` as needed), then `warden open`.`
 
@@ -317,6 +327,31 @@ itself (with the four service logs) at 10 MiB when it starts, keeping
 three generations; launchd holds no log of its own. `warden doctor` has a
 `service` check: a registered unit must be this launcher's and loaded
 (running or stopped is a detail). `warden uninstall` unregisters first.
+
+**The menu bar item** (macOS, step 10). A shield in the menu bar whose
+state is Warden's: slashed while stopped, plain while running, half
+filled while an agent's turn runs, an exclamation mark with a count when
+something waits on you. Its dropdown: the service line; what needs you
+(an approval to answer, a review only the app can do — a pull request
+proposal, document suggestions — a chat that failed in the last hour),
+each row opening the app on that chat; the chats with a running turn
+and what the agent is doing, then idle ones by last activity (eight at
+most, "N more…" opens the app); New Chat… (the New chat form, ⌘N), Open
+Warden (⌘O), today's spend; Stop / Start / Restart Warden and Show Logs
+in Finder (`<state>`); Quit Menu Bar Item, which quits the item only
+(`warden menu install` brings it back; it also returns at the next
+login). The menu approves nothing: an approval is read and answered in
+the app. The item is a bare executable, `bin/warden-menu`, that renders
+what `warden menu feed` writes (one JSON line per change, following the
+chat service's event stream; `stopped` / `starting` while the service
+does not answer) and runs `warden open [--chat ID | --new]`, `warden
+start|stop|restart` for every click; `warden stop` leaves it running so
+it can offer Start, `warden restart` restarts it too (so a new release's
+item runs), `warden service install|uninstall` register and unregister
+it with the service, `warden menu install|uninstall` on its own,
+`warden status` has a `menu:` line and `warden doctor` a `menu bar`
+check. Login Items & Extensions lists it (as `warden-menu`) beside the
+service; switching it off there is the same as Quit.
 
 Without a registered service (`--service=false`, or no manager on the
 host) `warden start` runs the stack in the terminal and `warden start
@@ -455,7 +490,7 @@ namespace was started detached and keeps running.
 | `launcher.lock` | Held while `warden start` runs. |
 
 **Reset and uninstall.** `warden uninstall` stops and unregisters the
-service (or stops a detached Warden), deletes every sandbox in the namespace, stops the namespace daemon and
+menu bar item and the service (or stops a detached Warden), deletes every sandbox in the namespace, stops the namespace daemon and
 removes `<state>`; `--keep-state` stops after the sbx cleanup, `--yes`
 skips the confirmation. Nothing outside `<state>` was created by install,
 so afterwards only the unpacked release directory (and any PATH entry for

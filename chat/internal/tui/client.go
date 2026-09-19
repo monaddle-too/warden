@@ -701,6 +701,13 @@ func (c *Client) Settings(ctx context.Context, chatID string, change map[string]
 	return c.do(ctx, "POST", "chats/"+chatID+"/settings", change, nil)
 }
 
+// Spend is the spend report (chats.SpendReport): today, the week, all time.
+func (c *Client) Spend(ctx context.Context) (chats.SpendReport, error) {
+	var v chats.SpendReport
+	err := c.do(ctx, "GET", "spend", nil, &v)
+	return v, err
+}
+
 func (c *Client) RevokePort(ctx context.Context, id string) error {
 	return c.do(ctx, "POST", "ports/"+id+"/revoke", map[string]any{}, nil)
 }
@@ -710,7 +717,7 @@ func (c *Client) RevokePort(ctx context.Context, id string) error {
 // drops; a 401 is fatal because the capability has rotated.
 func (c *Client) Events(ctx context.Context, receive func(*State)) error {
 	for {
-		err := c.stream(ctx, receive)
+		err := c.Stream(ctx, receive)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -725,7 +732,11 @@ func (c *Client) Events(ctx context.Context, receive func(*State)) error {
 	}
 }
 
-func (c *Client) stream(ctx context.Context, receive func(*State)) error {
+// Stream follows one connection to the event stream until it drops or
+// ctx ends; Events wraps it with the reconnects. A caller that needs to
+// know when the service is unreachable (the menu bar feed) uses it
+// directly.
+func (c *Client) Stream(ctx context.Context, receive func(*State)) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", c.Base+"/api/events", nil)
 	if err != nil {
 		return err

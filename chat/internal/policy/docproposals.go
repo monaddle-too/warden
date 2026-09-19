@@ -3,6 +3,8 @@ package policy
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"strconv"
 	"strings"
 )
@@ -266,8 +268,12 @@ func (s *Sharing) documentGrantLocked(sandbox, document, access string) (map[str
 			}
 		}
 	}
-	return nil, valueErr("The document is not shared with this workspace; ask for read access with request_google_docs_access")
+	return nil, errDocumentNotShared
 }
+
+// errDocumentNotShared is the read refusal an agent gets for a document
+// its workspace has no live grant on; Apply words it for the owner.
+var errDocumentNotShared = valueErr("The document is not shared with this workspace; ask for read access with request_google_docs_access")
 
 // Read serves read_google_document: the live document as numbered
 // paragraphs, or the draft an owner returned with a proposal.
@@ -745,6 +751,32 @@ func (d *DocumentProposals) rebaseOnto(r *docRow, proposal docProposal, draft do
 	return draft, err
 }
 
+// googleRefusal words a Docs API rejection for the owner: the status and
+// what Google said, with the usual causes named.
+func googleRefusal(code int, text string) string {
+	why := ""
+	switch code {
+	case 401:
+		why = "Google no longer accepts Warden's sign-in; reconnect Google in the admin console"
+	case 403:
+		why = "the connected Google account may not edit this document, or Warden's Google access lacks the Docs write scope"
+	case 404:
+		why = "the document was not found; it may have been deleted or moved out of reach of the connected account"
+	}
+	s := "Google rejected the write (HTTP " + strconv.Itoa(code) + ")"
+	if text != "" {
+		s += ": " + text
+	}
+	if why != "" {
+		s += " — " + why
+	}
+	return s + ". " + docFailedNext
+}
+
+// docFailedNext is what follows a failed write: the proposal is closed and
+// the agent gets the outcome (docAwaiting), so the way on is a new one.
+const docFailedNext = "The agent is told and can propose the edit again."
+
 // Apply writes the approved draft. The document is read again first: an
 // unchanged document is written against its current revision, a changed
 // one is rebased (and handed back to the owner on conflict). A write Google
@@ -766,7 +798,10 @@ func (d *DocumentProposals) Apply(id string) {
 		for attempt := 0; ; attempt++ {
 			fresh, _, err := d.readable(r.sandbox, proposal.DocumentID)
 			if err != nil {
-				return err
+				if errors.Is(err, errDocumentNotShared) {
+					return valueErr("The workspace's access to this document has ended (the share expired or was revoked). Share it with the workspace again. " + docFailedNext)
+				}
+				return fmt.Errorf("could not read the document from Google: %w", err)
 			}
 			if !sameDocument(proposal.Base, fresh.Paragraphs) {
 				merged, conflicts := mergeDocuments(proposal.Base, draft.Paragraphs, fresh.Paragraphs)
@@ -790,11 +825,11 @@ func (d *DocumentProposals) Apply(id string) {
 			proposal.BaseRevision = fresh.RevisionID
 			body, _, err := CompileDocumentUpdate(fresh, draft.Paragraphs)
 			if err != nil {
-				return err
+				return fmt.Errorf("could not turn the draft into Google Docs edits: %w", err)
 			}
 			code, response, err := d.s.Google.BatchUpdate(proposal.DocumentID, mustJSON(body))
 			if err != nil {
-				return err
+				return fmt.Errorf("could not send the edits to Google: %w", err)
 			}
 			if code != 200 {
 				message, _ := response["error"].(map[string]any)
@@ -805,7 +840,7 @@ func (d *DocumentProposals) Apply(id string) {
 					}
 					return valueErr("The document keeps changing while writing; refresh it from Google and approve again")
 				}
-				return errors.New("Google rejected the write (HTTP " + strconv.Itoa(code) + ")")
+				return valueErr(googleRefusal(code, text))
 			}
 			control, _ := response["writeControl"].(map[string]any)
 			out["revision_id"] = stringField(control, "requiredRevisionId")
@@ -819,15 +854,20 @@ func (d *DocumentProposals) Apply(id string) {
 		}
 	}()
 	if err != nil && status != "stale" {
-		message := "Writing to Google failed. Check the document and Google before approving again."
+		// The owner reads error; detail is what actually happened when
+		// the headline is the generic one, and the log has both.
+		message := "Writing to Google failed. " + docFailedNext
 		if isValueError(err) {
 			message = err.Error()
+		} else {
+			out["detail"] = err.Error()
 		}
 		out["error"] = message
 		out["url"] = proposal.URL
 		if strings.HasPrefix(message, "The document keeps changing") {
 			status = "pending"
 		}
+		log.Printf("document proposal %s (%q): write %s: %v", id, proposal.Title, status, err)
 	}
 	if status == "stale" {
 		return // rebaseOnto stored the merged draft and conflicts

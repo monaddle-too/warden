@@ -152,6 +152,48 @@ func (c *cli) service(state string) (serviceManager, string) {
 // reaches launchctl or systemctl by accident.
 var defaultServiceFn = platformService
 
+// platformMenu is the manager for the menu bar item (docs/menu-bar-plan.md):
+// a second launchd agent, `<label>.menu`, running `warden-menu` from
+// beside the launcher. nil with no reason where the item does not apply
+// (not macOS), nil with the reason where it cannot be registered.
+func platformMenu(state string) (serviceManager, string) {
+	if runtime.GOOS != "darwin" {
+		return nil, ""
+	}
+	if _, err := exec.LookPath("launchctl"); err != nil {
+		return nil, "launchctl not found"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, "no home directory: " + err.Error()
+	}
+	label, _ := serviceNames(state)
+	label += ".menu"
+	return &launchdAgent{name: label, path: filepath.Join(home, "Library", "LaunchAgents", label+".plist"), domain: "gui/" + strconv.Itoa(os.Getuid()), run: runCommand, menu: true}, ""
+}
+
+// menu returns the menu bar item's manager, as service does the service's.
+func (c *cli) menu(state string) (serviceManager, string) {
+	if c.menuFn != nil {
+		return c.menuFn(state)
+	}
+	return defaultMenuFn(state)
+}
+
+var defaultMenuFn = platformMenu
+
+// menuExecutable is where the menu bar item is beside the launcher, as
+// the tarball lays them out (bin/warden, bin/warden-menu); "" when this
+// build has none (a release built without swiftc). A test points it at
+// a file of its own.
+var menuExecutable = func(exe string) string {
+	path := filepath.Join(filepath.Dir(exe), "warden-menu")
+	if info, err := os.Stat(path); err != nil || info.IsDir() {
+		return ""
+	}
+	return path
+}
+
 // servicePath is a PATH the unit runs with: the launcher finds sbx through
 // its pinned wrapper, but sbx and the browser opener want the usual
 // places, which a service manager's environment lacks.
@@ -164,9 +206,17 @@ type launchdAgent struct {
 	path   string
 	domain string // gui/<uid>
 	run    commandRunner
+	// menu: the agent runs the menu bar item beside the launcher instead
+	// of the launcher (platformMenu).
+	menu bool
 }
 
-func (a *launchdAgent) kind() string     { return "launchd agent" }
+func (a *launchdAgent) kind() string {
+	if a.menu {
+		return "menu bar item"
+	}
+	return "launchd agent"
+}
 func (a *launchdAgent) label() string    { return a.name }
 func (a *launchdAgent) unitPath() string { return a.path }
 func (a *launchdAgent) target() string   { return a.domain + "/" + a.name }
@@ -185,6 +235,12 @@ func (a *launchdAgent) unit(exe, configPath string) string {
 		xml.EscapeText(&buf, []byte(s))
 		return buf.String()
 	}
+	args := []string{exe, "start", "--service", "--config", configPath}
+	if a.menu {
+		// The item runs `warden menu feed` and the actions through the
+		// launcher it is told; the GUI session only (Aqua).
+		args = []string{filepath.Join(filepath.Dir(exe), "warden-menu"), "--warden", exe, "--config", configPath}
+	}
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -193,13 +249,18 @@ func (a *launchdAgent) unit(exe, configPath string) string {
 	<string>` + esc(a.name) + `</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>` + esc(exe) + `</string>
-		<string>start</string>
-		<string>--service</string>
-		<string>--config</string>
-		<string>` + esc(configPath) + `</string>
-	</array>
-	<key>WorkingDirectory</key>
+`)
+	for _, arg := range args {
+		b.WriteString("\t\t<string>" + esc(arg) + "</string>\n")
+	}
+	b.WriteString(`	</array>
+`)
+	if a.menu {
+		b.WriteString(`	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+`)
+	}
+	b.WriteString(`	<key>WorkingDirectory</key>
 	<string>` + esc(filepath.Dir(configPath)) + `</string>
 	<key>EnvironmentVariables</key>
 	<dict>
@@ -229,12 +290,17 @@ func (a *launchdAgent) status() serviceStatus {
 		return serviceStatus{}
 	}
 	st := serviceStatus{Loaded: true}
+	// Only the service's own "state = ..." line counts: launchctl nests
+	// further "state = active" lines under the endpoints, and the last
+	// one of those used to mask a running service as stopped.
+	sawState := false
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "state = ") {
+		if strings.HasPrefix(line, "state = ") && !sawState {
+			sawState = true
 			st.Running = strings.TrimPrefix(line, "state = ") == "running"
 		}
-		if strings.HasPrefix(line, "pid = ") {
+		if strings.HasPrefix(line, "pid = ") && st.PID == 0 {
 			st.PID, _ = strconv.Atoi(strings.TrimPrefix(line, "pid = "))
 		}
 	}

@@ -34,6 +34,7 @@ type installer struct {
 	guestTar   string
 	sbxLogin   bool
 	service    bool   // --service: register and start the user service
+	menu       bool   // --menu: register and start the menu bar item (macOS)
 	bugReports string // --bug-reports: yes, no, or "" to ask
 	client     *http.Client
 	memoryMB   int
@@ -67,6 +68,7 @@ func (c *cli) install(args []string) error {
 	fs.StringVar(&in.guestTar, "guest-image-tar", "", "a saved Warden guest image tar to load when the release pins one for this architecture")
 	fs.BoolVar(&in.sbxLogin, "sbx-login", true, "run the SBX device login when Warden's namespace is not signed in yet")
 	fs.BoolVar(&in.service, "service", true, "register Warden with launchd (macOS) or systemd --user (Linux) and start it; --service=false leaves starting it to you")
+	fs.BoolVar(&in.menu, "menu", true, "register the menu bar item (macOS) and start it; --menu=false leaves the menu bar alone")
 	fs.StringVar(&in.bugReports, "bug-reports", "", "yes or no: send bug reports to Monaddle (you review every report before it is sent); asked on the terminal when not given")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
@@ -83,7 +85,7 @@ func (c *cli) install(args []string) error {
 	}
 	// Everything printed is also kept: a failure's report carries the
 	// installer's own output so far.
-	in.c = &cli{stdin: c.stdin, stdout: io.MultiWriter(c.stdout, &in.transcript), stderr: io.MultiWriter(c.stderr, &in.transcript), terminal: c.terminal, openFn: c.openFn, notifyFn: c.notifyFn, serviceFn: c.serviceFn}
+	in.c = &cli{stdin: c.stdin, stdout: io.MultiWriter(c.stdout, &in.transcript), stderr: io.MultiWriter(c.stderr, &in.transcript), terminal: c.terminal, openFn: c.openFn, notifyFn: c.notifyFn, serviceFn: c.serviceFn, menuFn: c.menuFn}
 	err := in.run()
 	if err != nil {
 		in.reportFailure(err)
@@ -216,6 +218,12 @@ func (in *installer) run() error {
 	if err != nil {
 		return err
 	}
+	// 10. The menu bar item (macOS): registered and started beside the
+	// service, restarted when this install brought a new release.
+	in.phase = "menu bar"
+	if err := in.ensureMenu(previous); err != nil {
+		return err
+	}
 	next := "then `warden start` and `warden open`"
 	if running {
 		next = "then `warden open`"
@@ -266,6 +274,37 @@ func (in *installer) ensureService(cfg config.Config, previous installRecord) (b
 		in.step("note", h)
 	}
 	return true, nil
+}
+
+// ensureMenu registers the menu bar item where there is one (macOS) and
+// starts it; an upgrade restarts a running one so the new build's item
+// runs. Nothing is printed where the item does not apply.
+func (in *installer) ensureMenu(previous installRecord) error {
+	m, reason := in.c.menu(in.state)
+	if m == nil {
+		if reason != "" {
+			in.step("menu bar", "not registered ("+reason+")")
+		}
+		return nil
+	}
+	if !in.menu {
+		in.step("menu bar", "not registered (--menu=false); `warden menu install` registers it later")
+		return nil
+	}
+	before := m.status()
+	upgraded := previous.Warden != "" && previous.Warden != revision && before.Running
+	result, err := in.c.registerMenu(m, in.configPath)
+	if err != nil {
+		return err
+	}
+	if upgraded && m.status().PID == before.PID {
+		if err := m.restart(); err != nil {
+			return err
+		}
+		result = m.label() + ": restarted on " + revision + " (" + m.status().String() + ")"
+	}
+	in.step("menu bar", result)
+	return nil
 }
 
 // bugReportsQuestion is asked once on the terminal.

@@ -73,7 +73,7 @@ func (c *cli) start(args []string) error {
 		}
 		defer log.Close()
 		stdlog.SetOutput(log)
-		c = &cli{stdin: c.stdin, stdout: log, stderr: log, openFn: c.openFn, notifyFn: c.notifyFn, serviceFn: c.serviceFn}
+		c = &cli{stdin: c.stdin, stdout: log, stderr: log, openFn: c.openFn, notifyFn: c.notifyFn, serviceFn: c.serviceFn, menuFn: c.menuFn}
 		*detachedChild = true
 	}
 	exe, err := os.Executable()
@@ -438,24 +438,28 @@ func (c *cli) open(args []string) error {
 	state := fs.String("state", "", "state directory when no warden.json exists yet")
 	print := fs.Bool("print", false, "print the URL instead of opening a browser")
 	withoutEdge := fs.Bool("without-edge", false, "open the chat origin directly (when warden start ran with --without-edge)")
+	chatID := fs.String("chat", "", "open the app on this chat")
+	newChat := fs.Bool("new", false, "open the app on the New chat form")
 	if err := fs.Parse(args); err != nil {
+		return errUsage
+	}
+	if *chatID != "" && *newChat {
+		fmt.Fprintln(c.stderr, "warden open: --chat and --new exclude each other")
 		return errUsage
 	}
 	cfg, _, err := loadConfig(*configPath, *state)
 	if err != nil {
 		return err
 	}
-	url, err := launchURL(cfg.OwnerTokenFile(), time.Now())
+	url, err := appURL(cfg, *withoutEdge, time.Now())
 	if err != nil {
 		return err
 	}
-	// In owner mode the edge fronts the chat: opening the app through it
-	// gives the browser the owner session that preview navigations need.
-	if cfg.Auth.Mode == config.AuthOwner && cfg.Auth.PublicURL != "" && !*withoutEdge {
-		url, err = throughEdge(url, cfg.Auth.PublicURL)
-		if err != nil {
-			return err
-		}
+	switch {
+	case *chatID != "":
+		url = withQuery(url, "chat="+neturl.QueryEscape(*chatID))
+	case *newChat:
+		url = withQuery(url, "new=1")
 	}
 	if *print {
 		fmt.Fprintln(c.stdout, url)
@@ -465,6 +469,35 @@ func (c *cli) open(args []string) error {
 		fmt.Fprintf(c.stdout, "open this URL in your browser:\n%s\n", url)
 	}
 	return nil
+}
+
+// appURL is the URL that opens the app with the owner capability. In
+// owner mode the edge fronts the chat: opening the app through it gives
+// the browser the owner session that preview navigations need.
+func appURL(cfg config.Config, withoutEdge bool, now time.Time) (string, error) {
+	url, err := launchURL(cfg.OwnerTokenFile(), now)
+	if err != nil {
+		return "", err
+	}
+	if cfg.Auth.Mode == config.AuthOwner && cfg.Auth.PublicURL != "" && !withoutEdge {
+		return throughEdge(url, cfg.Auth.PublicURL)
+	}
+	return url, nil
+}
+
+// withQuery adds a query parameter to a launch URL, before its fragment
+// (tui.PopupURL does the same for chat=).
+func withQuery(launch, param string) string {
+	base, fragment, _ := strings.Cut(launch, "#")
+	sep := "?"
+	if strings.Contains(base, "?") {
+		sep = "&"
+	}
+	u := base + sep + param
+	if fragment != "" {
+		u += "#" + fragment
+	}
+	return u
 }
 
 // throughEdge rewrites the chat launch URL onto the edge origin, keeping

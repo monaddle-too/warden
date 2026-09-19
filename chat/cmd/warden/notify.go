@@ -137,10 +137,7 @@ func popups(ctx context.Context, cfg config.Config, mode string, detached bool, 
 	}
 	client := &tui.Client{Base: base, Token: token}
 	p := &popupper{mode: mode, log: log, notify: desktopNotify, open: openBrowser}
-	if url, err := launchURL(cfg.OwnerTokenFile(), time.Now()); err == nil {
-		if cfg.Auth.Mode == "owner" && cfg.Auth.PublicURL != "" {
-			url, _ = throughEdge(url, cfg.Auth.PublicURL)
-		}
+	if url, err := appURL(cfg, false, time.Now()); err == nil {
 		p.appURL = url
 	}
 	err = tui.Watch(ctx, client, tui.Watcher{Approval: p.approval, Review: p.review})
