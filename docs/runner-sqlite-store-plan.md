@@ -69,7 +69,13 @@ renamed `cancelled-runs.migrated`. Neither backup is read again.
   (runtime removed, rows dropped) before refusing; it refuses only when
   every retained sandbox is still bound or running
   (`TestFullInventoryRetiresTheOldestUnboundStoppedSandbox`). Merged to
-  main 78adb90 (2026-09-19); not deployed to `~/.warden` yet.
+  main 78adb90 (2026-09-19). Deployed to `~/.warden` 2026-09-19 (1658a41):
+  the same send then failed with "…all bound or running" because all 32
+  stopped sandboxes were bound to old chats, and raising `keepStopped` to
+  64 killed the runner at startup ("invalid worker limits"): `runnersvc`
+  kept its own ceiling of 32 on `--retained` while the configuration
+  accepts any value ≥ 1. Fixed on `fix/runner-retained-limit`: the
+  ceiling is `maxRetained` (1024) and the refusal logs the values.
 
 ## Decisions
 

@@ -94,8 +94,12 @@ func run(args []string) error {
 		return services.ExitCode(1)
 	}
 	defer unlock()
-	if *memoryMB < 512 || *memoryMB > 16384 || *parallel < 1 || *parallel > 8 || *retained < *parallel || *retained > 32 {
-		slog.Error("invalid worker limits")
+	// The retained ceiling is the configuration's (sandboxes.keepStopped
+	// ≥ 1): a fixed 32 here refused `keepStopped: 64` at startup while
+	// the file accepted it, and an inventory of bound workspaces filled
+	// the smaller cap (docs/runner-sqlite-store-plan.md).
+	if *memoryMB < 512 || *memoryMB > 16384 || *parallel < 1 || *parallel > 8 || *retained < *parallel || *retained > maxRetained {
+		slog.Error("invalid worker limits", "memoryMB", *memoryMB, "maxRunning", *parallel, "retained", *retained, "maxRetained", maxRetained)
 		return services.ExitCode(1)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -165,6 +169,11 @@ const kubernetesPrepareTimeout = 10 * time.Minute
 
 // sizeLimits is the size offer of the configured runtime kind: what the
 // host allows on SBX, what the configuration says on Kubernetes.
+// maxRetained bounds `--retained` / `sandboxes.keepStopped`: an inventory
+// row per stopped workspace is cheap, the SBX images behind them are not,
+// so the ceiling is generous rather than absent.
+const maxRetained = 1024
+
 func sizeLimits(s settings) sandbox.ResourceLimits {
 	if s.cfg.RuntimeKind() == config.RuntimeKubernetes {
 		return kubernetesResourceLimits(s.cfg.Sandboxes, s.memoryMB)
