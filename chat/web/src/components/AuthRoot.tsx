@@ -7,6 +7,7 @@ import {
 } from "./GoogleLogin";
 import { ChatShell } from "./ChatShell";
 import { remoteSession } from "../api";
+import { documentTitle, signedOutHeading } from "../instance";
 export function AuthRoot() {
   const [auth, setAuth] = useState<AuthState>();
   const [error, setError] = useState("");
@@ -51,11 +52,20 @@ export function AuthRoot() {
     remoteSession("");
     await load();
   }
-  if (!auth || (auth.enabled && !auth.user))
+  // Which Warden is asking: a loopback owner install names itself and its
+  // build here and in the tab's title, so an install opened next to another
+  // one (or through another Warden's preview proxy) is recognisable before
+  // anyone signs in. A public install reports no instance (edge/owner.go).
+  const signedOut = !auth || (auth.enabled && !auth.user);
+  const instance = auth?.instance;
+  useEffect(() => {
+    if (signedOut) document.title = documentTitle("Warden — Sign in", instance);
+  }, [signedOut, instance?.name, instance?.version]);
+  if (signedOut)
     return (
       <div className="signin">
         <Shield size={36} />
-        <h1>Warden</h1>
+        <h1>{signedOutHeading(instance)}</h1>
         <p>Sign in to access your agents and private previews.</p>
         {auth && <GoogleLogin auth={auth} onSession={accept} onRetry={load} />}
         <p role="alert">{error}</p>
@@ -63,6 +73,7 @@ export function AuthRoot() {
     );
   return (
     <ChatShell
+      instance={instance}
       canConnectGoogle={!auth.enabled || auth.user?.role === "admin"}
       admin={!auth.enabled || auth.user?.role === "admin"}
       signIn={auth.enabled}

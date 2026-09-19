@@ -32,7 +32,14 @@ import {
   TextSearch,
   Timer,
 } from "lucide-react";
-import type { Chat, Entry, Environment, Resources, State } from "../types";
+import type {
+  Chat,
+  Entry,
+  Environment,
+  InstanceInfo,
+  Resources,
+  State,
+} from "../types";
 import { api, setOutputStyle, signedIn, subscribe } from "../api";
 import { ForkDialog } from "./ForkDialog";
 import { useNotifications } from "./Notifications";
@@ -82,11 +89,16 @@ export function ChatShell({
   canConnectGoogle = true,
   admin = false,
   signIn = false,
+  instance: reported,
 }: {
   account?: ReactNode;
   canConnectGoogle?: boolean;
   admin?: boolean;
   signIn?: boolean;
+  /* What /auth/session said this Warden is (AuthRoot.tsx): the header and
+     the title name the instance before the first GET state answers, and
+     keep naming it when the browser holds no capability at all. */
+  instance?: InstanceInfo;
 }) {
   const [state, setState] = useState<State>({ version: 1, chats: [] });
   const [live, setLive] = useState(false);
@@ -191,7 +203,7 @@ export function ChatShell({
     sessionStorage.setItem("warden-workspace-open", workspaceOpen ? "1" : "0");
   }, [workspaceOpen]);
   // A non-default instance names itself in the tab's title (instance.ts).
-  const instance = state.agentOptions?.instance;
+  const instance = state.agentOptions?.instance ?? reported;
   useEffect(() => {
     document.title = documentTitle("Warden — Chats", instance);
   }, [instance?.name, instance?.version]);

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import type { InstanceInfo } from "../types";
 
 export type BrowserSession = {
   user: { sub: string; email: string; role: string; name?: string };
@@ -9,6 +10,10 @@ export type AuthState = Partial<BrowserSession> & {
   enabled: boolean;
   client_id?: string;
   nonce?: string;
+  /* Which Warden is asking (instance.ts): a loopback owner install names
+     itself and its build on the signed-out page; a public one reports
+     nothing (edge/owner.go). */
+  instance?: InstanceInfo;
 };
 type GoogleIdentity = {
   initialize: (options: {
