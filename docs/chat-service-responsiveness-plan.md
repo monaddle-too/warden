@@ -130,3 +130,4 @@ latency while a workspace stops, edge→chat connection count.
   event stream idle sends keepalives only; edge→chat connections 7 for 3
   tabs (was 280 for 6). Not merged.
 - 2026-09-18: merged to main as cde9bca (fast-forward; Go 25 packages and web 292 tests green on the merged tree). GKE deploy next.
+- 2026-09-18: deployed to GKE from main abc9701 (image `v0.1.0-alpha.13-72-gabc9701`, helm rev 31): all four rollouts complete, canaries passed, the live workspace pod kept across the restart, the public host answers. Nothing remains; the worktree can go.
