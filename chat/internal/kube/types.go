@@ -228,6 +228,7 @@ type PodSpec struct {
 	EnableServiceLinks            *bool                  `json:"enableServiceLinks,omitempty"`
 	ImagePullSecrets              []LocalObjectReference `json:"imagePullSecrets,omitempty"`
 	NodeName                      string                 `json:"nodeName,omitempty"`
+	PriorityClassName             string                 `json:"priorityClassName,omitempty"`
 }
 
 // Container is one container of a pod.

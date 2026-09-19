@@ -15,7 +15,7 @@ identifiers were kept stable). Grep for the right-hand column.
 | **sandbox** (the VM itself) | sbx sandbox with `RuntimeName` `wc-…`/`ws-…`, `sandbox.RuntimeDriver` |
 | **chat** | `chats.Chat`, `chats/*` routes; a chat's transcript is `Entry`/`conversation` |
 | **preview** (a published port) | `Port`/`ports/*` routes, edge "binding", `sandbox/preview.go`, `chats/ports.go` |
-| **spare** (pre-warmed sandbox) | `sandbox/pool.go`, config `sandboxes.warmSpares` |
+| **spare** (pre-warmed sandbox; on Kubernetes also preemptible capacity: a sandbox pod that finds no node may take its slot) | `sandbox/managed.go` (`maintainSpares`, `takeSpareLocked`, `retireLostSpares`), `sandbox.ResidencyChecker` / `sandbox/kube/driver.go` `Resident`, config `sandboxes.warmSpares`, chart `sandboxes.preemptibleSpares` (`templates/spare-priorityclass.yaml`, `warden.json` `kubernetes.sparePriorityClass`) |
 | **grant** / **access** (documents, repos, network…) | `sharing/*` routes, `policy/sharing.go`, `chats/grants.go`; levels `read < write < structure` |
 | **share documents** / **share repositories** | `sharing/select`, `sharing/github_select`, `DocumentSharing.tsx`, `RepositorySharing.tsx` |
 | **pull request proposal** | `policy/pullrequests.go`, `sandbox/publish_plan.go`, `request_pull_request` tool |

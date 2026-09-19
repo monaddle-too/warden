@@ -396,7 +396,7 @@ when the two differ.
 | `guestImage` | The guest base image sandboxes run: `repository` and `digest`. The digest is required and must be a platform manifest digest; the runner pins it and the policy service checks each pod's `imageID` against it. | `ghcr.io/monaddle-too/warden-guest-base`, `""` |
 | `runtime` | `tier` (`kata` or `gvisor`); `runtimeClassName` (empty selects the tier default, `gvisor` or `kata-qemu`; the admission policy refuses any other class); `handlers.{gvisor,kata}` (used only when the chart creates the RuntimeClass); `createRuntimeClasses` (off: clusters usually own theirs); `overhead.{memoryMi,cpuMillis}` (the RuntimeClass pod overhead the sandbox quota must allow, typically 160Mi and 250m on Kata; written into the RuntimeClass when the chart creates it). | `gvisor`, `""`, `runsc`/`kata-qemu`, `false`, `0`/`0` |
 | `sandboxNamespace` | `name` of the sandbox namespace, whether the chart creates it, and whether it is kept on uninstall. | `warden-sandboxes`, `true`, `true` |
-| `sandboxes` | Sandbox sizing, mirrored into `warden.json` and into the namespace quota and LimitRange: `memoryMB` and `cpus` (the default size of a fresh workspace; CPUs in quarters), `maxMemoryMB` and `maxCPUs` (the most any one workspace may be resized to: the quota allows every sandbox at this size and the LimitRange caps containers at it), `maxRunning`, `warmSpares`, `stopAfterIdleMinutes` (minutes after the last chat activity), `keepStopped` (stopped workspaces kept), `extraPods` (quota headroom for the two canaries), `extraPVCs` (headroom for a fork clone in flight), `nodeSelector` and `tolerations` for sandbox pods (rendered into `warden.json` only when set). | `1536`, `1`, `8192`, `4`, `2`, `1`, `30`, `32`, `2`, `2`, `{}`, `[]` |
+| `sandboxes` | Sandbox sizing, mirrored into `warden.json` and into the namespace quota and LimitRange: `memoryMB` and `cpus` (the default size of a fresh workspace; CPUs in quarters), `maxMemoryMB` and `maxCPUs` (the most any one workspace may be resized to: the quota allows every sandbox at this size and the LimitRange caps containers at it), `maxRunning`, `warmSpares`, `preemptibleSpares` (spare pods under a PriorityClass of -10, so a sandbox pod that finds no node with room preempts one for its slot and the runner replaces it; `templates/spare-priorityclass.yaml`, `warden.json` `kubernetes.sparePriorityClass`), `stopAfterIdleMinutes` (minutes after the last chat activity), `keepStopped` (stopped workspaces kept), `extraPods` (quota headroom for the two canaries), `extraPVCs` (headroom for a fork clone in flight), `nodeSelector` and `tolerations` for sandbox pods (rendered into `warden.json` only when set). | `1536`, `1`, `8192`, `4`, `2`, `1`, `true`, `30`, `32`, `2`, `2`, `{}`, `[]` |
 | `egress` | `restricted` (the policy template's destination list) or `open` (any public HTTP/HTTPS host); enforced at the gateway, same NetworkPolicies either way. | `restricted` |
 | `auth` | `mode` (`owner` or `google`); `publicURL` (the URL browsers open: `http://127.0.0.1:<edge.port>` by default in owner mode, the Ingress URL in Google mode); `google.signInClientID`, `google.owners`, `google.demoDomains`. | `owner`, `""`, `""`, `[]`, `[]` |
 | `previews` | `mode` (`loopback` or `public`); `hostSuffix` (public only); `ingress.enabled`, `ingress.className`, `ingress.annotations`, `ingress.host` (empty derives the app host from `auth.publicURL`), `ingress.tls.enabled`, `ingress.tls.secretName` (the certificate for the app host and `*.<hostSuffix>`). | `loopback`, `""`, `true`, `""`, `{}`, `""`, `true`, `warden-edge-public-tls` |
@@ -1070,8 +1070,17 @@ balloon. So a pod fits an existing node only while it is in the
 headroom stage; otherwise every pod that arrives after a node has
 settled boots a node (~40–90 s to Running), which Autopilot does not
 bill (requests are the bill) but the owner waits for. The warm spare
-covers a fresh chat; a resume, or a second chat in quick succession,
-still pays the boot.
+covers a fresh chat; and since `sandboxes.preemptibleSpares` (on by
+default) the spare is also the answer for a resume, a fork's copy or a
+second chat: its pod carries the chart's PriorityClass of -10
+(`preemptionPolicy: Never`, so it evicts nothing itself), and a sandbox
+pod that finds no node with room preempts it and starts in its slot in
+seconds — measured 3 s from creation to Running on 2026-09-19 — while the
+runner notices the spare's guest is gone (`ResidencyChecker.Resident`,
+looked at every 10 s and at adoption) and replaces it, which is where the
+node boot now happens, watched by nobody. One paid slot serves whichever
+arrives first; a fresh chat that arrives within the ~2 minutes after a
+resume took the spare waits for the replacement.
 
 The domain is one delegated zone: the app is `https://<domain>/` and
 previews are `https://<binding-id>.<domain>/`, so `auth.publicURL` and

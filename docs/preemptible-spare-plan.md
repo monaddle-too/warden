@@ -63,3 +63,17 @@ the background (where the node boot is felt by nobody). One paid slot
 ## Progress log
 
 - 2026-09-19: worktree opened, plan written.
+- 2026-09-19: steps 1–4 done. Chart: `sandboxes.preemptibleSpares`
+  (default true) renders `templates/spare-priorityclass.yaml`
+  (`<clusterPrefix>-spare`, -10, Never) and `warden.json`
+  `kubernetes.sparePriorityClass`; goldens updated. Go:
+  `config.Kubernetes.SparePriorityClass` → `kube.Options` → `PodSpec`
+  sets `priorityClassName` on spare pods only (pod-spare golden). Worker:
+  `sandbox.ResidencyChecker` (the kube driver's `Resident`: the pod by
+  UID, not terminating, not ended); `retireLostSpares` every 10 s from
+  the lifecycle loop and `spareLostLocked` at adoption retire a preempted
+  spare (residency closed, `Remove` in the background so the claim goes
+  too) and `maintainSpares` refills; tests
+  `TestPreemptedSpareIsReplacedAndNeverAdopted`,
+  `TestResidentSeesAPreemptedPod`. Feature map row for spares corrected
+  (it named `sandbox/pool.go`, which does not exist).

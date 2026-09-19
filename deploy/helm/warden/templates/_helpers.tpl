@@ -18,6 +18,11 @@ is unique per installation.
 {{ printf "warden-%s" .Values.sandboxNamespace.name | trunc 50 | trimSuffix "-" }}
 {{- end -}}
 
+{{- /* The PriorityClass of warm spare pods (spare-priorityclass.yaml). */ -}}
+{{- define "warden.sparePriorityClassName" -}}
+{{ include "warden.clusterPrefix" . }}-spare
+{{- end -}}
+
 {{/* Common labels for every object. */}}
 {{- define "warden.labels" -}}
 app.kubernetes.io/name: warden
@@ -178,6 +183,9 @@ Compose file uses.
 {{- end -}}
 {{- if .Values.sandboxes.tolerations -}}
 {{- $_ = set $kube "tolerations" .Values.sandboxes.tolerations -}}
+{{- end -}}
+{{- if and (gt (int .Values.sandboxes.warmSpares) 0) .Values.sandboxes.preemptibleSpares -}}
+{{- $_ = set $kube "sparePriorityClass" (include "warden.sparePriorityClassName" .) -}}
 {{- end -}}
 {{- $_ = set $cfg "kubernetes" $kube -}}
 {{- $_ = set $cfg "sandboxes" (dict

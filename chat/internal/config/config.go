@@ -146,6 +146,11 @@ type Kubernetes struct {
 	// tainted gVisor pool); none when unset.
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 	Tolerations  []Toleration      `json:"tolerations,omitempty"`
+	// SparePriorityClass is the PriorityClass of warm spare pods (the
+	// chart's, value -10): a sandbox pod that finds no room preempts a
+	// spare and lands in its slot instead of waiting for a node, and the
+	// runner replaces the spare. Spares have no priority class when unset.
+	SparePriorityClass string `json:"sparePriorityClass,omitempty"`
 }
 
 // Toleration is a sandbox pod toleration, the Kubernetes field names.

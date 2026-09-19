@@ -90,6 +90,13 @@ sandboxes:
   maxRunning: 2
   # Pre-started sandboxes waiting for a chat.
   warmSpares: 1
+  # Spare pods carry a PriorityClass of -10 (never preempting anything
+  # themselves), so a sandbox pod that finds no node with room — a
+  # resume, a fork's copy, a second chat — preempts a spare and starts in
+  # its slot within seconds instead of waiting for a node; the runner
+  # replaces the spare in the background. One spare then serves whichever
+  # arrives first. Off keeps spares at the default priority.
+  preemptibleSpares: true
   # Stop a sandbox this long after its last chat activity (the agent's
   # last reply, a message, a person's command, a preview or review), unless
   # it has a published preview. The idle agent session's release does not

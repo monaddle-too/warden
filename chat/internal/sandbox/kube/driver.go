@@ -976,6 +976,38 @@ func (d *Driver) Unpublish(_ context.Context, name string, m sandbox.PortMapping
 	return nil
 }
 
+// Resident says whether the runtime's pod is still the one this driver
+// started (sandbox.ResidencyChecker): a spare pod carries a low priority
+// and a sandbox pod may preempt it, after which the pod is gone or
+// terminating while the worker still lists the spare.
+func (d *Driver) Resident(ctx context.Context, name string) (bool, error) {
+	d.mu.Lock()
+	rt := d.runtimes[name]
+	uid := ""
+	if rt != nil {
+		uid = rt.podUID
+	}
+	d.mu.Unlock()
+	if uid == "" {
+		return false, nil
+	}
+	var pod kube.Pod
+	if err := d.client.Get(ctx, kube.Pods, d.opts.Namespace, name, &pod); err != nil {
+		if kube.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("sandbox %s: pod: %w", name, err)
+	}
+	if pod.Metadata.UID != uid || pod.Metadata.DeletionTimestamp != nil {
+		return false, nil
+	}
+	switch pod.Status.Phase {
+	case "Failed", "Succeeded":
+		return false, nil
+	}
+	return true, nil
+}
+
 // Mappings returns the recorded publications once the pod is confirmed to
 // be the one they were made on (its UID); a replaced or missing pod is an
 // error, since its publications would name a different guest.

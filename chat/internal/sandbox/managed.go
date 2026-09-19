@@ -439,7 +439,13 @@ func (w *Worker) prepareLocked(ctx context.Context, r Request) (Response, error)
 		// Spares are booted at the default size; a workspace of another
 		// size is created directly, since resizing a spare would cost a
 		// regeneration on SBX.
-		if spare := w.takeSpareLocked(); spare != nil {
+		spare := w.takeSpareLocked()
+		if spare != nil && w.spareLostLocked(ctx, spare) {
+			// Preempted since the last look: a chat must not inherit a slot
+			// that is gone. Created fresh instead, as with no spare at all.
+			spare = nil
+		}
+		if spare != nil {
 			s.RuntimeName = spare.Name
 			s.Created = true
 			s.residency = spare.residency
@@ -1344,6 +1350,7 @@ func (w *Worker) lifecycleLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			w.auditPreviews(ctx)
+			w.retireLostSpares(ctx)
 			w.maintainSpares(ctx)
 			callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			_ = w.SweepIdle(callCtx)
@@ -1566,6 +1573,54 @@ func (w *Worker) takeSpareLocked() *spareSandbox {
 		return spare
 	}
 	return nil
+}
+
+// spareLostLocked asks a driver that can tell (ResidencyChecker) whether
+// the spare's guest is still there, and if not retires it: dropped from the
+// pool (the caller already took it) and removed in the background so its
+// claim goes too and maintainSpares makes a fresh one. A driver that cannot
+// tell, or an error asking, keeps the spare: the chat then finds out.
+func (w *Worker) spareLostLocked(ctx context.Context, spare *spareSandbox) bool {
+	checker, ok := w.Runtime.(ResidencyChecker)
+	if !ok {
+		return false
+	}
+	checkCtx, done := context.WithTimeout(ctx, 10*time.Second)
+	resident, err := checker.Resident(checkCtx, spare.Name)
+	done()
+	if err != nil || resident {
+		return false
+	}
+	log.Printf("spare sandbox %s: guest gone (preempted); replacing it", spare.Name)
+	if spare.residency != nil {
+		_ = spare.residency.Close()
+	}
+	go func() {
+		removeCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stop()
+		if err := w.Runtime.Remove(removeCtx, spare.Name); err != nil {
+			log.Printf("spare sandbox %s: remove after preemption: %v", spare.Name, err)
+		}
+	}()
+	return true
+}
+
+// retireLostSpares looks every 10 s, on a driver that can tell, for spares
+// whose guest was taken away (a sandbox pod preempted the spare's pod for
+// its slot) and retires them, so the pool is refilled while nobody waits.
+func (w *Worker) retireLostSpares(ctx context.Context) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.Runtime.(ResidencyChecker); !ok || len(w.managed.Spares) == 0 || w.now().Before(w.spareCheckAt) || ctx.Err() != nil {
+		return
+	}
+	w.spareCheckAt = w.now().Add(10 * time.Second)
+	for name, spare := range w.managed.Spares {
+		if w.spareLostLocked(ctx, spare) {
+			delete(w.managed.Spares, name)
+			_ = w.saveManagedLocked()
+		}
+	}
 }
 
 // maintainSpares starts creating one spare guest when fewer than Spares are

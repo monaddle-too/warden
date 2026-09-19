@@ -48,6 +48,7 @@ type Worker struct {
 	Spares       int
 	spareBusy    bool      // a spare is being created (guarded by mu)
 	spareRetryAt time.Time // next creation attempt after a failure (guarded by mu)
+	spareCheckAt time.Time // next look at whether the spares' guests are still there (guarded by mu)
 	// claudeDigest caches the SHA-256 of the host Claude executable, keyed by
 	// its size:mtime fingerprint, for comparison with a guest image manifest.
 	claudeDigestKey, claudeDigest string
