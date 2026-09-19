@@ -1,17 +1,22 @@
 {{- /*
 Sizing of the sandbox namespace (plan decision 11) from sandboxes.*: the
 quota bounds pods (resident sandboxes, warm spares and the canaries),
-their memory and CPU including the RuntimeClass overhead, and the
-workspace PVCs; the LimitRange gives every sandbox container the
-configured memory and CPU as both request and limit, so the runner's pod
-spec and the quota agree.
+their memory and CPU at the workspace ceiling (every workspace may be
+resized up to it) including the RuntimeClass overhead, and the workspace
+PVCs; the LimitRange gives a sandbox container that names no size the
+default memory and CPU as both request and limit, and caps any at the
+ceiling, so the runner's pod spec, its resizes and the quota agree.
 */ -}}
 {{- $sandboxNS := include "warden.sandboxNamespace" . }}
 {{- $pods := int (include "warden.sandboxPods" .) }}
 {{- $memoryMi := int .Values.sandboxes.memoryMB }}
-{{- $cpuMillis := int .Values.sandboxes.cpuMillis }}
-{{- $podMemoryMi := add $memoryMi (int .Values.runtime.overhead.memoryMi) }}
-{{- $podCPUMillis := add $cpuMillis (int .Values.runtime.overhead.cpuMillis) }}
+{{- $cpuMillis := int (mulf .Values.sandboxes.cpus 1000) }}
+{{- $maxMemoryMi := int .Values.sandboxes.maxMemoryMB }}
+{{- $maxCPUMillis := int (mulf .Values.sandboxes.maxCPUs 1000) }}
+{{- if lt $maxMemoryMi $memoryMi }}{{ fail "sandboxes.maxMemoryMB is below sandboxes.memoryMB" }}{{ end }}
+{{- if lt $maxCPUMillis $cpuMillis }}{{ fail "sandboxes.maxCPUs is below sandboxes.cpus" }}{{ end }}
+{{- $podMemoryMi := add $maxMemoryMi (int .Values.runtime.overhead.memoryMi) }}
+{{- $podCPUMillis := add $maxCPUMillis (int .Values.runtime.overhead.cpuMillis) }}
 {{- $pvcs := add (int .Values.sandboxes.maxRunning) (int .Values.sandboxes.warmSpares) (int .Values.sandboxes.keepStopped) (int .Values.sandboxes.extraPVCs) }}
 apiVersion: v1
 kind: ResourceQuota
@@ -52,8 +57,8 @@ spec:
         memory: {{ printf "%dMi" $memoryMi | quote }}
         cpu: {{ printf "%dm" $cpuMillis | quote }}
       max:
-        memory: {{ printf "%dMi" $memoryMi | quote }}
-        cpu: {{ printf "%dm" $cpuMillis | quote }}
+        memory: {{ printf "%dMi" $maxMemoryMi | quote }}
+        cpu: {{ printf "%dm" $maxCPUMillis | quote }}
     - type: PersistentVolumeClaim
       max:
         storage: {{ printf "%dGi" (int .Values.storage.workspaceGi) | quote }}

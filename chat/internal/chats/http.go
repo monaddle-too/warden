@@ -1,6 +1,8 @@
 package chats
 
 import (
+	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -8,9 +10,11 @@ import (
 	"mime"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"warden/chat/internal/conversation"
+	"warden/chat/internal/sandbox"
 	"warden/chat/internal/transport"
 )
 
@@ -96,7 +100,18 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if r.Method == "GET" && path == "state" {
-		json.NewEncoder(w).Encode(h.Engine.View())
+		data, _, _ := h.Engine.ViewJSON()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+		return
+	}
+	if r.Method == "GET" && path == "chats/search" {
+		// A search across every chat's title and transcript (search.go).
+		limit := 0
+		if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+			limit = n
+		}
+		json.NewEncoder(w).Encode(h.Engine.Search(r.URL.Query().Get("q"), limit))
 		return
 	}
 	if r.Method == "GET" && path == "environments" {
@@ -113,7 +128,31 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.clusterHTTP(w, r, path)
 		return
 	}
+	if r.Method == "GET" && path == "capacity" {
+		// The host's live capacity for the size picker (capacity.go);
+		// anyone who may create a chat may see it.
+		result, err := h.Engine.Capacity(r.Context())
+		respond(w, result, err)
+		return
+	}
+	if r.Method == "GET" && path == "spend" {
+		// The admin console's spend totals (spend.go); owner-only at the
+		// edge (ownerOnly lists api/spend).
+		json.NewEncoder(w).Encode(h.Engine.Spend())
+		return
+	}
+	if path == "me/instructions" {
+		// A person's own standing instructions (instructions.go); the
+		// requester is whoever the edge identified, or the owner.
+		h.instructionsHTTP(w, r)
+		return
+	}
 	parts := strings.Split(path, "/")
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "memory" {
+		view, err := h.Engine.Memory(r.Context(), parts[1])
+		respond(w, view, err)
+		return
+	}
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "runtime" {
 		res, err := h.Engine.Runtime(r.Context(), parts[1], "status")
 		respond(w, res, err)
@@ -125,6 +164,42 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "paths" {
 		h.pathsHTTP(w, r, parts[1])
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "local-paths" {
+		// A typed path on the owner's own machine (localfiles.go).
+		h.localPathsHTTP(w, r, parts[1])
+		return
+	}
+	if r.Method == "POST" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "attach-local" {
+		h.attachLocalHTTP(w, r, parts[1])
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "resources" {
+		// What the composer's "@" menu can mention (mentions.go).
+		resources, err := h.Engine.Resources(r.Context(), parts[1])
+		respond(w, resources, err)
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && (parts[0] == "environments" || parts[0] == "chats") && parts[2] == "rules" {
+		// A workspace's permission rules and its chats' (rules.go).
+		view, err := h.Engine.Rules(parts[1])
+		respond(w, view, err)
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "permissions" {
+		events, err := h.Engine.Permissions(parts[1])
+		respond(w, map[string]any{"events": events}, err)
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "diff" {
+		changes, err := h.Engine.Diff(r.Context(), parts[1])
+		respond(w, changes, err)
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "checkpoints" {
+		list, err := h.Engine.Checkpoints(r.Context(), parts[1])
+		respond(w, map[string]any{"checkpoints": list}, err)
 		return
 	}
 	if len(parts) >= 3 && parts[0] == "chats" && parts[2] == "attachments" {
@@ -165,6 +240,13 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", 404)
 		return
 	}
+	if path == "bug-test" {
+		// /test bugreporting: a deliberate panic, recovered and drafted
+		// (bugs.go). Owner-only at the edge.
+		result, err := h.Engine.BugTest()
+		respond(w, result, err)
+		return
+	}
 	var body struct {
 		Provider   string              `json:"provider"`
 		Model      string              `json:"model"`
@@ -176,10 +258,48 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Archived   bool                `json:"archived"`
 		Allow      bool                `json:"allow"`
 		Answers    map[string][]string `json:"answers"`
+		// A tool permission's other answers (Engine.Answer): allow and
+		// remember, deny with a message the model reads, the mode a plan
+		// is approved into; Mode is also the body of chats/{id}/mode.
+		Always    bool               `json:"always"`
+		Message   string             `json:"message"`
+		Mode      string             `json:"mode"`
+		Resources *sandbox.Resources `json:"resources"`
+		// Network, on chats and environments/{id}/network, is the
+		// workspace's own network access (network.go): "" follows the
+		// install, else restricted or open.
+		Network string `json:"network"`
 		// Attachments are upload IDs a message sends along.
 		Attachments []string `json:"attachments"`
+		// Thinking, Effort and Fast are the body of chats/{id}/settings
+		// (Engine.SetSettings): each applies when present.
+		Thinking *string `json:"thinking"`
+		Effort   *string `json:"effort"`
+		Fast     *bool   `json:"fast"`
+		// TurnID and What are a rewind's target and scope (rewind.go);
+		// TurnID is also where a fork cuts (fork.go). Code asks an
+		// undo-rewind to restore the workspace too.
+		TurnID string `json:"turnID"`
+		What   string `json:"what"`
+		Code   bool   `json:"code"`
+		// Scope and Path name the memory file a chats/{id}/memory/write
+		// replaces with Text (memory.go); Scope is also where an "allow
+		// always" answer remembers its rule ("chat" or "workspace").
+		Scope string `json:"scope"`
+		Path  string `json:"path"`
+		// Style is the body of chats/{id}/style (style.go).
+		Style string `json:"style"`
+		// CopyWorkspace, on chats/{id}/fork, gives the fork a copy of the
+		// workspace (fork.go).
+		CopyWorkspace bool `json:"copyWorkspace"`
+		// Kind and Pattern are a permission rule, the body of
+		// environments/{id}/rules and chats/{id}/rules (rules.go).
+		Kind    string `json:"kind"`
+		Pattern string `json:"pattern"`
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
+	// Room for a memory file (1 MiB of text, JSON-escaped); every other
+	// body is bounded far below by its own validation.
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
 		http.Error(w, "invalid request", 400)
@@ -196,18 +316,39 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = h.Engine.RevokePort(r.Context(), parts[1])
 	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "stop":
 		err = h.Engine.StopEnvironment(r.Context(), parts[1])
+	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "start":
+		err = h.Engine.StartEnvironment(r.Context(), parts[1])
 	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "archive":
 		err = h.Engine.ArchiveEnvironment(r.Context(), parts[1])
 	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "delete":
 		err = h.Engine.DeleteEnvironment(r.Context(), parts[1])
+	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "resize":
+		err = h.Engine.ResizeEnvironment(r.Context(), parts[1], body.Resources)
+	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "network":
+		if !isOwner(r) {
+			http.Error(w, errNetworkOwner, 403)
+			return
+		}
+		err = h.Engine.SetWorkspaceNetwork(r.Context(), parts[1], body.Network, requester(r))
 	case path == "chats":
+		if body.Network != "" && !isOwner(r) {
+			http.Error(w, errNetworkOwner, 403)
+			return
+		}
 		var id string
-		id, err = h.Engine.Create(body.Title, body.SandboxID, body.Repository, body.Provider, body.Model)
+		id, err = h.Engine.CreateFrom(requester(r), body.Title, body.SandboxID, body.Repository, body.Resources, body.Provider, body.Model)
+		if err == nil && body.Network != "" {
+			id, err = h.Engine.createdOnNetwork(r.Context(), id, body.Network, requester(r))
+		}
 		result = map[string]string{"id": id}
 	case len(parts) == 3 && parts[0] == "chats":
 		switch parts[2] {
 		case "agent":
 			err = h.Engine.ConfigureAgentAndRelease(r.Context(), parts[1], body.Provider, body.Model)
+		case "mode":
+			err = h.Engine.SetMode(r.Context(), parts[1], body.Mode)
+		case "settings":
+			err = h.Engine.SetSettings(r.Context(), parts[1], Settings{Thinking: body.Thinking, Effort: body.Effort, Fast: body.Fast})
 		case "message":
 			err = h.Engine.MessageFrom(parts[1], body.Text, body.ID, requester(r), body.Attachments...)
 		case "typing":
@@ -217,21 +358,94 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			err = h.Engine.Edit(parts[1], body.Title, body.Archived)
 		case "stop":
 			err = h.Engine.Stop(r.Context(), parts[1])
+		case "exec":
+			// A person's own shell command in the workspace (composer.go).
+			result, err = h.Engine.Exec(r.Context(), parts[1], body.Text, requester(r))
+		case "memory":
+			err = h.Engine.AppendMemory(r.Context(), parts[1], body.Text, requester(r))
 		case "activity":
 			result, err = h.Engine.Runtime(r.Context(), parts[1], "activity")
+		case "rewind":
+			result, err = h.Engine.Rewind(r.Context(), parts[1], body.TurnID, body.What)
+		case "withdraw":
+			// A queued message out of the queue, returned for the
+			// composer (queue.go); send-queued lets a held queue go.
+			result, err = h.Engine.Withdraw(parts[1], body.ID, requester(r))
+		case "send-queued":
+			err = h.Engine.SendQueued(parts[1])
+		case "undo-rewind":
+			// The last conversation rewind's removed transcript back in
+			// place (rewind.go); ID names its marker.
+			result, err = h.Engine.UndoRewind(r.Context(), parts[1], body.ID, body.Code, requester(r))
+		case "fork":
+			// A sibling chat copied from this one up to a message (fork.go).
+			result, err = h.Engine.Fork(r.Context(), parts[1], body.TurnID, body.CopyWorkspace, requester(r))
+		case "aside":
+			// A side question answered from a copy of the session (aside.go).
+			result, err = h.Engine.Aside(r.Context(), parts[1], body.Text, requester(r))
+		case "style":
+			err = h.Engine.SetOutputStyle(r.Context(), parts[1], body.Style)
+		case "rules":
+			// A permission rule added to the chat (rules.go).
+			result, err = h.Engine.AddRule(parts[1], body.Kind, body.Pattern, requester(r))
+		case "bug":
+			// /bug text: a user bug report with this chat's ids (bugs.go).
+			result, err = h.Engine.Bug(parts[1], body.Text, requester(r))
 		default:
 			http.Error(w, "not found", 404)
 			return
 		}
 	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "approvals":
-		err = h.Engine.ResolveAs(parts[1], parts[3], body.Allow, body.Answers, requester(r))
+		err = h.Engine.Answer(parts[1], parts[3], Answer{Allow: body.Allow, Answers: body.Answers, Always: body.Always, Scope: body.Scope, Message: body.Message, Mode: body.Mode}, requester(r))
+	case len(parts) == 3 && parts[0] == "environments" && parts[2] == "rules":
+		// A permission rule added to the workspace (rules.go).
+		result, err = h.Engine.AddRule(parts[1], body.Kind, body.Pattern, requester(r))
+	case len(parts) == 5 && (parts[0] == "environments" || parts[0] == "chats") && parts[2] == "rules" && parts[4] == "remove":
+		err = h.Engine.RemoveRule(parts[1], parts[3])
 	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "attachments" && parts[4] == "remove":
 		err = h.Engine.removeAttachment(parts[1], parts[3])
+	case len(parts) == 4 && parts[0] == "chats" && parts[2] == "memory" && parts[3] == "write":
+		err = h.Engine.WriteMemory(r.Context(), parts[1], body.Scope, body.Path, body.Text, requester(r))
+	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "aside" && parts[4] == "promote":
+		// A side question asked in chat as a message of the requester's,
+		// its answer quoted (aside.go).
+		result, err = h.Engine.PromoteAside(parts[1], parts[3], requester(r))
+	case len(parts) == 5 && parts[0] == "chats" && parts[2] == "queued" && parts[4] == "edit":
+		// A queued message's text and attachments replaced in place
+		// (queue.go); the edited entry comes back.
+		result, err = h.Engine.EditQueued(parts[1], parts[3], body.Text, body.Attachments, requester(r))
 	default:
 		http.Error(w, "not found", 404)
 		return
 	}
 	respond(w, result, err)
+}
+
+// instructionsHTTP answers me/instructions: GET reads the requester's own
+// text, POST {"text"} replaces it (blank removes it).
+func (h *HTTP) instructionsHTTP(w http.ResponseWriter, r *http.Request) {
+	actor := requester(r)
+	switch r.Method {
+	case http.MethodGet:
+		json.NewEncoder(w).Encode(h.Engine.Instructions(actor))
+	case http.MethodPost:
+		var body struct {
+			Text string `json:"text"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil || dec.Decode(&struct{}{}) != io.EOF {
+			http.Error(w, "invalid request", 400)
+			return
+		}
+		if err := h.Engine.SetInstructions(actor, body.Text); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		json.NewEncoder(w).Encode(h.Engine.Instructions(actor))
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
 }
 
 // requester is the person behind a request as the edge identified them
@@ -252,6 +466,15 @@ func requester(r *http.Request) conversation.Actor {
 	return conversation.Actor{PrincipalID: principal, Email: clip(r.Header.Get("X-Warden-Email"), 254), Name: clip(r.Header.Get("X-Warden-Name"), 120)}
 }
 
+const errNetworkOwner = "only the owner chooses a workspace's network access"
+
+// isOwner reports whether the edge marked the request as the owner's
+// (X-Warden-Role, which it strips from clients), or no edge is involved
+// and the capability holder is the owner.
+func isOwner(r *http.Request) bool {
+	return r.Header.Get("X-Warden-Principal") == "" || r.Header.Get("X-Warden-Role") == "admin"
+}
+
 func respond(w http.ResponseWriter, value any, err error) {
 	if err != nil {
 		w.WriteHeader(409)
@@ -268,13 +491,17 @@ func (h *HTTP) events(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("X-Accel-Buffering", "no")
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	previous := ""
+	// A frame goes when the view changed (at most every eventsPace, so a
+	// burst of streamed tokens is one frame) or every eventsKeepalive; in
+	// between the stream waits on the engine, doing nothing while Warden
+	// is idle. The encoded view is the engine's, shared with every other
+	// stream, so a change costs one encoding, not one per tab.
+	var previous []byte
+	var last viewKey
 	lastWrite := time.Time{}
 	for {
-		data, _ := json.Marshal(h.Engine.View())
-		if string(data) != previous || time.Since(lastWrite) >= 5*time.Second {
+		data, key, typing := h.Engine.ViewJSON()
+		if !bytes.Equal(data, previous) || time.Since(lastWrite) >= eventsKeepalive {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
 				return
@@ -284,12 +511,40 @@ func (h *HTTP) events(w http.ResponseWriter, r *http.Request) {
 			}
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 			lastWrite = time.Now()
-			previous = string(data)
+			previous = data
 		}
+		last = key
+		next := eventsKeepalive - time.Since(lastWrite)
+		if typing {
+			next = eventsPace // a typist expires without a change to wake on
+		}
+		keepalive := time.NewTimer(next)
+		changed := make(chan struct{})
+		waitCtx, cancel := context.WithCancel(r.Context())
+		go func() { defer close(changed); h.Engine.viewWait(waitCtx, last) }()
+		select {
+		case <-r.Context().Done():
+			cancel()
+			keepalive.Stop()
+			return
+		case <-changed:
+		case <-keepalive.C:
+		}
+		cancel()
+		keepalive.Stop()
+		// Typists expire with time and a change may come in a burst: pace
+		// the next frame.
 		select {
 		case <-r.Context().Done():
 			return
-		case <-ticker.C:
+		case <-time.After(eventsPace - time.Since(lastWrite)):
 		}
 	}
 }
+
+// eventsPace is the shortest interval between two frames of a stream;
+// eventsKeepalive the longest.
+const (
+	eventsPace      = 200 * time.Millisecond
+	eventsKeepalive = 5 * time.Second
+)

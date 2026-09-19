@@ -8,7 +8,30 @@ type Item = {
   createdAt: number;
   turnID?: string;
   sender?: { principalID: string };
+  parentID?: string;
 };
+
+/* The transcript's own entries and, by the ID of each subagent's card,
+   the entries that subagent produced: a subagent's entries name their
+   Agent call in `parentID` and render inside its card, not in the
+   transcript's flow. A nested subagent's entries key on its own card. An
+   entry whose parent is unknown (a card the service no longer has) stays
+   at the top rather than vanishing. */
+export function nestEntries<T extends Item>(
+  entries: T[],
+): { top: T[]; nested: Map<string, T[]> } {
+  const ids = new Set(entries.map((e) => e.id));
+  const top: T[] = [];
+  const nested = new Map<string, T[]>();
+  for (const e of entries) {
+    if (e.parentID && ids.has(e.parentID)) {
+      const list = nested.get(e.parentID);
+      if (list) list.push(e);
+      else nested.set(e.parentID, [e]);
+    } else top.push(e);
+  }
+  return { top, nested };
+}
 
 /* The last entry the reader saw: its ID, and its time for when the ID is
    gone (a chat whose entries the service replaced). */
@@ -70,7 +93,8 @@ export function unreadIndex<T extends Item>(entries: T[], id: string): number {
   return id ? entries.findIndex((e) => e.id === id) : -1;
 }
 
-/* How many messages (not tool steps) follow `lastID`, the last entry the
+/* How many messages (not tool steps, thinking or compaction dividers)
+   follow `lastID`, the last entry the
    reader had in view when they left the bottom of the transcript. An empty
    ID is an empty transcript, so everything counts; an ID that is gone
    counts nothing rather than everything. */
@@ -83,13 +107,20 @@ export function newSince<T extends Item>(entries: T[], lastID: string): number {
   }
   let count = 0;
   for (let i = from; i < entries.length; i++)
-    if (entries[i].role !== "activity") count++;
+    if (
+      entries[i].role !== "activity" &&
+      entries[i].role !== "thinking" &&
+      entries[i].role !== "compaction"
+    )
+      count++;
   return count;
 }
 
 /* Consecutive tool steps render as one collapsible group; a group never
    spans the unread divider, so the divider can sit before `breakAt`, and
-   never two turns, so a turn's line can follow its last group. */
+   never two turns, so a turn's line can follow its last group. A step
+   with a sender (a command the person ran) stands on its own, never in
+   the agent's group. */
 export function groupEntries<T extends Item>(
   entries: T[],
   breakAt = -1,
@@ -97,12 +128,13 @@ export function groupEntries<T extends Item>(
   const items: ({ entry: T } | { group: T[] })[] = [];
   entries.forEach((entry, index) => {
     const last = items[items.length - 1];
-    if (entry.role === "activity") {
+    if (entry.role === "activity" && !entry.sender) {
       if (
         last &&
         "group" in last &&
         index !== breakAt &&
-        last.group[0].turnID === entry.turnID
+        last.group[0].turnID === entry.turnID &&
+        !last.group[0].sender
       )
         last.group.push(entry);
       else items.push({ group: [entry] });

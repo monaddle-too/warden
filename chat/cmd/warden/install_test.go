@@ -71,6 +71,10 @@ type fixture struct {
 	unpin   bool
 	out     bytes.Buffer
 	stdinRd *strings.Reader
+	// serviceFn is the service manager the install sees (default: none);
+	// menuFn the menu bar item's (default: not on this host).
+	serviceFn func(state string) (serviceManager, string)
+	menuFn    func(state string) (serviceManager, string)
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -151,7 +155,7 @@ func (f *fixture) commands() []string {
 
 func (f *fixture) run(stdin string, args ...string) (int, string) {
 	f.out.Reset()
-	c := &cli{stdin: strings.NewReader(stdin), stdout: &f.out, stderr: &f.out, terminal: true}
+	c := &cli{stdin: strings.NewReader(stdin), stdout: &f.out, stderr: &f.out, terminal: true, serviceFn: f.serviceFn, menuFn: f.menuFn}
 	code := c.run(args)
 	return code, f.out.String()
 }
@@ -734,6 +738,9 @@ func TestEnsureDaemonRunningRestartsADaemonOlderThanTheCLI(t *testing.T) {
 // terminal it needs --yes.
 func TestUninstallRemovesSandboxesDaemonAndState(t *testing.T) {
 	f := newFixture(t)
+	svc := newFakeService(t, f.state)
+	svc.onStart = endpointWriter(config.Defaults(f.state))
+	f.serviceFn = func(string) (serviceManager, string) { return svc, "" }
 	if code, out := f.install(); code != 0 {
 		t.Fatalf("install (%d):\n%s", code, out)
 	}
@@ -746,6 +753,10 @@ func TestUninstallRemovesSandboxesDaemonAndState(t *testing.T) {
 	code, out := f.run("", "uninstall", "--config", configPath, "--yes", "--keep-state")
 	if code != 0 || !strings.Contains(out, "sandboxes:   2 removed") || !strings.Contains(out, "sbx daemon:  stopped") || !strings.Contains(out, "kept "+f.state) {
 		t.Fatalf("uninstall --keep-state (%d):\n%s", code, out)
+	}
+	// The service went first: stopped, unregistered, its unit removed.
+	if !strings.Contains(out, "service:     stopped and unregistered the fake agent ("+svc.unitPath()+" removed)") || svc.registered() || svc.calls[len(svc.calls)-1] != "uninstall" {
+		t.Fatalf("service not unregistered (%v):\n%s", svc.calls, out)
 	}
 	if got := strings.Join(f.commands()[before:], "\n"); got != "ls --quiet\nrm --force wc-spare-1\nrm --force wc-2\ndaemon stop" {
 		t.Fatalf("commands:\n%s", got)

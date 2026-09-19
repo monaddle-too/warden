@@ -41,6 +41,12 @@ rules:
   - apiGroups: [""]
     resources: [pods/log]
     verbs: [get]
+  # A workspace resize is one patch to the resize subresource (Kubernetes
+  # 1.33+): the pod's requests and limits change in place. The pod itself
+  # stays unpatchable by the runner; its labels are the policy service's.
+  - apiGroups: [""]
+    resources: [pods/resize]
+    verbs: [patch]
   # The trust-bundle readiness gate (decision 9): the runner creates no
   # sandbox until the guest trust ConfigMap holds a bundle.
   - apiGroups: [""]
@@ -52,6 +58,12 @@ rules:
   # absent metrics leave those columns empty.
   - apiGroups: [metrics.k8s.io]
     resources: [pods]
+    verbs: [get, list]
+  # The sandbox pods' events (docs/startup-detail-events-plan.md): the
+  # autoscaler's and the kubelet's word on a start, for the startup detail,
+  # the workspace panel and the Cluster section.
+  - apiGroups: [""]
+    resources: [events]
     verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -175,6 +187,9 @@ rules:
     verbs: [get]
   - apiGroups: [metrics.k8s.io]
     resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [events]
     verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

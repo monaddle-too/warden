@@ -29,7 +29,7 @@ func TestSharingNotificationSurvivesInterruptedDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := NewEngine(store, nil)
-	id, err := engine.Create("test", "", "")
+	id, err := engine.Create("test", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestRejectedPullRequestResumesWithFeedback(t *testing.T) {
 	}
 	defer store.Close()
 	engine := NewEngine(store, nil)
-	id, err := engine.Create("PR review", "", "")
+	id, err := engine.Create("PR review", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -62,7 +62,14 @@ type Config struct {
 	// (RotateOwnerCapability), in owner mode over a tls:// upstream.
 	OwnerTokenFile string `json:"ownerTokenFile"`
 	LoginsFile     string `json:"loginsFile"`
-	Listen         string `json:"listen"`
+	// SessionsFile keeps the Google sign-in sessions across restarts;
+	// empty puts it beside the ledger (sessions.json), or, without a
+	// ledger, keeps them in memory.
+	SessionsFile string `json:"sessionsFile,omitempty"`
+	Listen       string `json:"listen"`
+	// BugReports turns on POST /api/bug-reports (bugreports.go); nil or
+	// disabled, the route answers 404.
+	BugReports *BugReportsConfig `json:"bugReports,omitempty"`
 }
 type previewSession struct {
 	Parent, Binding string
@@ -93,6 +100,10 @@ const (
 	HeaderPrincipal = "X-Warden-Principal"
 	HeaderEmail     = "X-Warden-Email"
 	HeaderName      = "X-Warden-Name"
+	// HeaderRole is "admin" on the owner's requests, for the decisions the
+	// chat service reserves to the owner but cannot tell apart by path (a
+	// workspace's network access chosen on POST chats).
+	HeaderRole = "X-Warden-Role"
 )
 
 type Server struct {
@@ -104,7 +115,12 @@ type Server struct {
 	secure      bool   // Secure, __Host- cookies (https only)
 	target      *url.URL
 	upstreamTLS *tls.Config // mutual TLS to a tls:// upstream; nil for loopback http
-	mint        bool        // owner mode over tls://: the edge holds the capability (capability.go)
+	// upstream carries every proxied request: one transport, so the
+	// keep-alive connections to the chat service are pooled and reused
+	// (a transport per request left each connection in a pool nothing
+	// read again, hundreds of them until the chat service's idle timeout).
+	upstream *http.Transport
+	mint     bool // owner mode over tls://: the edge holds the capability (capability.go)
 	// Logf receives the edge's one-line notices, the launch URL among
 	// them; log.Printf unless replaced.
 	Logf        func(format string, args ...any)
@@ -115,6 +131,7 @@ type Server struct {
 	lastRefresh time.Time
 	Client      *http.Client
 	logins      *ledger
+	bugs        *bugReports // nil unless Config.BugReports is enabled
 }
 
 var idPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -152,10 +169,8 @@ func New(c Config) (*Server, error) {
 	if c.UpstreamHost == "" || strings.ContainsAny(c.PreviewSuffix, "/:@?#*") {
 		return nil, errors.New("upstream host and preview suffix required")
 	}
-	s := &Server{Config: c, host: origin.Host, scheme: origin.Scheme, secure: origin.Scheme == "https", target: target, upstreamTLS: upstreamTLS, Logf: log.Printf, sessions: map[string]previewSession{}, tickets: map[string]ticket{}, bindings: map[string]bool{}, Client: &http.Client{Timeout: 5 * time.Second}}
-	if upstreamTLS != nil {
-		s.Client.Transport = &http.Transport{Proxy: nil, TLSClientConfig: upstreamTLS}
-	}
+	upstream := &http.Transport{Proxy: nil, ResponseHeaderTimeout: 30 * time.Second, TLSClientConfig: upstreamTLS, MaxIdleConns: 32, MaxIdleConnsPerHost: 32, IdleConnTimeout: 90 * time.Second}
+	s := &Server{Config: c, host: origin.Host, scheme: origin.Scheme, secure: origin.Scheme == "https", target: target, upstreamTLS: upstreamTLS, upstream: upstream, Logf: log.Printf, sessions: map[string]previewSession{}, tickets: map[string]ticket{}, bindings: map[string]bool{}, Client: &http.Client{Timeout: 5 * time.Second, Transport: upstream}}
 	mode := c.Mode
 	if mode == "" {
 		mode = ModeGoogle
@@ -166,7 +181,11 @@ func New(c Config) (*Server, error) {
 		if !strings.Contains(c.PreviewSuffix, ".") {
 			return nil, errors.New("public previews need a dotted hostname suffix")
 		}
-		auth, err := browserauth.New(browserauth.Config{ClientID: c.ClientID, Origin: c.Origin, AdminEmails: c.OwnerEmails, DemoDomains: c.DemoDomains})
+		sessions := c.SessionsFile
+		if sessions == "" && c.LoginsFile != "" {
+			sessions = filepath.Join(filepath.Dir(c.LoginsFile), "sessions.json")
+		}
+		auth, err := browserauth.New(browserauth.Config{ClientID: c.ClientID, Origin: c.Origin, AdminEmails: c.OwnerEmails, DemoDomains: c.DemoDomains, SessionsFile: sessions})
 		if err != nil {
 			return nil, err
 		}
@@ -206,6 +225,13 @@ func New(c Config) (*Server, error) {
 		s.logins, _ = newLedger("")
 	default:
 		return nil, errors.New("https origins use Google sign-in; owner mode is loopback http only")
+	}
+	if c.BugReports != nil && c.BugReports.Enabled {
+		bugs, err := newBugReports(*c.BugReports, func(format string, args ...any) { s.Logf(format, args...) })
+		if err != nil {
+			return nil, fmt.Errorf("bug reports: %w", err)
+		}
+		s.bugs = bugs
 	}
 	return s, nil
 }
@@ -384,6 +410,16 @@ func (s *Server) main(w http.ResponseWriter, r *http.Request) {
 		s.Auth.Handler().ServeHTTP(w, r)
 		return
 	}
+	// Bug reports come from other installs, not from anyone signed in
+	// here: the one unauthenticated /api/ route, answered by the edge.
+	if strings.Trim(r.URL.Path, "/") == "api/bug-reports" {
+		if s.bugs == nil {
+			http.Error(w, "not found", 404)
+			return
+		}
+		s.bugs.receive(w, r)
+		return
+	}
 	// The demo shares chats and grants, but provider account connections, the
 	// admin console and "unsharable with AI" tags remain owner-only.
 	if ownerOnly(r.URL.Path) {
@@ -436,14 +472,31 @@ func (s *Server) main(w http.ResponseWriter, r *http.Request) {
 }
 func ownerOnly(path string) bool {
 	trimmed := strings.Trim(path, "/")
-	return strings.HasPrefix(path, "/oauth/") || strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/cluster") ||
-		trimmed == "api/sharing/connect" || trimmed == "api/sharing/disconnect" || trimmed == "api/sharing/egress_set" || trimmed == "api/sharing/block" || trimmed == "api/sharing/unblock"
+	return strings.HasPrefix(path, "/oauth/") || strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/cluster") || trimmed == "api/spend" ||
+		// /test bugreporting raises an exception in the chat service.
+		trimmed == "api/bug-test" ||
+		trimmed == "api/sharing/connect" || trimmed == "api/sharing/disconnect" || trimmed == "api/sharing/egress_set" || trimmed == "api/sharing/block" || trimmed == "api/sharing/unblock" ||
+		// A workspace's own network access widens or narrows what its
+		// sandbox reaches: the owner's call, like the install-wide switch.
+		(strings.HasPrefix(trimmed, "api/environments/") && strings.HasSuffix(trimmed, "/network")) ||
+		// The GitHub sign-in code binds whichever account types it to this
+		// Warden, so only the owner may see or start one.
+		strings.HasPrefix(trimmed, "api/sharing/github_login_")
 }
 
 // admin answers from the edge's own login ledger; identity is verified only here
 // and the upstream never learns which admitted user is browsing.
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" || strings.Trim(r.URL.Path, "/") != "api/admin/users" {
+	path := strings.Trim(r.URL.Path, "/")
+	if rest, ok := strings.CutPrefix(path, "api/admin/bug-reports"); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
+		if s.bugs == nil {
+			http.Error(w, "not found", 404)
+			return
+		}
+		s.bugs.admin(w, r, rest)
+		return
+	}
+	if r.Method != "GET" || path != "api/admin/users" {
 		http.Error(w, "not found", 404)
 		return
 	}
@@ -599,11 +652,16 @@ func (s *Server) proxy(binding string, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal, email, name, known := s.Auth.Identity(r)
+	role := s.Auth.Role(r)
 	proxy := httputil.NewSingleHostReverseProxy(s.target)
 	proxy.Director = func(req *http.Request) {
 		req.Header.Del(HeaderPrincipal)
 		req.Header.Del(HeaderEmail)
 		req.Header.Del(HeaderName)
+		req.Header.Del(HeaderRole)
+		if role == "admin" {
+			req.Header.Set(HeaderRole, role)
+		}
 		if known && principal != "" {
 			req.Header.Set(HeaderPrincipal, principal)
 			if email != "" {
@@ -636,7 +694,7 @@ func (s *Server) proxy(binding string, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	proxy.FlushInterval = -1
-	proxy.Transport = &http.Transport{Proxy: nil, ResponseHeaderTimeout: 30 * time.Second, TLSClientConfig: s.upstreamTLS}
+	proxy.Transport = s.upstream
 	proxy.ModifyResponse = func(res *http.Response) error {
 		res.Header.Del("Set-Cookie")
 		res.Header.Del("Content-Security-Policy")

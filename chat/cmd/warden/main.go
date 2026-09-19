@@ -8,6 +8,7 @@
 //	warden login   codex|claude|github
 //	warden start   [--config PATH]
 //	warden open    [--config PATH]
+//	warden bugs    status | on | off | send "text" | test | pending
 package main
 
 import (
@@ -28,12 +29,36 @@ import (
 // (release.Revision, set at link time by the release workflow).
 var revision = release.Revision
 
-// cli carries the standard streams so subcommands are testable.
+// cli carries the standard streams so subcommands are testable, and the
+// two ways of reaching the person besides them (nil is the host's own).
 type cli struct {
 	stdin    io.Reader
 	stdout   io.Writer
 	stderr   io.Writer
 	terminal bool // stdin is an interactive terminal
+	openFn   func(url string) error
+	notifyFn func(title, body string) error
+	// serviceFn supplies the service manager for a state directory (nil:
+	// the platform's); tests substitute a recording fake.
+	serviceFn func(state string) (serviceManager, string)
+	// menuFn supplies the menu bar item's manager (nil: the platform's).
+	menuFn func(state string) (serviceManager, string)
+}
+
+// openURL opens the browser on url.
+func (c *cli) openURL(url string) error {
+	if c.openFn != nil {
+		return c.openFn(url)
+	}
+	return openBrowser(url)
+}
+
+// notifyDesktop shows a desktop notification.
+func (c *cli) notifyDesktop(title, body string) error {
+	if c.notifyFn != nil {
+		return c.notifyFn(title, body)
+	}
+	return desktopNotify(title, body)
 }
 
 func main() {
@@ -46,12 +71,16 @@ const usageText = `usage: warden COMMAND [flags]
   install   create the private state, SBX namespace and runtimes; write warden.json
   doctor    check every host and runtime invariant and print the remediation
   login     codex | claude | github: store one provider sign-in, owner-only
-  start     run the policy, runner, chat and edge services
-  open      open the running Warden in the browser
+  start     start Warden: the registered service, or the four services here (--foreground) or detached (--detach)
+  stop      stop the running Warden (the service, or a detached one)
+  restart   restart the service (after a new release)
+  status    show whether Warden is running and how
+  service   install | uninstall: register Warden with launchd / systemd --user (install does this too)
+  open      open the running Warden in the browser (--chat ID, --new)
+  menu      install | uninstall the macOS menu bar item (install does this too); feed: its model (warden-menu runs it)
   chat      terminal client: warden chat [CHAT] | list | new | send | approve
-  stop      stop a detached Warden (see start --detach)
-  status    show whether Warden is running and its versions
-  uninstall stop Warden, delete its sandboxes, stop its private sbx daemon and remove the state
+  uninstall stop Warden, unregister the service, delete its sandboxes, stop its private sbx daemon and remove the state
+  bugs      bug reports: status | on | off | send "text" | test | pending (you review every report before it is sent)
   tls       bootstrap: write a deployment CA and the four service certificates for tls:// transport
   version   print the build revision and protocol number
 
@@ -82,10 +111,18 @@ func (c *cli) run(args []string) int {
 		err = c.chat(args[1:])
 	case "stop":
 		err = c.stopService(args[1:])
+	case "restart":
+		err = c.restartService(args[1:])
 	case "status":
 		err = c.status(args[1:])
+	case "service":
+		err = c.serviceCommand(args[1:])
+	case "menu":
+		err = c.menuCommand(args[1:])
 	case "uninstall":
 		err = c.uninstall(args[1:])
+	case "bugs":
+		err = c.bugs(args[1:])
 	case "tls":
 		err = c.tls(args[1:])
 	case "policy":

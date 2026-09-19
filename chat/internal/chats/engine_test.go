@@ -11,8 +11,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"warden/chat/internal/agent"
@@ -33,15 +35,39 @@ type fakeWorker struct {
 	inputs      [][]any  // the input items of every turn/start and turn/steer
 	turnID      string   // the ID of the next turn/start's turn; "turn-one" when empty
 	paths       []string // what a "paths" completion answers
+	// exec is what an "exec" answers (nil: a plain success with no output).
+	exec *sandbox.ExecResult
+	// memory is what a "memory-list" answers (nil: an empty listing).
+	memory *sandbox.MemoryListing
+	// developer is the developerInstructions of the last thread/start.
+	developer string
 	// prepareGate, when set, holds prepare until it is closed; progress is
 	// what the progress operation answers meanwhile (startup_test.go).
 	prepareGate chan struct{}
 	progress    *sandbox.Progress
+	// threadGate, when set, holds the thread/start reply until it is
+	// closed: the agent is live but has no turn yet.
+	threadGate chan struct{}
+	// turnGate, when set, holds the turn/start reply until it is closed:
+	// the message is handed over but the turn is not confirmed.
+	turnGate chan struct{}
+	// ignoreInterrupt answers turn/interrupt without ending the turn, as an
+	// agent that hangs would.
+	ignoreInterrupt bool
+	// checkpoints are the records the checkpoint op made (rewind_test.go);
+	// rewindAnswer is what conversation/rewind answers (nil: rewound).
+	checkpoints  []sandbox.Checkpoint
+	rewindAnswer map[string]any
 }
 
 func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if r.Operation == "health" {
+		// The size offer (Engine.refreshLimits) is no chat's request and
+		// comes whenever the refresher runs; tests index the requests.
+		return sandbox.Response{}, nil
+	}
 	f.requests = append(f.requests, r)
 	if f.fail {
 		return sandbox.Response{}, errors.New("unverified sandbox")
@@ -67,6 +93,52 @@ func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Respo
 	}
 	if r.Operation == "paths" {
 		return sandbox.Response{Version: 2, Paths: f.paths}, nil
+	}
+	switch r.Operation {
+	case "checkpoint":
+		cp := sandbox.Checkpoint{ID: r.CallID, ChatID: r.ChatID, Commit: "commit-" + r.CallID[:4], Tree: "tree-" + r.CallID[:4], Store: "repository", Changed: true}
+		f.checkpoints = append(f.checkpoints, cp)
+		return sandbox.Response{Version: 2, Checkpoint: &cp}, nil
+	case "checkpoints":
+		return sandbox.Response{Version: 2, Checkpoints: append([]sandbox.Checkpoint(nil), f.checkpoints...)}, nil
+	case "restore", "diff":
+		for _, cp := range f.checkpoints {
+			if cp.ID == r.CallID {
+				if r.Operation == "restore" {
+					restore := &sandbox.WorkspaceRestore{Checkpoint: cp, Restored: []string{"a.txt"}, Removed: []string{"b.txt"}}
+					if r.Before != "" {
+						// The workspace as it was, recorded under Before
+						// (sandbox/checkpoint.go) for an undo.
+						before := sandbox.Checkpoint{ID: r.Before, ChatID: r.ChatID, Commit: "commit-" + r.Before[:4], Tree: "tree-" + r.Before[:4], Store: "repository", Changed: true}
+						f.checkpoints = append(f.checkpoints, before)
+						restore.Before = &before
+					}
+					return sandbox.Response{Version: 2, Restore: restore}, nil
+				}
+				return sandbox.Response{Version: 2, Changes: &sandbox.WorkspaceChanges{Base: cp.ID, Files: []sandbox.ReviewFile{{Path: "a.txt", Added: 1}}, Diff: "diff --git a/a.txt b/a.txt\n--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1 @@\n+hello\n"}}, nil
+			}
+		}
+		return sandbox.Response{}, errors.New("no checkpoint was recorded at this message")
+	}
+	if r.Operation == "exec" {
+		result := f.exec
+		if result == nil {
+			result = &sandbox.ExecResult{}
+		}
+		return sandbox.Response{Version: 2, Exec: result}, nil
+	}
+	if r.Operation == "memory-append" {
+		return sandbox.Response{Version: 2, Directory: "CLAUDE.md"}, nil
+	}
+	if r.Operation == "memory-list" {
+		listing := f.memory
+		if listing == nil {
+			listing = &sandbox.MemoryListing{Root: "/home/agent/workspace", Files: []sandbox.MemoryFile{}}
+		}
+		return sandbox.Response{Version: 2, Memory: listing}, nil
+	}
+	if r.Operation == "memory-write" {
+		return sandbox.Response{Version: 2, Directory: r.Directory}, nil
 	}
 	return sandbox.Response{Version: 2, Directory: "/home/agent/workspace", Sandbox: &sandbox.SandboxInfo{ID: id, ProjectID: r.ProjectID}}, nil
 }
@@ -106,17 +178,46 @@ func (f *fakeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWriteC
 			var result any = map[string]any{}
 			switch frame.Method {
 			case "thread/start", "thread/resume":
+				f.mu.Lock()
+				gate := f.threadGate
+				f.developer = agent.String(frame.Params["developerInstructions"])
+				f.mu.Unlock()
+				if gate != nil {
+					<-gate
+				}
 				result = map[string]any{"thread": map[string]any{"id": "thread-one", "turns": []any{}}}
+			case "turn/interrupt":
+				// Codex answers at once and ends the turn as interrupted.
+				f.send(map[string]any{"id": frame.ID, "result": map[string]any{}})
+				f.mu.Lock()
+				ignore := f.ignoreInterrupt
+				f.mu.Unlock()
+				if !ignore {
+					f.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": frame.Params["turnId"], "status": "interrupted"}}})
+				}
+				continue
 			case "turn/start":
 				f.mu.Lock()
 				f.turns++
 				f.inputs = append(f.inputs, agent.Array(frame.Params["input"]))
 				turnID := f.turnID
+				gate := f.turnGate
 				f.mu.Unlock()
+				if gate != nil {
+					<-gate
+				}
 				if turnID == "" {
 					turnID = "turn-one"
 				}
 				result = map[string]any{"turn": map[string]any{"id": turnID, "status": "inProgress"}}
+			case "conversation/rewind":
+				f.mu.Lock()
+				answer := f.rewindAnswer
+				f.mu.Unlock()
+				if answer == nil {
+					answer = map[string]any{"rewound": true}
+				}
+				result = answer
 			case "turn/steer":
 				f.mu.Lock()
 				f.inputs = append(f.inputs, agent.Array(frame.Params["input"]))
@@ -132,7 +233,10 @@ func (f *fakeWorker) Open(ctx context.Context, r sandbox.Request) (io.ReadWriteC
 	}()
 	return client, sandbox.Response{Version: 2}, nil
 }
-func setup(t *testing.T) (*Engine, *fakeWorker, context.CancelFunc) {
+
+// setup opens a store and serves an engine on it; configure runs before
+// Serve starts, the place for fields Serve reads (PolicyAddress, Bugs).
+func setup(t *testing.T, configure ...func(*Engine)) (*Engine, *fakeWorker, context.CancelFunc) {
 	t.Helper()
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -141,6 +245,9 @@ func setup(t *testing.T) (*Engine, *fakeWorker, context.CancelFunc) {
 	w := &fakeWorker{}
 	e := NewEngine(s, w)
 	e.ResidentProviders = []string{} // these tests exercise one run per message; resident_test.go covers sessions
+	for _, f := range configure {
+		f(e)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go e.Serve(ctx)
 	t.Cleanup(func() {
@@ -167,7 +274,7 @@ func until(t *testing.T, predicate func() bool) {
 }
 func TestRunStreamingSteeringResume(t *testing.T) {
 	e, w, _ := setup(t)
-	id, err := e.Create("Test", "", "")
+	id, err := e.Create("Test", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,18 +342,20 @@ func TestFailClosedAndRecovery(t *testing.T) {
 	}
 	w := &fakeWorker{fail: true}
 	e := NewEngine(s, w)
-	id, _ := e.Create("Failure", "", "")
+	id, _ := e.Create("Failure", "", "", nil)
 	_ = e.Message(id, "Run", cv.ID())
 	e.run(context.Background(), id)
 	c := s.Snapshot().chat(id)
 	if c.Status != "failed" || c.Conversation.Entries[0].Delivery != "failed" || len(w.methods) > 0 {
 		t.Fatalf("not fail closed: %+v", c)
 	}
+	// A restart catches a message handed over but not yet confirmed: it is
+	// failed as unconfirmed, never replayed.
 	_ = s.update(func(st *State) error {
 		c := st.chat(id)
 		c.Status = "running"
-		c.Conversation.Entries[0].Delivery = "failed"
-		c.Conversation.Entries[0].Detail = "Delivery unconfirmed"
+		c.Conversation.Entries[0].Delivery = "sending"
+		c.Conversation.Entries[0].Detail = ""
 		return nil
 	})
 	root := filepath.Dir(s.path)
@@ -257,8 +366,8 @@ func TestFailClosedAndRecovery(t *testing.T) {
 	}
 	defer s.Close()
 	c = s.Snapshot().chat(id)
-	if c.Status != "interrupted" || c.Conversation.Entries[0].Delivery != "failed" {
-		t.Fatal("replayed unconfirmed delivery")
+	if c.Status != "interrupted" || c.Conversation.Entries[0].Delivery != "failed" || c.Conversation.Entries[0].Detail != "Interrupted before confirmed delivery" {
+		t.Fatalf("replayed unconfirmed delivery: %+v", c.Conversation.Entries[0])
 	}
 	info, _ := os.Stat(s.path)
 	if info.Mode().Perm() != 0600 {
@@ -271,7 +380,7 @@ func TestFailClosedAndRecovery(t *testing.T) {
 func TestUnconfirmedSteeringNeverReplayed(t *testing.T) {
 	e, w, _ := setup(t)
 	w.rejectSteer = true
-	id, _ := e.Create("Steering", "", "")
+	id, _ := e.Create("Steering", "", "", nil)
 	_ = e.Message(id, "Hello", cv.ID())
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Conversation.Entries[0].Delivery == "sent" })
 	mid := cv.ID()
@@ -300,7 +409,7 @@ func TestUnconfirmedSteeringNeverReplayed(t *testing.T) {
 }
 func TestApprovalsBoundToActiveRun(t *testing.T) {
 	e, w, _ := setup(t)
-	id, _ := e.Create("Approval", "", "")
+	id, _ := e.Create("Approval", "", "", nil)
 	_ = e.Message(id, "Hello", cv.ID())
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Conversation.Entries[0].Delivery == "sent" })
 	w.send(agent.Frame{ID: json.RawMessage(`42`), Method: "item/commandExecution/requestApproval", Params: map[string]any{"command": "ls"}})
@@ -339,7 +448,7 @@ func TestHTTPAuthenticationAndBindings(t *testing.T) {
 	if out.Code != http.StatusBadRequest {
 		t.Fatal("untrusted principal accepted")
 	}
-	id, _ := e.Create("status", "", "")
+	id, _ := e.Create("status", "", "", nil)
 	w.steal = true
 	if _, err := e.Runtime(context.Background(), id, "status"); err == nil {
 		t.Fatal("wrong environment returned")
@@ -347,9 +456,9 @@ func TestHTTPAuthenticationAndBindings(t *testing.T) {
 }
 func TestEnvironmentSharingAndArchive(t *testing.T) {
 	e, _, _ := setup(t)
-	id, _ := e.Create("One", "", "github://owner/repo")
+	id, _ := e.Create("One", "", "github://owner/repo", nil)
 	one := e.Store.Snapshot().chat(id)
-	shared, err := e.Create("Two", one.SandboxID, "")
+	shared, err := e.Create("Two", one.SandboxID, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +466,7 @@ func TestEnvironmentSharingAndArchive(t *testing.T) {
 	if two.SandboxID != one.SandboxID || two.Repository != one.Repository {
 		t.Fatal("sharing lost binding")
 	}
-	if _, err = e.Create("Other", "unknown", ""); err == nil {
+	if _, err = e.Create("Other", "unknown", "", nil); err == nil {
 		t.Fatal("unknown sandbox accepted")
 	}
 	if err = e.Edit(id, "Renamed", true); err != nil {
@@ -370,10 +479,10 @@ func TestEnvironmentSharingAndArchive(t *testing.T) {
 
 func TestEnvironmentsListStopAndDelete(t *testing.T) {
 	e, w, _ := setup(t)
-	id, _ := e.Create("One", "", "github://owner/repo")
+	id, _ := e.Create("One", "", "github://owner/repo", nil)
 	one := e.Store.Snapshot().chat(id)
-	shared, _ := e.Create("Two", one.SandboxID, "")
-	other, _ := e.Create("Alone", "", "")
+	shared, _ := e.Create("Two", one.SandboxID, "", nil)
+	other, _ := e.Create("Alone", "", "", nil)
 	envs, err := e.Environments(context.Background())
 	if err != nil || len(envs) != 2 {
 		t.Fatal(envs, err)
@@ -388,11 +497,14 @@ func TestEnvironmentsListStopAndDelete(t *testing.T) {
 	if err = e.DeleteEnvironment(context.Background(), one.SandboxID); err == nil {
 		t.Fatal("deleted an environment with a running chat")
 	}
-	if err = e.StopEnvironment(context.Background(), one.SandboxID); err == nil {
-		t.Fatal("stopped an environment under a running chat")
+	// Stopping the workspace ends its running chat first (the owner asked
+	// for the workspace to stop), then the sandbox.
+	if err = e.StopEnvironment(context.Background(), one.SandboxID); err != nil {
+		t.Fatalf("stop under a running chat: %v", err)
 	}
-	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
-	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
+	if status := e.Store.Snapshot().chat(id).Status; status == "running" || status == "stopping" {
+		t.Fatalf("chat still %s after the workspace stop", status)
+	}
 	envs, _ = e.Environments(context.Background())
 	if envs[0].Runtime == nil || envs[0].Runtime.ID != one.SandboxID {
 		t.Fatalf("runtime not reported once a chat has run: %+v", envs[0])
@@ -424,7 +536,7 @@ func TestEnvironmentsListStopAndDelete(t *testing.T) {
 	if err = e.Edit(id, "One", false); err == nil {
 		t.Fatal("chat on a deleted environment was restored")
 	}
-	if _, err = e.Create("Three", one.SandboxID, ""); err == nil {
+	if _, err = e.Create("Three", one.SandboxID, "", nil); err == nil {
 		t.Fatal("new chat joined a deleted environment")
 	}
 	envs, _ = e.Environments(context.Background())
@@ -466,26 +578,41 @@ func TestPreviewURLsAndIdentity(t *testing.T) {
 // has been acknowledged and the active reservation has gone away.
 type orderedWorker struct {
 	fakeWorker
+	orderMu   sync.Mutex
 	cancelled bool
 	stops     int
 }
 
 func (w *orderedWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
+	w.orderMu.Lock()
 	if r.Operation == "cancel" {
 		w.cancelled = true
+		w.orderMu.Unlock()
 		return sandbox.Response{}, nil
 	}
 	if r.Operation == "stop" {
 		w.stops++
 		if !w.cancelled {
+			w.orderMu.Unlock()
 			return sandbox.Response{}, errors.New("cancel must precede stop")
 		}
 		if w.stops == 1 {
+			w.orderMu.Unlock()
 			return sandbox.Response{}, errors.New("sandbox has an active run")
 		}
 	}
+	w.orderMu.Unlock()
 	return w.fakeWorker.Call(ctx, r)
 }
+func (w *orderedWorker) outcome() (bool, int) {
+	w.orderMu.Lock()
+	defer w.orderMu.Unlock()
+	return w.cancelled, w.stops
+}
+
+// A run whose agent is not up yet (the sandbox still preparing) has nothing
+// to interrupt: Stop falls back to cancelling the run, tombstoning it on
+// the runner before the stop, and waits out the runner's cleanup.
 func TestStopCancelsBeforeStoppingAndWaitsForCleanup(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -493,14 +620,134 @@ func TestStopCancelsBeforeStoppingAndWaitsForCleanup(t *testing.T) {
 	}
 	defer s.Close()
 	w := &orderedWorker{}
+	w.prepareGate = make(chan struct{})
 	e := NewEngine(s, w)
-	id, _ := e.Create("Stop", "", "")
-	_ = s.update(func(st *State) error { c := st.chat(id); c.Status = "running"; c.RunID = cv.ID(); return nil })
+	e.ResidentProviders = []string{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Serve(ctx)
+	id, _ := e.Create("Stop", "", "", nil)
+	if err = e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return w.count("prepare") == 1 })
 	if err = e.Stop(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
-	if !w.cancelled || w.stops != 2 || s.Snapshot().chat(id).Status != "interrupted" {
-		t.Fatal("stop did not wait for cancelled run cleanup")
+	cancelled, stops := w.outcome()
+	if !cancelled || stops != 2 || s.Snapshot().chat(id).Status != "interrupted" {
+		t.Fatalf("stop did not wait for cancelled run cleanup: cancelled %v, stops %d, status %s", cancelled, stops, s.Snapshot().chat(id).Status)
+	}
+	until(t, func() bool { return !e.sessionAlive(id) })
+	cancel()
+	<-e.done
+}
+
+// Stop on a turn in flight interrupts it through the agent's protocol: the
+// chat is handed back as interrupted with what streamed so far, the run
+// ends cleanly (no cancel tombstone, so the runner keeps the sandbox) and
+// the next message runs as usual.
+func TestStopInterruptsTurnWithoutStoppingSandbox(t *testing.T) {
+	e, w, _ := setup(t)
+	id, _ := e.Create("Interrupt", "", "", nil)
+	sendAndDeliver(t, e, id, "think hard")
+	w.send(agent.Frame{Method: "item/agentMessage/delta", Params: map[string]any{"itemId": "answer", "turnId": "turn-one", "delta": "Half an"}})
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 2 })
+	if err := e.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	c := e.Store.Snapshot().chat(id)
+	if c.Status != "interrupted" || c.Error != "" {
+		t.Fatalf("after stop: %s %q", c.Status, c.Error)
+	}
+	until(t, func() bool { return !e.sessionAlive(id) })
+	w.mu.Lock()
+	methods := append([]string(nil), w.methods...)
+	w.mu.Unlock()
+	if !slices.Contains(methods, "turn/interrupt") {
+		t.Fatalf("turn not interrupted: %v", methods)
+	}
+	if w.count("cancel") != 0 || w.count("stop") != 0 {
+		t.Fatalf("stop touched the sandbox: %d cancels, %d stops", w.count("cancel"), w.count("stop"))
+	}
+	c = e.Store.Snapshot().chat(id)
+	if len(c.Conversation.Entries) != 2 || c.Conversation.Entries[1].Text != "Half an" || c.Conversation.Entries[1].IsStreaming {
+		t.Fatalf("interrupted transcript: %+v", c.Conversation.Entries)
+	}
+	sendAndDeliver(t, e, id, "carry on")
+	until(t, func() bool { return w.turnCount() == 2 })
+}
+
+// An agent that answers the interrupt but never ends the turn is cancelled
+// after the grace, as before: the run is tombstoned and the sandbox stopped.
+func TestStopFallsBackToCancelWhenAgentIgnoresInterrupt(t *testing.T) {
+	e, w, _ := setup(t)
+	w.ignoreInterrupt = true
+	grace := interruptGrace
+	interruptGrace = 300 * time.Millisecond
+	t.Cleanup(func() { interruptGrace = grace })
+	id, _ := e.Create("Hung", "", "", nil)
+	sendAndDeliver(t, e, id, "hang")
+	if err := e.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if c := e.Store.Snapshot().chat(id); c.Status != "interrupted" {
+		t.Fatalf("after stop: %s %q", c.Status, c.Error)
+	}
+	if w.count("cancel") == 0 || w.count("stop") == 0 {
+		t.Fatalf("the hung run was not cancelled: %d cancels, %d stops", w.count("cancel"), w.count("stop"))
+	}
+}
+
+// Stop while the agent is up but has no turn yet (its session starting)
+// ends the run cleanly rather than tombstoning it: nothing runs in the
+// guest that a cancel would need to kill.
+func TestStopBeforeFirstTurnEndsRunWithoutCancel(t *testing.T) {
+	e, w, _ := setup(t)
+	gate := make(chan struct{})
+	w.threadGate = gate
+	id, _ := e.Create("Starting", "", "", nil)
+	if err := e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return slices.Contains(w.methods, "thread/start")
+	})
+	if err := e.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	close(gate)
+	c := e.Store.Snapshot().chat(id)
+	if c.Status != "interrupted" || c.Error != "" {
+		t.Fatalf("after stop: %s %q", c.Status, c.Error)
+	}
+	if w.count("cancel") != 0 || w.count("stop") != 0 {
+		t.Fatalf("stop touched the sandbox: %d cancels, %d stops", w.count("cancel"), w.count("stop"))
+	}
+}
+
+// A chat waiting for its run (queued, nothing started) is just taken off
+// the queue, its message held for later; the sandbox is not touched.
+func TestStopQueuedChatTouchesNothing(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	w := &fakeWorker{}
+	e := NewEngine(s, w)
+	id, _ := e.Create("Queued", "", "", nil)
+	if err = e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	c := s.Snapshot().chat(id)
+	if c.Status != "interrupted" || c.Conversation.Entries[0].Delivery != "queued" || len(w.requests) != 0 {
+		t.Fatalf("after stop: %s, delivery %s, runner calls %d", c.Status, c.Conversation.Entries[0].Delivery, len(w.requests))
 	}
 }
 
@@ -511,7 +758,7 @@ func TestConversationAgentSelectionPersistsAndLocksProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := NewEngine(s, &fakeWorker{})
-	id, err := e.Create("Claude", "", "", "claude", "sonnet")
+	id, err := e.Create("Claude", "", "", nil, "claude", "sonnet")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,31 +789,27 @@ func TestConversationAgentSelectionPersistsAndLocksProvider(t *testing.T) {
 	if c.Provider != "claude" || c.Model != "opus" {
 		t.Fatal(c)
 	}
-	if _, err = e.Create("bad", "", "", "unknown", ""); err == nil {
+	if _, err = e.Create("bad", "", "", nil, "unknown", ""); err == nil {
 		t.Fatal("accepted unknown provider")
 	}
 }
 
 func TestArchiveEnvironmentStopsAndArchivesAllChats(t *testing.T) {
 	e, w, _ := setup(t)
-	id, _ := e.Create("One", "", "")
+	id, _ := e.Create("One", "", "", nil)
 	one := e.Store.Snapshot().chat(id)
-	two, _ := e.Create("Two", one.SandboxID, "")
+	two, _ := e.Create("Two", one.SandboxID, "", nil)
 	if err := e.Message(id, "Hello", cv.ID()); err != nil {
 		t.Fatal(err)
 	}
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "running" })
-	if err := e.ArchiveEnvironment(context.Background(), one.SandboxID); err == nil {
-		t.Fatal("archived a workspace with a running chat")
-	}
-	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
-	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
+	// Archiving stops the running chat itself, as stopping the workspace does.
 	if err := e.ArchiveEnvironment(context.Background(), one.SandboxID); err != nil {
-		t.Fatal(err)
+		t.Fatalf("archive under a running chat: %v", err)
 	}
 	st := e.Store.Snapshot()
-	if !st.chat(id).Archived || !st.chat(two).Archived || st.deleted(one.SandboxID) {
-		t.Fatal("archive must archive every chat without deleting the workspace")
+	if !st.chat(id).Archived || !st.chat(two).Archived || st.deleted(one.SandboxID) || st.chat(id).Status == "running" {
+		t.Fatalf("archive must stop and archive every chat without deleting the workspace: %s", st.chat(id).Status)
 	}
 	stopped := false
 	w.mu.Lock()
@@ -601,11 +844,11 @@ func TestArchiveEnvironmentStopsAndArchivesAllChats(t *testing.T) {
 // indicators show for TypingTTL after the last reported keystroke and
 // vanish when that person sends.
 func TestAttributionAndTypingIndicators(t *testing.T) {
-	e, _, _ := setup(t)
-	now := time.Unix(1000, 0)
-	e.Now = func() time.Time { return now }
+	var now atomic.Int64 // the test's clock, read by the engine's run goroutines too
+	now.Store(1000)
+	e, _, _ := setup(t, func(e *Engine) { e.Now = func() time.Time { return time.Unix(now.Load(), 0) } })
 	h := &HTTP{Engine: e, Token: "private", Host: "127.0.0.1:18780", Origin: "http://127.0.0.1:18780", WebDir: t.TempDir()}
-	id, _ := e.Create("shared", "", "")
+	id, _ := e.Create("shared", "", "", nil)
 	call := func(path, body string, identity map[string]string) int {
 		t.Helper()
 		r := httptest.NewRequest("POST", h.Origin+"/api/"+path, strings.NewReader(body))
@@ -655,11 +898,11 @@ func TestAttributionAndTypingIndicators(t *testing.T) {
 		t.Fatalf("owner sender: %+v", s)
 	}
 	// Bob's indicator lapses eight seconds after his last keystroke.
-	now = time.Unix(1007, 0)
+	now.Store(1007)
 	if len(e.View().chat(id).Typing) != 1 {
 		t.Fatal("indicator lapsed early")
 	}
-	now = time.Unix(1008, 0)
+	now.Store(1008)
 	if len(e.View().chat(id).Typing) != 0 {
 		t.Fatal("indicator outlived its ttl")
 	}
@@ -671,7 +914,7 @@ func TestAttributionAndTypingIndicators(t *testing.T) {
 // the turn it cut short.
 func TestTurnTimingAndTokenUsage(t *testing.T) {
 	e, w, _ := setup(t)
-	id, _ := e.Create("Usage", "", "")
+	id, _ := e.Create("Usage", "", "", nil)
 	before := float64(time.Now().UnixMilli()) / 1000
 	_ = e.Message(id, "Count", cv.ID())
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Conversation.Entries[0].Delivery == "sent" })
@@ -696,6 +939,12 @@ func TestTurnTimingAndTokenUsage(t *testing.T) {
 	until(t, func() bool { u := usage(); return u != nil && u.Total == 3200 })
 	if u := usage(); u.Input != 2500 || u.Cached != 1500 || u.Output != 700 {
 		t.Fatalf("usage %+v", u)
+	}
+	// The agent's context report is kept on the conversation as it stands.
+	w.send(agent.Frame{Method: "thread/context/updated", Params: map[string]any{"threadId": "thread-one", "turnId": "turn-one", "context": map[string]any{"used": 42787.0, "window": 200000.0, "model": "claude-sonnet-5"}}})
+	until(t, func() bool { c := e.Store.Snapshot().chat(id).Conversation.Context; return c != nil && c.Used == 42787 })
+	if c := e.Store.Snapshot().chat(id).Conversation.Context; c.Window != 200000 || c.Model != "claude-sonnet-5" {
+		t.Fatalf("context %+v", c)
 	}
 	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
 	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
@@ -723,5 +972,173 @@ func TestTurnTimingAndTokenUsage(t *testing.T) {
 	turns := e.Store.Snapshot().chat(id).Conversation.Turns
 	if turns[0].EndedAt != first.EndedAt || turns[1].EndedAt < turns[1].StartedAt || turns[1].Usage.Input != 800 {
 		t.Fatalf("stopped run left the turn wrong: %+v", turns)
+	}
+}
+
+// The agent's thread/started names the session's slash commands and
+// settings (Claude's system/init); they are on the chat, in GET state as
+// chat.commands and chat.session, survive a restart, and follow the
+// next thread/started. A thread/started without them (Codex) leaves them
+// alone. A compaction item (item 8) is a compaction entry in the
+// transcript, its running state included.
+func TestSessionCommandsInStateAndCompactionNote(t *testing.T) {
+	e, w, _ := setup(t)
+	// The fake worker speaks the Codex protocol; the frames below are what
+	// the Claude adapter emits into it.
+	id, _ := e.Create("Commands", "", "", nil)
+	_ = e.Message(id, "/compact", cv.ID())
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Conversation.Entries[0].Delivery == "sent" })
+	if c := e.Store.Snapshot().chat(id); len(c.Commands) != 0 || c.Session != nil {
+		t.Fatalf("commands before the session reported any: %+v", c)
+	}
+	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one",
+		"commands": []any{map[string]any{"name": "compact"}, map[string]any{"name": "probe-cmd", "description": "From the workspace"}, map[string]any{"name": ""}},
+		"model":    "claude-opus-5[1m]", "permissionMode": "default", "outputStyle": "default"}}})
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Commands) == 2 })
+	h := &HTTP{Engine: e, Token: "private", Host: "127.0.0.1:18780", Origin: "http://127.0.0.1:18780", WebDir: t.TempDir()}
+	r := httptest.NewRequest("GET", "http://"+h.Host+"/api/state", nil)
+	r.Header.Set("Authorization", "Bearer private")
+	out := httptest.NewRecorder()
+	h.ServeHTTP(out, r)
+	var state struct {
+		Chats []struct {
+			Commands []Command `json:"commands"`
+			Session  *Session  `json:"session"`
+		} `json:"chats"`
+	}
+	if err := json.Unmarshal(out.Body.Bytes(), &state); err != nil || len(state.Chats) != 1 {
+		t.Fatal(err, out.Body.String())
+	}
+	got := state.Chats[0]
+	if len(got.Commands) != 2 || got.Commands[0] != (Command{Name: "compact"}) || got.Commands[1] != (Command{Name: "probe-cmd", Description: "From the workspace"}) {
+		t.Fatalf("commands %+v", got.Commands)
+	}
+	if got.Session == nil || *got.Session != (Session{Model: "claude-opus-5[1m]", PermissionMode: "default", OutputStyle: "default"}) {
+		t.Fatalf("session %+v", got.Session)
+	}
+	w.send(agent.Frame{Method: "item/started", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "k1", "type": "compaction", "status": "running"}}})
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 2 })
+	if note := e.Store.Snapshot().chat(id).Conversation.Entries[1]; note.Role != "compaction" || note.Text != "Compacting context…" || !note.IsStreaming {
+		t.Fatalf("running compaction %+v", note)
+	}
+	w.send(agent.Frame{Method: "item/completed", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "k1", "type": "compaction", "status": "completed", "trigger": "manual", "preTokens": 27230.0, "postTokens": 1850.0, "summary": "This session is being continued…"}}})
+	until(t, func() bool { return !e.Store.Snapshot().chat(id).Conversation.Entries[1].IsStreaming })
+	if note := e.Store.Snapshot().chat(id).Conversation.Entries[1]; note.Role != "compaction" || note.Text != "Context compacted" || note.Detail != "This session is being continued…" || note.Compaction == nil || note.Compaction.Trigger != "manual" || note.Compaction.PreTokens != 27230 || note.Compaction.PostTokens != 1850 {
+		t.Fatalf("note %+v %+v", note, note.Compaction)
+	}
+	// Codex's thread/started, and a later Claude init with fewer commands.
+	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one"}}})
+	w.send(agent.Frame{Method: "item/completed", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "k2", "type": "compaction", "status": "completed", "trigger": "auto"}}})
+	until(t, func() bool { return len(e.Store.Snapshot().chat(id).Conversation.Entries) == 3 })
+	if c := e.Store.Snapshot().chat(id); len(c.Commands) != 2 || c.Session == nil || c.Conversation.Entries[2].Role != "compaction" || c.Conversation.Entries[2].Compaction.Trigger != "auto" {
+		t.Fatalf("unchanged by a bare thread/started: %+v", c)
+	}
+	w.send(agent.Frame{Method: "thread/started", Params: map[string]any{"thread": map[string]any{"id": "thread-one", "commands": []any{map[string]any{"name": "init"}}}}})
+	until(t, func() bool {
+		c := e.Store.Snapshot().chat(id)
+		return len(c.Commands) == 1 && c.Commands[0].Name == "init"
+	})
+	w.send(agent.Frame{Method: "turn/completed", Params: map[string]any{"turn": map[string]any{"id": "turn-one", "status": "completed"}}})
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "idle" })
+	if c := e.Store.Snapshot().chat(id); c.Session == nil || len(c.Commands) != 1 {
+		t.Fatalf("session lost with the turn: %+v", c)
+	}
+	// The commands belong to the provider: choosing the other one drops them
+	// (only possible before the chat has history).
+	fresh, _ := e.Create("Fresh", "", "", nil, "claude", "")
+	_ = e.Store.update(func(st *State) error {
+		st.chat(fresh).sessionStarted(map[string]any{"commands": []any{map[string]any{"name": "compact"}}, "model": "m"})
+		return nil
+	})
+	if err := e.ConfigureAgent(fresh, "codex", ""); err != nil {
+		t.Fatal(err)
+	}
+	if c := e.Store.Snapshot().chat(fresh); len(c.Commands) != 0 || c.Session != nil {
+		t.Fatalf("commands survived the provider change: %+v", c)
+	}
+}
+
+// A message handed to the agent reads "sending" until the turn confirms
+// it, and "sent" after; it is never marked failed on the way (that mark
+// used to flash under every first message while the agent started).
+func TestHandOverIsSendingUntilConfirmed(t *testing.T) {
+	e, w, _ := setup(t)
+	id, err := e.Create("Test", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := make(chan struct{})
+	w.mu.Lock()
+	w.turnGate = gate
+	w.mu.Unlock()
+	if err = e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return startupOf(e, id).Stage == stageSending })
+	if v := e.View().chat(id).Conversation.Entries[0]; v.Delivery != "sending" || v.Detail != "" {
+		t.Fatalf("in flight: %+v", v)
+	}
+	close(gate)
+	until(t, func() bool { return e.View().chat(id).Conversation.Entries[0].Delivery == "sent" })
+	if v := e.View().chat(id).Conversation.Entries[0]; v.Detail != "" || v.TurnID == nil {
+		t.Fatalf("confirmed: %+v", v)
+	}
+}
+
+// A run that ends while a message is in flight leaves it failed as
+// unconfirmed: the agent may or may not have read it.
+func TestHandOverUnconfirmedWhenTheRunEnds(t *testing.T) {
+	e, w, _ := setup(t)
+	id, err := e.Create("Test", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := make(chan struct{})
+	defer close(gate)
+	w.mu.Lock()
+	w.turnGate = gate
+	w.mu.Unlock()
+	if err = e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return startupOf(e, id).Stage == stageSending })
+	if err = e.Stop(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return e.View().chat(id).Conversation.Entries[0].Delivery == "failed" })
+	if v := e.View().chat(id).Conversation.Entries[0]; v.Detail != deliveryUnconfirmed {
+		t.Fatalf("unconfirmed: %+v", v)
+	}
+}
+
+// The service's own shutdown cuts a run short without tombstoning it on
+// the runner: a cancel would make the runner stop the sandbox, and a
+// redeploy would take every live workspace down with it. The runner sees
+// a plain disconnect and keeps the sandbox for the run that resumes.
+func TestShutdownEndsRunWithoutCancellingSandbox(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	w := &fakeWorker{}
+	w.prepareGate = make(chan struct{})
+	e := NewEngine(s, w)
+	e.ResidentProviders = []string{}
+	ctx, cancel := context.WithCancel(context.Background())
+	go e.Serve(ctx)
+	id, _ := e.Create("Shutdown", "", "", nil)
+	if err = e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return w.count("prepare") == 1 })
+	cancel()
+	select {
+	case <-e.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("engine did not stop")
+	}
+	if w.count("cancel") != 0 || w.count("stop") != 0 {
+		t.Fatalf("shutdown touched the sandbox: %d cancels, %d stops", w.count("cancel"), w.count("stop"))
 	}
 }

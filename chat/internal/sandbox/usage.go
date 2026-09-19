@@ -3,20 +3,21 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 )
 
 // SandboxUsage is a sandbox's resources as the guest itself reports them:
-// what the VM was given (its CPUs, MemTotal and the workspace filesystem) and
-// what it is using. Provisioned figures are read inside the guest rather than
-// echoed from the create flags because the guest is what the agent gets; a
-// stopped sandbox falls back to the runner's sizing and reports no usage.
+// what the VM was given (MemTotal and the workspace filesystem as the guest
+// sees them, the CPUs as the sandbox's size, since a CPU quota is invisible
+// from inside) and what it is using; the CPU percentage is of that size. A
+// stopped sandbox reports its size and no usage.
 type SandboxUsage struct {
 	At          time.Time `json:"at"`
 	Running     bool      `json:"running"`
-	CPUs        int       `json:"cpus"`
+	CPUs        float64   `json:"cpus"`
 	MemoryTotal uint64    `json:"memoryTotal"`
 	DiskTotal   uint64    `json:"diskTotal"`
 	// Usage; meaningful only while Running. CPUPercent needs two samples of
@@ -25,9 +26,6 @@ type SandboxUsage struct {
 	MemoryUsed uint64   `json:"memoryUsed"`
 	DiskUsed   uint64   `json:"diskUsed"`
 }
-
-// sandboxCPUs is the CPU count every sandbox is created with (runtime.go).
-const sandboxCPUs = 1
 
 // usageScript prints, one per line: the CPU count, the aggregate line of
 // /proc/stat, MemTotal and MemAvailable, and the df line of the workspace.
@@ -71,11 +69,9 @@ func (w *Worker) usage(ctx context.Context, r Request) (Response, error) {
 		return Response{Usage: &sample}, nil
 	}
 	if s.State != "running" || !s.Created {
-		memoryMB := w.MemoryMB
-		if memoryMB == 0 {
-			memoryMB = defaultMemoryMB
-		}
-		sample := SandboxUsage{At: now, CPUs: sandboxCPUs, MemoryTotal: uint64(memoryMB) << 20}
+		// What the sandbox will have when it runs: its own size.
+		size := w.resourcesOf(s)
+		sample := SandboxUsage{At: now, CPUs: float64(size.CPUMilli) / 1000, MemoryTotal: uint64(size.MemoryMB) << 20}
 		state.total, state.idle = 0, 0
 		state.sample = sample
 		w.mu.Unlock()
@@ -83,6 +79,7 @@ func (w *Worker) usage(ctx context.Context, r Request) (Response, error) {
 		return Response{Usage: &sample}, nil
 	}
 	name, dir := s.RuntimeName, s.Directory
+	size := w.resourcesOf(s)
 	previousTotal, previousIdle, previousAt := state.total, state.idle, state.sample.At
 	// The guest exec runs without the worker lock; a busy sandbox must not
 	// stall every other operation while it answers.
@@ -96,8 +93,16 @@ func (w *Worker) usage(ctx context.Context, r Request) (Response, error) {
 		return Response{}, err
 	}
 	sample.At = w.now()
+	// The guest counts the CPUs it can see (under gVisor, the node's); the
+	// sandbox has its size's worth of them. Its busy share of the visible
+	// CPUs, scaled to the size, is the share of what it was given.
+	visible := sample.CPUs
+	sample.CPUs = float64(size.CPUMilli) / 1000
 	if !previousAt.IsZero() && previousTotal > 0 && total > previousTotal && idle >= previousIdle {
 		percent := 100 * (1 - float64(idle-previousIdle)/float64(total-previousTotal))
+		if visible > 0 && sample.CPUs > 0 {
+			percent = math.Min(100, percent*visible/sample.CPUs)
+		}
 		sample.CPUPercent = &percent
 	}
 	w.rememberUsage(s.ID, sample)
@@ -169,6 +174,6 @@ func parseUsage(raw string) (sample SandboxUsage, total, idle uint64, err error)
 	if e1 != nil || e2 != nil || diskUsed > diskTotal {
 		return sample, 0, 0, errors.New("invalid sandbox disk report")
 	}
-	sample = SandboxUsage{Running: true, CPUs: cpus, MemoryTotal: memoryTotal, MemoryUsed: memoryTotal - memoryAvailable, DiskTotal: diskTotal << 10, DiskUsed: diskUsed << 10}
+	sample = SandboxUsage{Running: true, CPUs: float64(cpus), MemoryTotal: memoryTotal, MemoryUsed: memoryTotal - memoryAvailable, DiskTotal: diskTotal << 10, DiskUsed: diskUsed << 10}
 	return sample, total, idle, nil
 }

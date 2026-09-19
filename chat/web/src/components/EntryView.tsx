@@ -1,24 +1,43 @@
 // Adapted from Panta Conversation.tsx at bf61d5b; presentation retained, app dependencies removed.
-import { memo, useCallback, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isKey } from "../shortcuts";
 import {
   Bot,
   Check,
   ChevronRight,
   Copy,
   FileText,
+  GitFork,
+  History,
   LoaderCircle,
+  MessageCircleQuestion,
+  MessageSquareReply,
   Pencil,
   RotateCcw,
+  Send,
+  Undo2,
   User,
+  X,
 } from "lucide-react";
+import { compactionLabel } from "../context";
 import { hasDiff, parseDiff } from "../diff";
 import { senderLabel } from "../export";
-import type { TurnFooter } from "../turns";
+import { undoHint, undoOffersCode } from "../rewind";
+import { subagentInput, subagentProgress, toolRunning } from "../tools";
+import { groupEntries } from "../transcript";
+import {
+  formatCost,
+  formatDuration,
+  formatTokens,
+  type TurnFooter,
+} from "../turns";
 import type { Entry } from "../types";
 import { EntryAttachments } from "./Attachments";
 import { DiffView } from "./DiffView";
 import { ImageAttachment } from "./ImageAttachment";
 import { RichText } from "./RichText";
+import { ThinkingBlock } from "./Thinking";
+import { ToolBody, ToolSummary } from "./ToolCard";
 import { TurnStats } from "./TurnStats";
 import { useCopy } from "./useCopy";
 const time = (v: number) =>
@@ -38,24 +57,161 @@ function ActivityDetail({ text }: { text: string }) {
     <pre>{text}</pre>
   );
 }
-/* A run of consecutive tool steps collapses into one row. */
+/* One step's summary row: the typed card's (ToolCard.tsx) when the
+   service recorded the tool call, else the step's text. */
+function StepSummary({ entry, steps }: { entry: Entry; steps?: Entry[] }) {
+  if (entry.tool) return <ToolSummary entry={entry} steps={steps} />;
+  return (
+    <>
+      <FileText size={13} />
+      <span>{entry.text || "Agent activity"}</span>
+      {entry.isStreaming && <LoaderCircle size={12} className="spin" />}
+    </>
+  );
+}
+/* What a card's body needs beyond its entry: the file opener, and for a
+   subagent's card the transcript nested under it. */
+type StepContext = {
+  onFile?: (href: string) => void;
+  nested?: Map<string, Entry[]>;
+  chatID?: string;
+  provider?: string;
+};
+function StepBody({ entry, ctx }: { entry: Entry; ctx: StepContext }) {
+  if (!entry.tool) return <ActivityDetail text={entry.detail} />;
+  const children = ctx.nested?.get(entry.id);
+  return (
+    <ToolBody
+      entry={entry}
+      onFile={ctx.onFile}
+      chatID={ctx.chatID}
+      nested={
+        entry.tool.kind === "task" && children?.length ? (
+          <SubagentTranscript parent={entry} entries={children} ctx={ctx} />
+        ) : undefined
+      }
+    />
+  );
+}
+/* A subagent's own work, inside its card: its messages and tool cards as
+   the transcript shows the conversation's, collapsed behind a count until
+   opened. A subagent's subagent nests the same way. */
+function SubagentTranscript({
+  parent,
+  entries,
+  ctx,
+}: {
+  parent: Entry;
+  entries: Entry[];
+  ctx: StepContext;
+}) {
+  const { steps, running, step } = subagentProgress(
+    entries,
+    parent.tool?.progress,
+  );
+  const label = subagentInput(parent.tool).type || "Subagent";
+  const messages = entries.filter((e) => !e.tool).length;
+  const parts = [];
+  if (steps) parts.push(`${steps} tool call${steps === 1 ? "" : "s"}`);
+  if (messages) parts.push(`${messages} message${messages === 1 ? "" : "s"}`);
+  // The step the agent reports lasts while the subagent itself runs, its
+  // own tool finished or not.
+  if (toolRunning(parent) && step) parts.push(step);
+  return (
+    <details className="subagent">
+      <summary>
+        <ChevronRight size={14} className="chevron" />
+        <span>
+          {label}: {parts.join(", ") || "no activity yet"}
+        </span>
+        {running && <LoaderCircle size={12} className="spin" />}
+      </summary>
+      <div className="subagent-transcript">
+        {groupEntries(entries).map((item) =>
+          "group" in item ? (
+            <ActivityGroup
+              key={item.group[0].id}
+              entries={item.group}
+              nested={ctx.nested}
+              chatID={ctx.chatID}
+              provider={ctx.provider}
+              onFile={ctx.onFile}
+            />
+          ) : (
+            <EntryView
+              key={item.entry.id}
+              entry={item.entry}
+              chatID={ctx.chatID ?? ""}
+              provider={ctx.provider}
+              label={label}
+              nested={ctx.nested}
+              onFile={ctx.onFile ?? (() => {})}
+            />
+          ),
+        )}
+      </div>
+    </details>
+  );
+}
+/* A run of consecutive tool steps collapses into one row; a todo list
+   stands open on its own. */
 export const ActivityGroup = memo(function ActivityGroup({
   entries,
+  onFile,
+  nested,
+  chatID,
+  provider,
+  onQuote,
 }: {
   entries: Entry[];
+  /* Opens a workspace file a step names (a read's path). */
+  onFile?: (href: string) => void;
+  /* Subagents' entries by the ID of their card (transcript.ts
+     `nestEntries`), for the cards of Agent calls. */
+  nested?: Map<string, Entry[]>;
+  chatID?: string;
+  provider?: string;
+  /* Puts a command the person ran (a card with a sender) into the
+     composer for the agent: the agent sees such a card only that way. */
+  onQuote?: (entry: Entry) => void;
 }) {
+  const ctx: StepContext = { onFile, nested, chatID, provider };
   const streaming = entries.some((e) => e.isStreaming);
   const latest = entries[entries.length - 1];
   // `data-entry` is how the find bar lands on an entry from the palette.
   if (entries.length === 1)
     return (
-      <details className="activity-group" data-entry={latest.id}>
+      <details
+        className={`activity-group${latest.tool ? ` tool-card tool-kind-${latest.tool.kind}` : ""}${latest.sender ? " by-person" : ""}`}
+        data-entry={latest.id}
+        open={latest.tool?.kind === "todo" || !!latest.sender || undefined}
+      >
         <summary>
           <ChevronRight size={14} className="chevron" />
-          <span>{latest.text || "Agent activity"}</span>
-          {streaming && <LoaderCircle size={12} className="spin" />}
+          {latest.tool ? (
+            <ToolSummary entry={latest} steps={nested?.get(latest.id)} />
+          ) : (
+            <>
+              <span>{latest.text || "Agent activity"}</span>
+              {streaming && <LoaderCircle size={12} className="spin" />}
+            </>
+          )}
         </summary>
-        <ActivityDetail text={latest.detail} />
+        <StepBody entry={latest} ctx={ctx} />
+        {latest.sender && onQuote && !latest.isStreaming && (
+          <div className="tool-actions">
+            <button
+              type="button"
+              className="ghost"
+              title="Put this command and its output into the composer, for the agent"
+              disabled={latest.tool?.status === "running"}
+              onClick={() => onQuote(latest)}
+            >
+              <Send size={13} />
+              Send to agent
+            </button>
+          </div>
+        )}
       </details>
     );
   return (
@@ -69,38 +225,232 @@ export const ActivityGroup = memo(function ActivityGroup({
       <div className="activity-list">
         {entries.map((entry) => (
           <details
-            className="activity-entry"
+            className={`activity-entry${entry.tool ? ` tool-card tool-kind-${entry.tool.kind}` : ""}`}
             key={entry.id}
             data-entry={entry.id}
+            open={entry.tool?.kind === "todo" || undefined}
           >
             <summary>
-              <FileText size={13} />
-              <span>{entry.text || "Agent activity"}</span>
-              {entry.isStreaming && <LoaderCircle size={12} className="spin" />}
+              <StepSummary entry={entry} steps={nested?.get(entry.id)} />
             </summary>
-            <ActivityDetail text={entry.detail} />
+            <StepBody entry={entry} ctx={ctx} />
           </details>
         ))}
       </div>
     </details>
   );
 });
+/* A queued message edited on its card (queue.ts): the text in a
+   textarea (Enter saves, Shift-Enter a newline, Esc leaves the message
+   as it was) and its attachments, each removable; the save keeps the
+   message's slot and ID. The text is the parent's, so a message the
+   agent gets while it is edited is not lost with the card. */
+function QueuedEditor({
+  entry,
+  text,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  entry: Entry;
+  text: string;
+  onChange: (text: string) => void;
+  onSave: (text: string, attachments: string[]) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [kept, setKept] = useState(() => entry.attachments ?? []);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, []);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 320) + "px";
+  }, [text]);
+  async function save() {
+    if (busy) return;
+    if (!text.trim() && !kept.length) {
+      setError("A message needs text or an attachment; withdraw it instead");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await onSave(text, kept.map((a) => a.id));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="queued-editor" data-entry={entry.id}>
+      <textarea
+        ref={ref}
+        value={text}
+        rows={1}
+        aria-label="Edit the queued message"
+        disabled={busy}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (isKey(e, "queued-cancel")) {
+            e.preventDefault();
+            onCancel();
+          } else if (isKey(e, "queued-save")) {
+            e.preventDefault();
+            void save();
+          }
+        }}
+      />
+      {kept.length > 0 && (
+        <ul className="queued-editor-files">
+          {kept.map((a) => (
+            <li key={a.id}>
+              <FileText size={13} aria-hidden="true" /> {a.name}
+              <button
+                type="button"
+                className="ghost icon"
+                aria-label={`Remove ${a.name}`}
+                title="Send the message without this file"
+                onClick={() => setKept(kept.filter((k) => k.id !== a.id))}
+              >
+                <X size={12} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="queued-editor-bar">
+        <span className="muted">
+          {error || "Enter saves it in its place · Shift-Enter newline · Esc cancels"}
+        </span>
+        <span>
+          <button type="button" className="ghost" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={() => void save()}
+          >
+            Save
+          </button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* Under a queued message (queue.ts): edit opens the card's editor,
+   withdraw drops it, and Send lets a held queue go. Always shown: the
+   queue is something to act on, not to discover on hover. */
+function QueuedActions({
+  entry,
+  queue,
+  onEditQueued,
+  onWithdraw,
+  onSendQueued,
+}: {
+  entry: Entry;
+  queue: QueueState;
+  onEditQueued?: (entry: Entry) => void;
+  onWithdraw?: (entry: Entry) => void;
+  onSendQueued?: () => void;
+}) {
+  return (
+    <div
+      className="message-actions shown queued-actions"
+      role="group"
+      aria-label="Queued message actions"
+    >
+      {queue.held && onSendQueued && (
+        <button
+          type="button"
+          className="ghost queued-send"
+          title="Send the queued messages now, in order"
+          onClick={onSendQueued}
+        >
+          <Send size={14} /> Send
+        </button>
+      )}
+      {onEditQueued && (
+        <button
+          type="button"
+          className="ghost icon"
+          aria-label="Edit this queued message"
+          title={
+            queue.mine
+              ? "Edit it here; it keeps its place in the queue"
+              : "Only its sender or the owner can edit it"
+          }
+          disabled={!queue.mine}
+          onClick={() => onEditQueued(entry)}
+        >
+          <Pencil size={14} />
+        </button>
+      )}
+      {onWithdraw && (
+        <button
+          type="button"
+          className="ghost icon"
+          aria-label="Withdraw this queued message"
+          title={
+            queue.mine
+              ? "Withdraw: the agent never sees it"
+              : "Only its sender or the owner can withdraw it"
+          }
+          disabled={!queue.mine}
+          onClick={() => onWithdraw(entry)}
+        >
+          <X size={14} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* What a queued message's card shows (queue.ts): the line beside the
+   sender, whether the queue is held, and whether this person may act on
+   the message. */
+export type QueueState = { label: string; held: boolean; mine: boolean };
+
 /* Under every message: copy its markdown source, and for one the owner
    sent, retry and edit. Shown on hover or focus (always when the message
    failed to deliver, since retrying is the fix); `enabled` is false while a
-   send would be refused, so the buttons still show what is possible instead
-   of failing in the composer. Copy waits for a streaming message to finish,
-   so the clipboard never holds half a message. */
+   send would be refused, and `editable` while a rewind would be (editing
+   a message the agent got rewinds the conversation to before it: queue.ts),
+   so the buttons still show what is possible instead of failing in the
+   composer. Copy waits for a streaming message to finish, so the clipboard
+   never holds half a message. */
 function MessageActions({
   entry,
   enabled,
+  editable,
   onEdit,
   onRetry,
+  onRewind,
+  rewindable,
+  onFork,
 }: {
   entry: Entry;
   enabled: boolean;
+  editable?: boolean;
   onEdit?: (entry: Entry) => void;
   onRetry?: (entry: Entry) => void;
+  /* Opens the rewind chooser on this message (rewind.ts); disabled while
+     the chat is busy. */
+  onRewind?: (entry: Entry) => void;
+  rewindable?: boolean;
+  /* Opens the fork dialog cut before this message; same condition. */
+  onFork?: (entry: Entry) => void;
 }) {
   const { copied, copy } = useCopy(useCallback(() => entry.text, [entry.text]));
   return (
@@ -124,8 +474,8 @@ function MessageActions({
           type="button"
           className="ghost icon"
           aria-label="Edit and resend"
-          title="Edit and resend"
-          disabled={!enabled}
+          title="Edit and resend: the conversation goes back to before this message"
+          disabled={!editable}
           onClick={() => onEdit(entry)}
         >
           <Pencil size={14} />
@@ -147,6 +497,30 @@ function MessageActions({
           <RotateCcw size={14} />
         </button>
       )}
+      {onRewind && (
+        <button
+          type="button"
+          className="ghost icon"
+          aria-label="Rewind to before this message"
+          title="Rewind to before this message (code, conversation or both)"
+          disabled={!rewindable}
+          onClick={() => onRewind(entry)}
+        >
+          <History size={14} />
+        </button>
+      )}
+      {onFork && (
+        <button
+          type="button"
+          className="ghost icon"
+          aria-label="Fork the chat before this message"
+          title="Fork the chat before this message: a sibling chat continues from here"
+          disabled={!rewindable}
+          onClick={() => onFork(entry)}
+        >
+          <GitFork size={14} />
+        </button>
+      )}
     </div>
   );
 }
@@ -158,8 +532,26 @@ export const EntryView = memo(function EntryView({
   onFile,
   onEdit,
   onRetry,
+  onRewind,
+  onFork,
+  onQuote,
+  onPromote,
+  onEditQueued,
+  onWithdraw,
+  onSendQueued,
+  queue,
+  queuedEdit,
+  onQueuedEditChange,
+  onSaveQueued,
+  onCancelQueuedEdit,
+  onUndoRewind,
+  undoable = false,
   actions = false,
+  editable = false,
+  rewindable = false,
   stats,
+  nested,
+  label,
 }: {
   entry: Entry;
   chatID: string;
@@ -167,10 +559,42 @@ export const EntryView = memo(function EntryView({
   onFile: (href: string) => void;
   onEdit?: (entry: Entry) => void;
   onRetry?: (entry: Entry) => void;
-  /* Whether retry and edit would be accepted right now. */
+  onRewind?: (entry: Entry) => void;
+  onFork?: (entry: Entry) => void;
+  /* For a command the person ran: quote it into the composer. */
+  onQuote?: (entry: Entry) => void;
+  /* For an answered side question: ask it in chat as a message. */
+  onPromote?: (entry: Entry) => void;
+  /* For a queued message (queue.ts): edit it in the composer, withdraw
+     it, let a held queue go; `queue` says what its card shows. */
+  onEditQueued?: (entry: Entry) => void;
+  onWithdraw?: (entry: Entry) => void;
+  onSendQueued?: () => void;
+  queue?: QueueState;
+  /* For a queued message being edited on its card: the draft (the
+     parent's), its changes, the save (text and the attachments kept) and
+     the cancel. */
+  queuedEdit?: string;
+  onQueuedEditChange?: (text: string) => void;
+  onSaveQueued?: (entry: Entry, text: string, attachments: string[]) => Promise<void>;
+  onCancelQueuedEdit?: () => void;
+  /* For a rewind marker whose rewind can still be undone (rewind.ts):
+     the undo, with or without the workspace. */
+  onUndoRewind?: (entry: Entry, code: boolean) => void;
+  undoable?: boolean;
+  /* Whether retry would be accepted right now. */
   actions?: boolean;
+  /* Whether edit-and-resend would be (a rewind is possible). */
+  editable?: boolean;
+  /* Whether a rewind would be accepted right now (the chat is idle). */
+  rewindable?: boolean;
   /* The turn's timing and usage, under the turn's last message. */
   stats?: TurnFooter;
+  /* Subagents' entries by the ID of their card, for a task entry. */
+  nested?: Map<string, Entry[]>;
+  /* The name over an agent message, instead of the provider's: the
+     subagent's type inside its card. */
+  label?: string;
 }) {
   if (entry.role === "image")
     return (
@@ -181,12 +605,111 @@ export const EntryView = memo(function EntryView({
         entryID={entry.id}
       />
     );
-  if (entry.role === "activity") return <ActivityGroup entries={[entry]} />;
-  if (entry.role === "system")
+  if (entry.role === "activity")
     return (
-      <div className="system-entry" data-entry={entry.id}>
+      <ActivityGroup
+        entries={[entry]}
+        nested={nested}
+        chatID={chatID}
+        provider={provider}
+        onFile={onFile}
+        onQuote={onQuote}
+      />
+    );
+  if (entry.role === "thinking")
+    return (
+      <ThinkingBlock
+        entry={entry}
+        provider={provider}
+        chatID={chatID}
+        onFile={onFile}
+      />
+    );
+  if (entry.role === "system" || entry.role === "notice")
+    return (
+      <div className={`system-entry ${entry.role}-entry`} data-entry={entry.id}>
         {entry.text}
       </div>
+    );
+  if (entry.role === "rewind")
+    // The marker a rewind leaves: which message the chat went back to
+    // before and what was taken back, and Undo while the removed
+    // transcript is still kept (rewind.ts).
+    return (
+      <div
+        className="system-entry rewind-entry"
+        data-entry={entry.id}
+        role="separator"
+        aria-label={entry.text}
+      >
+        <span>
+          <History size={13} aria-hidden="true" /> {entry.text}
+        </span>
+        {entry.detail && <small>{entry.detail}</small>}
+        {undoable && onUndoRewind && (
+          <div className="rewind-actions">
+            <button
+              type="button"
+              className="ghost"
+              title={undoHint(entry)}
+              onClick={() => onUndoRewind(entry, false)}
+            >
+              <Undo2 size={13} aria-hidden="true" /> Undo
+            </button>
+            {undoOffersCode(entry) && (
+              <button
+                type="button"
+                className="ghost"
+                title="Undo, and put the workspace back as it was before the rewind"
+                onClick={() => onUndoRewind(entry, true)}
+              >
+                <Undo2 size={13} aria-hidden="true" /> Undo and restore the files
+              </button>
+            )}
+            <small>{undoHint(entry)}</small>
+          </div>
+        )}
+      </div>
+    );
+  if (entry.role === "compaction")
+    return <CompactionDivider entry={entry} chatID={chatID} onFile={onFile} />;
+  if (entry.role === "fork")
+    // The marker a fork leaves at the top of the copy: which chat it came
+    // from (a link) and where the copy stops.
+    return (
+      <div
+        className="system-entry rewind-entry fork-entry"
+        data-entry={entry.id}
+        role="separator"
+        aria-label={entry.text}
+      >
+        <span>
+          <GitFork size={13} aria-hidden="true" />{" "}
+          {entry.fork?.chatID ? (
+            <>
+              {entry.fork.into ? "Forked into " : "Forked from "}
+              <a href={"?chat=" + encodeURIComponent(entry.fork.chatID)}>
+                {entry.fork.title || "another chat"}
+              </a>
+              {entry.fork.messageID || entry.fork.workspace
+                ? entry.text.replace(/^Forked (from|into) “[^”]*”/, "")
+                : ""}
+            </>
+          ) : (
+            entry.text
+          )}
+        </span>
+        {entry.detail && <small>{entry.detail}</small>}
+      </div>
+    );
+  if (entry.role === "aside")
+    return (
+      <AsideCard
+        entry={entry}
+        chatID={chatID}
+        onFile={onFile}
+        onPromote={onPromote}
+      />
     );
   const user = entry.role === "user";
   const header = (
@@ -194,9 +717,7 @@ export const EntryView = memo(function EntryView({
       <strong>
         {user
           ? senderLabel(entry.sender)
-          : provider === "claude"
-            ? "Claude"
-            : "Codex"}
+          : label || (provider === "claude" ? "Claude" : "Codex")}
       </strong>
       <time>{time(entry.createdAt)}</time>
       {entry.isStreaming && (
@@ -204,37 +725,70 @@ export const EntryView = memo(function EntryView({
           Writing<span className="typing-dots">…</span>
         </span>
       )}
-      {entry.delivery === "queued" && <span className="muted">Queued</span>}
+      {entry.delivery === "queued" && (
+        <span className="muted queued-label">{queue?.label ?? "Queued"}</span>
+      )}
       {entry.delivery === "failed" && (
         <span className="danger-text">{entry.detail || "Not delivered"}</span>
       )}
     </header>
   );
-  if (user)
+  if (user) {
+    const queued = entry.delivery === "queued" && !!queue;
+    const editingHere =
+      queued && queuedEdit !== undefined && !!onSaveQueued && !!onQueuedEditChange && !!onCancelQueuedEdit;
     return (
-      <article className="message message-user" data-entry={entry.id}>
+      <article
+        className={`message message-user${queued ? " message-queued" : ""}${editingHere ? " message-editing" : ""}`}
+        data-entry={entry.id}
+      >
         {header}
-        <div className="message-body">
-          {entry.text && (
-            <RichText
-              text={entry.text}
-              chatID={chatID}
-              entryID={entry.id}
-              onFile={onFile}
-            />
-          )}
-          {!!entry.attachments?.length && (
-            <EntryAttachments chatID={chatID} attachments={entry.attachments} />
-          )}
-        </div>
-        <MessageActions
-          entry={entry}
-          enabled={actions}
-          onEdit={onEdit}
-          onRetry={onRetry}
-        />
+        {editingHere ? (
+          <QueuedEditor
+            entry={entry}
+            text={queuedEdit}
+            onChange={onQueuedEditChange}
+            onSave={(text, attachments) => onSaveQueued(entry, text, attachments)}
+            onCancel={onCancelQueuedEdit}
+          />
+        ) : (
+          <div className="message-body">
+            {entry.text && (
+              <RichText
+                text={entry.text}
+                chatID={chatID}
+                entryID={entry.id}
+                onFile={onFile}
+              />
+            )}
+            {!!entry.attachments?.length && (
+              <EntryAttachments chatID={chatID} attachments={entry.attachments} />
+            )}
+          </div>
+        )}
+        {editingHere ? null : queued ? (
+          <QueuedActions
+            entry={entry}
+            queue={queue}
+            onEditQueued={onEditQueued}
+            onWithdraw={onWithdraw}
+            onSendQueued={onSendQueued}
+          />
+        ) : (
+          <MessageActions
+            entry={entry}
+            enabled={actions}
+            editable={editable}
+            onEdit={onEdit}
+            onRetry={onRetry}
+            onRewind={onRewind}
+            onFork={onFork}
+            rewindable={rewindable}
+          />
+        )}
       </article>
     );
+  }
   return (
     <article className={`message message-${entry.role}`} data-entry={entry.id}>
       <div className="message-avatar" aria-hidden="true">
@@ -258,3 +812,150 @@ export const EntryView = memo(function EntryView({
     </article>
   );
 });
+
+/* The divider where the agent compacted its context: "Context compacted ·
+   manual · 171k → 2.2k tokens", with the summary it continues from
+   behind a disclosure; "Compacting context…" while it runs; the error
+   when it failed. */
+function CompactionDivider({
+  entry,
+  chatID,
+  onFile,
+}: {
+  entry: Entry;
+  chatID: string;
+  onFile: (href: string) => void;
+}) {
+  const c = entry.compaction ?? { status: "completed" };
+  const running = c.status === "running" || (entry.isStreaming && !c.trigger);
+  const failed = c.status === "failed";
+  const label = compactionLabel(c);
+  return (
+    <div
+      className={`compaction-entry${running ? " running" : failed ? " failed" : ""}`}
+      data-entry={entry.id}
+      role="separator"
+      aria-label={entry.text}
+    >
+      <div className="compaction-line">
+        <span>
+          {running
+            ? "Compacting context…"
+            : failed
+              ? `Compaction failed${c.error ? `: ${c.error}` : ""}`
+              : label
+                ? `Context compacted · ${label}`
+                : "Context compacted"}
+        </span>
+      </div>
+      {!running && !failed && entry.detail && (
+        <details className="compaction-summary">
+          <summary>Summary the agent continues from</summary>
+          <RichText
+            text={entry.detail}
+            chatID={chatID}
+            entryID={entry.id}
+            onFile={onFile}
+            agent
+          />
+        </details>
+      )}
+    </div>
+  );
+}
+
+/* A side question (/btw) and its answer: asked by a person, answered from
+   a copy of the agent's session, never part of the conversation the agent
+   sees. The card says so, with what the answer cost. */
+function AsideCard({
+  entry,
+  chatID,
+  onFile,
+  onPromote,
+}: {
+  entry: Entry;
+  chatID: string;
+  onFile: (href: string) => void;
+  onPromote?: (entry: Entry) => void;
+}) {
+  const a = entry.aside ?? { status: "completed" as const };
+  const starting = a.status === "starting";
+  const running =
+    starting || a.status === "running" || (entry.isStreaming && !entry.detail);
+  const failed = a.status === "failed";
+  const answered = !running && !failed && !!entry.detail?.trim();
+  const facts: string[] = [];
+  if (a.durationMS) facts.push(formatDuration(a.durationMS / 1000));
+  if (a.input || a.output)
+    facts.push(`${formatTokens((a.input || 0) + (a.output || 0))} tokens`);
+  if (a.costUSD) facts.push(formatCost(a.costUSD));
+  return (
+    <article
+      className={`aside-entry${running ? " running" : failed ? " failed" : ""}`}
+      data-entry={entry.id}
+      aria-label="Side question"
+    >
+      <header>
+        <MessageCircleQuestion size={14} aria-hidden="true" />
+        <strong>Side question</strong>
+        <span className="muted">
+          by {senderLabel(entry.sender)} · {time(entry.createdAt)} · not sent to
+          the agent
+        </span>
+      </header>
+      <p className="aside-question">{entry.text}</p>
+      {running ? (
+        <p className="aside-answer muted">
+          {starting
+            ? "Starting the agent's session for the question"
+            : "Answering from a copy of the session"}
+          <span className="typing-dots">…</span>
+        </p>
+      ) : failed ? (
+        <p className="aside-answer danger-text">
+          Could not answer{a.error ? `: ${a.error}` : ""}
+        </p>
+      ) : (
+        <div className="aside-answer">
+          <RichText
+            text={entry.detail}
+            chatID={chatID}
+            entryID={entry.id}
+            onFile={onFile}
+            agent
+          />
+        </div>
+      )}
+      {(facts.length > 0 || answered) && (
+        <p className="aside-facts">
+          {facts.join(" · ")}
+          {answered && a.promoted ? (
+            <button
+              type="button"
+              className="ghost aside-promote"
+              title="The question went as a message; jump to it"
+              onClick={() =>
+                document
+                  .querySelector(`[data-entry="${a.promoted}"]`)
+                  ?.scrollIntoView({ block: "center" })
+              }
+            >
+              <MessageSquareReply size={13} aria-hidden="true" />
+              Asked in chat
+            </button>
+          ) : answered && onPromote ? (
+            <button
+              type="button"
+              className="ghost aside-promote"
+              title="Send the question as your message, with this answer quoted, so the agent can build on it"
+              onClick={() => onPromote(entry)}
+            >
+              <MessageSquareReply size={13} aria-hidden="true" />
+              Ask in chat
+            </button>
+          ) : null}
+        </p>
+      )}
+    </article>
+  );
+}

@@ -54,6 +54,25 @@ func TestHelmChartRendersKubernetesConfig(t *testing.T) {
 	if c.Providers.Codex == nil || c.Providers.Codex.Secret != "warden-codex-login" || c.Providers.GitHub == nil || c.Providers.GitHub.Secret != "warden-github-login" {
 		t.Errorf("providers = %+v %+v", c.Providers.Codex, c.Providers.GitHub)
 	}
+	// The bug-report receiver is off unless the values say so
+	// (docs/bug-reporting-plan.md); the dev values do not.
+	if b := c.Edge.BugReports; b.Enabled || b.RetentionDays != 90 || b.MaxPerHour != 30 || b.MaxPerDay != 500 {
+		t.Errorf("edge.bugReports = %+v", b)
+	}
+	cmd = exec.Command(helm, "template", "warden", "../../../deploy/helm/warden",
+		"--namespace", "warden",
+		"-f", "../../../deploy/k8s/dev/values.yaml",
+		"--set", "edge.bugReports.enabled=true", "--set", "edge.bugReports.retentionDays=14",
+		"-s", "templates/configmap.yaml")
+	if out, err = cmd.CombinedOutput(); err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	if c, err = Parse([]byte(configMapFile(t, string(out), "warden.json"))); err != nil {
+		t.Fatal(err)
+	}
+	if b := c.Edge.BugReports; !b.Enabled || b.RetentionDays != 14 || b.MaxPerHour != 30 {
+		t.Errorf("edge.bugReports enabled = %+v", b)
+	}
 }
 
 // configMapFile extracts one literal-block data entry from a rendered

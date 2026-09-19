@@ -53,7 +53,8 @@ https://<name>.{{ .Values.previews.hostSuffix }} through the Ingress:
   kubectl -n {{ $ns }} get ingress warden-edge
 {{- end }}
 
-Sandboxes: {{ .Values.sandboxes.maxRunning }} running at most, {{ .Values.sandboxes.warmSpares }} warm, {{ int .Values.sandboxes.memoryMB }}Mi and {{ int .Values.sandboxes.cpuMillis }}m each,
+Sandboxes: {{ .Values.sandboxes.maxRunning }} running at most, {{ .Values.sandboxes.warmSpares }} warm, {{ int .Values.sandboxes.memoryMB }}Mi and {{ .Values.sandboxes.cpus }} CPU each
+by default, resizable up to {{ int .Values.sandboxes.maxMemoryMB }}Mi and {{ .Values.sandboxes.maxCPUs }} CPU,
 {{ int .Values.storage.workspaceGi }}Gi of workspace; egress {{ .Values.egress }} through the gateway. The
 sandbox namespace enforces the RuntimeClass, the Warden label and the
 volume allowlist by admission, and the policy service refuses a cluster

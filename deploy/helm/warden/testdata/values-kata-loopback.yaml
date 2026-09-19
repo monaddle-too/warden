@@ -10,7 +10,9 @@ runtime:
     cpuMillis: 250
 sandboxes:
   memoryMB: 2048
-  cpuMillis: 2000
+  cpus: 2
+  maxCPUs: 4
+  maxMemoryMB: 4096
   maxRunning: 4
   warmSpares: 2
   keepStopped: 16

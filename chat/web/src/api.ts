@@ -1,5 +1,14 @@
+import type { Resources } from "./composer";
 import { saveFile } from "./export";
-import type { Attachment, State } from "./types";
+import type {
+  Checkpoint,
+  RewindResult,
+  RewindWhat,
+  SessionChanges,
+  UndoResult,
+} from "./rewind";
+import { failureMessage } from "./failure";
+import type { Attachment, Entry, State } from "./types";
 const key = "warden-chat-session";
 let token = "";
 try {
@@ -34,12 +43,9 @@ const credentials = () => ({
   ...(remoteCSRF ? { "X-Warden-CSRF": remoteCSRF } : {}),
 });
 async function failure(response: Response) {
-  const text = await response.text();
-  try {
-    return new Error(JSON.parse(text).error || text);
-  } catch {
-    return new Error(text);
-  }
+  return new Error(
+    failureMessage(response.status, response.statusText, await response.text()),
+  );
 }
 export async function api<T = unknown>(
   path: string,
@@ -55,6 +61,15 @@ export async function api<T = unknown>(
   });
   if (!response.ok) throw await failure(response);
   return response.json();
+}
+
+/* DELETE one resource; the answer has no body. */
+export async function apiDelete(path: string): Promise<void> {
+  const response = await fetch("/api/" + path, {
+    method: "DELETE",
+    headers: credentials(),
+  });
+  if (!response.ok) throw await failure(response);
 }
 
 /* One file for the composer: multipart, answered with the stored record
@@ -200,4 +215,175 @@ export async function workspacePaths(
   return Array.isArray(result.paths)
     ? result.paths.filter((p): p is string => typeof p === "string")
     : [];
+}
+
+/* Paths on this computer for a local mention's prefix or an /attach
+   word (chats/localfiles.go; a local install only). */
+export async function localPaths(
+  chatID: string,
+  query: string,
+): Promise<string[]> {
+  const result = await api<{ paths?: unknown }>(
+    `chats/${encodeURIComponent(chatID)}/local-paths?q=${encodeURIComponent(query)}`,
+  );
+  return Array.isArray(result.paths)
+    ? result.paths.filter((p): p is string => typeof p === "string")
+    : [];
+}
+
+/* What attaching typed paths came to: the records stored, each with the
+   path it was typed as, and one line per path that could not be
+   attached; `missing` are the typed paths that named no file (or a
+   directory), which a mention sends as written. */
+export type LocalAttachResult = {
+  attached: (Attachment & { typed: string })[];
+  errors: string[];
+  missing: string[];
+};
+
+/* Attaches files from this computer for the chat's next message; `limit`
+   is how many more the message can take. */
+export async function attachLocal(
+  chatID: string,
+  paths: string[],
+  limit: number,
+): Promise<LocalAttachResult> {
+  const result = await api<Partial<LocalAttachResult>>(
+    `chats/${encodeURIComponent(chatID)}/attach-local`,
+    { paths, limit },
+  );
+  return {
+    attached: result.attached ?? [],
+    errors: result.errors ?? [],
+    missing: result.missing ?? [],
+  };
+}
+
+// Checkpoints, rewind and the session diff (rewind.ts). A rewind names the
+// message by its ID (or its turn's) and what to take back: the workspace,
+// the conversation, or both.
+export async function chatCheckpoints(chatID: string): Promise<Checkpoint[]> {
+  const result = await api<{ checkpoints?: unknown }>(
+    `chats/${encodeURIComponent(chatID)}/checkpoints`,
+  );
+  return Array.isArray(result.checkpoints)
+    ? (result.checkpoints as Checkpoint[])
+    : [];
+}
+
+export function rewindChat(
+  chatID: string,
+  turnID: string,
+  what: RewindWhat,
+): Promise<RewindResult> {
+  return api<RewindResult>(`chats/${encodeURIComponent(chatID)}/rewind`, {
+    turnID,
+    what,
+  });
+}
+
+/* A queued message out of the queue (its sender or the owner may); the
+   entry comes back for the composer (queue.ts). */
+export function withdrawMessage(chatID: string, id: string): Promise<Entry> {
+  return api<Entry>(`chats/${encodeURIComponent(chatID)}/withdraw`, { id });
+}
+
+/* Lets a held queue go: the queued messages send in order. */
+export function sendQueued(chatID: string): Promise<unknown> {
+  return api(`chats/${encodeURIComponent(chatID)}/send-queued`, {});
+}
+
+/* A queued message's text (and, when given, attachment set) replaced in
+   place: it keeps its slot in the queue and its ID. Refused once the
+   agent has it (queue.ts). */
+export function editQueued(
+  chatID: string,
+  id: string,
+  text: string,
+  attachments?: string[],
+): Promise<Entry> {
+  return api<Entry>(
+    `chats/${encodeURIComponent(chatID)}/queued/${encodeURIComponent(id)}/edit`,
+    attachments ? { text, attachments } : { text },
+  );
+}
+
+/* What the rewind marked by `id` removed, back in place; `code` restores
+   the workspace as it was before the rewind too (rewind.ts). */
+export function undoRewind(
+  chatID: string,
+  id: string,
+  code: boolean,
+): Promise<UndoResult> {
+  return api<UndoResult>(`chats/${encodeURIComponent(chatID)}/undo-rewind`, {
+    id,
+    code,
+  });
+}
+
+/* A sibling chat copied from this one up to `turnID` (a user message, or
+   its turn); the whole transcript when unset. */
+export function forkChat(
+  chatID: string,
+  turnID?: string,
+  copyWorkspace = false,
+): Promise<ForkResult> {
+  return api<ForkResult>(`chats/${encodeURIComponent(chatID)}/fork`, {
+    turnID: turnID || "",
+    copyWorkspace,
+  });
+}
+export type ForkResult = {
+  id: string;
+  title: string;
+  session: "forked" | "fresh" | "none";
+  /* The fork's workspace: the source's ("shared") or a copy of it. */
+  sandboxID?: string;
+  workspace?: "shared" | "copied";
+};
+
+/* What the chat can mention with "@": its workspace's shared documents,
+   repositories and previews (chats/mentions.go). */
+export async function chatResources(chatID: string): Promise<Resources> {
+  const result = await api<Partial<Resources>>(
+    `chats/${encodeURIComponent(chatID)}/resources`,
+  );
+  return {
+    documents: Array.isArray(result.documents) ? result.documents : [],
+    repositories: Array.isArray(result.repositories) ? result.repositories : [],
+    previews: Array.isArray(result.previews) ? result.previews : [],
+  };
+}
+
+/* A side question answered from a copy of the chat's session; the answer
+   lands as an aside entry over the event stream too. */
+export function askAside(chatID: string, text: string): Promise<AsideResult> {
+  return api<AsideResult>(`chats/${encodeURIComponent(chatID)}/aside`, {
+    text,
+  });
+}
+export type AsideResult = {
+  id: string;
+  text?: string;
+  error?: string;
+  costUSD?: number;
+};
+
+/* A side question asked in chat: its question goes as the person's
+   message with the answer quoted, so the agent can build on it. */
+export function promoteAside(chatID: string, entryID: string): Promise<PromoteResult> {
+  return api<PromoteResult>(
+    `chats/${encodeURIComponent(chatID)}/aside/${encodeURIComponent(entryID)}/promote`,
+    {},
+  );
+}
+export type PromoteResult = { messageID: string; text: string };
+
+/* The output style a Claude chat launches with next ("" for the default). */
+export function setOutputStyle(chatID: string, style: string) {
+  return api(`chats/${encodeURIComponent(chatID)}/style`, { style });
+}
+
+export function sessionChanges(chatID: string): Promise<SessionChanges> {
+  return api<SessionChanges>(`chats/${encodeURIComponent(chatID)}/diff`);
 }

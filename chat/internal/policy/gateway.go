@@ -22,6 +22,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"warden/chat/internal/bugreport"
 )
 
 // Header sets shared with the Python gateway.
@@ -140,8 +142,8 @@ func NewBindingGateway(cfg GatewayConfig) (*BindingGateway, error) {
 		cfg.Review = InspectPush
 	}
 	g := &BindingGateway{cfg: cfg, Redactor: NewRedactor(), reviewSlots: make(chan struct{}, 2), reviewCache: map[string]reviewCacheEntry{}, done: make(chan struct{})}
-	g.server = &http.Server{Handler: g, ReadHeaderTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20, ErrorLog: silentLogger(), TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){}}
-	g.tunnelServer = &http.Server{Handler: g, ReadHeaderTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20, ErrorLog: silentLogger(), TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
+	g.server = &http.Server{Handler: bugreport.Handler(g), ReadHeaderTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20, ErrorLog: silentLogger(), TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){}}
+	g.tunnelServer = &http.Server{Handler: bugreport.Handler(g), ReadHeaderTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20, ErrorLog: silentLogger(), TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			if tc, ok := c.(*tunnelConn); ok {
 				return context.WithValue(ctx, tunnelKey, &tunnelInfo{host: tc.host, sni: tc.Conn.(*tls.Conn).ConnectionState().ServerName})
@@ -807,6 +809,12 @@ func (f *flow) guardRequest() bool {
 		}
 		var git *GitInspection
 		if host == "github.com" && GitRouteFor(f.method, f.path) != nil {
+			// git gzips larger RPC bodies; inspection and the upstream
+			// request both see the inflated form.
+			filtered, f.body, err = GitDecodeBody(filtered, f.body, requestInspectionLimit)
+			if err != nil {
+				return fail(valueErr(err.Error()))
+			}
 			git, err = GitInspect(f.method, f.path, filtered, f.body)
 			if err != nil {
 				return fail(valueErr(err.Error()))

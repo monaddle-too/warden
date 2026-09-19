@@ -188,6 +188,34 @@ describe("chat export", () => {
     );
     expect(md).toContain("````\n```js\nx\n```\n````\n");
   });
+  it("quotes the model's thinking as a step, left out with the steps", () => {
+    const thought = {
+      ...chat,
+      conversation: {
+        entries: [
+          entry({ role: "thinking", text: "**Plan**\n\nRead, then test." }),
+          entry({ id: "m", text: "Done." }),
+        ],
+      },
+    };
+    const md = exportMarkdown(
+      thought,
+      { format: "markdown", activity: true },
+      at,
+      time,
+    );
+    expect(md).toContain(
+      "### Thinking\n\n> **Plan**\n> \n> Read, then test.\n",
+    );
+    expect(
+      exportMarkdown(
+        thought,
+        { format: "markdown", activity: false },
+        at,
+        time,
+      ),
+    ).not.toContain("Thinking");
+  });
   it("exports JSON with the chat's records under a named format", () => {
     const parsed = JSON.parse(
       exportJSON(chat, { format: "json", activity: false }, at),
@@ -231,6 +259,132 @@ describe("chat export", () => {
     expect(
       exportMarkdown(bare, { format: "markdown", activity: false }, at, time),
     ).not.toContain("_Turn:");
+  });
+  it("nests a subagent's work under its card and keeps the person's commands", () => {
+    const nested = {
+      ...chat,
+      conversation: {
+        entries: [
+          entry({ id: "u", role: "user", text: "Look" }),
+          entry({
+            id: "agent",
+            role: "activity",
+            text: "Agent: look around (Explore)",
+            detail: "It is in lex.go.",
+            tool: { kind: "task", name: "Agent", status: "completed" },
+          }),
+          entry({
+            id: "grep",
+            role: "activity",
+            text: 'Grep "tokenizer" in .',
+            detail: "lex.go:12\n",
+            parentID: "agent",
+            tool: { kind: "search", name: "Grep", status: "completed" },
+          }),
+          entry({
+            id: "inner",
+            role: "activity",
+            text: "Agent: dig (Plan)",
+            parentID: "agent",
+            tool: { kind: "task", name: "Agent", status: "completed" },
+          }),
+          entry({
+            id: "deep",
+            role: "activity",
+            text: "Read lex.go",
+            detail: "```\nx\n```",
+            parentID: "inner",
+            tool: { kind: "read", name: "Read", status: "completed" },
+          }),
+          entry({
+            id: "said",
+            role: "assistant",
+            text: "Found it.",
+            parentID: "agent",
+          }),
+          entry({ id: "r", role: "assistant", text: "It is in lex.go." }),
+          entry({
+            id: "mine",
+            role: "activity",
+            text: "git status",
+            detail: "clean\n",
+            sender: { principalID: "owner" },
+            tool: { kind: "command", name: "Bash", status: "completed" },
+          }),
+        ],
+      },
+    };
+    expect(
+      exportEntries(nested.conversation.entries, true).map((e) => e.id),
+    ).toEqual(["u", "agent", "grep", "inner", "deep", "said", "r", "mine"]);
+    // The card left out takes its subagent's work with it; the person's
+    // command stays.
+    expect(
+      exportEntries(nested.conversation.entries, false).map((e) => e.id),
+    ).toEqual(["u", "r", "mine"]);
+    const md = exportMarkdown(
+      nested,
+      { format: "markdown", activity: true },
+      at,
+      time,
+    );
+    expect(md).toContain(
+      [
+        "### Activity — Agent: look around (Explore)",
+        "",
+        '> ### Activity — Grep "tokenizer" in .',
+        ">",
+        "> ```",
+        "> lex.go:12",
+        "> ```",
+        ">",
+        "> ### Activity — Agent: dig (Plan)",
+        ">",
+        "> > ### Activity — Read lex.go",
+        "> >",
+        "> > ````",
+        "> > ```",
+        "> > x",
+        "> > ```",
+        "> > ````",
+        "> >",
+        ">",
+        "> ## Claude — T1789000000",
+        ">",
+        "> Found it.",
+        ">",
+        "",
+        "```",
+        "It is in lex.go.",
+        "```",
+        "",
+        "## Claude — T1789000000",
+      ].join("\n"),
+    );
+    expect(md).toContain(
+      "### Command by You — git status\n\n```\nclean\n```\n",
+    );
+    expect(
+      exportMarkdown(nested, { format: "markdown", activity: false }, at, time),
+    ).toContain("### Command by You — git status");
+    const parsed = JSON.parse(
+      exportJSON(nested, { format: "json", activity: true }, at),
+    );
+    expect(
+      parsed.entries.map((e: Entry & { children?: Entry[] }) => [
+        e.id,
+        e.children?.map((c) => c.id),
+      ]),
+    ).toEqual([
+      ["u", undefined],
+      ["agent", ["grep", "inner", "said"]],
+      ["r", undefined],
+      ["mine", undefined],
+    ]);
+    expect(
+      parsed.entries[1].children[1].children.map((e: Entry) => e.id),
+    ).toEqual(["deep"]);
+    expect(parsed.entries[1].children[0].parentID).toBe("agent");
   });
   it("names the file after the title, the time and the format", () => {
     const local = new Date(2026, 8, 17, 9, 7);

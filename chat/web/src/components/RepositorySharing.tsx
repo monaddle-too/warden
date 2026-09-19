@@ -8,6 +8,7 @@ import {
 } from "react";
 import { GitFork } from "lucide-react";
 import { api } from "../api";
+import { GitHubSignIn } from "./GitHubSignIn";
 
 type Repo = {
   id: number;
@@ -27,22 +28,31 @@ const CATEGORIES: { id: string; label: string; hint: string }[] = [
   { id: "pull_requests", label: "Pull requests", hint: "PRs, files, reviews" },
 ];
 const ALL = CATEGORIES.map((c) => c.id);
-type GitHubStatus = { configured?: boolean; appSlug?: string };
+type GitHubStatus = {
+  configured?: boolean;
+  appSlug?: string;
+  mode?: string;
+  connected?: boolean;
+};
 export type RepositorySharingHandle = { open: () => void };
 export function RepositorySharing({
   ref,
   chatID,
   trigger,
+  admin,
 }: {
   ref?: Ref<RepositorySharingHandle>;
   chatID?: string;
   trigger?: ((open: () => void) => ReactNode) | null;
+  // The owner can refresh the GitHub sign-in from here when it has lapsed.
+  admin?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState(false);
   // providers.github decides whether the repository section exists at all
   // and which GitHub App (if any) the installation link points at.
   const [github, setGitHub] = useState<GitHubStatus>({});
+  const [statusTick, setStatusTick] = useState(0);
   useEffect(() => {
     let active = true;
     api<{ github?: GitHubStatus }>("sharing/status")
@@ -55,7 +65,7 @@ export function RepositorySharing({
     return () => {
       active = false;
     };
-  }, []);
+  }, [statusTick]);
   const [repos, setRepos] = useState<Repo[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   // name -> chosen read categories (every category unless changed)
@@ -125,6 +135,9 @@ export function RepositorySharing({
         ),
       });
       setOpen(false);
+      // The workspace panel lists the shares; refresh it now rather than
+      // on its next poll.
+      window.dispatchEvent(new Event("warden-refresh-state"));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -191,6 +204,19 @@ export function RepositorySharing({
               {error}
             </p>
           )}
+          {admin &&
+            github.mode === "user" &&
+            (!github.connected ||
+              error.includes("Refresh the GitHub sign-in")) && (
+              <GitHubSignIn
+                connected={!!github.connected}
+                disabled={busy}
+                onSignedIn={() => {
+                  setStatusTick((n) => n + 1);
+                  void load();
+                }}
+              />
+            )}
           <label>
             Find a repository
             <input

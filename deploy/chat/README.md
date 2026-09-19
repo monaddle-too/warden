@@ -44,8 +44,8 @@ Mac; the OVH workspace starts with its own sandbox identities and state.
 The OVH configuration limits resident Warden environments to two (1 CPU,
 1536 MiB per environment) to fit alongside existing services. Demo pages use
 plain HTML/CSS and Python's HTTP server, without dependency-heavy builds. Chats can share
-an environment; idle environments stop after 15 minutes unless they have an
-available published preview. The runner holds a credential-free SBX exec session
+an environment; idle environments stop 30 minutes after their last chat
+activity unless they have an available published preview. The runner holds a credential-free SBX exec session
 for each resident environment, preventing SBX's independent 30-second auto-stop
 after agent disconnect. Warden releases this session on stop or shutdown.
 Published previews keep their sandbox running until

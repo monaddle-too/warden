@@ -37,10 +37,10 @@ func TestTwoChatsRunConcurrentlyAndSharedSandboxWaits(t *testing.T) {
 	}
 	w := &multiChatWorker{workers: map[string]*fakeWorker{}}
 	e := NewEngine(s, w)
-	a, _ := e.Create("A", "", "")
-	b, _ := e.Create("B", "", "")
+	a, _ := e.Create("A", "", "", nil)
+	b, _ := e.Create("B", "", "", nil)
 	shared := s.Snapshot().chat(a).SandboxID
-	c, _ := e.Create("C", shared, "")
+	c, _ := e.Create("C", shared, "", nil)
 	for _, id := range []string{a, b, c} {
 		if err = e.Message(id, "hello", cv.ID()); err != nil {
 			t.Fatal(err)

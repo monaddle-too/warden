@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,9 @@ type Driver struct {
 	cache   clusterCache
 	// exec retries and waits are shortened by tests.
 	execRetry time.Duration
+	// resizeWait bounds how long a resize waits for the kubelet to apply
+	// it before it counts as infeasible.
+	resizeWait time.Duration
 }
 
 // runtime is the driver's view of one guest.
@@ -75,7 +79,7 @@ func New(client *kube.Client, opts Options) (*Driver, error) {
 	if m := opts.memoryMB(); m < 512 || m > 16384 {
 		return nil, errors.New("sandbox memory must be 512–16384 MiB")
 	}
-	return &Driver{client: client, opts: opts, runtimes: map[string]*runtime{}, execRetry: 500 * time.Millisecond}, nil
+	return &Driver{client: client, opts: opts, runtimes: map[string]*runtime{}, execRetry: 500 * time.Millisecond, resizeWait: resizeWait}, nil
 }
 
 // Runtime reports what the driver knows about a guest.
@@ -194,7 +198,7 @@ func (d *Driver) ensureRunning(ctx context.Context, spec sandbox.RuntimeSpec) er
 		workspace = WorkspaceClone
 	}
 	sandbox.Report(ctx, "creating the sandbox pod")
-	pod, err := d.ensurePod(ctx, spec, workspace)
+	pod, err := d.ensurePod(ctx, spec, workspace, claim.Spec.VolumeName != "" || claim.Status.Phase == "Bound")
 	if err != nil {
 		return err
 	}
@@ -268,7 +272,7 @@ func (d *Driver) ensureClaim(ctx context.Context, spec sandbox.RuntimeSpec) (*ku
 // ensurePod returns the runtime's pod, creating it when missing. An
 // existing pod must carry this driver's labels; one being deleted is
 // waited out and replaced.
-func (d *Driver) ensurePod(ctx context.Context, spec sandbox.RuntimeSpec, workspace string) (*kube.Pod, error) {
+func (d *Driver) ensurePod(ctx context.Context, spec sandbox.RuntimeSpec, workspace string, bound bool) (*kube.Pod, error) {
 	var pod kube.Pod
 	err := d.client.Get(ctx, kube.Pods, d.opts.Namespace, spec.Name, &pod)
 	if err == nil && pod.Metadata.DeletionTimestamp != nil {
@@ -286,7 +290,7 @@ func (d *Driver) ensurePod(ctx context.Context, spec sandbox.RuntimeSpec, worksp
 	if !kube.IsNotFound(err) {
 		return nil, fmt.Errorf("sandbox %s: pod: %w", spec.Name, err)
 	}
-	desired := PodSpec(d.opts, spec.Name, spec.SandboxID, spec.Generation, spec.Spare, workspace)
+	desired := PodSpec(d.opts, spec, workspace, bound)
 	err = d.client.Create(ctx, kube.Pods, d.opts.Namespace, desired, &pod)
 	if kube.IsAlreadyExists(err) {
 		err = d.client.Get(ctx, kube.Pods, d.opts.Namespace, spec.Name, &pod)
@@ -303,7 +307,47 @@ func (d *Driver) ensurePod(ctx context.Context, spec sandbox.RuntimeSpec, worksp
 // volume wait lasts until ctx ends and reports the last condition seen.
 func (d *Driver) awaitRunning(ctx context.Context, name, uid string) (*kube.Pod, error) {
 	last := ""
+	// The pod object stands still while it waits for a node or an image;
+	// its events do not. A ticker re-reports the detail with the latest
+	// event's word (a node being added, none available, the pull) until
+	// the pod runs.
+	ctx, stopEvents := context.WithCancel(ctx)
+	defer stopEvents()
+	var waiting struct {
+		sync.Mutex
+		pod    *kube.Pod
+		events []sandbox.Event
+	}
+	go func() {
+		ticker := time.NewTicker(eventPoll)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			waiting.Lock()
+			pod := waiting.pod
+			waiting.Unlock()
+			if pod == nil || pod.Metadata.UID == "" {
+				continue
+			}
+			events, err := d.podEvents(ctx, d.opts.Namespace, pod.Metadata.UID)
+			if err != nil || ctx.Err() != nil {
+				continue
+			}
+			waiting.Lock()
+			waiting.events = events
+			waiting.Unlock()
+			sandbox.Report(ctx, startupDetailWithEvents(pod, events))
+		}
+	}()
 	pod, err := d.awaitPod(ctx, name, func(pod *kube.Pod, event kube.EventType) (bool, error) {
+		waiting.Lock()
+		waiting.pod = pod
+		events := waiting.events
+		waiting.Unlock()
 		if event == kube.Deleted || pod == nil {
 			return true, fmt.Errorf("sandbox %s: pod disappeared before it ran", name)
 		}
@@ -339,13 +383,95 @@ func (d *Driver) awaitRunning(ctx context.Context, name, uid string) (*kube.Pod,
 				last = c.Reason + ": " + c.Message
 			}
 		}
-		sandbox.Report(ctx, StartupDetail(pod))
+		sandbox.Report(ctx, startupDetailWithEvents(pod, events))
 		return false, nil
 	})
 	if err != nil && errors.Is(err, ctx.Err()) && last != "" {
 		return nil, fmt.Errorf("sandbox %s: pod did not start (%s): %w", name, strings.TrimSpace(last), err)
 	}
 	return pod, err
+}
+
+// SchedulerVerdict is the scheduler's Unschedulable message in the owner's
+// words. The scheduler writes "0/5 nodes are available: 2 Insufficient
+// cpu, 2 Insufficient memory, 3 node(s) didn't match Pod's node
+// affinity/selector. no new claims to deallocate, preemption: …" — a
+// per-node tally of filter failures followed by its preemption reasoning,
+// which read to the owner like a capacity outage when they mean "no node
+// fits yet". The verdict keeps the first sentence's tally, names each
+// reason as what it is for a sandbox pod (a node full or shrunk under a
+// managed cluster's balloon pod, a node without the sandbox runtime or
+// outside the pinned zone, a node in another zone than the workspace's
+// disk, a node still starting), and drops the preemption clause. On an
+// autoscaled cluster this is the moment a node is being added. A tally
+// the verdict does not know is kept verbatim, and a message that is not a
+// tally is returned as its first sentence.
+func SchedulerVerdict(message string) string {
+	message = strings.TrimSpace(message)
+	first, _, _ := strings.Cut(message, ". ")
+	first = strings.TrimSuffix(first, ".")
+	if first == "" {
+		return ""
+	}
+	head, tally, ok := strings.Cut(first, " nodes are available: ")
+	if !ok || !strings.HasPrefix(head, "0/") {
+		if strings.HasPrefix(head, "no nodes available") {
+			return "the cluster has no nodes"
+		}
+		return first
+	}
+	total := strings.TrimPrefix(head, "0/")
+	if total == "0" {
+		return "the cluster has no nodes"
+	}
+	var full, other, unknown []string
+	fullCount := 0
+	for _, item := range strings.Split(tally, ", ") {
+		if strings.HasPrefix(item, "pod has unbound immediate PersistentVolumeClaims") {
+			other = append(other, "the workspace's disk is not ready")
+			continue
+		}
+		count, reason, _ := strings.Cut(item, " ")
+		n, err := strconv.Atoi(count)
+		if err != nil {
+			unknown = append(unknown, item)
+			continue
+		}
+		switch {
+		case strings.HasPrefix(reason, "Insufficient ") || reason == "Too many pods":
+			// The same node counts once per resource it lacks.
+			if n > fullCount {
+				fullCount = n
+			}
+			full = append(full, strings.TrimPrefix(reason, "Insufficient "))
+		case strings.HasPrefix(reason, "node(s) didn't match Pod's node affinity/selector"):
+			other = append(other, count+" not for sandboxes")
+		case strings.Contains(reason, "PersistentVolume's node affinity") || strings.Contains(reason, "volume node affinity conflict"):
+			other = append(other, count+" in another zone than the workspace's disk")
+		case strings.HasPrefix(reason, "node(s) had untolerated taint") || strings.HasPrefix(reason, "node(s) had taint"):
+			other = append(other, count+" still starting or reserved")
+		case strings.HasPrefix(reason, "node(s) were unschedulable"):
+			other = append(other, count+" cordoned")
+		case strings.HasPrefix(reason, "node(s) were not ready"):
+			other = append(other, count+" not ready")
+		default:
+			unknown = append(unknown, item)
+		}
+	}
+	var parts []string
+	if fullCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d full (%s)", fullCount, strings.Join(full, ", ")))
+	}
+	parts = append(parts, other...)
+	parts = append(parts, unknown...)
+	verdict := "none of the " + total + " nodes can take the sandbox"
+	if total == "1" {
+		verdict = "the cluster's only node cannot take the sandbox"
+	}
+	if len(parts) > 0 {
+		verdict += ": " + strings.Join(parts, ", ")
+	}
+	return verdict
 }
 
 // StartupDetail says, in the owner's words, what a pod that is not yet
@@ -366,10 +492,8 @@ func StartupDetail(pod *kube.Pod) string {
 		if c.Type == "PodScheduled" {
 			scheduled = c.Status == "True"
 			if !scheduled {
-				// The scheduler's first sentence says what is missing; the
-				// rest is its preemption reasoning.
-				if message, _, _ := strings.Cut(strings.TrimSpace(c.Message), ". "); message != "" {
-					return "waiting for a node: " + strings.TrimSuffix(message, ".")
+				if verdict := SchedulerVerdict(c.Message); verdict != "" {
+					return "waiting for a node: " + verdict
 				}
 				return "waiting for a node"
 			}
@@ -473,6 +597,14 @@ func (d *Driver) watchPod(ctx context.Context, name string, done func(*kube.Pod,
 				if ctx.Err() != nil {
 					return nil, true, ctx.Err()
 				}
+				if !isStatus(ev.Err) {
+					// The stream itself broke (the API server's front end
+					// resets long watches; a pod on Autopilot can wait
+					// minutes for its node): list and watch again.
+					log.Printf("sandbox %s: pod watch interrupted (%v); watching again", name, ev.Err)
+					sleep(ctx, watchRetry)
+					return nil, false, nil
+				}
 				return nil, true, ev.Err
 			}
 			var pod kube.Pod
@@ -488,6 +620,36 @@ func (d *Driver) watchPod(ctx context.Context, name string, done func(*kube.Pod,
 		}
 		return nil, false, nil
 	}
+}
+
+// watchRetry is the pause before a broken pod watch is reopened;
+// eventPoll is how often a waiting pod's events are read for the detail.
+const (
+	watchRetry = time.Second
+	eventPoll  = 10 * time.Second
+)
+
+// startupDetailWithEvents is StartupDetail with the newest event's word
+// appended when it says more: "waiting for a node: 0/2 nodes are
+// available … · a node is being added". Events older than the pod are
+// its predecessor's and ignored; a hint that repeats the detail is not
+// added twice.
+func startupDetailWithEvents(pod *kube.Pod, events []sandbox.Event) string {
+	detail := StartupDetail(pod)
+	for _, e := range events {
+		if pod.Metadata.CreationTimestamp != nil && e.At.Before(*pod.Metadata.CreationTimestamp) {
+			continue
+		}
+		add := eventDetail(e)
+		if add == "" || add == detail || strings.Contains(detail, add) {
+			continue
+		}
+		if detail == "" {
+			return add
+		}
+		return detail + " · " + add
+	}
+	return detail
 }
 
 // awaitGone waits for a pod or claim to be deleted.
@@ -620,6 +782,135 @@ func (d *Driver) Stop(ctx context.Context, name string) error {
 	return nil
 }
 
+// Resize gives the running pod a new size in place through pods/resize
+// (Kubernetes 1.33+) and waits until the kubelet reports the container
+// running at it; the pod is never replaced here, so restarted is always
+// false. A stopped runtime has no pod: the size takes effect through the
+// spec of its next Prepare, and this returns at once. A resize the
+// cluster refuses or cannot apply (an infeasible or deferred one, a
+// cluster without the subresource) is sandbox.ErrResizeInfeasible, and
+// the worker replaces the pod when nothing runs on it.
+func (d *Driver) Resize(ctx context.Context, name string, r sandbox.Resources) (bool, error) {
+	if err := validName(name); err != nil {
+		return false, err
+	}
+	if r.CPUMilli <= 0 || r.MemoryMB <= 0 {
+		return false, errors.New("resize needs a whole size")
+	}
+	var pod kube.Pod
+	err := d.client.Get(ctx, kube.Pods, d.opts.Namespace, name, &pod)
+	if kube.IsNotFound(err) || (err == nil && pod.Metadata.DeletionTimestamp != nil) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("sandbox %s: resize: %w", name, err)
+	}
+	if pod.Metadata.Labels[LabelSandbox] != name || pod.Metadata.Labels[LabelManagedBy] != ManagedBy {
+		return false, fmt.Errorf("sandbox %s: an unmanaged pod holds its name", name)
+	}
+	if runningAt(&pod, r) {
+		return false, nil
+	}
+	previous := sandbox.Resources{}
+	for _, c := range pod.Spec.Containers {
+		if c.Name == ContainerName {
+			cpu, _ := kube.Milli(c.Resources.Limits["cpu"])
+			memory, _ := kube.Bytes(c.Resources.Limits["memory"])
+			previous = sandbox.Resources{CPUMilli: int(cpu), MemoryMB: int(memory >> 20)}
+		}
+	}
+	if err = d.client.StrategicPatch(ctx, kube.PodsResize, d.opts.Namespace, name, ResizePatch(r), &pod); err != nil {
+		if isStatus(err) {
+			return false, fmt.Errorf("%w: %v", sandbox.ErrResizeInfeasible, err)
+		}
+		return false, fmt.Errorf("sandbox %s: resize: %w", name, err)
+	}
+	// A resize the kubelet defers (no room on the node now) is not going
+	// to be waited for: a managed cluster does not grow a node for it, and
+	// the worker holds its registry meanwhile. The bound is the driver's,
+	// under the caller's context.
+	waitCtx, cancel := context.WithTimeout(ctx, d.resizeWait)
+	defer cancel()
+	uid := pod.Metadata.UID
+	// The conditions an earlier attempt left (Infeasible, the runtime's
+	// error) are still on the pod when the watch starts; only a status
+	// the kubelet writes after this patch says anything about it.
+	first := true
+	_, err = d.awaitPod(waitCtx, name, func(pod *kube.Pod, event kube.EventType) (bool, error) {
+		if event == kube.Deleted || pod == nil || pod.Metadata.UID != uid || pod.Metadata.DeletionTimestamp != nil {
+			return true, fmt.Errorf("sandbox %s: pod went away during the resize", name)
+		}
+		if runningAt(pod, r) {
+			return true, nil
+		}
+		stale := first
+		first = false
+		if stale {
+			return false, nil
+		}
+		return false, resizeFailed(pod)
+	})
+	if err != nil && errors.Is(err, waitCtx.Err()) {
+		err = fmt.Errorf("%w: not applied within %s (deferred by the kubelet)", sandbox.ErrResizeInfeasible, d.resizeWait)
+	}
+	if errors.Is(err, sandbox.ErrResizeInfeasible) && previous.CPUMilli > 0 && previous.MemoryMB > 0 {
+		// Put the spec back so a pod that stays (under a run) does not
+		// carry a size it never got; best effort, the caller's answer is
+		// the same either way.
+		revertCtx, done := context.WithTimeout(context.Background(), 10*time.Second)
+		if revertErr := d.client.StrategicPatch(revertCtx, kube.PodsResize, d.opts.Namespace, name, ResizePatch(previous), nil); revertErr != nil {
+			log.Printf("sandbox %s: resize to %s not applied and not reverted to %s: %v", name, r, previous, revertErr)
+		}
+		done()
+	}
+	if err != nil {
+		return false, err
+	}
+	log.Printf("sandbox %s: pod %s resized to %s", name, uid, r)
+	return false, nil
+}
+
+// resizeWait is how long a resize may stay deferred or in progress before
+// the driver gives up on the running pod: a kubelet that has the room
+// applies one within seconds.
+const resizeWait = 15 * time.Second
+
+// runningAt reports whether the kubelet runs the guest container at r
+// (status.containerStatuses[].resources, 1.33+), whatever the resize
+// conditions say.
+func runningAt(pod *kube.Pod, r sandbox.Resources) bool {
+	for _, c := range pod.Status.ContainerStatuses {
+		if c.Name != ContainerName || c.Resources == nil {
+			continue
+		}
+		cpu, errCPU := kube.Milli(c.Resources.Limits["cpu"])
+		memory, errMemory := kube.Bytes(c.Resources.Limits["memory"])
+		if errCPU == nil && errMemory == nil && cpu == int64(r.CPUMilli) && memory == int64(r.MemoryMB)<<20 {
+			return true
+		}
+	}
+	return false
+}
+
+// resizeFailed is the resize condition that will never clear on its own:
+// infeasible (the node cannot ever fit it) or the runtime's error (GKE
+// Sandbox's gVisor: not implemented). Pending (deferred) and in progress
+// are nil: still worth waiting for.
+func resizeFailed(pod *kube.Pod) error {
+	for _, c := range pod.Status.Conditions {
+		if c.Status != "True" {
+			continue
+		}
+		switch {
+		case c.Type == "PodResizePending" && c.Reason == "Infeasible":
+			return fmt.Errorf("%w: %s", sandbox.ErrResizeInfeasible, strings.TrimSpace(c.Reason+" "+c.Message))
+		case c.Type == "PodResizeInProgress" && c.Reason == "Error":
+			return fmt.Errorf("%w: %s", sandbox.ErrResizeInfeasible, strings.TrimSpace(c.Message))
+		}
+	}
+	return nil
+}
+
 // Remove stops the runtime and deletes its workspace claim.
 func (d *Driver) Remove(ctx context.Context, name string) error {
 	if err := d.Stop(ctx, name); err != nil {
@@ -685,6 +976,38 @@ func (d *Driver) Unpublish(_ context.Context, name string, m sandbox.PortMapping
 	return nil
 }
 
+// Resident says whether the runtime's pod is still the one this driver
+// started (sandbox.ResidencyChecker): a spare pod carries a low priority
+// and a sandbox pod may preempt it, after which the pod is gone or
+// terminating while the worker still lists the spare.
+func (d *Driver) Resident(ctx context.Context, name string) (bool, error) {
+	d.mu.Lock()
+	rt := d.runtimes[name]
+	uid := ""
+	if rt != nil {
+		uid = rt.podUID
+	}
+	d.mu.Unlock()
+	if uid == "" {
+		return false, nil
+	}
+	var pod kube.Pod
+	if err := d.client.Get(ctx, kube.Pods, d.opts.Namespace, name, &pod); err != nil {
+		if kube.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("sandbox %s: pod: %w", name, err)
+	}
+	if pod.Metadata.UID != uid || pod.Metadata.DeletionTimestamp != nil {
+		return false, nil
+	}
+	switch pod.Status.Phase {
+	case "Failed", "Succeeded":
+		return false, nil
+	}
+	return true, nil
+}
+
 // Mappings returns the recorded publications once the pod is confirmed to
 // be the one they were made on (its UID); a replaced or missing pod is an
 // error, since its publications would name a different guest.
@@ -713,37 +1036,63 @@ func (d *Driver) Mappings(ctx context.Context, name string) ([]sandbox.PortMappi
 	return append(out, rt.publications...), nil
 }
 
-// Reconcile is the startup pass: no sandbox pod is legitimately running
-// when the worker starts (it has just stopped every registered sandbox and
-// removed every registered spare), so every pod under this driver's labels
-// is deleted; a workspace claim not registered is deleted when it was a
-// spare's and kept, with a log line, otherwise.
-func (d *Driver) Reconcile(ctx context.Context, registered []string) error {
-	keep := make(map[string]bool, len(registered))
-	for _, name := range registered {
-		keep[name] = true
+// Reconcile is the startup pass. A pod under this driver's labels whose
+// sandbox the worker registered as resident, at the generation the pod's
+// annotation names, and which is running with an address, survived the
+// worker's restart: the driver rebuilds its view of it (the claim and pod
+// UIDs, the address, the workspace provenance; publications are the
+// worker's to restore) and reports its name, so the worker keeps the
+// sandbox running instead of stopping it. Every other pod is stale and is
+// deleted (a terminating one is left to finish); a workspace claim not
+// registered is deleted when it was a spare's and kept, with a log line,
+// otherwise.
+func (d *Driver) Reconcile(ctx context.Context, registered []sandbox.RegisteredRuntime) ([]string, error) {
+	keep := make(map[string]sandbox.RegisteredRuntime, len(registered))
+	for _, r := range registered {
+		keep[r.Name] = r
 	}
 	var pods kube.List[kube.Pod]
 	if err := d.client.List(ctx, kube.Pods, d.opts.Namespace, kube.ListOptions{LabelSelector: selector()}, &pods); err != nil {
-		return fmt.Errorf("list sandbox pods: %w", err)
+		return nil, fmt.Errorf("list sandbox pods: %w", err)
 	}
-	for _, pod := range pods.Items {
+	var resident []string
+	for i := range pods.Items {
+		pod := &pods.Items[i]
 		if pod.Metadata.DeletionTimestamp != nil {
 			continue
 		}
-		err := d.client.Delete(ctx, kube.Pods, d.opts.Namespace, pod.Metadata.Name, kube.DeleteOptions{GracePeriodSeconds: kube.Int64(StopGraceSeconds), UID: pod.Metadata.UID})
-		if err != nil && !kube.IsNotFound(err) && !kube.IsConflict(err) {
-			return fmt.Errorf("delete stale sandbox pod %s: %w", pod.Metadata.Name, err)
+		name := pod.Metadata.Name
+		r, registered := keep[name]
+		if registered && r.Resident && r.Generation != "" && pod.Metadata.Annotations[AnnotationGeneration] == r.Generation && pod.Metadata.Labels[LabelSandbox] == name && pod.Status.Phase == "Running" && pod.Status.PodIP != "" {
+			var claim kube.PersistentVolumeClaim
+			err := d.client.Get(ctx, kube.PersistentVolumeClaims, d.opts.Namespace, name, &claim)
+			if err != nil && !kube.IsNotFound(err) {
+				return nil, fmt.Errorf("sandbox %s: workspace claim: %w", name, err)
+			}
+			if err == nil && claim.Metadata.DeletionTimestamp == nil {
+				rt := d.record(name)
+				d.mu.Lock()
+				rt.claimUID, rt.podUID, rt.podIP, rt.generation = claim.Metadata.UID, pod.Metadata.UID, pod.Status.PodIP, r.Generation
+				rt.workspace, rt.publications = pod.Metadata.Annotations[AnnotationWorkspace], nil
+				d.mu.Unlock()
+				resident = append(resident, name)
+				log.Printf("sandbox %s: pod %s kept across the restart, running at %s (claim %s, generation %s)", name, pod.Metadata.UID, pod.Status.PodIP, claim.Metadata.UID, r.Generation)
+				continue
+			}
 		}
-		log.Printf("sandbox %s: stale pod %s deleted at startup (registered=%v)", pod.Metadata.Name, pod.Metadata.UID, keep[pod.Metadata.Name])
+		err := d.client.Delete(ctx, kube.Pods, d.opts.Namespace, name, kube.DeleteOptions{GracePeriodSeconds: kube.Int64(StopGraceSeconds), UID: pod.Metadata.UID})
+		if err != nil && !kube.IsNotFound(err) && !kube.IsConflict(err) {
+			return nil, fmt.Errorf("delete stale sandbox pod %s: %w", name, err)
+		}
+		log.Printf("sandbox %s: stale pod %s deleted at startup (registered=%v resident=%v)", name, pod.Metadata.UID, registered, r.Resident)
 	}
 	var claims kube.List[kube.PersistentVolumeClaim]
 	if err := d.client.List(ctx, kube.PersistentVolumeClaims, d.opts.Namespace, kube.ListOptions{LabelSelector: selector()}, &claims); err != nil {
-		return fmt.Errorf("list workspace claims: %w", err)
+		return nil, fmt.Errorf("list workspace claims: %w", err)
 	}
 	for _, claim := range claims.Items {
 		name := claim.Metadata.Name
-		if keep[name] || claim.Metadata.DeletionTimestamp != nil {
+		if _, registered := keep[name]; registered || claim.Metadata.DeletionTimestamp != nil {
 			continue
 		}
 		if claim.Metadata.Labels[LabelSpare] != "true" {
@@ -752,11 +1101,11 @@ func (d *Driver) Reconcile(ctx context.Context, registered []string) error {
 		}
 		err := d.client.Delete(ctx, kube.PersistentVolumeClaims, d.opts.Namespace, name, kube.DeleteOptions{UID: claim.Metadata.UID})
 		if err != nil && !kube.IsNotFound(err) && !kube.IsConflict(err) {
-			return fmt.Errorf("delete stale spare claim %s: %w", name, err)
+			return nil, fmt.Errorf("delete stale spare claim %s: %w", name, err)
 		}
 		log.Printf("spare workspace claim %s deleted at startup", name)
 	}
-	return nil
+	return resident, nil
 }
 
 // awaitTrust blocks the first creation until the trust ConfigMap holds a

@@ -924,7 +924,7 @@ func (e *Engine) Authorize(request map[string]any) (map[string]any, error) {
 	case isGoogle && hasGoogleList && !stringList(e.Policy["allowed_google_documents"])[n.DocumentID]:
 		reason = "Google document outside the allowed documents"
 	case !(isFigma || isGoogle) && hasRepoList && !lowerList(e.Policy["allowed_repositories"])[strings.ToLower(n.Repository)]:
-		reason = "repository outside this project"
+		reason = "repository not shared with this workspace; an agent asks with request_repository_access"
 	case !isGit && (!(host == "api.github.com" || isFigma || isGoogle) || scheme != "https" || port != 443):
 		reason = "unsupported provider channel; use approved HTTPS REST or Git smart HTTP"
 	case e.GitHubApp != nil && !(isFigma || isGoogle) && githubOwnerMismatch(e.GitHubApp, n.Repository):

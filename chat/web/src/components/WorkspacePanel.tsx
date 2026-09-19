@@ -1,11 +1,41 @@
-import { useState } from "react";
-import { Archive, ExternalLink, History, Square, Trash2 } from "lucide-react";
-import type { AccessEvent, Chat, Environment, PodInfo, SandboxUsage } from "../types";
+import { useEffect, useState } from "react";
+import {
+  Archive,
+  ExternalLink,
+  History,
+  Play,
+  Square,
+  Trash2,
+} from "lucide-react";
+import type {
+  AccessEvent,
+  Chat,
+  Environment,
+  PodInfo,
+  ResourceLimits,
+  Resources,
+  SandboxUsage,
+  Startup,
+} from "../types";
 import { stageLabel } from "../stages";
+import { EventList } from "./Events";
 import { cpu, memory } from "../units";
 import { api } from "../api";
 import type { PullRequestProposal } from "./PullRequestReview";
+import { resourcesLabel } from "./Approvals";
+import { SizeSelect } from "./SizeSelect";
+import { sameSize } from "../sizes";
+import { NetworkSelect } from "./NetworkSelect";
+import {
+  effectiveNetwork,
+  networkTitle,
+  type InstallNetwork,
+  type NetworkMode,
+} from "../network";
 import type { DocumentProposal } from "./DocumentReview";
+import { MemorySection } from "./MemorySection";
+import { PermissionsSection } from "./PermissionsSection";
+import { chatSpend, spendLine, spendSummary, workspaceSpend } from "../spend";
 
 const remaining = (value: number | null) => {
   if (!value) return "";
@@ -63,8 +93,9 @@ const percent = (used: number, total: number) =>
 
 /* One row per resource: what is used of what was provisioned, with a bar.
    A stopped sandbox shows only the provisioned side; the disk size of a
-   stopped sandbox is unknown until it boots. */
-function Resources({ usage }: { usage: SandboxUsage }) {
+   stopped sandbox is unknown until it boots. The section around it holds
+   the owner's size change. */
+function UsageRows({ usage }: { usage: SandboxUsage }) {
   const rows: { name: string; value: string; percent: number | null }[] = [
     {
       name: "CPU",
@@ -95,28 +126,74 @@ function Resources({ usage }: { usage: SandboxUsage }) {
     },
   ];
   return (
+    <ul className="workspace-resources">
+      {rows.map((r) => (
+        <li key={r.name}>
+          <span>{r.name}</span>
+          <small>{r.value}</small>
+          <meter
+            min={0}
+            max={100}
+            value={r.percent ?? 0}
+            aria-label={`${r.name} used`}
+            className={r.percent == null ? "idle" : ""}
+          />
+        </li>
+      ))}
+    </ul>
+  );
+}
+/* The chat's start, explained: the stage, the runtime's whole detail
+   (the status line clamps it), how long the stage has taken, and the
+   pod's events under it when there is a pod — the autoscaler's answer to
+   a wait for a node lives there. */
+function Starting({
+  startup,
+  pod,
+  now,
+}: {
+  startup: Startup;
+  pod?: PodInfo | null;
+  now: number;
+}) {
+  const elapsed = Math.max(0, Math.floor(now / 1000 - startup.since));
+  const events = pod?.events ?? [];
+  return (
     <section className="workspace-section">
-      <h2>Resources</h2>
-      <ul className="workspace-resources">
-        {rows.map((r) => (
-          <li key={r.name}>
-            <span>{r.name}</span>
-            <small>{r.value}</small>
-            <meter
-              min={0}
-              max={100}
-              value={r.percent ?? 0}
-              aria-label={`${r.name} used`}
-              className={r.percent == null ? "idle" : ""}
-            />
-          </li>
-        ))}
-      </ul>
+      <h2>Starting</h2>
+      <div className="workspace-startup">
+        <strong>
+          {stageLabel(startup.stage)}
+          {elapsed >= 3 && (
+            <span className="muted"> · {elapsedLabel(elapsed)}</span>
+          )}
+        </strong>
+        {startup.detail && <p>{startup.detail}</p>}
+      </div>
+      {events.length > 0 && (
+        <>
+          <h3 className="workspace-subhead">Pod events</h3>
+          <EventList events={events} now={now} />
+        </>
+      )}
     </section>
   );
 }
-/* The sandbox pod on Kubernetes: where it runs and what it was given. */
-function Pod({ pod }: { pod: PodInfo }) {
+
+const elapsedLabel = (s: number) =>
+  s < 60 ? `${s} s` : `${Math.floor(s / 60)} m ${s % 60} s`;
+
+/* The sandbox pod on Kubernetes: where it runs and what it was given,
+   and its recent events unless the Starting section shows them. */
+function Pod({
+  pod,
+  now,
+  events = true,
+}: {
+  pod: PodInfo;
+  now: number;
+  events?: boolean;
+}) {
   const facts: [string, string][] = [
     ["Pod", `${pod.namespace}/${pod.name}`],
     ["Node", pod.node || "not scheduled yet"],
@@ -157,6 +234,12 @@ function Pod({ pod }: { pod: PodInfo }) {
           </div>
         ))}
       </dl>
+      {events && pod.events?.length > 0 && (
+        <>
+          <h3 className="workspace-subhead">Events</h3>
+          <EventList events={pod.events} now={now} limit={5} />
+        </>
+      )}
     </section>
   );
 }
@@ -178,11 +261,18 @@ export function WorkspacePanel({
   onOpenPullRequest,
   onOpenDocumentReview,
   onChanged,
+  onChanges,
+  limits,
+  owner = false,
 }: {
   chat: Chat;
   workspace?: Environment;
   siblings: Chat[];
   pullRequests: PullRequestProposal[];
+  // The runner's size offer; absent while the runner is unreachable.
+  limits?: ResourceLimits;
+  // The owner may change the workspace's network access.
+  owner?: boolean;
   documentReviews?: DocumentProposal[];
   onSelectChat: (id: string) => void;
   onShareDocuments: () => void;
@@ -190,12 +280,35 @@ export function WorkspacePanel({
   onOpenPullRequest: (id: string) => void;
   onOpenDocumentReview?: (id: string) => void;
   onChanged: () => void;
+  /* Opens the session diff: the workspace's changes since the chat began
+     (rewind.ts). */
+  onChanges?: () => void;
 }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [history, setHistory] = useState<AccessEvent[]>();
   const [historyError, setHistoryError] = useState("");
+  // The size being edited, or null when the row shows the current size.
+  const [sizing, setSizing] = useState<Resources | null>(null);
+  // The network access being edited (network.ts), or null when the row
+  // shows the current one; the install's setting is what "" means.
+  const [networking, setNetworking] = useState<NetworkMode | null>(null);
+  const [installNetwork, setInstallNetwork] = useState<InstallNetwork>();
+  useEffect(() => {
+    api<InstallNetwork>("sharing/egress").then(setInstallNetwork, () => {});
+  }, [chat.sandboxID]);
   const ws = workspace;
+  // The chat's start while it lasts: ticks each second for the elapsed
+  // time and the event ages.
+  const starting =
+    chat.startup && (chat.status === "running" || chat.status === "queued")
+      ? chat.startup
+      : undefined;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), starting ? 1000 : 5000);
+    return () => clearInterval(id);
+  }, [!!starting]);
   async function loadHistory() {
     if (!ws) return;
     setHistoryError("");
@@ -208,6 +321,8 @@ export function WorkspacePanel({
       setHistoryError(String(e));
     }
   }
+  // The workspace's spend: this chat and its siblings (spend.ts).
+  const total = workspaceSpend([chat, ...siblings], chat.sandboxID);
   const chats = ws?.chats ?? [
     {
       id: chat.id,
@@ -228,6 +343,13 @@ export function WorkspacePanel({
     ["running", "queued", "stopping"].includes(c.status),
   );
   const state = ws?.deleted ? "deleted" : ws?.runtime?.state || "";
+  // The workspace's own network access; "" follows the install.
+  const network: NetworkMode = ws?.network ?? chat.network ?? "";
+  // The size in force: the runner's record, else what the first chat asked
+  // for, else the runner's default.
+  const current: Resources = ws?.resources ??
+    chat.resources ??
+    limits?.default ?? { cpuMilli: 1000, memoryMB: 1536 };
   const documents = ws?.documents ?? [];
   const repositories = ws?.repositories ?? [];
   const ports = ws?.ports ?? [];
@@ -274,19 +396,42 @@ export function WorkspacePanel({
         </div>
         {!ws?.deleted && (
           <div className="workspace-actions">
-            <button
-              disabled={!!busy || running || !state || state === "stopped"}
-              onClick={() =>
-                void act("stop", `environments/${chat.sandboxID}/stop`)
-              }
-            >
-              <Square size={12} fill="currentColor" />
-              {busy === "stop" ? "Stopping…" : "Stop"}
-            </button>
+            {!running &&
+            (!state || state === "stopped" || state === "error") ? (
+              <button
+                disabled={!!busy || !ws?.runtime}
+                title={
+                  ws?.runtime
+                    ? "Start the workspace's sandbox now, so the next message starts at once"
+                    : "The first message creates the sandbox"
+                }
+                onClick={() =>
+                  void act("start", `environments/${chat.sandboxID}/start`)
+                }
+              >
+                <Play size={12} fill="currentColor" />
+                {busy === "start" ? "Starting…" : "Start"}
+              </button>
+            ) : (
+              <button
+                disabled={!!busy || state === "stopping"}
+                title={
+                  running
+                    ? "Stop the running chat and the workspace's sandbox; files are kept"
+                    : "Stop the workspace's sandbox; files are kept"
+                }
+                onClick={() =>
+                  void act("stop", `environments/${chat.sandboxID}/stop`)
+                }
+              >
+                <Square size={12} fill="currentColor" />
+                {busy === "stop" ? "Stopping…" : "Stop"}
+              </button>
+            )}
             {!ws?.archived && (
               <button
-                disabled={!!busy || running}
-                title="Stop the workspace and archive its chats; files are kept"
+                disabled={!!busy}
+                title="Stop the workspace (and any running chat) and archive its chats; files are kept"
                 onClick={() =>
                   void act("archive", `environments/${chat.sandboxID}/archive`)
                 }
@@ -298,6 +443,11 @@ export function WorkspacePanel({
             <button
               className="danger"
               disabled={!!busy || running}
+              title={
+                running
+                  ? "Stop the running chat first; deleting removes the workspace's files"
+                  : "Delete the workspace and its files"
+              }
               onClick={remove}
             >
               <Trash2 size={14} />
@@ -313,9 +463,12 @@ export function WorkspacePanel({
       )}
       {running && (
         <p className="workspace-note">
-          A chat is running here. Stop it before stopping or deleting the
-          workspace.
+          A chat is running here. Stop stops it too; delete needs it stopped
+          first.
         </p>
+      )}
+      {starting && !ws?.deleted && (
+        <Starting startup={starting} pod={ws?.pod} now={now} />
       )}
       {ws?.deleted && (
         <p className="workspace-note">
@@ -323,8 +476,184 @@ export function WorkspacePanel({
           resumed.
         </p>
       )}
-      {ws?.usage && !ws.deleted && <Resources usage={ws.usage} />}
-      {ws?.pod && !ws.deleted && <Pod pod={ws.pod} />}
+      {ws?.copiedFrom && (
+        <p className="workspace-note workspace-origin">
+          Copied from{" "}
+          <a
+            href={"?chat=" + encodeURIComponent(ws.copiedFrom.chatID)}
+            title="Open the chat this workspace was forked from"
+            onClick={(e) => {
+              e.preventDefault();
+              onSelectChat(ws.copiedFrom!.chatID);
+            }}
+          >
+            {ws.copiedFrom.name || "another workspace"}
+          </a>{" "}
+          at {when(ws.copiedFrom.at)}. Its files came along; shared documents,
+          repositories and network stay with the original until shared here.
+        </p>
+      )}
+      {!ws?.deleted && (limits || ws?.usage) && (
+        <section className="workspace-section">
+          <h2>
+            Resources
+            {limits && !sizing && (
+              <button
+                className="ghost"
+                disabled={!!busy || (!!ws?.resizing && !ws.resizing.done)}
+                title="Change the CPUs and memory this workspace gets"
+                onClick={() => setSizing(current)}
+              >
+                Change…
+              </button>
+            )}
+          </h2>
+          {ws?.resizing && !ws.resizing.done && (
+            <p className="muted">
+              Resizing to{" "}
+              {resourcesLabel(
+                ws.resizing.target.cpuMilli,
+                ws.resizing.target.memoryMB,
+              )}
+              … the sandbox is being replaced; a chat resumes on its next
+              message.
+            </p>
+          )}
+          {ws?.resizing?.error && (
+            <p role="alert" className="error">
+              Resize to{" "}
+              {resourcesLabel(
+                ws.resizing.target.cpuMilli,
+                ws.resizing.target.memoryMB,
+              )}{" "}
+              failed: {ws.resizing.error}
+            </p>
+          )}
+          {!sizing && ws?.usage && <UsageRows usage={ws.usage} />}
+          {!sizing && !ws?.usage && (
+            <p>
+              {resourcesLabel(current.cpuMilli, current.memoryMB)}
+              {limits && sameSize(current, limits.default) && (
+                <span className="muted"> · default</span>
+              )}
+            </p>
+          )}
+          {sizing && limits && (
+            <form
+              className="size-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void act("resize", `environments/${chat.sandboxID}/resize`, {
+                  resources: sizing,
+                }).then(() => setSizing(null));
+              }}
+            >
+              <SizeSelect
+                limits={limits}
+                value={sizing}
+                onChange={setSizing}
+                disabled={busy === "resize"}
+              />
+              <p className="muted">
+                {limits.restart
+                  ? "The sandbox is recreated at the new size; files are kept."
+                  : "Applied in place where the cluster allows it, otherwise the sandbox restarts at the new size; files are kept."}{" "}
+                {running &&
+                  (limits.restart
+                    ? "The running chat is stopped first. "
+                    : "A restart stops the running chat first. ")}
+                Up to {resourcesLabel(limits.max.cpuMilli, limits.max.memoryMB)}
+                .
+              </p>
+              <div className="button-row">
+                <button
+                  type="button"
+                  onClick={() => setSizing(null)}
+                  disabled={busy === "resize"}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="primary"
+                  disabled={busy === "resize" || sameSize(sizing, current)}
+                >
+                  {busy === "resize" ? "Resizing…" : "Resize"}
+                </button>
+              </div>
+            </form>
+          )}
+        </section>
+      )}
+      {!ws?.deleted && (
+        <section className="workspace-section">
+          <h2>
+            Network access
+            {owner && networking === null && (
+              <button
+                className="ghost"
+                disabled={!!busy}
+                title="Choose what this workspace's sandbox may reach"
+                onClick={() => setNetworking(network)}
+              >
+                Change…
+              </button>
+            )}
+          </h2>
+          {networking === null && (
+            <p>
+              {effectiveNetwork(network, installNetwork)
+                ? networkTitle(effectiveNetwork(network, installNetwork)!)
+                : "Install setting"}
+              {!network && (
+                <span className="muted"> · the install's setting</span>
+              )}
+            </p>
+          )}
+          {networking !== null && (
+            <form
+              className="size-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void act("network", `environments/${chat.sandboxID}/network`, {
+                  network: networking,
+                }).then(() => setNetworking(null));
+              }}
+            >
+              <NetworkSelect
+                value={networking}
+                install={installNetwork}
+                onChange={setNetworking}
+                disabled={busy === "network"}
+              />
+              <p className="muted">
+                Applies to every chat in this workspace at once, running ones
+                included. Credentials are still injected only for approved
+                requests.
+              </p>
+              <div className="button-row">
+                <button
+                  type="button"
+                  onClick={() => setNetworking(null)}
+                  disabled={busy === "network"}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="primary"
+                  disabled={busy === "network" || networking === network}
+                >
+                  {busy === "network" ? "Applying…" : "Apply"}
+                </button>
+              </div>
+            </form>
+          )}
+        </section>
+      )}
+      {ws?.pod && !ws.deleted && (
+        <Pod pod={ws.pod} now={now} events={!starting} />
+      )}
       <section className="workspace-section">
         <h2>Chats in this workspace</h2>
         <ul>
@@ -359,6 +688,50 @@ export function WorkspacePanel({
           ))}
         </ul>
       </section>
+      <section className="workspace-section">
+        <h2>Spend</h2>
+        <dl className="workspace-facts">
+          <div>
+            <dt>Workspace</dt>
+            <dd
+              title={`${spendLine(total.spend)} · ${total.chats} chat${total.chats === 1 ? "" : "s"}`}
+            >
+              {spendSummary(total.spend)}
+              {total.chats > 1 ? ` · ${total.chats} chats` : ""}
+            </dd>
+          </div>
+          {total.chats > 1 && (
+            <div>
+              <dt>This chat</dt>
+              <dd title={spendLine(chatSpend(chat))}>
+                {spendSummary(chatSpend(chat))}
+              </dd>
+            </div>
+          )}
+        </dl>
+        <p className="muted">
+          Every chat of the workspace summed from the agent's turns, archived
+          ones included; Codex reports tokens and no cost.
+        </p>
+      </section>
+      {onChanges && !ws?.deleted && (
+        <section className="workspace-section">
+          <h2>
+            Changes
+            <button
+              className="ghost"
+              title="What changed in the workspace since this chat began"
+              onClick={onChanges}
+            >
+              View…
+            </button>
+          </h2>
+          <p className="muted">
+            The workspace against the checkpoint taken before this chat's first
+            message, or its last code rewind.
+          </p>
+        </section>
+      )}
       <section className="workspace-section">
         <h2>
           Documents
@@ -418,6 +791,16 @@ export function WorkspacePanel({
           ))}
         </ul>
       </section>
+      <MemorySection chat={chat} disabled={!!ws?.deleted} />
+      {chat.provider === "claude" && (
+        <PermissionsSection
+          chat={chat}
+          workspace={ws}
+          siblings={siblings}
+          disabled={!!ws?.deleted}
+          onChanged={onChanged}
+        />
+      )}
       {ws && (
         <section className="workspace-section">
           <details

@@ -505,3 +505,140 @@ func TestRegistryEgressSwitchAppliesEverywhereAndPersists(t *testing.T) {
 		t.Fatalf("back to restricted: %v", err)
 	}
 }
+
+// A sandbox's own egress mode is keyed by sandbox ID: set before the
+// sandbox registers it shapes the engine created for it, set on a live
+// sandbox it changes the engine at once, the install-wide switch leaves it
+// alone, it survives a registry restart, and clearing it returns the
+// sandbox to the install's mode.
+func TestRegistrySandboxEgressOverridesTheInstall(t *testing.T) {
+	dir := t.TempDir()
+	clock := &testClock{now: 1000, mono: 1000}
+	registry := newTestRegistry(t, dir, clock, &fixtureVerifier{enabled: true})
+	mode := func(e *Engine) string {
+		egress, _ := e.PolicyCopy()["egress"].(map[string]any)
+		m, _ := egress["mode"].(string)
+		return m
+	}
+	// Chosen at creation, before the sandbox exists.
+	if err := registry.SetSandboxEgress("s1", "public"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Register(runContext(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Register(runContext(map[string]any{"sandboxID": "s2", "runtimeName": "sbx-two"})); err != nil {
+		t.Fatal(err)
+	}
+	first, second := registry.Bindings["s1"].Engine, registry.Bindings["s2"].Engine
+	if mode(first) != "public" || mode(second) != "restricted" {
+		t.Fatalf("after register: %s %s", mode(first), mode(second))
+	}
+	if own, effective := registry.SandboxEgress("s1"); own != "public" || effective != "public" {
+		t.Fatalf("s1: %s %s", own, effective)
+	}
+	if own, effective := registry.SandboxEgress("s2"); own != "" || effective != "restricted" {
+		t.Fatalf("s2: %s %s", own, effective)
+	}
+	if registry.EgressOverrides() != 1 {
+		t.Fatalf("overrides: %d", registry.EgressOverrides())
+	}
+	// The install-wide switch skips the sandbox with its own mode.
+	if err := registry.SetSandboxEgress("s2", "restricted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetEgressMode("public"); err != nil {
+		t.Fatal(err)
+	}
+	if mode(second) != "restricted" {
+		t.Fatal("install-wide switch changed a sandbox with its own mode")
+	}
+	if own, effective := registry.SandboxEgress("s2"); own != "restricted" || effective != "restricted" {
+		t.Fatalf("s2 after install open: %s %s", own, effective)
+	}
+	// A live change applies at once; clearing follows the install (now open).
+	if err := registry.SetSandboxEgress("s2", ""); err != nil || mode(second) != "public" {
+		t.Fatalf("s2 cleared: %v %s", err, mode(second))
+	}
+	if err := registry.SetSandboxEgress("s1", "restricted"); err != nil || mode(first) != "restricted" {
+		t.Fatalf("s1 restricted live: %v %s", err, mode(first))
+	}
+	for _, bad := range []struct{ sandbox, mode string }{{"", "public"}, {"s1", "open"}, {strings.Repeat("x", 129), "public"}} {
+		if err := registry.SetSandboxEgress(bad.sandbox, bad.mode); err == nil {
+			t.Fatalf("accepted %v", bad)
+		}
+	}
+	// Persisted: a restarted registry recreates s1's engine restricted
+	// while the install is open, and s2's open.
+	registry.Close()
+	options := RegistryOptions{Operations: testOperations(t), PolicyTemplate: templatePath(t), Verifier: &fixtureVerifier{enabled: true}, Clock: clock.monotonic, EgressMode: "public"}
+	restarted, err := NewRegistry(dir, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if mode(restarted.Bindings["s1"].Engine) != "restricted" || mode(restarted.Bindings["s2"].Engine) != "public" {
+		t.Fatalf("after restart: %s %s", mode(restarted.Bindings["s1"].Engine), mode(restarted.Bindings["s2"].Engine))
+	}
+	if restarted.EgressOverrides() != 1 {
+		t.Fatalf("overrides after restart: %d", restarted.EgressOverrides())
+	}
+	if err := os.WriteFile(filepath.Join(dir, egressOverridesFile), []byte(`{"s1":"open"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restarted.Close()
+	if _, err := NewRegistry(dir, options); err == nil {
+		t.Fatal("invalid overrides file accepted")
+	}
+}
+
+// The runner's declared snapshot image (a workspace copy, a regeneration)
+// reaches the verifier with the binding's identity: on the registration
+// that names it, on a re-registration of the same generation, on a new
+// generation, and again after a restart from the first request that
+// names it; a malformed digest is refused; the digest is not part of the
+// binding identity.
+func TestRegistryPassesTheDeclaredImageDigestToTheVerifier(t *testing.T) {
+	f := newSbxFixture(t)
+	var seen []string
+	f.verifier.hook = func(identity map[string]string, phase string) { seen = append(seen, identity["imageDigest"]) }
+	digest := "sha256:" + strings.Repeat("c", 64)
+	if _, err := f.registry.Register(runContext(map[string]any{"imageDigest": "sha256:short"})); err == nil {
+		t.Fatal("malformed digest accepted")
+	}
+	if ready(f.must(f.registry.Check(f.value, "create"))); len(seen) != 1 || seen[0] != "" {
+		t.Fatalf("no digest declared yet: %v", seen)
+	}
+	declared := runContext(map[string]any{"imageDigest": digest})
+	f.must(f.registry.Register(declared))
+	f.must(f.registry.Check(declared, "create"))
+	if seen[len(seen)-1] != digest {
+		t.Fatalf("re-registration did not pass the digest: %v", seen)
+	}
+	identity, _ := ValidateContext(declared)
+	plain, _ := ValidateContext(f.value)
+	if BindingDigest(identity) != BindingDigest(plain) {
+		t.Fatal("the digest changed the binding identity")
+	}
+	// A new generation declared with the digest keeps it.
+	f.must(f.registry.Begin(declared, false))
+	f.must(f.registry.End(declared))
+	next := runContext(map[string]any{"generation": "2", "runID": "r2", "imageDigest": digest})
+	f.must(f.registry.Register(next))
+	f.must(f.registry.Check(next, "create"))
+	if seen[len(seen)-1] != digest {
+		t.Fatalf("new generation lost the digest: %v", seen)
+	}
+	// After a restart the manifest has identities only; the first request
+	// naming the digest restores it, one without it verifies without.
+	f.reopen()
+	f.registry.Verifier = f.verifier
+	f.must(f.registry.Check(runContext(map[string]any{"generation": "2", "runID": "r2"}), "create"))
+	if seen[len(seen)-1] != "" {
+		t.Fatalf("restart kept a digest the manifest does not hold: %v", seen)
+	}
+	f.must(f.registry.Check(next, "create"))
+	if seen[len(seen)-1] != digest {
+		t.Fatalf("digest not restored by the request naming it: %v", seen)
+	}
+}

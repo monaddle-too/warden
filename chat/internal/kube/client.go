@@ -21,24 +21,40 @@ import (
 // and Apply put in the object's kind field when the caller leaves it empty.
 type Resource struct {
 	Group, Version, Resource, Kind string
+	// Subresource names one of the object's subresources (resize, status);
+	// the path puts it after the object's name.
+	Subresource string
+}
+
+// Sub is the resource's named subresource.
+func (r Resource) Sub(name string) Resource {
+	r.Subresource = name
+	return r
 }
 
 // The resources Warden uses.
 var (
-	Pods                              = Resource{"", "v1", "pods", "Pod"}
-	PersistentVolumeClaims            = Resource{"", "v1", "persistentvolumeclaims", "PersistentVolumeClaim"}
-	Secrets                           = Resource{"", "v1", "secrets", "Secret"}
-	ConfigMaps                        = Resource{"", "v1", "configmaps", "ConfigMap"}
-	Namespaces                        = Resource{"", "v1", "namespaces", "Namespace"}
-	NetworkPolicies                   = Resource{"networking.k8s.io", "v1", "networkpolicies", "NetworkPolicy"}
-	RuntimeClasses                    = Resource{"node.k8s.io", "v1", "runtimeclasses", "RuntimeClass"}
-	ValidatingAdmissionPolicies       = Resource{"admissionregistration.k8s.io", "v1", "validatingadmissionpolicies", "ValidatingAdmissionPolicy"}
-	ValidatingAdmissionPolicyBindings = Resource{"admissionregistration.k8s.io", "v1", "validatingadmissionpolicybindings", "ValidatingAdmissionPolicyBinding"}
-	Nodes                             = Resource{"", "v1", "nodes", "Node"}
+	Pods                              = Resource{Group: "", Version: "v1", Resource: "pods", Kind: "Pod"}
+	PersistentVolumeClaims            = Resource{Group: "", Version: "v1", Resource: "persistentvolumeclaims", Kind: "PersistentVolumeClaim"}
+	Secrets                           = Resource{Group: "", Version: "v1", Resource: "secrets", Kind: "Secret"}
+	ConfigMaps                        = Resource{Group: "", Version: "v1", Resource: "configmaps", Kind: "ConfigMap"}
+	Namespaces                        = Resource{Group: "", Version: "v1", Resource: "namespaces", Kind: "Namespace"}
+	NetworkPolicies                   = Resource{Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies", Kind: "NetworkPolicy"}
+	RuntimeClasses                    = Resource{Group: "node.k8s.io", Version: "v1", Resource: "runtimeclasses", Kind: "RuntimeClass"}
+	ValidatingAdmissionPolicies       = Resource{Group: "admissionregistration.k8s.io", Version: "v1", Resource: "validatingadmissionpolicies", Kind: "ValidatingAdmissionPolicy"}
+	ValidatingAdmissionPolicyBindings = Resource{Group: "admissionregistration.k8s.io", Version: "v1", Resource: "validatingadmissionpolicybindings", Kind: "ValidatingAdmissionPolicyBinding"}
+	Nodes                             = Resource{Group: "", Version: "v1", Resource: "nodes", Kind: "Node"}
+	// Events are the core API's events (what kubectl describe lists):
+	// the scheduler's, the autoscaler's and the kubelet's word on a pod.
+	Events = Resource{Group: "", Version: "v1", Resource: "events", Kind: "Event"} // decoded as CoreEvent
+	// PodsResize is the pods/resize subresource (Kubernetes 1.33+): a
+	// patch to it changes a running container's requests and limits in
+	// place, which the kubelet then applies without a restart.
+	PodsResize = Pods.Sub("resize")
 	// NodeMetrics and PodMetrics are the metrics server's live usage
 	// (metrics.k8s.io); absent on a cluster without one.
-	NodeMetrics = Resource{"metrics.k8s.io", "v1beta1", "nodes", "NodeMetrics"}
-	PodMetrics  = Resource{"metrics.k8s.io", "v1beta1", "pods", "PodMetrics"}
+	NodeMetrics = Resource{Group: "metrics.k8s.io", Version: "v1beta1", Resource: "nodes", Kind: "NodeMetrics"}
+	PodMetrics  = Resource{Group: "metrics.k8s.io", Version: "v1beta1", Resource: "pods", Kind: "PodMetrics"}
 )
 
 // APIVersion is the group/version string of the resource.
@@ -70,6 +86,10 @@ func (r Resource) path(namespace, name string) string {
 	if name != "" {
 		b.WriteByte('/')
 		b.WriteString(url.PathEscape(name))
+		if r.Subresource != "" {
+			b.WriteByte('/')
+			b.WriteString(r.Subresource)
+		}
 	}
 	return b.String()
 }
@@ -212,6 +232,20 @@ func (c *Client) Patch(ctx context.Context, r Resource, namespace, name string, 
 		return errors.New("kube: patch is not valid JSON")
 	}
 	return c.do(ctx, http.MethodPatch, r.path(namespace, name), nil, "application/merge-patch+json", patch, into)
+}
+
+// StrategicPatch sends a strategic merge patch: unlike a merge patch it
+// merges a list of named objects (a pod's containers) entry by entry, so a
+// container's resources can be changed without restating the container.
+// It is the patch type the pods/resize subresource takes from kubectl.
+func (c *Client) StrategicPatch(ctx context.Context, r Resource, namespace, name string, patch []byte, into any) error {
+	if name == "" {
+		return errors.New("kube: StrategicPatch needs a name")
+	}
+	if !json.Valid(patch) {
+		return errors.New("kube: patch is not valid JSON")
+	}
+	return c.do(ctx, http.MethodPatch, r.path(namespace, name), nil, "application/strategic-merge-patch+json", patch, into)
 }
 
 // MergePatchLabels is the merge patch that sets and removes labels.

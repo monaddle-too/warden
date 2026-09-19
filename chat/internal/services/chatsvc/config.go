@@ -14,6 +14,7 @@ import (
 // disagrees with a loaded file is an error.
 type settings struct {
 	cfg           config.Config
+	configPath    string         // the warden.json the settings came from ("" for flags only)
 	state         string         // paths.state/app
 	policy        string         // services.policy.address (unix://paths.state/policy/sbx-control.sock)
 	runner        string         // services.runner.address (unix://paths.state/runner/worker.sock)
@@ -41,7 +42,7 @@ func resolveSettings(fs *flag.FlagSet, f chatFlags) (settings, error) {
 		return settings{}, err
 	}
 	o := config.NewOverrides(fs, source)
-	s := settings{cfg: cfg}
+	s := settings{cfg: cfg, configPath: source}
 	s.state = config.Override(o, "state", *f.state, "paths.state (app directory)", cfg.AppState())
 	s.policy = config.Override(o, "warden-socket", "unix://"+*f.wardenSocket, "services.policy.address", cfg.PolicyAddress())
 	s.runner = config.Override(o, "runner-socket", "unix://"+*f.runnerSocket, "services.runner.address", cfg.RunnerAddress())

@@ -1,0 +1,587 @@
+package tui
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+// The long tail (docs/claude-parity.md, item 15): /fork, /btw, /cost,
+// /style, /bell, the terminal title and the bell on the agent's events.
+// The web's cost.ts, notify.ts and ForkDialog do the same there.
+
+// CostSummary is what a chat's turns took so far, summed (the web's
+// sessionCost).
+type CostSummary struct {
+	Turns, Reported int
+	Usage           Usage
+	Priced          bool
+	Seconds         float64
+	// Answered side questions (R2.19): in the usage above, marked here
+	// with their share of the cost.
+	Asides       int
+	AsideCostUSD float64
+}
+
+// SessionCost sums the chat's turn records and its answered side
+// questions; nowSeconds counts a running turn up to now when positive.
+func SessionCost(c *Chat, nowSeconds float64) CostSummary {
+	var out CostSummary
+	for _, e := range c.Conversation.Entries {
+		if e.Role != "aside" || e.Aside == nil || e.Aside.Status != "completed" {
+			continue
+		}
+		out.Asides++
+		out.Usage.Input += e.Aside.Input
+		out.Usage.Output += e.Aside.Output
+		out.Usage.Total += e.Aside.Input + e.Aside.Output
+		if e.Aside.CostUSD > 0 {
+			out.Priced = true
+			out.Usage.CostUSD += e.Aside.CostUSD
+			out.AsideCostUSD += e.Aside.CostUSD
+		}
+	}
+	for _, t := range c.Conversation.Turns {
+		out.Turns++
+		if u := t.Usage; u != nil {
+			out.Reported++
+			out.Usage.Input += u.Input
+			out.Usage.Cached += u.Cached
+			out.Usage.CacheWrite += u.CacheWrite
+			out.Usage.Output += u.Output
+			out.Usage.Reasoning += u.Reasoning
+			out.Usage.Total += u.Total
+			if u.CostUSD > 0 {
+				out.Priced = true
+				out.Usage.CostUSD += u.CostUSD
+			}
+		}
+		if t.StartedAt > 0 {
+			if t.EndedAt > 0 {
+				out.Seconds += max(0, t.EndedAt-t.StartedAt)
+			} else if nowSeconds > 0 {
+				out.Seconds += max(0, nowSeconds-t.StartedAt)
+			}
+		}
+	}
+	return out
+}
+
+// CostLines lays the summary out as the /cost notice.
+func CostLines(s CostSummary) []string {
+	turns := strconv.Itoa(s.Turns)
+	if s.Reported < s.Turns {
+		turns += fmt.Sprintf(" (%d with usage)", s.Reported)
+	}
+	rows := [][2]string{{"turns", turns}, {"input tokens", FormatTokens(s.Usage.Input)}}
+	if s.Usage.Cached > 0 {
+		rows = append(rows, [2]string{"  read from cache", FormatTokens(s.Usage.Cached)})
+	}
+	if s.Usage.CacheWrite > 0 {
+		rows = append(rows, [2]string{"  written to cache", FormatTokens(s.Usage.CacheWrite)})
+	}
+	rows = append(rows, [2]string{"output tokens", FormatTokens(s.Usage.Output)})
+	if s.Usage.Reasoning > 0 {
+		rows = append(rows, [2]string{"  thinking", FormatTokens(s.Usage.Reasoning)})
+	}
+	rows = append(rows, [2]string{"total tokens", FormatTokens(s.Usage.Total)})
+	cost := "not reported by this agent"
+	if s.Priced {
+		cost = FormatCost(s.Usage.CostUSD)
+	}
+	rows = append(rows, [2]string{"cost", cost})
+	if s.Asides > 0 {
+		share := "no cost reported"
+		if s.AsideCostUSD > 0 {
+			share = FormatCost(s.AsideCostUSD)
+		}
+		rows = append(rows, [2]string{"  of it, side questions", fmt.Sprintf("%d · %s", s.Asides, share)})
+	}
+	rows = append(rows, [2]string{"time in turns", FormatDuration(s.Seconds)})
+	out := []string{"cost so far (this chat; not sent to the agent)"}
+	for _, r := range rows {
+		out = append(out, fmt.Sprintf("  %-20s %s", r[0], r[1]))
+	}
+	return out
+}
+
+// WorkspaceCost sums the turns of every chat on the workspace of c
+// (archived ones included) and says how many chats; nowSeconds as for
+// SessionCost.
+func WorkspaceCost(c *Chat, chats []*Chat, nowSeconds float64) (CostSummary, int) {
+	var out CostSummary
+	n := 0
+	for _, other := range chats {
+		if other.SandboxID != c.SandboxID {
+			continue
+		}
+		n++
+		s := SessionCost(other, nowSeconds)
+		out.Turns += s.Turns
+		out.Reported += s.Reported
+		out.Usage.Input += s.Usage.Input
+		out.Usage.Cached += s.Usage.Cached
+		out.Usage.CacheWrite += s.Usage.CacheWrite
+		out.Usage.Output += s.Usage.Output
+		out.Usage.Reasoning += s.Usage.Reasoning
+		out.Usage.Total += s.Usage.Total
+		out.Usage.CostUSD += s.Usage.CostUSD
+		out.Priced = out.Priced || s.Priced
+		out.Seconds += s.Seconds
+		out.Asides += s.Asides
+		out.AsideCostUSD += s.AsideCostUSD
+	}
+	return out, n
+}
+
+// WorkspaceCostLine is the /cost notice's last line: the workspace's
+// total over its chats (docs/claude-parity.md, R2.2).
+func WorkspaceCostLine(s CostSummary, chats int) string {
+	parts := []string{fmt.Sprintf("%d chat%s", chats, plural(chats)), fmt.Sprintf("%d turn%s", s.Turns, plural(s.Turns)), FormatTokens(s.Usage.Total) + " tokens"}
+	if s.Priced {
+		parts = append(parts, FormatCost(s.Usage.CostUSD))
+	}
+	if s.Asides > 0 {
+		parts = append(parts, fmt.Sprintf("%d side question%s", s.Asides, plural(s.Asides)))
+	}
+	return "this workspace: " + strings.Join(parts, " · ")
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// cost shows the chat's totals as a notice, with the workspace's under
+// them.
+func (a *App) cost(c *Chat) {
+	if c == nil {
+		a.setNotice("no chat selected")
+		return
+	}
+	now := 0.0
+	if c.Running() {
+		now = float64(a.now().UnixMilli()) / 1000
+	}
+	lines := CostLines(SessionCost(c, now))
+	var all []*Chat
+	if a.state != nil {
+		all = a.state.Chats
+	}
+	if total, n := WorkspaceCost(c, all, now); n > 1 {
+		lines = append(lines, WorkspaceCostLine(total, n))
+	}
+	a.setNotice(strings.Join(lines, "\n"))
+}
+
+// fork lists the messages (no argument) or forks the chat: before
+// message N, or the whole of it ("all"), with "copy" for a copy of the
+// workspace too (`/fork all copy`, `/fork 2 copy`, `/fork copy`), then
+// switches to the fork.
+func (a *App) fork(ctx context.Context, c *Chat, arg string) {
+	if c == nil {
+		a.setNotice("no chat selected")
+		return
+	}
+	targets := rewindTargets(c)
+	words := strings.Fields(arg)
+	copy := false
+	if n := len(words); n > 0 && strings.EqualFold(words[n-1], "copy") {
+		copy = true
+		words = words[:n-1]
+	}
+	if len(words) > 1 {
+		a.setNotice("/fork [N|all] [copy]")
+		return
+	}
+	arg = ""
+	if len(words) == 1 {
+		arg = words[0]
+	}
+	if arg == "" && !copy {
+		var b strings.Builder
+		for i, e := range targets {
+			fmt.Fprintf(&b, "%2d   %s\n", i+1, truncate(excerptOf(e.Text), 70))
+		}
+		b.WriteString("/fork N copies the chat up to before message N into a sibling chat; /fork all copies the whole of it; add copy for a copy of the workspace too")
+		a.setNotice(b.String())
+		return
+	}
+	target := ""
+	label := "the whole conversation"
+	if arg != "all" && arg != "" {
+		n, err := strconv.Atoi(arg)
+		if err != nil || n < 1 || n > len(targets) {
+			a.setNotice("/fork N (from /fork) or /fork all")
+			return
+		}
+		target = targets[n-1].ID
+		label = fmt.Sprintf("before message %d %q", n, truncate(excerptOf(targets[n-1].Text), 50))
+	}
+	if c.Running() {
+		a.setNotice("stop the agent first (Esc)")
+		return
+	}
+	result, err := a.Client.Fork(ctx, c.ID, target, copy)
+	if err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	a.refreshState(ctx)
+	a.selectChat(result.ID)
+	if result.Workspace == "copied" {
+		label += " with a copy of the workspace"
+	}
+	a.setNotice(fmt.Sprintf("forked %s into %q; %s", label, sanitize(result.Title), forkOutcome(result.Session)))
+}
+
+// forkOutcome says how the fork's agent session follows the source's.
+func forkOutcome(session string) string {
+	switch session {
+	case "forked":
+		return "the agent continues from a copy of its session"
+	case "fresh":
+		return "the agent's session cannot be copied; the next message starts a new one with the conversation so far as context"
+	}
+	return "the fork starts its own agent session"
+}
+
+// btw asks a side question in the background and reports the answer as
+// a notice when it arrives; the aside entry itself comes over the stream.
+// A released session is started for it (the service does; the notice
+// says so). Without an argument the chat's side questions are listed;
+// "/btw promote N" asks the Nth (the last without N) in chat as a
+// message of the person's, the answer quoted (R2.19).
+func (a *App) btw(ctx context.Context, c *Chat, question string) {
+	if c == nil {
+		a.setNotice("no chat selected")
+		return
+	}
+	if question == "" {
+		asides := asideEntries(c)
+		if len(asides) == 0 {
+			a.setNotice(btwUsage)
+			return
+		}
+		var b strings.Builder
+		for i, e := range asides {
+			fmt.Fprintf(&b, "%2d   %s %s\n", i+1, asideMark(e), truncate(excerptOf(e.Text), 66))
+		}
+		b.WriteString(btwUsage)
+		a.setNotice(b.String())
+		return
+	}
+	if word, rest, _ := strings.Cut(question, " "); word == "promote" {
+		a.promoteAside(ctx, c, strings.TrimSpace(rest))
+		return
+	}
+	if c.Provider != "claude" {
+		a.setNotice("side questions are a Claude chat's")
+		return
+	}
+	if c.Running() {
+		a.setNotice("the agent's turn is running; ask the side question after this turn")
+		return
+	}
+	if c.Session == nil {
+		a.setNotice("asking a copy of the session (starting it first, as it was released): " + truncate(question, 60))
+	} else {
+		a.setNotice("asking a copy of the session: " + truncate(question, 60))
+	}
+	go func() {
+		result, err := a.Client.Aside(ctx, c.ID, question)
+		report := func(context.Context) {
+			switch {
+			case err != nil:
+				a.setNotice(err.Error())
+			case result.Error != "":
+				a.setNotice("side question failed: " + result.Error)
+			default:
+				a.setNotice("side question answered" + costSuffix(result.CostUSD) + " · /btw promote asks it in chat")
+			}
+		}
+		select {
+		case a.later <- report:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+const btwUsage = "/btw QUESTION asks a copy of the agent's session, from this chat's context; the agent never sees it · /btw promote [N] asks side question N (the last) in chat, its answer quoted"
+
+// asideEntries are the chat's side questions in order.
+func asideEntries(c *Chat) []Entry {
+	var out []Entry
+	for _, e := range c.Conversation.Entries {
+		if e.Role == "aside" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// asideMark is a side question's state in the /btw listing.
+func asideMark(e Entry) string {
+	a := e.Aside
+	switch {
+	case a == nil:
+		return "·"
+	case a.Promoted != "":
+		return "✓ asked in chat ·"
+	case a.Status == "starting", a.Status == "running":
+		return "⋯"
+	case a.Status == "failed":
+		return "!"
+	}
+	return "·"
+}
+
+// promoteAside asks side question N (the last when arg is empty) in chat.
+func (a *App) promoteAside(ctx context.Context, c *Chat, arg string) {
+	asides := asideEntries(c)
+	if len(asides) == 0 {
+		a.setNotice("no side question to ask in chat; /btw QUESTION asks one")
+		return
+	}
+	n := len(asides)
+	if arg != "" {
+		v, err := strconv.Atoi(arg)
+		if err != nil || v < 1 || v > len(asides) {
+			a.setNotice(fmt.Sprintf("/btw promote N with N from 1 to %d (/btw lists them)", len(asides)))
+			return
+		}
+		n = v
+	}
+	e := asides[n-1]
+	result, err := a.Client.PromoteAside(ctx, c.ID, e.ID)
+	if err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	a.setNotice("asked in chat as your message, the side answer quoted: " + truncate(excerptOf(result.Text), 60))
+}
+
+func costSuffix(usd float64) string {
+	if usd <= 0 {
+		return ""
+	}
+	return " (" + FormatCost(usd) + ")"
+}
+
+// outputStyles are the styles /style accepts, as the service names them.
+var outputStyles = []string{"default", "Explanatory", "Learning"}
+
+// style shows or sets a Claude chat's output style for its next session.
+func (a *App) style(ctx context.Context, c *Chat, arg string) {
+	if c == nil {
+		a.setNotice("no chat selected")
+		return
+	}
+	current := c.OutputStyle
+	if current == "" {
+		current = "default"
+	}
+	if arg == "" {
+		running := ""
+		if c.Session != nil && c.Session.OutputStyle != "" {
+			running = "; the running session uses " + sanitize(c.Session.OutputStyle)
+		}
+		a.setNotice("output style " + current + " for the next session" + running + " · /style default|Explanatory|Learning")
+		return
+	}
+	want := ""
+	for _, s := range outputStyles {
+		if strings.EqualFold(s, arg) {
+			want = s
+		}
+	}
+	if want == "" {
+		a.setNotice("/style default|Explanatory|Learning")
+		return
+	}
+	if want == "default" {
+		want = ""
+	}
+	if err := a.Client.Style(ctx, c.ID, want); err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	a.refreshState(ctx)
+	shown := want
+	if shown == "" {
+		shown = "default"
+	}
+	a.setNotice("output style " + shown + " applies when the next session starts (the next message starts one)")
+}
+
+// The bell: rung on the agent's events (a turn ending, an approval, a
+// failure) unless turned off; the choice is kept in BellFile.
+
+// bellOn reports whether the bell rings (on until turned off).
+func (a *App) bellOn() bool {
+	if a.bell == nil {
+		on := true
+		if a.BellFile != "" {
+			if b, err := os.ReadFile(a.BellFile); err == nil && strings.TrimSpace(string(b)) == "off" {
+				on = false
+			}
+		}
+		a.bell = &on
+	}
+	return *a.bell
+}
+
+// setBell turns the bell on or off and remembers it.
+func (a *App) setBell(on bool) {
+	a.bell = &on
+	if a.BellFile == "" {
+		return
+	}
+	value := "on"
+	if !on {
+		value = "off"
+	}
+	if err := os.MkdirAll(filepath.Dir(a.BellFile), 0700); err == nil {
+		_ = os.WriteFile(a.BellFile, []byte(value+"\n"), 0600)
+	}
+}
+
+// bellCommand: /bell shows the setting, /bell on|off changes it.
+func (a *App) bellCommand(arg string) {
+	switch strings.ToLower(arg) {
+	case "":
+		state := "on"
+		if !a.bellOn() {
+			state = "off"
+		}
+		a.setNotice("bell " + state + ": rings when the agent finishes, asks or fails · /bell on|off")
+	case "on", "off":
+		a.setBell(arg == "on")
+		a.setNotice("bell " + strings.ToLower(arg))
+	default:
+		a.setNotice("/bell on|off")
+	}
+}
+
+// BellEvents says which of the agent's events happened between two
+// snapshots of the selected chat: "completed" (a turn ended), "failed"
+// (a turn failed), "approval" (something new to answer). Nothing for a
+// stop the person asked for, or a chat seen for the first time.
+func BellEvents(prev, next *Chat) []string {
+	if prev == nil || next == nil || prev.ID != next.ID {
+		return nil
+	}
+	var out []string
+	if prev.Running() && !next.Running() {
+		switch {
+		case next.Status == "failed" || (next.Error != "" && next.Error != prev.Error):
+			out = append(out, "failed")
+		case next.Status == "idle":
+			out = append(out, "completed")
+		}
+	}
+	seen := map[string]bool{}
+	for _, ap := range prev.Pending() {
+		seen[ap.ID] = true
+	}
+	for _, r := range prev.Reviews {
+		seen[r.ID] = true
+	}
+	for _, ap := range next.Pending() {
+		if !seen[ap.ID] {
+			out = append(out, "approval")
+		}
+	}
+	// A review waits for the person as an approval does, in the app.
+	for _, r := range next.Reviews {
+		if !seen[r.ID] {
+			out = append(out, "approval")
+		}
+	}
+	return out
+}
+
+// bellForEvents rings once for the events between the previous snapshot
+// of the selected chat and this one, and remembers this one.
+func (a *App) bellForEvents() {
+	c := a.chat()
+	prev := a.lastSeen
+	if c != nil {
+		copy := *c
+		a.lastSeen = &copy
+	} else {
+		a.lastSeen = nil
+	}
+	if !a.bellOn() {
+		return
+	}
+	if len(BellEvents(prev, c)) > 0 {
+		fmt.Fprint(a.Output, "\a")
+	}
+}
+
+// TitleFor is the terminal title: the app, the chat, and what the agent
+// is up to (running, idle, or waiting for an answer).
+func TitleFor(c *Chat) string {
+	if c == nil {
+		return "Warden"
+	}
+	state := "idle"
+	switch {
+	case len(c.Pending()) > 0 || len(c.Reviews) > 0:
+		state = "approval"
+	case c.Running():
+		state = "running"
+	}
+	return "Warden · " + strings.Join(strings.Fields(sanitize(c.Title)), " ") + " · " + state
+}
+
+// setTitle writes the terminal title (OSC 0) when it changed.
+func (a *App) setTitle() {
+	title := TitleFor(a.chat())
+	if title == a.title {
+		return
+	}
+	a.title = title
+	fmt.Fprint(a.Output, "\x1b]0;"+title+"\a")
+}
+
+// bug drafts a bug report from this chat (docs/bug-reporting-plan.md):
+// the person's text and the chat's ids, never its messages; the launcher
+// opens the review page.
+func (a *App) bug(ctx context.Context, c *Chat, text string) {
+	if text == "" {
+		a.setNotice("/bug TEXT reports a bug to Monaddle: what went wrong, in your words; you review the report before it is sent")
+		return
+	}
+	if c == nil {
+		a.setNotice("no chat selected; `warden bugs send \"…\"` reports from the terminal")
+		return
+	}
+	result, err := a.Client.Bug(ctx, c.ID, text)
+	if err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	a.setNotice(result.Notice)
+}
+
+// testBugs raises the test exception in the chat service so the automatic
+// path can be seen end to end.
+func (a *App) testBugs(ctx context.Context, arg string) {
+	if strings.ToLower(arg) != "bugreporting" {
+		a.setNotice("/test bugreporting raises a test exception in the chat service; its report opens for review")
+		return
+	}
+	result, err := a.Client.BugTest(ctx)
+	if err != nil {
+		a.setNotice(err.Error())
+		return
+	}
+	a.setNotice(result.Notice)
+}

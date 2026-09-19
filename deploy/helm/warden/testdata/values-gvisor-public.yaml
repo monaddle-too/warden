@@ -26,6 +26,10 @@ previews:
     className: nginx
     annotations:
       cert-manager.io/cluster-issuer: letsencrypt-dns
+edge:
+  bugReports:
+    enabled: true
+    retentionDays: 30
 storage:
   className: standard-rwo
 tls:

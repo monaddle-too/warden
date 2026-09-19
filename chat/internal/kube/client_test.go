@@ -27,6 +27,7 @@ func TestResourcePaths(t *testing.T) {
 		{RuntimeClasses, "", "gvisor", "/apis/node.k8s.io/v1/runtimeclasses/gvisor", "node.k8s.io/v1"},
 		{ValidatingAdmissionPolicyBindings, "", "warden", "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings/warden", "admissionregistration.k8s.io/v1"},
 		{Secrets, "warden", "a b", "/api/v1/namespaces/warden/secrets/a%20b", "v1"},
+		{PodsResize, "warden-sandboxes", "sbx-1", "/api/v1/namespaces/warden-sandboxes/pods/sbx-1/resize", "v1"},
 	}
 	for _, c := range cases {
 		if got := c.r.path(c.ns, c.name); got != c.want {

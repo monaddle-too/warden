@@ -66,11 +66,16 @@ func (d *Driver) Pod(ctx context.Context, name string) (*sandbox.PodInfo, error)
 		return nil, fmt.Errorf("sandbox %s: pod: %w", name, err)
 	default:
 		var metrics kube.PodMetricsItem
-		usage := map[string]*sandbox.Resources{}
+		usage := map[string]*sandbox.Amounts{}
 		if d.client.Get(ctx, kube.PodMetrics, d.opts.Namespace, name, &metrics) == nil {
 			usage[name] = podUsage(metrics)
 		}
 		summary := podInfo(&pod, usage)
+		// The pod's events: the autoscaler's and the kubelet's word on a
+		// start. A Role without the events verb leaves the list empty.
+		if events, err := d.podEvents(ctx, d.opts.Namespace, pod.Metadata.UID); err == nil {
+			summary.Events = events
+		}
 		info = &summary
 	}
 	d.cacheMu.Lock()
@@ -94,14 +99,14 @@ func (d *Driver) Cluster(ctx context.Context) (*sandbox.ClusterStatus, error) {
 		return &status, nil
 	}
 	d.cacheMu.Unlock()
-	status := sandbox.ClusterStatus{Available: true, At: time.Now(), SandboxNamespace: d.opts.Namespace, ServiceNamespace: d.client.Namespace(), Tier: d.opts.Tier, RuntimeClass: d.opts.RuntimeClass, Nodes: []sandbox.NodeInfo{}, SandboxPods: []sandbox.PodInfo{}, ServicePods: []sandbox.PodInfo{}}
+	status := sandbox.ClusterStatus{Available: true, At: time.Now(), SandboxNamespace: d.opts.Namespace, ServiceNamespace: d.client.Namespace(), Tier: d.opts.Tier, RuntimeClass: d.opts.RuntimeClass, Nodes: []sandbox.NodeInfo{}, SandboxPods: []sandbox.PodInfo{}, ServicePods: []sandbox.PodInfo{}, Events: []sandbox.Event{}}
 	if v, err := d.client.ServerVersion(ctx); err == nil {
 		status.Server = v.GitVersion
 	}
 	// Live usage first, so the pod and node summaries can carry it. Any
 	// refusal (no metrics server, no RBAC) leaves usage nil.
-	usage := map[string]*sandbox.Resources{}
-	nodeUsage := map[string]*sandbox.Resources{}
+	usage := map[string]*sandbox.Amounts{}
+	nodeUsage := map[string]*sandbox.Amounts{}
 	status.Metrics = true
 	var podMetrics kube.List[kube.PodMetricsItem]
 	if err := d.client.List(ctx, kube.PodMetrics, d.opts.Namespace, kube.ListOptions{}, &podMetrics); err != nil {
@@ -127,13 +132,35 @@ func (d *Driver) Cluster(ctx context.Context) (*sandbox.ClusterStatus, error) {
 			}
 		}
 	}
+	// Events, one list per namespace, related to the pods by uid; the
+	// cluster's list is the newest of both. A refusal is reported, not
+	// fatal.
+	var all []kube.CoreEvent
+	byUID := map[string][]kube.CoreEvent{}
+	if events, err := d.namespaceEvents(ctx, d.opts.Namespace); err != nil {
+		status.EventsError = metricsError(err)
+	} else {
+		all = append(all, events...)
+	}
+	if ns := d.client.Namespace(); ns != "" && ns != d.opts.Namespace && status.EventsError == "" {
+		if events, err := d.namespaceEvents(ctx, ns); err == nil {
+			all = append(all, events...)
+		}
+	}
+	for _, e := range all {
+		if e.InvolvedObject.UID != "" {
+			byUID[e.InvolvedObject.UID] = append(byUID[e.InvolvedObject.UID], e)
+		}
+	}
+	status.Events = eventInfos(all, ClusterEventsMax)
 	var pods kube.List[kube.Pod]
 	if err := d.client.List(ctx, kube.Pods, d.opts.Namespace, kube.ListOptions{LabelSelector: selector()}, &pods); err != nil {
 		return nil, fmt.Errorf("sandbox pods: %w", err)
 	}
 	perNode := map[string]int{}
 	for i := range pods.Items {
-		info := podInfo(&pods.Items[i], map[string]*sandbox.Resources{pods.Items[i].Metadata.Name: usage[d.opts.Namespace+"/"+pods.Items[i].Metadata.Name]})
+		info := podInfo(&pods.Items[i], map[string]*sandbox.Amounts{pods.Items[i].Metadata.Name: usage[d.opts.Namespace+"/"+pods.Items[i].Metadata.Name]})
+		info.Events = eventInfos(byUID[info.UID], PodEventsMax)
 		status.SandboxPods = append(status.SandboxPods, info)
 		if info.Node != "" {
 			perNode[info.Node]++
@@ -146,7 +173,8 @@ func (d *Driver) Cluster(ctx context.Context) (*sandbox.ClusterStatus, error) {
 			status.ServicePodsError = metricsError(err)
 		} else {
 			for i := range service.Items {
-				info := podInfo(&service.Items[i], map[string]*sandbox.Resources{service.Items[i].Metadata.Name: usage[ns+"/"+service.Items[i].Metadata.Name]})
+				info := podInfo(&service.Items[i], map[string]*sandbox.Amounts{service.Items[i].Metadata.Name: usage[ns+"/"+service.Items[i].Metadata.Name]})
+				info.Events = eventInfos(byUID[info.UID], PodEventsMax)
 				status.ServicePods = append(status.ServicePods, info)
 			}
 			sort.Slice(status.ServicePods, func(i, j int) bool {
@@ -270,8 +298,8 @@ func readTail(r io.Reader, max int, limit int) ([]string, bool, error) {
 }
 
 // podInfo summarises a pod for the owner; usage is by pod name.
-func podInfo(pod *kube.Pod, usage map[string]*sandbox.Resources) sandbox.PodInfo {
-	info := sandbox.PodInfo{Namespace: pod.Metadata.Namespace, Name: pod.Metadata.Name, UID: pod.Metadata.UID, Node: pod.Spec.NodeName, Phase: pod.Status.Phase, IP: pod.Status.PodIP, Started: pod.Status.StartTime, Containers: containerNames(pod), SandboxID: pod.Metadata.Annotations[AnnotationSandboxID], Spare: pod.Metadata.Labels[LabelSpare] == "true", Component: pod.Metadata.Labels[ComponentLabel]}
+func podInfo(pod *kube.Pod, usage map[string]*sandbox.Amounts) sandbox.PodInfo {
+	info := sandbox.PodInfo{Namespace: pod.Metadata.Namespace, Name: pod.Metadata.Name, UID: pod.Metadata.UID, Node: pod.Spec.NodeName, Phase: pod.Status.Phase, IP: pod.Status.PodIP, Started: pod.Status.StartTime, Containers: containerNames(pod), SandboxID: pod.Metadata.Annotations[AnnotationSandboxID], Spare: pod.Metadata.Labels[LabelSpare] == "true", Component: pod.Metadata.Labels[ComponentLabel], Events: []sandbox.Event{}}
 	if pod.Spec.RuntimeClassName != nil {
 		info.RuntimeClass = *pod.Spec.RuntimeClassName
 	}
@@ -312,7 +340,7 @@ func containerNames(pod *kube.Pod) []string {
 }
 
 // nodeInfo summarises a node; usage is nil without metrics.
-func nodeInfo(node *kube.Node, usage *sandbox.Resources) sandbox.NodeInfo {
+func nodeInfo(node *kube.Node, usage *sandbox.Amounts) sandbox.NodeInfo {
 	info := sandbox.NodeInfo{Name: node.Metadata.Name, Roles: []string{}, KubeletVersion: node.Status.NodeInfo.KubeletVersion, ContainerRuntime: node.Status.NodeInfo.ContainerRuntimeVersion, OS: node.Status.NodeInfo.OSImage, Architecture: node.Status.NodeInfo.Architecture, Created: node.Metadata.CreationTimestamp, Unschedulable: node.Spec.Unschedulable, Capacity: *resources(node.Status.Capacity), Allocatable: *resources(node.Status.Allocatable), Usage: usage}
 	for _, c := range node.Status.Conditions {
 		if c.Type == "Ready" && c.Status == "True" {
@@ -330,8 +358,8 @@ func nodeInfo(node *kube.Node, usage *sandbox.Resources) sandbox.NodeInfo {
 
 // resources reads the cpu and memory of a resource list; a quantity that
 // does not parse counts as unset.
-func resources(list kube.ResourceList) *sandbox.Resources {
-	var r sandbox.Resources
+func resources(list kube.ResourceList) *sandbox.Amounts {
+	var r sandbox.Amounts
 	if v, err := kube.Milli(list["cpu"]); err == nil {
 		r.CPUMilli = v
 	}
@@ -341,8 +369,8 @@ func resources(list kube.ResourceList) *sandbox.Resources {
 	return &r
 }
 
-func podUsage(m kube.PodMetricsItem) *sandbox.Resources {
-	var total sandbox.Resources
+func podUsage(m kube.PodMetricsItem) *sandbox.Amounts {
+	var total sandbox.Amounts
 	for _, c := range m.Containers {
 		total = total.Add(resources(c.Usage))
 	}

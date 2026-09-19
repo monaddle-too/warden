@@ -1,7 +1,19 @@
-import { useState } from "react";
-import { ShieldAlert } from "lucide-react";
-import type { Approval } from "../types";
+import { useMemo, useState } from "react";
+import { ClipboardList, ShieldAlert, TerminalSquare } from "lucide-react";
+import type { Approval, PermissionParams } from "../types";
 import { api } from "../api";
+import {
+  PLAN_ANSWERS,
+  alwaysHint,
+  alwaysLabel,
+  askedCommand,
+  isPlan,
+  permissionParams,
+  permissionTitle,
+} from "../permissions";
+import { editSegments, inputText, shortPath } from "../tools";
+import { DiffView } from "./DiffView";
+import { RichText } from "./RichText";
 /* Top-level parameters shown as label/value rows; nested values are
    summarised and the full request stays behind "Show raw request". */
 // Owner-approved grants an agent can request (see chats/grants.go): what
@@ -60,8 +72,32 @@ function describeGrant(approval: Approval) {
         reason: "",
         button: "Copy changes back",
       };
+    case "warden/sandbox/resources": {
+      const wanted = resourcesLabel(Number(p.cpu_milli), Number(p.memory_mb));
+      const current = resourcesLabel(
+        Number(p.current_cpu_milli),
+        Number(p.current_memory_mb),
+      );
+      return {
+        title: `Give this workspace ${wanted}`,
+        text: p.restart
+          ? `Up from ${current}. The sandbox restarts to take the new size: the agent's process ends, files and this conversation are kept, and Warden resumes the chat afterwards. You can shrink it again from the workspace panel.`
+          : `Up from ${current}. Applied to the running sandbox where the cluster allows it; otherwise the sandbox restarts with the new size (files and this conversation are kept, Warden resumes the chat). You can shrink it again from the workspace panel.`,
+        reason,
+        button: "Resize to " + wanted,
+      };
+    }
   }
   return undefined;
+}
+
+// resourcesLabel renders a size as the Go side does: "2 CPUs · 4 GiB".
+export function resourcesLabel(cpuMilli: number, memoryMB: number): string {
+  const cpus = cpuMilli / 1000;
+  const cpu = cpus === 1 ? "1 CPU" : `${cpus} CPUs`;
+  const memory =
+    memoryMB % 1024 === 0 ? `${memoryMB / 1024} GiB` : `${memoryMB} MiB`;
+  return `${cpu} · ${memory}`;
 }
 
 function summarize(value: unknown): string {
@@ -77,6 +113,188 @@ function summarize(value: unknown): string {
   return `{ ${keys.slice(0, 4).join(", ")}${keys.length > 4 ? ", …" : ""} }`;
 }
 export function ApprovalCard({
+  chatID,
+  approval,
+}: {
+  chatID: string;
+  approval: Approval;
+}) {
+  const permission = permissionParams(approval);
+  if (permission)
+    return (
+      <PermissionCard chatID={chatID} approval={approval} params={permission} />
+    );
+  return <GenericApprovalCard chatID={chatID} approval={approval} />;
+}
+
+/* A tool ask of a Claude chat in ask mode (the CLI's can_use_tool routed
+   to the owner: a command, a file edit as its diff, another tool with
+   its input), or the plan of one in plan mode. The answers go back as
+   the CLI's allow or deny; "Allow always" also records the call's rule
+   on the chat, or on the workspace for every chat of it (rules.go); a
+   denial's message and a plan's feedback reach the model as the tool's
+   error text. */
+export function PermissionCard({
+  chatID,
+  approval,
+  params,
+}: {
+  chatID: string;
+  approval: Approval;
+  params: PermissionParams;
+}) {
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const plan = isPlan(params);
+  const entry = params.entry;
+  const kind = entry?.tool?.kind;
+  const command = askedCommand(params);
+  const segments = useMemo(
+    () => (kind === "edit" && entry?.detail ? editSegments(entry.detail) : []),
+    [kind, entry?.detail],
+  );
+  const input =
+    kind && kind !== "command" && kind !== "edit"
+      ? inputText(entry?.tool?.input ?? params.input)
+      : "";
+  async function answer(body: {
+    allow: boolean;
+    always?: boolean;
+    scope?: "chat" | "workspace";
+    message?: string;
+    mode?: string;
+  }) {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`chats/${chatID}/approvals/${approval.id}`, {
+        allow: body.allow,
+        always: !!body.always,
+        scope: body.scope ?? "chat",
+        message: body.message ?? "",
+        mode: body.mode ?? "",
+        answers: {},
+      });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section
+      className={`approval-card permission-card${plan ? " plan-card" : ""}`}
+      aria-label={plan ? "Plan for review" : "Tool permission request"}
+    >
+      <div className="approval-head">
+        <span className="approval-icon" aria-hidden="true">
+          {plan ? <ClipboardList size={18} /> : <TerminalSquare size={18} />}
+        </span>
+        <div>
+          <h3>{permissionTitle(params)}</h3>
+          {!plan && (
+            <p>
+              {params.description ||
+                (kind === "edit" && entry?.tool?.paths?.[0]
+                  ? shortPath(entry.tool.paths[0])
+                  : entry?.tool?.name || params.tool)}
+            </p>
+          )}
+        </div>
+      </div>
+      {plan ? (
+        <div className="plan-body">
+          <RichText text={params.plan || "(empty plan)"} chatID={chatID} />
+        </div>
+      ) : command ? (
+        <pre className="approval-body permission-command">{command}</pre>
+      ) : segments.length > 0 ? (
+        <div className="activity-detail permission-diff">
+          <DiffView segments={segments} />
+        </div>
+      ) : input ? (
+        <pre className="approval-body">{input}</pre>
+      ) : null}
+      <label className="permission-message">
+        <input
+          aria-label={plan ? "Feedback for Claude" : "Reason for denying"}
+          placeholder={
+            plan
+              ? "Feedback if you keep planning (optional)"
+              : "Message to Claude if you deny (optional)"
+          }
+          value={message}
+          disabled={busy}
+          onChange={(e) => setMessage(e.target.value)}
+        />
+      </label>
+      <div className="approval-actions">
+        {plan ? (
+          <>
+            <button
+              disabled={busy}
+              title="The plan goes back to Claude with your feedback; it stays in plan mode"
+              onClick={() => answer({ allow: false, message })}
+            >
+              Keep planning
+            </button>
+            {PLAN_ANSWERS.map((a, i) => (
+              <button
+                key={a.mode}
+                className={i === 0 ? "primary" : ""}
+                disabled={busy}
+                title={a.hint}
+                onClick={() => answer({ allow: true, mode: a.mode })}
+              >
+                {a.label}
+              </button>
+            ))}
+          </>
+        ) : (
+          <>
+            <button
+              disabled={busy}
+              onClick={() => answer({ allow: false, message })}
+            >
+              Deny
+            </button>
+            <button
+              disabled={busy}
+              title={alwaysHint(params, "chat")}
+              onClick={() => answer({ allow: true, always: true })}
+            >
+              {alwaysLabel(params, "chat")}
+            </button>
+            <button
+              disabled={busy}
+              title={alwaysHint(params, "workspace")}
+              onClick={() =>
+                answer({ allow: true, always: true, scope: "workspace" })
+              }
+            >
+              {alwaysLabel(params, "workspace")}
+            </button>
+            <button
+              className="primary"
+              disabled={busy}
+              onClick={() => answer({ allow: true })}
+            >
+              Allow
+            </button>
+          </>
+        )}
+      </div>
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function GenericApprovalCard({
   chatID,
   approval,
 }: {

@@ -637,8 +637,9 @@ missing `providers.github` hides the repository UI instead of failing.
   },
   "runtimes": { "codex": "…", "claude": "…" },
   "sandboxes": {
-    "memoryMB": 1536, "maxRunning": 2, "warmSpares": 1,
-    "stopAfterIdleMinutes": 15, "keepStopped": 32
+    "memoryMB": 1536, "cpus": 1, "maxMemoryMB": 0, "maxCPUs": 0,
+    "maxRunning": 2, "warmSpares": 1,
+    "stopAfterIdleMinutes": 30, "keepStopped": 32
   },
   "chat": { "listen": "127.0.0.1:18780" },
   "previews": { "mode": "loopback", "hostSuffix": "localhost", "edgeListen": "127.0.0.1:18781" },
@@ -670,10 +671,12 @@ missing `providers.github` hides the repository UI instead of failing.
 | `sbx.inspectionCertMaxAgeDays` | How old the certificate Warden uses to inspect sandbox HTTPS traffic may get before it is regenerated at startup (today the gateway CA max age). | policy |
 | `runtimes.codex` | The pinned Codex CLI bundle for the guest architecture. | runner |
 | `runtimes.claude` | The pinned Claude Code executable for the guest. | runner |
-| `sandboxes.memoryMB` | RAM per new sandbox. | runner |
+| `sandboxes.memoryMB` | RAM a new workspace gets unless its creator chose a size. | runner |
+| `sandboxes.cpus` | CPUs a new workspace gets unless its creator chose a size (whole on SBX). | runner |
+| `sandboxes.maxMemoryMB`, `sandboxes.maxCPUs` | The most any one workspace may be given (at creation, by the owner, or through an agent's approved request); 0 derives it from the host. See [warden-workspace-resources-plan](warden-workspace-resources-plan.md). | runner |
 | `sandboxes.maxRunning` | How many sandboxes may run at once. | runner |
 | `sandboxes.warmSpares` | Booted empty sandboxes kept ready so a new chat starts fast. | runner |
-| `sandboxes.stopAfterIdleMinutes` | Minutes without user activity before a running sandbox stops; files are kept. | runner |
+| `sandboxes.stopAfterIdleMinutes` | Minutes after the last chat activity (the agent's last reply, a message, a command, a preview) before a running sandbox stops; files are kept. Default 30. | runner |
 | `sandboxes.keepStopped` | Stopped sandboxes kept on disk before the oldest are deleted. | runner |
 | `sandboxes.egress` | What a sandbox may reach through its gateway besides the brokered providers: `restricted` (the template's destination list; default) or `open` (any public HTTP/HTTPS host). Credentials are injected only for approved requests in both modes; in `open`, a brokered host without a grant is reached anonymously instead of refused. The Admin console can switch it at runtime; that choice persists in the policy state and overrides this value. | policy |
 | `chat.listen` | Loopback address of the chat API and UI; the edge sits in front. | chat, edge |
@@ -835,6 +838,34 @@ route is revived or removed). `--manage-network` is dropped; it is always on.
   scrolling, follow-until-idle and submit semantics against a fake chat
   service, and the launcher subcommands against a fake endpoint.
   Native Codex remote-TUI relay and subagent nesting remain future work.
+- 2026-09-18: approval popups default to `none`: a question asked in the
+  terminal client opened the browser although the client showed and could
+  answer it; approvals now wait in whichever client is open (`--popups
+  notify|browser|auto` opt back in).
+- 2026-09-18 (later): reviews only the app can do open the app. A pull
+  request proposal, suggested document edits and a document selection or
+  creation were invisible outside the web (they are not approvals; the
+  engine polls the policy service for them). The chat now records them as
+  `chats[].reviews` (`chats/reviews.go`: added when the submission waits,
+  dropped when the poll or the delivery loop sees them settled, matched to
+  `pr_state`/`doc_state`/`state` when the delivery loop starts and every
+  30 s). The launcher opens the app on the chat for a review under every
+  `--popups` value, `none` included — there is nowhere else to do it — and
+  the new `silent` value suppresses even that; approvals keep the 2026-09-18
+  rule. The terminal client shows a review card above the approvals,
+  `/review [N]` opens the app on the chat (URL shown when it cannot), the
+  status line, title and bell count reviews with approvals, `send --wait`
+  announces them. Decision: one knob (`--popups`), no separate flag for
+  reviews. The web's polling of the three state routes is unchanged.
+  Landed on main as 971eee0 (dd4fafc, 842d7bf: `openBrowser` honours
+  `$BROWSER`). Live on a cloned home: two document proposals still pending
+  in the policy database reappeared as reviews at start and the launcher
+  opened the app on each (through a `$BROWSER` stub); the TUI card, status
+  count, title, `/review` and `send --wait` line verified under a pty; a
+  `doc_resolve` rejection and a `resolve` denial each removed the review at
+  once. Not verified live: the pull request path (the owner's GitHub
+  sign-in had expired; the engine test covers submit, settle and
+  reconcile). Not deployed to `~/.warden`.
 - 2026-09-16: approval popups. The launcher watches the event stream and
   surfaces each newly pending approval once (desktop notification; browser
   opened on the chat in `--popups browser`, the default when detached); the

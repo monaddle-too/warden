@@ -13,8 +13,10 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	"warden/chat/internal/bugreport"
 	"warden/chat/internal/config"
 	"warden/chat/internal/handshake"
+	"warden/chat/internal/hostinfo"
 	"warden/chat/internal/kube"
 	"warden/chat/internal/release"
 	"warden/chat/internal/sandbox"
@@ -37,7 +39,7 @@ func run(args []string) error {
 	template := fs.String("template", "", "Pinned SBX template for the verified Warden launch profile (sbx.guestImage@sbx.guestImageDigest; default the stock shell template)")
 	runtimeDir := fs.String("runtime-dir", "", "Pinned Linux Codex vendor bundle directory (runtimes.codex)")
 	wardenSocket := fs.String("warden-socket", "", "Private Warden enforcement socket; missing/unverified enforcement denies execution (services.policy.address, default paths.state/policy/sbx-control.sock)")
-	idle := fs.Duration("idle-timeout", 15*time.Minute, "Stop environments after this much trusted user inactivity (sandboxes.stopAfterIdleMinutes)")
+	idle := fs.Duration("idle-timeout", 30*time.Minute, "Stop environments this long after the last chat activity (a turn's end, a message, a command, a preview; sandboxes.stopAfterIdleMinutes)")
 	memoryMB := fs.Int("sandbox-memory-mb", 1536, "Memory in MiB for newly created chat sandboxes, 512–16384 (sandboxes.memoryMB)")
 	residents := fs.Int("max-resident", 2, "Maximum resident sandbox environments (sandboxes.maxRunning)")
 	spares := fs.Int("spare-sandboxes", 1, "Booted spare guests kept ready for new environments, beside max-resident (sandboxes.warmSpares)")
@@ -62,7 +64,11 @@ func run(args []string) error {
 	}
 	root, sbx, template, runtimeDir, claudePath = &s.root, &s.sbx, &s.template, &s.runtimeDir, &s.claudePath
 	idle, memoryMB, residents, spares, retained = &s.idle, &s.memoryMB, &s.residents, &s.spares, &s.retained
-	driver, err := runtimeDriver(s, *kubeconfig)
+	// Bug reports (docs/bug-reporting-plan.md): a recovered panic in a
+	// worker op or the preview server is drafted for the launcher to show.
+	bugreport.SetDefault(bugreport.New(s.cfg, s.configPath, bugreport.ComponentRunner))
+	limits := sizeLimits(s)
+	driver, err := runtimeDriver(s, limits, *kubeconfig)
 	if err != nil {
 		slog.Error("configuration", "error", err)
 		return services.ExitCode(1)
@@ -119,6 +125,11 @@ func run(args []string) error {
 	w.IdleTimeout = *idle
 	w.MaxResident = *residents
 	w.MemoryMB = *memoryMB
+	w.Limits = limits
+	if err = w.Limits.Validate(); err != nil {
+		slog.Error("invalid sandbox size limits", "error", err)
+		return services.ExitCode(1)
+	}
 	w.Revision, w.Parallel, w.Retained = release.Revision, *parallel, *retained
 	if err = w.Serve(ctx, l); err != nil {
 		slog.Error("worker stopped", "error", err)
@@ -131,14 +142,24 @@ func run(args []string) error {
 // have to be provisioned and the guest image pulled before the pod runs.
 const kubernetesPrepareTimeout = 10 * time.Minute
 
+// sizeLimits is the size offer of the configured runtime kind: what the
+// host allows on SBX, what the configuration says on Kubernetes.
+func sizeLimits(s settings) sandbox.ResourceLimits {
+	if s.cfg.RuntimeKind() == config.RuntimeKubernetes {
+		return kubernetesResourceLimits(s.cfg.Sandboxes, s.memoryMB)
+	}
+	hostMemoryMB, cores := hostinfo.Capacity()
+	return resourceLimits(s.cfg.Sandboxes, s.memoryMB, hostMemoryMB, cores)
+}
+
 // runtimeDriver selects the RuntimeDriver of the configured runtime kind.
 // The sbx shapes get the SBX driver over the worker's executable and
 // template; the Kubernetes kind gets the pod driver over the in-cluster
 // service account (or the kubeconfig named for development), configured
-// from the kubernetes section and the runner's sandbox memory
+// from the kubernetes section and the runner's default sandbox size
 // (docs/warden-kubernetes-plan.md, work item 4). The runner's other
 // settings (spares, idle timeout, residents) apply to both.
-func runtimeDriver(s settings, kubeconfig string) (func(*sandbox.Worker) sandbox.RuntimeDriver, error) {
+func runtimeDriver(s settings, limits sandbox.ResourceLimits, kubeconfig string) (func(*sandbox.Worker) sandbox.RuntimeDriver, error) {
 	switch kind := s.cfg.RuntimeKind(); kind {
 	case config.RuntimeSBX:
 		return sandbox.NewSBXRuntime, nil
@@ -161,7 +182,7 @@ func runtimeDriver(s settings, kubeconfig string) (func(*sandbox.Worker) sandbox
 		if err != nil {
 			return nil, fmt.Errorf("kubernetes API client: %w", err)
 		}
-		driver, err := sandboxkube.New(client, kubernetesOptions(k, s.memoryMB, s.cfg.Sandboxes.CPUMillis))
+		driver, err := sandboxkube.New(client, kubernetesOptions(k, limits.Default))
 		if err != nil {
 			return nil, err
 		}
@@ -177,21 +198,22 @@ func runtimeDriver(s settings, kubeconfig string) (func(*sandbox.Worker) sandbox
 	}
 }
 
-// kubernetesOptions maps the kubernetes section and the sandbox memory to
-// the driver's options.
-func kubernetesOptions(k *config.Kubernetes, memoryMB, cpuMillis int) sandboxkube.Options {
+// kubernetesOptions maps the kubernetes section and the default sandbox
+// size (what a spare is booted at) to the driver's options.
+func kubernetesOptions(k *config.Kubernetes, size sandbox.Resources) sandboxkube.Options {
 	return sandboxkube.Options{
-		Namespace:        k.Namespace,
-		Tier:             k.Tier,
-		RuntimeClass:     k.RuntimeClass,
-		GuestImage:       k.GuestImage,
-		GuestImageDigest: k.GuestImageDigest,
-		StorageClass:     k.StorageClass,
-		WorkspaceSizeGi:  k.WorkspaceSizeGi,
-		TrustConfigMap:   k.TrustConfigMap,
-		MemoryMB:         memoryMB,
-		CPUMillis:        cpuMillis,
-		NodeSelector:     k.NodeSelector,
-		Tolerations:      k.Tolerations,
+		Namespace:          k.Namespace,
+		Tier:               k.Tier,
+		RuntimeClass:       k.RuntimeClass,
+		GuestImage:         k.GuestImage,
+		GuestImageDigest:   k.GuestImageDigest,
+		StorageClass:       k.StorageClass,
+		WorkspaceSizeGi:    k.WorkspaceSizeGi,
+		TrustConfigMap:     k.TrustConfigMap,
+		MemoryMB:           size.MemoryMB,
+		CPUMillis:          size.CPUMilli,
+		NodeSelector:       k.NodeSelector,
+		Tolerations:        k.Tolerations,
+		SparePriorityClass: k.SparePriorityClass,
 	}
 }

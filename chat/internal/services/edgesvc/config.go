@@ -92,5 +92,10 @@ func edgeConfig(cfg config.Config) edge.Config {
 		c.DemoDomains = strings.Join(g.DemoDomains, ",")
 		c.LoginsFile = g.SignInLedger
 	}
+	// The bug-report receiver keeps its files beside the edge's other
+	// state (docs/bug-reporting-plan.md); only an enabled one is passed on.
+	if b := cfg.Edge.BugReports; b.Enabled {
+		c.BugReports = &edge.BugReportsConfig{Enabled: true, Dir: filepath.Join(cfg.EdgeState(), "bug-reports"), RetentionDays: b.RetentionDays, MaxPerHour: b.MaxPerHour, MaxPerDay: b.MaxPerDay}
+	}
 	return c
 }

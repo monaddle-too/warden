@@ -177,7 +177,7 @@ func (e *Engine) attachmentBytes(chatID, id string) ([]byte, error) {
 
 // removeAttachment forgets an upload that no message has used.
 func (e *Engine) removeAttachment(chatID, id string) error {
-	c := e.Store.Snapshot().chat(chatID)
+	c := e.Store.Chat(chatID)
 	if c == nil {
 		return errors.New("chat not found")
 	}
@@ -241,6 +241,9 @@ func (e *Engine) deliverAttachments(ctx context.Context, c *Chat, m cv.Entry) er
 // inside the sandbox; the Claude adapter runs on the host, so for Claude the
 // normalised PNG rides along as base64 (up to claudeImageBudget per turn).
 func (e *Engine) input(ctx context.Context, c *Chat, cwd string, m cv.Entry) ([]any, error) {
+	// The transcript keeps the message as typed; the agent gets its
+	// resource mentions expanded (mentions.go).
+	m.Text = e.expandMessage(ctx, c, m.Text)
 	if len(m.Attachments) == 0 {
 		return messageInput(m, cwd, nil), nil
 	}
@@ -307,7 +310,7 @@ func attachmentSize(n int64) string {
 // attachmentUpload takes one multipart file (field "file") for a chat and
 // answers with its record; the message that sends it names the ID.
 func (h *HTTP) attachmentUpload(w http.ResponseWriter, r *http.Request, chatID string) {
-	c := h.Engine.Store.Snapshot().chat(chatID)
+	c := h.Engine.Store.Chat(chatID)
 	if c == nil {
 		http.Error(w, "chat not found", 404)
 		return
@@ -336,7 +339,7 @@ func (h *HTTP) attachmentUpload(w http.ResponseWriter, r *http.Request, chatID s
 // as the normalised PNG with the images route's headers, anything else as a
 // download the browser never renders.
 func (h *HTTP) attachmentHTTP(w http.ResponseWriter, r *http.Request, chatID, id string) {
-	if h.Engine.Store.Snapshot().chat(chatID) == nil {
+	if h.Engine.Store.Chat(chatID) == nil {
 		http.Error(w, "chat not found", 404)
 		return
 	}

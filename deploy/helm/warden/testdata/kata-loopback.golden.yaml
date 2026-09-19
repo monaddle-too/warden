@@ -1,4 +1,22 @@
 ---
+# Source: warden/templates/spare-priorityclass.yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: warden-warden-sandboxes-spare
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: sandboxes
+value: -10
+preemptionPolicy: Never
+globalDefault: false
+description: Warden warm spare sandboxes; a sandbox pod may preempt one for its slot.
+
+---
 # Source: warden/templates/sandbox-namespace.yaml
 apiVersion: v1
 kind: Namespace
@@ -462,10 +480,10 @@ metadata:
 spec:
   hard:
     pods: "8"
-    requests.memory: "17664Mi"
-    limits.memory: "17664Mi"
-    requests.cpu: "18000m"
-    limits.cpu: "18000m"
+    requests.memory: "34048Mi"
+    limits.memory: "34048Mi"
+    requests.cpu: "34000m"
+    limits.cpu: "34000m"
     persistentvolumeclaims: "24"
     requests.storage: "480Gi"
     # Sandboxes get nothing else: no Services, no Secrets of their own.
@@ -496,8 +514,8 @@ spec:
         memory: "2048Mi"
         cpu: "2000m"
       max:
-        memory: "2048Mi"
-        cpu: "2000m"
+        memory: "4096Mi"
+        cpu: "4000m"
     - type: PersistentVolumeClaim
       max:
         storage: "20Gi"
@@ -589,6 +607,14 @@ data:
       "chat": {
         "listen": "127.0.0.1:18780"
       },
+      "edge": {
+        "bugReports": {
+          "enabled": false,
+          "maxPerDay": 500,
+          "maxPerHour": 30,
+          "retentionDays": 90
+        }
+      },
       "kubernetes": {
         "gatewayPort": 7000,
         "gatewayService": "warden-gateway",
@@ -599,6 +625,7 @@ data:
           "warden.monaddle.com/pool": "kata"
         },
         "runtimeClass": "kata-qemu",
+        "sparePriorityClass": "warden-warden-sandboxes-spare",
         "storageClass": "",
         "tier": "kata",
         "trustConfigMap": "warden-guest-trust",
@@ -633,12 +660,14 @@ data:
         "kind": "kubernetes"
       },
       "sandboxes": {
-        "cpuMillis": 2000,
+        "cpus": 2,
         "egress": "restricted",
         "keepStopped": 16,
+        "maxCPUs": 4,
+        "maxMemoryMB": 4096,
         "maxRunning": 4,
         "memoryMB": 2048,
-        "stopAfterIdleMinutes": 15,
+        "stopAfterIdleMinutes": 30,
         "warmSpares": 2
       },
       "services": {
@@ -899,6 +928,12 @@ rules:
   - apiGroups: [""]
     resources: [pods/log]
     verbs: [get]
+  # A workspace resize is one patch to the resize subresource (Kubernetes
+  # 1.33+): the pod's requests and limits change in place. The pod itself
+  # stays unpatchable by the runner; its labels are the policy service's.
+  - apiGroups: [""]
+    resources: [pods/resize]
+    verbs: [patch]
   # The trust-bundle readiness gate (decision 9): the runner creates no
   # sandbox until the guest trust ConfigMap holds a bundle.
   - apiGroups: [""]
@@ -910,6 +945,12 @@ rules:
   # absent metrics leave those columns empty.
   - apiGroups: [metrics.k8s.io]
     resources: [pods]
+    verbs: [get, list]
+  # The sandbox pods' events (docs/startup-detail-events-plan.md): the
+  # autoscaler's and the kubelet's word on a start, for the startup detail,
+  # the workspace panel and the Cluster section.
+  - apiGroups: [""]
+    resources: [events]
     verbs: [get, list]
 
 ---
@@ -1000,6 +1041,9 @@ rules:
     verbs: [get]
   - apiGroups: [metrics.k8s.io]
     resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [events]
     verbs: [get, list]
 
 ---
@@ -1261,7 +1305,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: policy
       annotations:
-        checksum/config: f4b235b31ba2019a01a55f454d13a6425d9d530aaf8faa04f3d12f9938aeb327
+        checksum/config: 86387c33ccc01f8b3b05abb173d92ddc80b600426a923b4b1367962f411b0a96
     spec:
       serviceAccountName: warden-policy
       automountServiceAccountToken: true
@@ -1327,8 +1371,8 @@ spec:
             limits:
               memory: 1Gi
             requests:
-              cpu: 250m
-              memory: 256Mi
+              cpu: 100m
+              memory: 128Mi
           volumeMounts:
             - name: state
               mountPath: /var/lib/warden/policy
@@ -1396,7 +1440,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: runner
       annotations:
-        checksum/config: f4b235b31ba2019a01a55f454d13a6425d9d530aaf8faa04f3d12f9938aeb327
+        checksum/config: 86387c33ccc01f8b3b05abb173d92ddc80b600426a923b4b1367962f411b0a96
     spec:
       serviceAccountName: warden-runner
       automountServiceAccountToken: true
@@ -1462,8 +1506,8 @@ spec:
             limits:
               memory: 1Gi
             requests:
-              cpu: 250m
-              memory: 256Mi
+              cpu: 100m
+              memory: 128Mi
           volumeMounts:
             - name: state
               mountPath: /var/lib/warden/runner
@@ -1531,7 +1575,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: chat
       annotations:
-        checksum/config: f4b235b31ba2019a01a55f454d13a6425d9d530aaf8faa04f3d12f9938aeb327
+        checksum/config: 86387c33ccc01f8b3b05abb173d92ddc80b600426a923b4b1367962f411b0a96
     spec:
       serviceAccountName: warden-chat
       automountServiceAccountToken: false
@@ -1663,7 +1707,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: edge
       annotations:
-        checksum/config: f4b235b31ba2019a01a55f454d13a6425d9d530aaf8faa04f3d12f9938aeb327
+        checksum/config: 86387c33ccc01f8b3b05abb173d92ddc80b600426a923b4b1367962f411b0a96
     spec:
       serviceAccountName: warden-edge
       automountServiceAccountToken: false
@@ -1726,7 +1770,7 @@ spec:
             limits:
               memory: 256Mi
             requests:
-              cpu: 100m
+              cpu: 50m
               memory: 64Mi
           volumeMounts:
             - name: state

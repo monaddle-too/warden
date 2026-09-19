@@ -46,7 +46,9 @@ func (c *cli) uninstall(args []string) error {
 	if lock, err := os.OpenFile(filepath.Join(root, "launcher.lock"), os.O_RDWR, 0o600); err == nil {
 		held := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil
 		lock.Close()
-		if _, detached := runningPID(cfg); held && !detached {
+		_, detached := runningPID(cfg)
+		service := c.registeredService(cfg) != nil && c.registeredService(cfg).status().Running
+		if held && !detached && !service {
 			return errors.New("Warden is running in the foreground (warden start); stop it with Ctrl+C first")
 		}
 	}
@@ -65,6 +67,18 @@ func (c *cli) uninstall(args []string) error {
 		if strings.TrimSpace(line) != "yes" {
 			return errors.New("cancelled")
 		}
+	}
+	if m := c.registeredMenu(cfg); m != nil {
+		if err := m.uninstall(); err != nil {
+			return err
+		}
+		fmt.Fprintf(c.stdout, "menu bar:    stopped and unregistered the menu bar item (%s removed)\n", m.unitPath())
+	}
+	if svc := c.registeredService(cfg); svc != nil {
+		if err := svc.uninstall(); err != nil {
+			return err
+		}
+		fmt.Fprintf(c.stdout, "service:     stopped and unregistered the %s (%s removed)\n", svc.kind(), svc.unitPath())
 	}
 	if pid, alive := runningPID(cfg); alive {
 		if err := stopDetached(cfg, pid); err != nil {

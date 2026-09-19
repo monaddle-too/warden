@@ -2,7 +2,9 @@
    wrote, or as JSON for another tool. Everything here is string work on
    `chat.conversation`; nothing is fetched and nothing is rendered, so an
    agent's text goes into the file exactly as it was written. */
+import { compactionText } from "./context";
 import { formatSize } from "./attachments";
+import { nestEntries } from "./transcript";
 import { footerText, turnFooters } from "./turns";
 import type { Chat, Entry } from "./types";
 
@@ -51,16 +53,55 @@ export function fenceFor(text: string) {
   return "`".repeat(Math.max(3, longest + 1));
 }
 
-export function exportEntries(entries: Entry[], activity: boolean) {
-  return entries.filter((e) => activity || e.role !== "activity");
+/* An entry with, under it, the entries a subagent produced for it (the
+   transcript's nesting, `nestEntries`); a subagent's own subagent nests
+   the same way. */
+export type ExportNode = { entry: Entry; children: ExportNode[] };
+
+/* Tool steps and the model's thinking are the agent's working, kept out
+   unless asked for; a command the person ran themselves (`!cmd`) is
+   theirs, not the agent's, and stays. */
+export const exportable = (e: Entry, activity: boolean) =>
+  activity ||
+  (e.role !== "activity" && e.role !== "thinking") ||
+  (e.role === "activity" && !!e.sender);
+
+/* What goes into the file, as the transcript nests it: the conversation's
+   own entries, a subagent's under its Agent card. A card left out takes
+   its subagent's work with it. */
+export function exportTree(entries: Entry[], activity: boolean): ExportNode[] {
+  const { top, nested } = nestEntries(entries);
+  const build = (list: Entry[]): ExportNode[] =>
+    list
+      .filter((e) => exportable(e, activity))
+      .map((entry) => ({
+        entry,
+        children: build(nested.get(entry.id) ?? []),
+      }));
+  return build(top);
+}
+
+/* The same entries flat, each subagent's after its card. */
+export function exportEntries(entries: Entry[], activity: boolean): Entry[] {
+  const out: Entry[] = [];
+  const walk = (nodes: ExportNode[]) => {
+    for (const n of nodes) {
+      out.push(n.entry);
+      walk(n.children);
+    }
+  };
+  walk(exportTree(entries, activity));
+  return out;
 }
 
 /* One entry as markdown; a message keeps its text verbatim (it is markdown
-   already), everything else is described. */
+   already), everything else is described. `inner` is a subagent's work,
+   set under its card's title before the card's result. */
 function entryMarkdown(
   entry: Entry,
   provider: string | undefined,
   time: (s: number) => string,
+  inner: string[] = [],
 ) {
   const lines: string[] = [];
   switch (entry.role) {
@@ -90,16 +131,51 @@ function entryMarkdown(
       break;
     }
     case "activity": {
-      lines.push(`### Activity — ${entry.text || "Agent activity"}`, "");
+      // A command the person ran is theirs; the agent's steps are its.
+      lines.push(
+        entry.sender
+          ? `### Command by ${senderLabel(entry.sender)} — ${entry.text}`
+          : `### Activity — ${entry.text || "Agent activity"}`,
+        "",
+      );
+      lines.push(...inner);
       if (entry.detail) {
         const fence = fenceFor(entry.detail);
         lines.push(fence, entry.detail.replace(/\n$/, ""), fence, "");
       }
       break;
     }
+    case "thinking":
+      lines.push("### Thinking", "");
+      if (entry.text)
+        lines.push(`> ${entry.text.split("\n").join("\n> ")}`, "");
+      break;
     case "image":
       lines.push(`_Image${entry.text ? `: ${entry.text}` : ""}_`, "");
       break;
+    case "compaction":
+      lines.push(
+        `### ${compactionText(entry.compaction ?? { status: "completed" })}`,
+        "",
+      );
+      if (entry.detail)
+        lines.push(`> ${entry.detail.split("\n").join("\n> ")}`, "");
+      break;
+    case "aside": {
+      // A side question and its answer, never part of the conversation.
+      lines.push(
+        `### Side question — ${senderLabel(entry.sender)}, ${time(entry.createdAt)}`,
+        "",
+        entry.text,
+        "",
+      );
+      const a = entry.aside;
+      if (a?.status === "failed")
+        lines.push(`_Could not answer${a.error ? `: ${a.error}` : ""}_`, "");
+      else if (entry.detail)
+        lines.push(`> ${entry.detail.split("\n").join("\n> ")}`, "");
+      break;
+    }
     default:
       lines.push(`> ${entry.text.split("\n").join("\n> ")}`, "");
   }
@@ -119,19 +195,29 @@ export function exportMarkdown(
   if (chat.repository) facts.push(`Repository: ${chat.repository}`);
   facts.push(`Exported: ${time(at.getTime() / 1000)}`);
   head.push(...facts.map((f) => `- ${f}`), "", "---", "");
-  // What each finished turn took, under its last entry; a turn still
-  // running when the file is written has no line.
+  const tree = exportTree(chat.conversation.entries, options.activity);
+  // What each finished turn took, under its last entry of the
+  // conversation's own; a turn still running when the file is written
+  // has no line.
   const footers = turnFooters(
-    chat.conversation.entries,
+    nestEntries(chat.conversation.entries).top,
     chat.conversation.turns,
     false,
   );
-  const body = exportEntries(
-    chat.conversation.entries,
-    options.activity,
-  ).flatMap((entry) => {
-    const lines = entryMarkdown(entry, chat.provider, time);
-    const footer = footers.get(entry.id);
+  // A subagent's work goes under its card as a quotation, so its own
+  // headings and fences stay inside the card; a nested subagent's is
+  // quoted twice.
+  const nodeMarkdown = (node: ExportNode): string[] => {
+    const inner = node.children
+      .flatMap(nodeMarkdown)
+      .flatMap((block) => block.split("\n"))
+      .map((line) => (line ? `> ${line}` : ">"));
+    if (inner.length) inner.push("");
+    return entryMarkdown(node.entry, chat.provider, time, inner);
+  };
+  const body = tree.flatMap((node) => {
+    const lines = nodeMarkdown(node);
+    const footer = footers.get(node.entry.id);
     const took = footer ? footerText(footer) : "";
     if (took) lines.push(`_Turn: ${took}_`, "");
     return lines;
@@ -139,8 +225,16 @@ export function exportMarkdown(
   return [...head, ...body].join("\n").replace(/\n+$/, "\n");
 }
 
+/* An entry's record with a subagent's entries under it as `children`. */
+function nodeJSON(node: ExportNode): Entry & { children?: unknown[] } {
+  return node.children.length
+    ? { ...node.entry, children: node.children.map(nodeJSON) }
+    : node.entry;
+}
+
 /* The chat's own records, as the service sent them, under a header that
-   names the format so a reader can tell the file apart. */
+   names the format so a reader can tell the file apart; a subagent's
+   entries nest under their card as `children`. */
 export function exportJSON(chat: Chat, options: ExportOptions, at: Date) {
   return JSON.stringify(
     {
@@ -157,7 +251,9 @@ export function exportJSON(chat: Chat, options: ExportOptions, at: Date) {
         archived: chat.archived,
         threadID: chat.conversation.threadID,
       },
-      entries: exportEntries(chat.conversation.entries, options.activity),
+      entries: exportTree(chat.conversation.entries, options.activity).map(
+        nodeJSON,
+      ),
       turns: chat.conversation.turns ?? [],
     },
     null,

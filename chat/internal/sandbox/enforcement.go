@@ -20,6 +20,10 @@ type GrantContext struct {
 	ChatID      string `json:"chatID"`
 	RunID       string `json:"runID"`
 	PrincipalID string `json:"principalID"`
+	// ImageDigest is the image of a sandbox the runner derived from a
+	// snapshot of a verified guest (a copy, a regeneration), for the
+	// policy service's image pin; "" for the pinned guest image.
+	ImageDigest string `json:"imageDigest,omitempty"`
 }
 
 type Enforcement interface {
@@ -31,10 +35,15 @@ type Enforcement interface {
 }
 
 type BrokerConfig struct {
-	CACertificate     string `json:"caCertificate,omitempty"`
-	Provider          string `json:"provider,omitempty"`
-	Model             string `json:"-"`
-	ThreadID          string `json:"-"`
+	CACertificate string `json:"caCertificate,omitempty"`
+	Provider      string `json:"provider,omitempty"`
+	Model         string `json:"-"`
+	ThreadID      string `json:"-"`
+	// ForkSession resumes ThreadID as a copy (a forked chat's first run);
+	// OutputStyle is the Claude output style to launch with (both from
+	// the stream request, never from the policy service).
+	ForkSession       bool   `json:"-"`
+	OutputStyle       string `json:"-"`
 	DocumentBaseURL   string `json:"documentBaseURL,omitempty"`
 	APIKeyPlaceholder string `json:"apiKeyPlaceholder"`
 	ProviderBaseURL   string `json:"providerBaseURL"`

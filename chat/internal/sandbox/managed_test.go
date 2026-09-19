@@ -25,6 +25,8 @@ type testGate struct {
 	calls   []string
 	deny    bool
 	endHook func(context.Context, GrantContext) error
+	// grants are every context registered or checked, in order.
+	grants []GrantContext
 }
 
 func (g *testGate) record(s string) error {
@@ -37,9 +39,15 @@ func (g *testGate) record(s string) error {
 	return nil
 }
 func (g *testGate) Register(_ context.Context, c GrantContext) error {
+	g.mu.Lock()
+	g.grants = append(g.grants, c)
+	g.mu.Unlock()
 	return g.record("register:" + c.SandboxID)
 }
-func (g *testGate) Check(_ context.Context, _ GrantContext, phase string) error {
+func (g *testGate) Check(_ context.Context, c GrantContext, phase string) error {
+	g.mu.Lock()
+	g.grants = append(g.grants, c)
+	g.mu.Unlock()
 	return g.record("check:" + phase)
 }
 func (g *testGate) Begin(_ context.Context, _ GrantContext) (BrokerConfig, error) {
@@ -63,8 +71,47 @@ type testRuntime struct {
 	stopHook      func(context.Context, string) error
 	execHook      func([]string) error
 	execOutput    string
+	resizeRestart bool      // Resize reports the instance replaced, as SBX does
+	resizeErr     error     // Resize's answer when set
 	runs          []RunSpec // every Stream launch, in order
 	requestURI    string    // the last request the fake guest service saw
+	// digests is what ImageDigest answers per runtime name (a snapshot's
+	// digest for a copy or a regeneration); a name without one errors.
+	digests map[string]string
+	// survivors is what a restarted worker's Reconcile finds still
+	// running: runtime name to the generation of its guest.
+	survivors map[string]string
+	// lost is what Resident denies: guests taken away under the worker (a
+	// preempted spare pod).
+	lost map[string]bool
+}
+
+func (d *testRuntime) Resident(_ context.Context, name string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls = append(d.calls, "resident:"+name)
+	return !d.lost[name], nil
+}
+
+func (d *testRuntime) lose(name string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.lost == nil {
+		d.lost = map[string]bool{}
+	}
+	d.lost[name] = true
+}
+
+func (d *testRuntime) removed() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var names []string
+	for _, c := range d.calls {
+		if strings.HasPrefix(c, "remove:") {
+			names = append(names, strings.TrimPrefix(c, "remove:"))
+		}
+	}
+	return names
 }
 
 func (d *testRuntime) record(s string) {
@@ -74,6 +121,12 @@ func (d *testRuntime) record(s string) {
 }
 func (d *testRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 	d.record("create:" + s.Name)
+	if !s.Resources.IsZero() {
+		d.record("size:" + s.Name + ":" + s.Resources.String())
+	}
+	if s.Source != "" {
+		d.record("source:" + s.Name + ":" + s.Source)
+	}
 	Report(ctx, "creating the VM")
 	if d.createStarted != nil {
 		close(d.createStarted)
@@ -83,6 +136,15 @@ func (d *testRuntime) Create(ctx context.Context, s RuntimeSpec) error {
 		return ctx.Err()
 	}
 	return nil
+}
+func (d *testRuntime) ImageDigest(_ context.Context, name string) (string, error) {
+	d.record("image:" + name)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if digest, ok := d.digests[name]; ok {
+		return digest, nil
+	}
+	return "", errors.New("no digest for " + name)
 }
 func (d *testRuntime) Exec(_ context.Context, name, dir string, args ...string) (string, error) {
 	d.record("exec:" + name + ":" + strings.Join(args, " "))
@@ -119,6 +181,13 @@ func (d *testRuntime) Stream(ctx context.Context, name string, run RunSpec) (io.
 	go func() { <-ctx.Done(); b.Close() }()
 	return a, nil
 }
+func (d *testRuntime) Resize(ctx context.Context, name string, r Resources) (bool, error) {
+	d.record("resize:" + name + ":" + r.String())
+	if d.resizeErr != nil {
+		return false, d.resizeErr
+	}
+	return d.resizeRestart, nil
+}
 func (d *testRuntime) Stop(ctx context.Context, name string) error {
 	d.record("stop:" + name)
 	if d.stopHook != nil {
@@ -131,13 +200,24 @@ func (d *testRuntime) Remove(_ context.Context, name string) error {
 	return nil
 }
 
-// Reconcile records the registered names a restarted worker hands the
-// driver, sorted so tests can compare them.
-func (d *testRuntime) Reconcile(_ context.Context, registered []string) error {
-	names := append([]string(nil), registered...)
+// Reconcile records the registered runtimes a restarted worker hands the
+// driver (name, with "*" for one registered resident), sorted so tests can
+// compare them, and reports the names in survivors as still running.
+func (d *testRuntime) Reconcile(_ context.Context, registered []RegisteredRuntime) ([]string, error) {
+	var names, kept []string
+	for _, r := range registered {
+		name := r.Name
+		if r.Resident {
+			name += "*"
+		}
+		names = append(names, name)
+		if d.survivors[r.Name] == r.Generation && r.Resident {
+			kept = append(kept, r.Name)
+		}
+	}
 	sort.Strings(names)
 	d.record("reconcile:" + strings.Join(names, ","))
-	return nil
+	return kept, nil
 }
 
 // Publish serves a fake guest service on a fresh loopback port, the same
@@ -706,10 +786,15 @@ func TestExplicitCancelStopsCurrentGuestAndInvalidatesPreview(t *testing.T) {
 	if runtimeStops(d) != 1 {
 		t.Fatal("explicit current cancellation must stop guest exactly once", d.calls)
 	}
+	// The registry's own answer: a status op that finds the lock busy (the
+	// stream's last bookkeeping) answers from the snapshot, without
+	// attachments.
 	r.Operation = "status"
-	res, err := w.dispatch(context.Background(), r)
-	if err != nil || res.Sandbox.State != "stopped" || res.Attachments[0].State != "stopped" || res.Attachments[0].URL != "" {
-		t.Fatal(res, err)
+	w.mu.Lock()
+	res := w.statusLocked(r)
+	w.mu.Unlock()
+	if res.Sandbox.State != "stopped" || len(res.Attachments) != 1 || res.Attachments[0].State != "stopped" || res.Attachments[0].URL != "" {
+		t.Fatal(res)
 	}
 	response, err := http.Get(a.URL)
 	if err != nil {
@@ -856,7 +941,7 @@ func TestUnpublishedPreviewAllowsIdleStop(t *testing.T) {
 	if _, err := w.dispatch(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(16 * time.Minute)
+	now = now.Add(31 * time.Minute) // past the default idle window
 	if err := w.SweepIdle(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -873,6 +958,9 @@ func (p *testResidency) Close() error { p.runtime.record("release-residency"); r
 func (d *testRuntime) Prepare(_ context.Context, spec RuntimeSpec) (io.Closer, error) {
 	name := spec.Name
 	d.record("hold-residency:" + name)
+	if !spec.Resources.IsZero() {
+		d.record("prepare:" + name + ":" + spec.Resources.String())
+	}
 	return &testResidency{runtime: d}, nil
 }
 func TestResidentSessionSurvivesAgentFinishAndReleasesOnStop(t *testing.T) {
@@ -910,6 +998,91 @@ func TestResidentSessionSurvivesAgentFinishAndReleasesOnStop(t *testing.T) {
 	}
 	if !released {
 		t.Fatal("residency session leaked")
+	}
+}
+
+// The idle window counts from the last chat activity: an activity report
+// carries the time of the turn's end it reports (never moving the clock
+// back, never ahead of now), and the run's stream ending — a resident
+// session released after sitting idle — is not activity, so the sweep
+// stops the sandbox IdleTimeout after the last reported turn's end, not
+// after the release.
+func TestIdleWindowCountsFromReportedActivityNotTheStreamEnd(t *testing.T) {
+	w, _, _, r := managedFixture(t)
+	w.IdleTimeout = 30 * time.Minute
+	start := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	now := start
+	w.Now = func() time.Time { return now }
+	prepareFixture(t, w, r)
+	activity := func() time.Time {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.managed.Sandboxes[r.SandboxID].LastActivity
+	}
+	if !activity().Equal(start) {
+		t.Fatalf("activity after prepare: %v", activity())
+	}
+	now = start.Add(20 * time.Minute)
+	report := func(at time.Time) {
+		t.Helper()
+		q := r
+		q.Operation = "activity"
+		q.At = at
+		if _, err := w.dispatch(context.Background(), q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report(start.Add(5 * time.Minute)) // the turn ended at +5, reported late
+	if !activity().Equal(start.Add(5 * time.Minute)) {
+		t.Fatalf("activity after a late report: %v", activity())
+	}
+	report(start.Add(2 * time.Minute)) // an older report never moves the clock back
+	if !activity().Equal(start.Add(5 * time.Minute)) {
+		t.Fatalf("activity moved back: %v", activity())
+	}
+	report(start.Add(time.Hour)) // a report from the future counts as now
+	if !activity().Equal(now) {
+		t.Fatalf("activity ahead of now: %v", activity())
+	}
+	report(time.Time{}) // no time: now (the chat menu's "Keep workspace running")
+	now = start.Add(21 * time.Minute)
+	report(time.Time{})
+	if !activity().Equal(now) {
+		t.Fatalf("activity without a time: %v", activity())
+	}
+	// The session is released ten minutes later: the stream ends, the run
+	// with it, and the clock stays at the last report.
+	w.mu.Lock()
+	grant := w.managed.Sandboxes[r.SandboxID].Grant
+	w.mu.Unlock()
+	now = start.Add(31 * time.Minute)
+	w.finishManagedRun(r, grant, false)
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	state, active := s.State, s.Active
+	w.mu.Unlock()
+	if state != "running" || active != nil || !activity().Equal(start.Add(21*time.Minute)) {
+		t.Fatalf("after the stream end: state=%s active=%v activity=%v", state, active != nil, activity())
+	}
+	now = start.Add(50 * time.Minute)
+	if err := w.SweepIdle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	state = w.managed.Sandboxes[r.SandboxID].State
+	w.mu.Unlock()
+	if state != "running" {
+		t.Fatalf("stopped before the window from the last turn passed: %s", state)
+	}
+	now = start.Add(52 * time.Minute)
+	if err := w.SweepIdle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	state = w.managed.Sandboxes[r.SandboxID].State
+	w.mu.Unlock()
+	if state != "stopped" {
+		t.Fatalf("not stopped after the window: %s", state)
 	}
 }
 
@@ -1325,7 +1498,7 @@ func TestSpareSandboxIsBootedAheadAndAdoptedByTheNextEnvironment(t *testing.T) {
 	for i, c := range calls {
 		if strings.HasPrefix(c, "reconcile:") {
 			reconciled = i
-			if c != "reconcile:"+spareName {
+			if c != "reconcile:"+spareName+"*" {
 				t.Fatalf("reconcile did not name the registered sandbox: %s", c)
 			}
 		}
@@ -1337,6 +1510,123 @@ func TestSpareSandboxIsBootedAheadAndAdoptedByTheNextEnvironment(t *testing.T) {
 		if strings.HasPrefix(c, "remove:wc-spare-") || strings.HasPrefix(c, "stop:") {
 			t.Fatalf("reconcile ran before the registry pass: %v", calls)
 		}
+	}
+}
+
+// A restarted worker on a driver whose guests outlive it keeps a sandbox
+// whose guest the driver finds still running at its generation: running,
+// with no run on it, its grant ended, its idle window started over; the
+// driver stops the guests it does not keep, and the worker stops nothing
+// itself. A later prepare resumes the kept sandbox without a stop or a
+// creation, and the idle sweep still stops it once the window passes.
+func TestRestartKeepsTheGuestsTheDriverFindsRunning(t *testing.T) {
+	w, d, g, r := managedFixture(t)
+	prepareFixture(t, w, r)
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	generation, activity := s.Generation, s.LastActivity
+	w.mu.Unlock()
+	if s.State != "running" || s.Active == nil || generation == "" {
+		t.Fatalf("fixture not running: %s active=%v generation=%q", s.State, s.Active != nil, generation)
+	}
+	// A second sandbox on the same worker whose guest did not survive.
+	other := r
+	other.ChatID, other.SandboxID, other.RunID = "chat-two", "sandbox-two", "run-two"
+	if _, err := w.dispatch(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
+	prepareFixture(t, w, other)
+	w.mu.Lock()
+	lostName := w.managed.Sandboxes[other.SandboxID].RuntimeName
+	w.mu.Unlock()
+	later := activity.Add(20 * time.Minute)
+	d.survivors = map[string]string{s.RuntimeName: generation}
+	fresh := NewWorker(w.Root, "/never-host-exec", "template")
+	fresh.Runtime, fresh.Gate, fresh.RuntimeDir = d, g, w.RuntimeDir
+	fresh.IdleTimeout = 30 * time.Minute
+	fresh.Now = func() time.Time { return later }
+	before := len(g.calls)
+	if err := fresh.initializeManaged(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fresh.mu.Lock()
+	kept, lost := fresh.managed.Sandboxes[r.SandboxID], fresh.managed.Sandboxes[other.SandboxID]
+	fresh.mu.Unlock()
+	if kept.State != "running" || kept.Active != nil || kept.Generation != generation || !kept.LastActivity.Equal(later) {
+		t.Fatalf("kept sandbox after restart: state=%s active=%v generation=%q activity=%v", kept.State, kept.Active != nil, kept.Generation, kept.LastActivity)
+	}
+	if lost.State != "stopped" || lost.Active != nil {
+		t.Fatalf("lost sandbox after restart: state=%s active=%v", lost.State, lost.Active != nil)
+	}
+	ended := 0
+	for _, c := range g.calls[before:] {
+		if c == "end" {
+			ended++
+		}
+	}
+	if ended != 2 {
+		t.Fatalf("both runs' grants must end at the restart: %v", g.calls[before:])
+	}
+	d.mu.Lock()
+	calls := append([]string(nil), d.calls...)
+	d.mu.Unlock()
+	reconciled := false
+	for _, c := range calls {
+		if strings.HasPrefix(c, "reconcile:") {
+			reconciled = true
+			if c != "reconcile:"+lostName+"*,"+s.RuntimeName+"*" && c != "reconcile:"+s.RuntimeName+"*,"+lostName+"*" {
+				t.Fatalf("reconcile did not name both sandboxes resident: %s", c)
+			}
+		}
+		if strings.HasPrefix(c, "stop:") && reconciled {
+			t.Fatalf("the worker stopped a guest the driver settles: %v", calls)
+		}
+	}
+	if !reconciled {
+		t.Fatal("restart did not reconcile the driver")
+	}
+	// The next prepare resumes the kept sandbox on the same generation
+	// without creating or stopping anything.
+	created, stops := len(d.created()), 0
+	resumed := r
+	resumed.RunID = "run-three"
+	prepareFixture(t, fresh, resumed)
+	d.mu.Lock()
+	for _, c := range d.calls {
+		if strings.HasPrefix(c, "stop:") {
+			stops++
+		}
+	}
+	d.mu.Unlock()
+	fresh.mu.Lock()
+	again := fresh.managed.Sandboxes[r.SandboxID]
+	fresh.mu.Unlock()
+	if again.State != "running" || again.Active == nil || again.Generation != generation || len(d.created()) != created || stops != 0 {
+		t.Fatalf("resume on the kept guest: state=%s active=%v generation=%q created=%d stops=%d", again.State, again.Active != nil, again.Generation, len(d.created()), stops)
+	}
+	// Once the run ends, the idle window counts from the restart.
+	fresh.mu.Lock()
+	again.Active = nil
+	fresh.mu.Unlock()
+	fresh.Now = func() time.Time { return later.Add(29 * time.Minute) }
+	if err := fresh.SweepIdle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fresh.mu.Lock()
+	state := fresh.managed.Sandboxes[r.SandboxID].State
+	fresh.mu.Unlock()
+	if state != "running" {
+		t.Fatalf("swept inside the idle window: %s", state)
+	}
+	fresh.Now = func() time.Time { return later.Add(31 * time.Minute) }
+	if err := fresh.SweepIdle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fresh.mu.Lock()
+	state = fresh.managed.Sandboxes[r.SandboxID].State
+	fresh.mu.Unlock()
+	if state != "stopped" {
+		t.Fatalf("not swept after the idle window: %s", state)
 	}
 }
 
@@ -1433,6 +1723,206 @@ func TestAdoptedSpareNeedsNoGuestRoundTrips(t *testing.T) {
 	}
 	if s.pendingReport != "" || s.fresh || !s.Installed {
 		t.Fatalf("report not consumed: pending=%q fresh=%v installed=%v", s.pendingReport, s.fresh, s.Installed)
+	}
+}
+
+// A workspace created with a size keeps it in the registry, is created at
+// it, and where a resize restarts (SBX) does not take a spare booted at
+// the default size; a size on a later request is ignored. The health
+// answer carries the limits.
+func TestWorkspaceSizeIsRecordedAtCreationAndSkipsSpares(t *testing.T) {
+	d := &testRuntime{servers: map[int]*http.Server{}}
+	w := NewWorker(t.TempDir(), "/never-host-exec", "template")
+	w.Runtime, w.Gate, w.RuntimeDir = d, &testGate{}, "/fake-pinned-linux-bundle"
+	w.Limits = ResourceLimits{Default: Resources{CPUMilli: 1000, MemoryMB: 1536}, Max: Resources{CPUMilli: 4000, MemoryMB: 8192}, CPUStepMilli: 1000, Restart: true}
+	w.Spares = 1
+	w.mu.Lock()
+	w.defaultsLocked()
+	w.mu.Unlock()
+	w.maintainSpares(context.Background())
+	waitFor(t, "spare not created", func() bool { w.mu.Lock(); defer w.mu.Unlock(); return len(w.managed.Spares) == 1 })
+	r := Request{Version: 2, Operation: "bind-chat", ProjectID: "project-one", ChatID: "chat-one", SandboxID: "sandbox-one", RunID: "run-one", PrincipalID: "owner", Resources: &Resources{MemoryMB: 4096}}
+	if _, err := w.dispatch(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	r.Resources = &Resources{MemoryMB: 65536}
+	res, err := w.dispatch(context.Background(), r)
+	if err != nil || res.Sandbox.Resources != (Resources{CPUMilli: 1000, MemoryMB: 4096}) || res.Limits == nil || res.Limits.Max.MemoryMB != 8192 {
+		t.Fatalf("size after a second bind: %+v %v", res.Sandbox, err)
+	}
+	r.Resources = nil
+	prepareFixture(t, w, r)
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	spares := len(w.managed.Spares)
+	w.mu.Unlock()
+	if strings.HasPrefix(s.RuntimeName, "wc-spare-") || spares != 1 {
+		t.Fatal("a sized workspace adopted the default-size spare")
+	}
+	d.mu.Lock()
+	calls := strings.Join(d.calls, "\n")
+	d.mu.Unlock()
+	if !strings.Contains(calls, "size:"+s.RuntimeName+":1 CPU · 4 GiB") {
+		t.Fatalf("runtime created without the size:\n%s", calls)
+	}
+	over := Request{Version: 2, Operation: "bind-chat", ProjectID: "project-one", ChatID: "chat-two", SandboxID: "sandbox-two", RunID: "run-two", PrincipalID: "owner", Resources: &Resources{CPUMilli: 500}}
+	if _, err := w.dispatch(context.Background(), over); err == nil || !strings.Contains(err.Error(), "multiple of 1 CPU") {
+		t.Fatalf("fractional CPU accepted on SBX: %v", err)
+	}
+}
+
+// Where a resize is live (Kubernetes) a sized workspace adopts the spare
+// and the spare is grown to the size before the run; a spare the driver
+// cannot grow in place is stopped and a pod at the right size prepared.
+func TestSizedWorkspaceAdoptsAndResizesASpareOnALivePlatform(t *testing.T) {
+	for _, infeasible := range []bool{false, true} {
+		d := &testRuntime{servers: map[int]*http.Server{}}
+		if infeasible {
+			d.resizeErr = ErrResizeInfeasible
+		}
+		w := NewWorker(t.TempDir(), "/never-host-exec", "template")
+		w.Runtime, w.Gate, w.RuntimeDir = d, &testGate{}, "/fake-pinned-linux-bundle"
+		w.Limits = ResourceLimits{Default: Resources{CPUMilli: 1000, MemoryMB: 1536}, Max: Resources{CPUMilli: 4000, MemoryMB: 8192}, CPUStepMilli: 250}
+		w.Spares = 1
+		w.mu.Lock()
+		w.defaultsLocked()
+		w.mu.Unlock()
+		w.maintainSpares(context.Background())
+		waitFor(t, "spare not created", func() bool { w.mu.Lock(); defer w.mu.Unlock(); return len(w.managed.Spares) == 1 })
+		r := Request{Version: 2, Operation: "bind-chat", ProjectID: "project-one", ChatID: "chat-one", SandboxID: "sandbox-one", RunID: "run-one", PrincipalID: "owner", Resources: &Resources{CPUMilli: 1500, MemoryMB: 4096}}
+		if _, err := w.dispatch(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
+		r.Resources = nil
+		prepareFixture(t, w, r)
+		w.mu.Lock()
+		s := w.managed.Sandboxes[r.SandboxID]
+		spares := len(w.managed.Spares)
+		w.mu.Unlock()
+		if !strings.HasPrefix(s.RuntimeName, "wc-spare-") || spares != 0 {
+			t.Fatalf("infeasible=%v: the spare was not adopted: %s, %d spares", infeasible, s.RuntimeName, spares)
+		}
+		d.mu.Lock()
+		calls := strings.Join(d.calls, "\n")
+		d.mu.Unlock()
+		if !strings.Contains(calls, "resize:"+s.RuntimeName+":1.5 CPUs · 4 GiB") {
+			t.Fatalf("infeasible=%v: adopted spare not resized:\n%s", infeasible, calls)
+		}
+		replaced := strings.Contains(calls, "stop:"+s.RuntimeName+"\nhold-residency:"+s.RuntimeName+"\nprepare:"+s.RuntimeName+":1.5 CPUs · 4 GiB")
+		if replaced != infeasible {
+			t.Fatalf("infeasible=%v: replaced=%v:\n%s", infeasible, replaced, calls)
+		}
+		if s.State != "running" {
+			t.Fatalf("infeasible=%v: state %s", infeasible, s.State)
+		}
+	}
+}
+
+// A live platform that cannot apply a size in place (a memory decrease
+// the kubelet refuses, a runtime without in-place resize) has the sandbox
+// stopped instead, so the next start carries the size; the record holds
+// it either way. Under an active run the in-place attempt is made (that
+// is what a live resize is for) and, refused, answered with
+// ErrResizeRestart rather than a stop the caller did not arrange.
+func TestResizeInfeasibleInPlaceStopsTheSandboxOnALivePlatform(t *testing.T) {
+	w, d, _, r := managedFixture(t)
+	w.Limits = ResourceLimits{Default: Resources{CPUMilli: 1000, MemoryMB: 1536}, Max: Resources{CPUMilli: 4000, MemoryMB: 8192}, CPUStepMilli: 250}
+	prepareFixture(t, w, r)
+	d.resizeErr = ErrResizeInfeasible
+	r.Operation = "resize"
+	r.Resources = &Resources{CPUMilli: 2000, MemoryMB: 4096}
+	if _, err := w.dispatch(context.Background(), r); !errors.Is(err, ErrResizeRestart) {
+		t.Fatalf("under a run: %v", err)
+	}
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	state := s.State
+	w.mu.Unlock()
+	if state != "running" {
+		t.Fatalf("the sandbox was stopped under a run: %s", state)
+	}
+	d.resizeErr = nil
+	if res, err := w.dispatch(context.Background(), r); err != nil || res.Sandbox.Resources != *r.Resources || res.Sandbox.State != "running" {
+		t.Fatalf("live resize under a run: %+v %v", res.Sandbox, err)
+	}
+	w.mu.Lock()
+	s.Active = nil
+	w.mu.Unlock()
+	d.resizeErr = ErrResizeInfeasible
+	r.Resources = &Resources{CPUMilli: 500, MemoryMB: 1024}
+	res, err := w.dispatch(context.Background(), r)
+	if err != nil || res.Sandbox.Resources != *r.Resources || res.Sandbox.State != "stopped" {
+		t.Fatalf("infeasible resize: %+v %v", res.Sandbox, err)
+	}
+	d.mu.Lock()
+	calls := strings.Join(d.calls, "\n")
+	d.mu.Unlock()
+	if !strings.Contains(calls, "resize:"+s.RuntimeName+":0.5 CPUs · 1 GiB\nrelease-residency\nstop:"+s.RuntimeName) {
+		t.Fatalf("driver calls:\n%s", calls)
+	}
+	d.resizeErr = errors.New("api server down")
+	r.Resources = &Resources{CPUMilli: 2000, MemoryMB: 2048}
+	if _, err = w.dispatch(context.Background(), r); err == nil || !strings.Contains(err.Error(), "api server down") {
+		t.Fatalf("other errors must surface: %v", err)
+	}
+}
+
+// Resize: refused while a run is active; a sandbox not created yet only
+// records the size; a created one goes through the driver, and when the
+// driver replaced the instance the sandbox is stopped and its residency
+// released. The same size again is a no-op.
+func TestResizeRecordsAppliesAndStopsWhenTheInstanceIsReplaced(t *testing.T) {
+	w, d, _, r := managedFixture(t)
+	w.Limits = ResourceLimits{Default: Resources{CPUMilli: 1000, MemoryMB: 1536}, Max: Resources{CPUMilli: 4000, MemoryMB: 8192}, CPUStepMilli: 1000, Restart: true}
+	r.Operation = "resize"
+	r.Resources = &Resources{CPUMilli: 2000, MemoryMB: 4096}
+	res, err := w.dispatch(context.Background(), r)
+	if err != nil || res.Sandbox.Resources != *r.Resources {
+		t.Fatalf("size not recorded before creation: %+v %v", res.Sandbox, err)
+	}
+	if d.calls != nil && strings.Contains(strings.Join(d.calls, " "), "resize:") {
+		t.Fatal("driver resized a sandbox that does not exist")
+	}
+	prepareFixture(t, w, r)
+	r.Operation = "resize"
+	r.Resources = &Resources{CPUMilli: 4000, MemoryMB: 8192}
+	if _, err = w.dispatch(context.Background(), r); err == nil || !strings.Contains(err.Error(), "active run") {
+		t.Fatalf("resized under an active run: %v", err)
+	}
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	s.Active = nil
+	w.mu.Unlock()
+	d.resizeRestart = true
+	res, err = w.dispatch(context.Background(), r)
+	if err != nil || res.Sandbox.Resources != *r.Resources || res.Sandbox.State != "stopped" {
+		t.Fatalf("resize with restart: %+v %v", res.Sandbox, err)
+	}
+	w.mu.Lock()
+	held := s.residency != nil
+	w.mu.Unlock()
+	if held {
+		t.Fatal("residency kept across a replaced instance")
+	}
+	d.mu.Lock()
+	calls := strings.Join(d.calls, "\n")
+	d.mu.Unlock()
+	if !strings.Contains(calls, "stop:"+s.RuntimeName+"\n") || !strings.Contains(calls, "resize:"+s.RuntimeName+":4 CPUs · 8 GiB") {
+		t.Fatalf("driver calls:\n%s", calls)
+	}
+	n := strings.Count(calls, "resize:")
+	if _, err = w.dispatch(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	again := strings.Count(strings.Join(d.calls, "\n"), "resize:")
+	d.mu.Unlock()
+	if again != n {
+		t.Fatal("the same size resized again")
+	}
+	r.Resources = &Resources{MemoryMB: 16384}
+	if _, err = w.dispatch(context.Background(), r); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("over the ceiling: %v", err)
 	}
 }
 
@@ -1537,4 +2027,144 @@ func TestPublicationAddressBackfilledFromDriverOnLoad(t *testing.T) {
 	if p == nil || p.Address != "127.0.0.1" || p.HostPort == 0 {
 		t.Fatalf("address not backfilled: %+v", p)
 	}
+}
+
+// The owner's Start: a stopped, created sandbox is made resident again
+// without a run and reported running; a sandbox never created has nothing
+// to start; a running one is left alone.
+func TestStartBringsAStoppedSandboxBackWithoutARun(t *testing.T) {
+	w, d, _, r := managedFixture(t)
+	r.Operation = "start"
+	if _, err := w.dispatch(context.Background(), r); err == nil || !strings.Contains(err.Error(), "no sandbox yet") {
+		t.Fatalf("start before creation: %v", err)
+	}
+	prepareFixture(t, w, r)
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	s.Active = nil
+	w.mu.Unlock()
+	r.Operation = "stop"
+	if res, err := w.dispatch(context.Background(), r); err != nil || res.Sandbox.State != "stopped" {
+		t.Fatalf("stop: %+v %v", res.Sandbox, err)
+	}
+	d.mu.Lock()
+	before := len(d.calls)
+	d.mu.Unlock()
+	r.Operation = "start"
+	res, err := w.dispatch(context.Background(), r)
+	if err != nil || res.Sandbox.State != "running" {
+		t.Fatalf("start: %+v %v", res.Sandbox, err)
+	}
+	d.mu.Lock()
+	calls := strings.Join(d.calls[before:], "\n")
+	d.mu.Unlock()
+	if !strings.Contains(calls, "hold-residency:"+s.RuntimeName) || strings.Contains(calls, "exec:") {
+		t.Fatalf("start must only restore residency:\n%s", calls)
+	}
+	w.mu.Lock()
+	held := s.residency != nil
+	w.mu.Unlock()
+	if !held {
+		t.Fatal("residency not held after start")
+	}
+	if _, err = w.dispatch(context.Background(), r); err != nil {
+		t.Fatalf("start of a running sandbox: %v", err)
+	}
+}
+
+func TestOperationTimeoutHonoursPrepareTimeout(t *testing.T) {
+	w := &Worker{}
+	if got := w.operationTimeout("prepare"); got != 2*time.Minute {
+		t.Fatalf("unset PrepareTimeout: prepare bounded by %v, want 2m", got)
+	}
+	w.PrepareTimeout = 10 * time.Minute
+	for _, op := range []string{"prepare", "start", "clone", "resize"} {
+		if got := w.operationTimeout(op); got != 10*time.Minute {
+			t.Errorf("%s bounded by %v, want the PrepareTimeout", op, got)
+		}
+	}
+	for _, op := range []string{"status", "stop", "remove", "exec"} {
+		if got := w.operationTimeout(op); got != 2*time.Minute {
+			t.Errorf("%s bounded by %v, want 2m", op, got)
+		}
+	}
+}
+
+// A spare whose guest was taken away (its pod preempted by a sandbox pod)
+// is retired by the periodic look and replaced, and one lost between looks
+// is not handed to a chat: the chat is created fresh instead.
+func TestPreemptedSpareIsReplacedAndNeverAdopted(t *testing.T) {
+	w, d, _, r := managedFixture(t)
+	w.Spares = 1
+	spares := func() map[string]bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		out := map[string]bool{}
+		for name := range w.managed.Spares {
+			out[name] = true
+		}
+		return out
+	}
+	w.maintainSpares(context.Background())
+	waitFor(t, "spare not created", func() bool { return len(spares()) == 1 })
+	var first string
+	for name := range spares() {
+		first = name
+	}
+	// Still there: the look keeps it.
+	w.retireLostSpares(context.Background())
+	if !spares()[first] {
+		t.Fatal("a resident spare was retired")
+	}
+	// Preempted: the next look (10 s later) retires and removes it, and
+	// the pool refills with a new name.
+	d.lose(first)
+	w.retireLostSpares(context.Background())
+	if !spares()[first] {
+		t.Fatal("the look ran again within 10 s")
+	}
+	w.mu.Lock()
+	w.spareCheckAt = time.Time{}
+	w.mu.Unlock()
+	w.retireLostSpares(context.Background())
+	if len(spares()) != 0 {
+		t.Fatalf("lost spare still listed: %v", spares())
+	}
+	waitFor(t, "lost spare not removed", func() bool {
+		for _, name := range d.removed() {
+			if name == first {
+				return true
+			}
+		}
+		return false
+	})
+	w.maintainSpares(context.Background())
+	waitFor(t, "pool not refilled", func() bool { return len(spares()) == 1 && !spares()[first] })
+	var second string
+	for name := range spares() {
+		second = name
+	}
+	// Lost between looks: adoption checks, retires it and creates fresh.
+	d.lose(second)
+	w.mu.Lock()
+	hashed := w.managed.Sandboxes[r.SandboxID].RuntimeName
+	w.mu.Unlock()
+	prepareFixture(t, w, r)
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	w.mu.Unlock()
+	if s.RuntimeName != hashed || !s.Created {
+		t.Fatalf("lost spare adopted: runtime %q (spare %q, hashed %q)", s.RuntimeName, second, hashed)
+	}
+	if len(spares()) != 0 {
+		t.Fatalf("lost spare still listed after adoption: %v", spares())
+	}
+	waitFor(t, "lost spare not removed after adoption", func() bool {
+		for _, name := range d.removed() {
+			if name == second {
+				return true
+			}
+		}
+		return false
+	})
 }

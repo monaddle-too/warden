@@ -14,6 +14,34 @@ type Conversation struct {
 	// and the tokens the provider reported for it. Entries name their turn
 	// in TurnID; a turn from before this record was kept has no row.
 	Turns []Turn `json:"turns,omitempty"`
+	// Context is how full the agent's context is, as it last reported:
+	// what its latest model call was given against the model's window.
+	// Nil until a provider reports one (Claude does; Codex does not yet).
+	Context *Context `json:"context,omitempty"`
+}
+
+// Context is the agent's context length against its window, in tokens:
+// Used is the prompt of the latest model call (its input, cache-read and
+// cache-written tokens), or the agent's own account of it; Window is the
+// model's context window; Threshold is where the agent compacts on its
+// own (Claude Code keeps a buffer free below the window), 0 when not
+// reported; Model the model the agent reported it for.
+type Context struct {
+	Used      int64  `json:"used"`
+	Window    int64  `json:"window"`
+	Threshold int64  `json:"threshold,omitempty"`
+	Model     string `json:"model,omitempty"`
+}
+
+// ContextFrom reads a `thread/context/updated` notification's context.
+func ContextFrom(m map[string]any) *Context {
+	n := func(k string) int64 { f, _ := m[k].(float64); return int64(f) }
+	c := Context{Used: n("used"), Window: n("window"), Threshold: n("threshold")}
+	c.Model, _ = m["model"].(string)
+	if c.Used == 0 && c.Window == 0 {
+		return nil
+	}
+	return &c
 }
 
 // Turn is the service's record of one agent turn. StartedAt is when the
@@ -75,20 +103,215 @@ type Actor struct {
 	Name        string `json:"name,omitempty"`
 }
 type Entry struct {
-	Sender      *Actor  `json:"sender,omitempty"`
-	ID          string  `json:"id"`
-	Role        string  `json:"role"`
-	Text        string  `json:"text"`
-	Detail      string  `json:"detail"`
-	TurnID      *string `json:"turnID,omitempty"`
-	CreatedAt   float64 `json:"createdAt"`
+	Sender    *Actor  `json:"sender,omitempty"`
+	ID        string  `json:"id"`
+	Role      string  `json:"role"`
+	Text      string  `json:"text"`
+	Detail    string  `json:"detail"`
+	TurnID    *string `json:"turnID,omitempty"`
+	CreatedAt float64 `json:"createdAt"`
+	// EndedAt is when a thinking entry stopped streaming, so the
+	// transcript can say how long the model thought, or when a subagent
+	// (a task entry) finished; 0 for other entries.
+	EndedAt     float64 `json:"endedAt,omitempty"`
 	IsStreaming bool    `json:"isStreaming"`
 	Delivery    string  `json:"delivery"`
 	// Attachments are the files the sender added to a user message. Each
 	// is written into the sandbox workspace at Path when the message is
 	// delivered; the chat service keeps its own copy for the transcript.
 	Attachments []Attachment `json:"attachments,omitempty"`
+	// Tool is the agent tool call an activity entry records, for the
+	// surfaces to render by kind. With it set, Text is the call's title
+	// and Detail its output alone (a command's output, a search's hits, a
+	// unified diff per changed file). Nil on an activity entry recorded
+	// before it existed, whose Detail then starts with the status line.
+	Tool *Tool `json:"tool,omitempty"`
+	// ParentID names the subagent this entry belongs to: the ID of the
+	// task entry (the Agent tool call) whose subagent produced it, so a
+	// surface can nest a subagent's messages and tool calls under its
+	// card. Empty for the conversation's own entries. A subagent's own
+	// subagent chains by the same rule.
+	ParentID string `json:"parentID,omitempty"`
+	// Compaction is what a compaction entry records: the agent compacted
+	// its context here (Text says so; Detail is the summary it continues
+	// from, when the agent gives one).
+	Compaction *Compaction `json:"compaction,omitempty"`
+	// Fork is what a fork marker records: the chat this one was forked
+	// from and the message it was cut before (Text says so).
+	Fork *Fork `json:"fork,omitempty"`
+	// Aside is what an aside entry records: a side question (Text, by
+	// Sender) answered from a copy of the agent's session (Detail is the
+	// answer), what it cost, and never sent to the session.
+	Aside *Aside `json:"aside,omitempty"`
+	// Rewind is what a rewind marker records: the message the chat went
+	// back to before, the scope, how the agent's session followed and
+	// the checkpoint of the workspace as it was before a code rewind.
+	Rewind *Rewind `json:"rewind,omitempty"`
 }
+
+// Rewind is a rewind marker's record (chats/rewind.go): MessageID the
+// user message the chat went back to before, What "code", "conversation"
+// or "both", Conversation how the session followed a conversation rewind
+// ("rewound", "pending", "fresh"; "" for code only), and Before the ID of
+// the checkpoint the runner took of the workspace as it was before a
+// code rewind restored the message's ("" when none was recorded), which
+// undoing the rewind can restore. Whether the rewind can still be undone
+// is the chat's undoRewind, not the marker's: the kept tail is dropped
+// when the next turn starts.
+type Rewind struct {
+	MessageID    string `json:"messageID"`
+	What         string `json:"what"`
+	Conversation string `json:"conversation,omitempty"`
+	Before       string `json:"before,omitempty"`
+}
+
+// Fork names the chat a forked chat was copied from and, when the copy
+// was cut before one of its messages, that message. Workspace says the
+// fork took a copy of the workspace too (its own sandbox, cloned from the
+// source's); Into marks the marker left on the source, where ChatID and
+// Title name the fork instead.
+type Fork struct {
+	ChatID    string `json:"chatID"`
+	Title     string `json:"title,omitempty"`
+	MessageID string `json:"messageID,omitempty"`
+	Workspace bool   `json:"workspace,omitempty"`
+	Into      bool   `json:"into,omitempty"`
+}
+
+// Aside is what a side question came to: Status starting (the chat's
+// released session is being brought up for it), running, completed or
+// failed (Error says why), and the answer's cost and tokens as the
+// agent reported them (0 when it gave none). Promoted is the ID of the
+// user message the question was later asked in chat as ("Ask in chat"),
+// "" until then.
+type Aside struct {
+	Status     string  `json:"status"`
+	Error      string  `json:"error,omitempty"`
+	CostUSD    float64 `json:"costUSD,omitempty"`
+	Input      int64   `json:"input,omitempty"`
+	Output     int64   `json:"output,omitempty"`
+	DurationMS int64   `json:"durationMS,omitempty"`
+	Promoted   string  `json:"promoted,omitempty"`
+}
+
+// Compaction describes one compaction of the agent's context: Trigger is
+// "manual" (the owner's /compact) or "auto" (the agent near its window),
+// PreTokens the context before it and PostTokens the summary it came down
+// to, in tokens (0 when not reported); Status is running while it is under
+// way, completed, or failed with Error saying why.
+type Compaction struct {
+	Trigger    string `json:"trigger,omitempty"`
+	PreTokens  int64  `json:"preTokens,omitempty"`
+	PostTokens int64  `json:"postTokens,omitempty"`
+	Status     string `json:"status"`
+	Error      string `json:"error,omitempty"`
+}
+
+// Tool describes one agent tool call: Kind is what a surface renders by
+// (command, edit, read, search, fetch, webSearch, mcp, task, todo or
+// other),
+// Name the tool as the agent names it (Bash, Read, an MCP tool's name),
+// Server an MCP tool's server, Status running, completed or failed (an
+// agent's own word otherwise, such as Codex's declined). Description is
+// what the agent said the call is for, Paths the workspace files it names
+// (relative to the workspace when inside it), Query a search's pattern or
+// a fetch's URL, and Input the call's input where the surfaces show it as
+// given (a generic tool, an MCP call, a todo list's items), with long
+// strings cut. Background marks a command or a subagent the agent runs in
+// the background: the call returns at once and the entry stays running
+// until the task reports back. Progress is a subagent's own account of
+// its work while it runs, as the agent reports it (Claude Code's
+// task_progress), nil until it reports one.
+type Tool struct {
+	Kind        string         `json:"kind"`
+	Name        string         `json:"name,omitempty"`
+	Server      string         `json:"server,omitempty"`
+	Status      string         `json:"status"`
+	Description string         `json:"description,omitempty"`
+	Paths       []string       `json:"paths,omitempty"`
+	Query       string         `json:"query,omitempty"`
+	Input       map[string]any `json:"input,omitempty"`
+	Background  bool           `json:"background,omitempty"`
+	// Read is what a read of something other than text carried (an
+	// image, a PDF, a notebook); nil for a text read.
+	Read     *Read     `json:"read,omitempty"`
+	Progress *Progress `json:"progress,omitempty"`
+}
+
+// Progress is what a running subagent has done so far, as its agent
+// reports it: Activity what it is doing now in the agent's words
+// ("Reading hello.txt"; "" when not reported), ToolCalls the tool calls
+// it made, LastTool the tool it used last (the agent's own name for it),
+// DurationMS how long it has run and Tokens what it has used (0 when not
+// reported).
+type Progress struct {
+	Activity   string `json:"activity,omitempty"`
+	ToolCalls  int64  `json:"toolCalls"`
+	LastTool   string `json:"lastTool,omitempty"`
+	DurationMS int64  `json:"durationMS,omitempty"`
+	Tokens     int64  `json:"tokens,omitempty"`
+}
+
+// ProgressFrom reads a task item's `progress` field; nil when there is
+// none or it says nothing.
+func ProgressFrom(m map[string]any) *Progress {
+	if m == nil {
+		return nil
+	}
+	n := func(k string) int64 { f, _ := m[k].(float64); return int64(f) }
+	p := Progress{ToolCalls: n("toolCalls"), DurationMS: n("durationMS"), Tokens: n("tokens")}
+	p.LastTool, _ = m["lastTool"].(string)
+	p.Activity, _ = m["activity"].(string)
+	if p.ToolCalls == 0 && p.LastTool == "" && p.DurationMS == 0 && p.Tokens == 0 && p.Activity == "" {
+		return nil
+	}
+	return &p
+}
+
+// Read describes a file read that returned no text: Kind "image" (Image
+// the stored copy's id, served at chats/{id}/images/{image}, "" when it
+// could not be stored; Width and Height its pixels), "pdf" (Pages as
+// counted from the bytes, 0 when unknown) or "notebook" (Cells, first
+// line each); Bytes the file's size when reported.
+type Read struct {
+	Kind   string     `json:"kind"`
+	Image  string     `json:"image,omitempty"`
+	Width  int        `json:"width,omitempty"`
+	Height int        `json:"height,omitempty"`
+	Bytes  int64      `json:"bytes,omitempty"`
+	Pages  int        `json:"pages,omitempty"`
+	Cells  []ReadCell `json:"cells,omitempty"`
+}
+
+// ReadCell is one notebook cell: its type (code, markdown, raw), the
+// code cell's language, and its first line.
+type ReadCell struct {
+	Type     string `json:"type"`
+	Language string `json:"language,omitempty"`
+	Text     string `json:"text"`
+}
+
+// ReadFrom reads an item's `read` object (the Claude adapter's) into a
+// Read; nil when there is none.
+func ReadFrom(m map[string]any) *Read {
+	if m == nil {
+		return nil
+	}
+	n := func(k string) int { f, _ := m[k].(float64); return int(f) }
+	r := &Read{Kind: stringOf(m["kind"]), Image: stringOf(m["image"]), Width: n("width"), Height: n("height"), Bytes: int64(n("bytes")), Pages: n("pages")}
+	if r.Kind == "" {
+		return nil
+	}
+	if cells, ok := m["cells"].([]any); ok {
+		for _, v := range cells {
+			c, _ := v.(map[string]any)
+			r.Cells = append(r.Cells, ReadCell{Type: stringOf(c["type"]), Language: stringOf(c["language"]), Text: stringOf(c["text"])})
+		}
+	}
+	return r
+}
+
+func stringOf(v any) string { s, _ := v.(string); return s }
 
 // Attachment is one file sent with a user message. Kind is "image" for a
 // PNG/JPEG (stored and delivered as an imageguard-normalised PNG) and

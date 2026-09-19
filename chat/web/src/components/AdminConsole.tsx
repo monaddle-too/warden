@@ -9,7 +9,10 @@ import {
   Users,
 } from "lucide-react";
 import { api } from "../api";
+import { BugReports } from "./BugReports";
 import { ClusterView } from "./ClusterView";
+import { GitHubSignIn } from "./GitHubSignIn";
+import { SpendView } from "./SpendView";
 
 type LoginRecord = {
   email: string;
@@ -39,7 +42,13 @@ type Status = {
 type File = { id: string; name: string; blocked: boolean };
 type Repo = { id: number; full_name: string; private?: boolean };
 type Blocked = { id: string; name: string; blocked_at: number };
-type Egress = { mode: "restricted" | "open"; source: "config" | "console" };
+type Egress = {
+  mode: "restricted" | "open";
+  source: "config" | "console";
+  // Workspaces with a network access of their own (the workspace panel),
+  // which this switch leaves alone.
+  overrides?: number;
+};
 
 const when = (value: string | number) =>
   new Date(typeof value === "number" ? value * 1000 : value).toLocaleString();
@@ -159,7 +168,12 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
           : "Sandboxes are back to the restricted destination list.",
       );
     } catch (e) {
-      setError(String(e));
+      // The request may have failed on its way in (a redeploy, say): the
+      // policy service's own mode is the truth, not the choice just made.
+      setError(
+        `Network access was not changed: ${e instanceof Error ? e.message : String(e)}. Try again.`,
+      );
+      await api<Egress>("sharing/egress").then(setEgress, () => undefined);
     } finally {
       setBusy(false);
     }
@@ -328,7 +342,7 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
                     Load more repositories
                   </button>
                 )}
-                {github.disconnectable && (
+                {github.disconnectable && github.mode !== "user" && (
                   <button
                     className="danger"
                     disabled={!!busy}
@@ -338,23 +352,53 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
                   </button>
                 )}
               </div>
+              {github.mode === "user" && (
+                // A rejected or expired token fails closed ("Refresh the
+                // GitHub sign-in…"); a fresh device-flow sign-in replaces it.
+                <GitHubSignIn
+                  connected
+                  disabled={!!busy}
+                  onSignedIn={() => void load()}
+                >
+                  {github.disconnectable && (
+                    <button
+                      className="danger"
+                      disabled={!!busy}
+                      onClick={() => void disconnect("github")}
+                    >
+                      Disconnect GitHub
+                    </button>
+                  )}
+                </GitHubSignIn>
+              )}
+            </>
+          ) : status.github.mode === "user" || !status.github.appSlug ? (
+            <>
+              <p className="muted">
+                Sign in with the GitHub account whose repositories conversations
+                may share. Warden asks for the classic <code>repo</code> and{" "}
+                <code>read:org</code> scopes and keeps the token on this
+                machine.
+              </p>
+              <GitHubSignIn
+                connected={false}
+                disabled={!!busy}
+                onSignedIn={() => void load()}
+              />
+              <p className="muted">
+                Or from a terminal: <code>warden login github</code>
+              </p>
             </>
           ) : (
             <p className="muted">
-              {status.github.mode === "user" || !status.github.appSlug
-                ? "Sign in from a terminal: "
-                : "Install the GitHub App to connect: "}
-              {status.github.mode === "user" || !status.github.appSlug ? (
-                <code>warden login github</code>
-              ) : (
-                <a
-                  href={`https://github.com/apps/${status.github.appSlug}/installations/new`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  github.com/apps/{status.github.appSlug}
-                </a>
-              )}
+              Install the GitHub App to connect:{" "}
+              <a
+                href={`https://github.com/apps/${status.github.appSlug}/installations/new`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                github.com/apps/{status.github.appSlug}
+              </a>
             </p>
           )}
         </details>
@@ -410,6 +454,11 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
                 ? "was last set here, overriding warden.json"
                 : "currently comes from warden.json"}
               .
+              {egress.overrides === 1 &&
+                " One workspace has a network access of its own, chosen from its workspace panel; this switch leaves it alone."}
+              {!!egress.overrides &&
+                egress.overrides > 1 &&
+                ` ${egress.overrides} workspaces have a network access of their own, chosen from their workspace panels; this switch leaves them alone.`}
             </p>
             <div
               className="admin-choices"
@@ -489,7 +538,9 @@ export function AdminConsole({ signIn = true }: { signIn?: boolean }) {
             )}
           </section>
         )}
+        <SpendView />
         <ClusterView />
+        <BugReports />
         <section aria-labelledby="admin-blocked">
           <h2 id="admin-blocked">
             <ShieldOff size={16} />

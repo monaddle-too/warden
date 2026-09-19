@@ -9,11 +9,13 @@
 package kube
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 
 	"warden/chat/internal/config"
 	"warden/chat/internal/kube"
+	"warden/chat/internal/sandbox"
 )
 
 // Labels and annotations on sandbox pods and workspace claims. The sandbox
@@ -63,12 +65,16 @@ type Options struct {
 	WorkspaceSizeGi int
 	TrustConfigMap  string
 	// MemoryMB and CPUMillis are the container's memory and CPU request
-	// and limit, as the namespace's LimitRange expects (decision 11); 1536
-	// MiB and one core when unset.
+	// and limit for a spec that names no size (the runner's default, as
+	// the namespace's LimitRange expects, decision 11); 1536 MiB and one
+	// core when unset. A spec's Resources take precedence.
 	MemoryMB     int
 	CPUMillis    int
 	NodeSelector map[string]string
 	Tolerations  []config.Toleration
+	// SparePriorityClass is set on spare pods only (config.Kubernetes):
+	// the spare is capacity a sandbox pod may preempt.
+	SparePriorityClass string
 	// GuestUID and GuestGID are the account the container runs as and the
 	// workspace's group, the base image's agent user (1000/1000 when zero);
 	// Home is the mount point of the workspace claim (/home/agent when
@@ -116,6 +122,25 @@ func (o Options) cpuMillis() int {
 	return 1000
 }
 
+// resources is the container's request and limit for a size: the spec's,
+// each field falling back to the options' default.
+func (o Options) resources(r sandbox.Resources) kube.ResourceList {
+	r = r.Fill(sandbox.Resources{CPUMilli: o.cpuMillis(), MemoryMB: o.memoryMB()})
+	return kube.ResourceList{"cpu": strconv.Itoa(r.CPUMilli) + "m", "memory": strconv.Itoa(r.MemoryMB) + "Mi"}
+}
+
+// ResizePatch is the strategic merge patch to pods/resize that gives the
+// guest container a new request and limit: only the container's name and
+// resources, which is all that subresource accepts.
+func ResizePatch(r sandbox.Resources) []byte {
+	resources := kube.ResourceList{"cpu": strconv.Itoa(r.CPUMilli) + "m", "memory": strconv.Itoa(r.MemoryMB) + "Mi"}
+	patch, _ := json.Marshal(map[string]any{"spec": map[string]any{"containers": []map[string]any{{
+		"name":      ContainerName,
+		"resources": kube.ResourceRequirements{Limits: resources, Requests: copyLabels(resources)},
+	}}}})
+	return patch
+}
+
 func (o Options) workspaceSizeGi() int {
 	if o.WorkspaceSizeGi > 0 {
 		return o.WorkspaceSizeGi
@@ -137,8 +162,9 @@ func (o Options) Image() string { return o.GuestImage + "@" + o.GuestImageDigest
 var DroppedCapabilities = []string{"AUDIT_WRITE", "FSETID", "MKNOD", "NET_RAW", "SETFCAP", "SETPCAP", "SYS_CHROOT"}
 
 // PodSpec is the sandbox pod for a runtime, a pure function of the options
-// and the spec: the pinned image under the RuntimeClass, one CPU and the
-// configured memory as both request and limit, no service account token,
+// and the spec: the pinned image under the RuntimeClass, the spec's size
+// (else the options' default) as both request and limit, no service
+// account token,
 // the workspace claim at the home, the trust ConfigMap read-only, an
 // emptyDir /tmp, the guest account with DroppedCapabilities removed and
 // the runtime's default seccomp profile, and args (not command) so the
@@ -147,7 +173,13 @@ var DroppedCapabilities = []string{"AUDIT_WRITE", "FSETID", "MKNOD", "NET_RAW", 
 // result under decision 2). The labels are the sandbox name, this driver's
 // mark and the spare flag; the annotations record what the worker knows
 // about the sandbox at creation. The pod's name is the runtime name.
-func PodSpec(o Options, name, sandboxID, generation string, spare bool, workspace string) kube.Pod {
+//
+// bound says the workspace claim already has a volume: the options' node
+// selector then loses its zone keys (Placement), since a zonal disk pins
+// the pod's zone by itself and a selector naming another zone would never
+// schedule.
+func PodSpec(o Options, spec sandbox.RuntimeSpec, workspace string, bound bool) kube.Pod {
+	name, sandboxID, generation, spare := spec.Name, spec.SandboxID, spec.Generation, spec.Spare
 	labels := map[string]string{LabelSandbox: name, LabelManagedBy: ManagedBy}
 	if spare {
 		labels[LabelSpare] = "true"
@@ -166,20 +198,25 @@ func PodSpec(o Options, name, sandboxID, generation string, spare bool, workspac
 		annotations = nil
 	}
 	uid, gid := o.guestUID(), o.guestGID()
-	resources := kube.ResourceList{"cpu": strconv.Itoa(o.cpuMillis()) + "m", "memory": strconv.Itoa(o.memoryMB()) + "Mi"}
+	resources := o.resources(spec.Resources)
 	var tolerations []kube.Toleration
 	for _, t := range o.Tolerations {
 		tolerations = append(tolerations, kube.Toleration{Key: t.Key, Operator: t.Operator, Value: t.Value, Effect: t.Effect, TolerationSeconds: t.TolerationSeconds})
 	}
+	priorityClass := ""
+	if spare {
+		priorityClass = o.SparePriorityClass
+	}
 	return kube.Pod{
 		Metadata: kube.ObjectMeta{Name: name, Namespace: o.Namespace, Labels: labels, Annotations: annotations},
 		Spec: kube.PodSpec{
+			PriorityClassName:             priorityClass,
 			RuntimeClassName:              kube.String(o.RuntimeClass),
 			AutomountServiceAccountToken:  kube.Bool(false),
 			RestartPolicy:                 "Always",
 			TerminationGracePeriodSeconds: kube.Int64(StopGraceSeconds),
 			EnableServiceLinks:            kube.Bool(false),
-			NodeSelector:                  copyLabels(o.NodeSelector),
+			NodeSelector:                  Placement(o.NodeSelector, bound),
 			Tolerations:                   tolerations,
 			SecurityContext: &kube.PodSecurityContext{
 				RunAsUser:      kube.Int64(uid),
@@ -236,6 +273,29 @@ func ClaimSpec(o Options, name, sandboxID, source string, spare bool) kube.Persi
 		spec.DataSource = &kube.TypedLocalObjectReference{Kind: "PersistentVolumeClaim", Name: source}
 	}
 	return kube.PersistentVolumeClaim{Metadata: kube.ObjectMeta{Name: name, Namespace: o.Namespace, Labels: labels, Annotations: annotations}, Spec: spec}
+}
+
+// ZoneKeys are the node labels a deployment pins sandbox pods to one zone
+// with (deploy/k8s/gke/values.yaml does, so spares, disks and the nodes a
+// resume needs share a zone). A bound claim's disk carries the same
+// constraint through the PersistentVolume's node affinity.
+var ZoneKeys = []string{"topology.kubernetes.io/zone", "topology.gke.io/zone", "failure-domain.beta.kubernetes.io/zone"}
+
+// Placement is the pod's node selector: the configured one, minus the
+// ZoneKeys when the workspace claim is already bound. A disk created
+// before the zone pin (or in another zone) then resumes where it is
+// instead of never scheduling.
+func Placement(selector map[string]string, bound bool) map[string]string {
+	out := copyLabels(selector)
+	if bound {
+		for _, k := range ZoneKeys {
+			delete(out, k)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+	}
+	return out
 }
 
 func copyLabels(m map[string]string) map[string]string {

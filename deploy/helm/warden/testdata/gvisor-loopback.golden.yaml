@@ -1,4 +1,22 @@
 ---
+# Source: warden/templates/spare-priorityclass.yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: warden-warden-sandboxes-spare
+  labels:
+    app.kubernetes.io/name: warden
+    app.kubernetes.io/instance: warden
+    app.kubernetes.io/version: "v0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: warden-0.0.0-dev
+    warden.monaddle.com/component: sandboxes
+value: -10
+preemptionPolicy: Never
+globalDefault: false
+description: Warden warm spare sandboxes; a sandbox pod may preempt one for its slot.
+
+---
 # Source: warden/templates/sandbox-namespace.yaml
 apiVersion: v1
 kind: Namespace
@@ -462,10 +480,10 @@ metadata:
 spec:
   hard:
     pods: "5"
-    requests.memory: "7680Mi"
-    limits.memory: "7680Mi"
-    requests.cpu: "5000m"
-    limits.cpu: "5000m"
+    requests.memory: "40960Mi"
+    limits.memory: "40960Mi"
+    requests.cpu: "20000m"
+    limits.cpu: "20000m"
     persistentvolumeclaims: "37"
     requests.storage: "740Gi"
     # Sandboxes get nothing else: no Services, no Secrets of their own.
@@ -496,8 +514,8 @@ spec:
         memory: "1536Mi"
         cpu: "1000m"
       max:
-        memory: "1536Mi"
-        cpu: "1000m"
+        memory: "8192Mi"
+        cpu: "4000m"
     - type: PersistentVolumeClaim
       max:
         storage: "20Gi"
@@ -589,6 +607,14 @@ data:
       "chat": {
         "listen": "127.0.0.1:18780"
       },
+      "edge": {
+        "bugReports": {
+          "enabled": false,
+          "maxPerDay": 500,
+          "maxPerHour": 30,
+          "retentionDays": 90
+        }
+      },
       "kubernetes": {
         "gatewayPort": 7000,
         "gatewayService": "warden-gateway",
@@ -596,6 +622,7 @@ data:
         "guestImageDigest": "sha256:cd77d0ff2af115f3cb700414c7c54840c2c1c87c3322ea0a98c17880ef07b63e",
         "namespace": "warden-sandboxes",
         "runtimeClass": "gvisor",
+        "sparePriorityClass": "warden-warden-sandboxes-spare",
         "storageClass": "",
         "tier": "gvisor",
         "trustConfigMap": "warden-guest-trust",
@@ -630,12 +657,14 @@ data:
         "kind": "kubernetes"
       },
       "sandboxes": {
-        "cpuMillis": 1000,
+        "cpus": 1,
         "egress": "restricted",
         "keepStopped": 32,
+        "maxCPUs": 4,
+        "maxMemoryMB": 8192,
         "maxRunning": 2,
         "memoryMB": 1536,
-        "stopAfterIdleMinutes": 15,
+        "stopAfterIdleMinutes": 30,
         "warmSpares": 1
       },
       "services": {
@@ -896,6 +925,12 @@ rules:
   - apiGroups: [""]
     resources: [pods/log]
     verbs: [get]
+  # A workspace resize is one patch to the resize subresource (Kubernetes
+  # 1.33+): the pod's requests and limits change in place. The pod itself
+  # stays unpatchable by the runner; its labels are the policy service's.
+  - apiGroups: [""]
+    resources: [pods/resize]
+    verbs: [patch]
   # The trust-bundle readiness gate (decision 9): the runner creates no
   # sandbox until the guest trust ConfigMap holds a bundle.
   - apiGroups: [""]
@@ -907,6 +942,12 @@ rules:
   # absent metrics leave those columns empty.
   - apiGroups: [metrics.k8s.io]
     resources: [pods]
+    verbs: [get, list]
+  # The sandbox pods' events (docs/startup-detail-events-plan.md): the
+  # autoscaler's and the kubelet's word on a start, for the startup detail,
+  # the workspace panel and the Cluster section.
+  - apiGroups: [""]
+    resources: [events]
     verbs: [get, list]
 
 ---
@@ -997,6 +1038,9 @@ rules:
     verbs: [get]
   - apiGroups: [metrics.k8s.io]
     resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [events]
     verbs: [get, list]
 
 ---
@@ -1258,7 +1302,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: policy
       annotations:
-        checksum/config: 9e267cf42878d2d5b5dcd58c67c1162d8b0f42e96e13815982b2e281dd549b27
+        checksum/config: 114c95b0224c50cc9388e25cb400a8947559e02a7f8884e7045c547a0fb98c6c
     spec:
       serviceAccountName: warden-policy
       automountServiceAccountToken: true
@@ -1324,8 +1368,8 @@ spec:
             limits:
               memory: 1Gi
             requests:
-              cpu: 250m
-              memory: 256Mi
+              cpu: 100m
+              memory: 128Mi
           volumeMounts:
             - name: state
               mountPath: /var/lib/warden/policy
@@ -1393,7 +1437,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: runner
       annotations:
-        checksum/config: 9e267cf42878d2d5b5dcd58c67c1162d8b0f42e96e13815982b2e281dd549b27
+        checksum/config: 114c95b0224c50cc9388e25cb400a8947559e02a7f8884e7045c547a0fb98c6c
     spec:
       serviceAccountName: warden-runner
       automountServiceAccountToken: true
@@ -1459,8 +1503,8 @@ spec:
             limits:
               memory: 1Gi
             requests:
-              cpu: 250m
-              memory: 256Mi
+              cpu: 100m
+              memory: 128Mi
           volumeMounts:
             - name: state
               mountPath: /var/lib/warden/runner
@@ -1528,7 +1572,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: chat
       annotations:
-        checksum/config: 9e267cf42878d2d5b5dcd58c67c1162d8b0f42e96e13815982b2e281dd549b27
+        checksum/config: 114c95b0224c50cc9388e25cb400a8947559e02a7f8884e7045c547a0fb98c6c
     spec:
       serviceAccountName: warden-chat
       automountServiceAccountToken: false
@@ -1660,7 +1704,7 @@ spec:
         helm.sh/chart: warden-0.0.0-dev
         warden.monaddle.com/component: edge
       annotations:
-        checksum/config: 9e267cf42878d2d5b5dcd58c67c1162d8b0f42e96e13815982b2e281dd549b27
+        checksum/config: 114c95b0224c50cc9388e25cb400a8947559e02a7f8884e7045c547a0fb98c6c
     spec:
       serviceAccountName: warden-edge
       automountServiceAccountToken: false
@@ -1723,7 +1767,7 @@ spec:
             limits:
               memory: 256Mi
             requests:
-              cpu: 100m
+              cpu: 50m
               memory: 64Mi
           volumeMounts:
             - name: state

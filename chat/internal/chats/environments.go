@@ -3,6 +3,7 @@ package chats
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -22,12 +23,27 @@ type Environment struct {
 	Usage      *sandbox.SandboxUsage `json:"usage"`
 	// Pod is the sandbox pod on the Kubernetes shape (nil elsewhere, and
 	// while the sandbox is stopped).
-	Pod          *sandbox.PodInfo `json:"pod"`
+	Pod *sandbox.PodInfo `json:"pod"`
+	// Resources is the workspace's size: the runner's record once the
+	// sandbox exists, else what its first chat asked for, else nil (the
+	// runner's default).
+	Resources *sandbox.Resources `json:"resources,omitempty"`
+	// Network is the workspace's own network access ("" follows the
+	// install; network.go).
+	Network string `json:"network,omitempty"`
+	// Resizing is a resize in flight or how the last one ended.
+	Resizing     *Resizing        `json:"resizing,omitempty"`
 	Documents    []map[string]any `json:"documents"`
 	Repositories []any            `json:"repositories"`
 	Ports        []PortBinding    `json:"ports"`
-	Deleted      bool             `json:"deleted"`
-	Archived     bool             `json:"archived"`
+	// Rules are the workspace's permission rules (rules.go), applied to
+	// every chat of it.
+	Rules    []Rule `json:"rules"`
+	Deleted  bool   `json:"deleted"`
+	Archived bool   `json:"archived"`
+	// CopiedFrom is set on a workspace created as a copy of another (a
+	// fork with copyWorkspace, fork.go): which one and when.
+	CopiedFrom *WorkspaceOrigin `json:"copiedFrom,omitempty"`
 }
 type EnvironmentChat struct {
 	ID       string `json:"id"`
@@ -92,9 +108,15 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		}
 		seen[c.SandboxID] = true
 		chats := st.environmentChats(c.SandboxID)
-		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Deleted: st.deleted(c.SandboxID)}
+		env := Environment{ID: c.SandboxID, Name: chats[0].Title, Repository: chats[0].Repository, Resources: chats[0].Resources, Network: chats[0].Network, Resizing: e.resizingOf(c.SandboxID), Documents: []map[string]any{}, Repositories: []any{}, Ports: []PortBinding{}, Rules: []Rule{}, Deleted: st.deleted(c.SandboxID)}
+		if rec := st.Environments[c.SandboxID]; rec != nil && len(rec.Rules) > 0 {
+			env.Rules = rec.Rules
+		}
 		env.Archived = true
 		for _, chat := range chats {
+			if chat.Origin != nil && env.CopiedFrom == nil {
+				env.CopiedFrom = chat.Origin
+			}
 			ec := EnvironmentChat{ID: chat.ID, Title: chat.Title, Status: chat.Status, Archived: chat.Archived}
 			if s := e.startupOf(chat.ID); s != nil {
 				ec.Stage = s.Stage
@@ -122,6 +144,10 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		if ran := ranChat(chats); ran != nil && !env.Deleted {
 			if res, err := e.Runtime(ctx, ran.ID, "status"); err == nil && res.Sandbox != nil {
 				env.Runtime = res.Sandbox
+				if !res.Sandbox.Resources.IsZero() {
+					size := res.Sandbox.Resources
+					env.Resources = &size
+				}
 				// Provisioned and used CPU, memory and disk, as the guest
 				// reports them; the panel refreshes this every few seconds.
 				if res, err := e.Runtime(ctx, ran.ID, "usage"); err == nil {
@@ -131,10 +157,12 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 					env.Pod = res.Pod
 				}
 			}
-			if e.PolicyAddress != "" {
-				if result, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": ran.ID, "sandboxID": c.SandboxID}); err == nil {
-					env.Repositories = agent.Array(result["repositories"])
-				}
+		}
+		// Shared repositories belong to the workspace, not to a run: a
+		// chat that has not sent its first message lists them too.
+		if e.PolicyAddress != "" && !env.Deleted {
+			if result, err := e.sharingCall(ctx, "github_list", map[string]any{"chatID": chats[0].ID, "sandboxID": c.SandboxID}); err == nil {
+				env.Repositories = agent.Array(result["repositories"])
 			}
 		}
 		out = append(out, env)
@@ -155,16 +183,69 @@ func (e *Engine) StopEnvironment(ctx context.Context, id string) error {
 	if len(chats) == 0 {
 		return errors.New("workspace not found")
 	}
-	if c := busy(chats); c != nil {
-		return errors.New("workspace is running chat “" + c.Title + "”; stop that chat first")
+	if err := e.stopChats(ctx, id); err != nil {
+		return err
 	}
 	ran := ranChat(chats)
 	if ran == nil {
 		return nil
 	}
 	e.releaseSandbox(ctx, id, "")
-	_, err := e.Worker.Call(ctx, request(ran, "stop"))
+	return e.stopSandbox(ctx, ran)
+}
+
+// StartEnvironment brings a stopped workspace's sandbox back without a
+// message, so the next one starts at once. A workspace that never ran has
+// nothing to start.
+func (e *Engine) StartEnvironment(ctx context.Context, id string) error {
+	st := e.Store.Snapshot()
+	chats := st.environmentChats(id)
+	if len(chats) == 0 {
+		return errors.New("workspace not found")
+	}
+	if st.deleted(id) {
+		return errors.New("workspace was deleted")
+	}
+	ran := ranChat(chats)
+	if ran == nil {
+		return errors.New("the workspace has no sandbox yet; its first message creates one")
+	}
+	_, err := e.Worker.Call(ctx, request(ran, "start"))
 	return err
+}
+
+// stopChats ends every running chat on the workspace (the agent's turn,
+// then its session) and waits for them to settle: the owner asked for the
+// workspace to stop or change, and a chat that is merely resident between
+// turns is not worth a refusal. A chat stopping already is waited for.
+// Stop on the chat refuses while a sibling runs, so the chats are stopped
+// one at a time. Stop alone leaves the session resident for the next
+// message; here the sandbox is about to go, so the sessions end too.
+func (e *Engine) stopChats(ctx context.Context, id string) error {
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		chats := e.Store.Snapshot().environmentChats(id)
+		c := busy(chats)
+		if c == nil {
+			for _, c := range chats {
+				e.endSession(ctx, c.ID)
+			}
+			return nil
+		}
+		if c.Status != "stopping" {
+			if err := e.Stop(ctx, c.ID); err != nil && !strings.Contains(err.Error(), "stop already pending") && !strings.Contains(err.Error(), "another chat") {
+				return fmt.Errorf("stopping chat “%s”: %w", c.Title, err)
+			}
+		}
+		if time.Now().After(deadline) {
+			return errors.New("chat “" + c.Title + "” did not stop in time")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // ArchiveEnvironment stops the sandbox and archives every chat on it. Files

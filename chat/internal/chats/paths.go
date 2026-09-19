@@ -18,7 +18,7 @@ func (h *HTTP) pathsHTTP(w http.ResponseWriter, r *http.Request, chatID string) 
 		http.Error(w, "path query too long", 400)
 		return
 	}
-	c := h.Engine.Store.Snapshot().chat(chatID)
+	c := h.Engine.Store.Chat(chatID)
 	if c == nil {
 		http.Error(w, "chat not found", 404)
 		return

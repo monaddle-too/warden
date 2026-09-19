@@ -8,6 +8,7 @@ import (
 
 	"warden/chat/internal/config"
 	"warden/chat/internal/hostinfo"
+	"warden/chat/internal/sandbox"
 	"warden/chat/internal/transport"
 )
 
@@ -16,6 +17,7 @@ import (
 // that disagrees with a loaded file is an error.
 type settings struct {
 	cfg        config.Config
+	configPath string         // the warden.json the settings came from ("" for flags only)
 	root       string         // paths.state/runner
 	listen     string         // services.runner.listen (unix://paths.state/runner/worker.sock)
 	policy     string         // services.policy.address (unix://paths.state/policy/sbx-control.sock)
@@ -48,7 +50,7 @@ func resolveSettings(fs *flag.FlagSet, f runnerFlags) (settings, error) {
 		return settings{}, err
 	}
 	o := config.NewOverrides(fs, source)
-	s := settings{cfg: cfg}
+	s := settings{cfg: cfg, configPath: source}
 	s.root = config.Override(o, "root", *f.root, "paths.state (runner directory)", cfg.RunnerState())
 	// The listener is the Unix socket of --socket or the mutual-TLS port of
 	// --tls-listen, both against services.runner.listen.
@@ -102,3 +104,71 @@ func str(p *string) string {
 }
 
 var findSBX = hostinfo.FindSBX
+
+// resourceLimits is the size offer for SBX: the configured default, a
+// ceiling from the configuration or else from the host (75 % of its memory
+// and all its cores, what SBX itself allows a sandbox), whole CPUs only
+// (SBX takes no fraction, so a fractional setting rounds up), and a resize
+// that restarts the sandbox.
+func resourceLimits(s config.Sandboxes, defaultMemoryMB, hostMemoryMB, cores int) sandbox.ResourceLimits {
+	// An unset value stays 0 so the fallbacks below apply: CPUsFromSpec
+	// would turn it into one CPU and pin the ceiling there.
+	wholeCPUs := func(cpus float64) int {
+		milli := sandbox.CPUMilli(cpus)
+		if milli == 0 {
+			return 0
+		}
+		return sandbox.CPUsFromSpec(milli) * 1000
+	}
+	l := sandbox.ResourceLimits{CPUStepMilli: 1000, Restart: true}
+	l.Default = sandbox.Resources{CPUMilli: wholeCPUs(s.CPUs), MemoryMB: defaultMemoryMB}
+	if l.Default.CPUMilli == 0 {
+		l.Default.CPUMilli = 1000
+	}
+	l.Max = sandbox.Resources{CPUMilli: wholeCPUs(s.MaxCPUs), MemoryMB: s.MaxMemoryMB}
+	if l.Max.MemoryMB == 0 {
+		l.Max.MemoryMB = hostMemoryMB * 3 / 4 / sandbox.MinMemoryMB * sandbox.MinMemoryMB
+	}
+	if l.Max.CPUMilli == 0 && cores > 0 {
+		l.Max.CPUMilli = cores * 1000
+	}
+	return clampLimits(l)
+}
+
+// kubernetesResourceLimits is the size offer on Kubernetes: quarter CPUs
+// (the platform takes fractions), the configured default and ceiling, and
+// a resize applied live to the pod. Here the runner is a pod itself, so
+// the host says nothing about the ceiling: an unset one is the default,
+// which offers no growth; the chart sets both (sandboxes.maxCPUs,
+// sandboxes.maxMemoryMB) and sizes the namespace quota from them.
+func kubernetesResourceLimits(s config.Sandboxes, defaultMemoryMB int) sandbox.ResourceLimits {
+	quarterCPUs := func(cpus float64) int {
+		milli := sandbox.CPUMilli(cpus)
+		return (milli + 249) / 250 * 250
+	}
+	l := sandbox.ResourceLimits{CPUStepMilli: 250}
+	l.Default = sandbox.Resources{CPUMilli: quarterCPUs(s.CPUs), MemoryMB: defaultMemoryMB}
+	if l.Default.CPUMilli == 0 {
+		l.Default.CPUMilli = 1000
+	}
+	l.Max = sandbox.Resources{CPUMilli: quarterCPUs(s.MaxCPUs), MemoryMB: s.MaxMemoryMB}
+	return clampLimits(l)
+}
+
+// clampLimits keeps the ceiling at or above the default and within what a
+// single sandbox may ever have.
+func clampLimits(l sandbox.ResourceLimits) sandbox.ResourceLimits {
+	if l.Max.MemoryMB < l.Default.MemoryMB {
+		l.Max.MemoryMB = l.Default.MemoryMB
+	}
+	if l.Max.CPUMilli < l.Default.CPUMilli {
+		l.Max.CPUMilli = l.Default.CPUMilli
+	}
+	if l.Max.MemoryMB > sandbox.MaxMemoryMB {
+		l.Max.MemoryMB = sandbox.MaxMemoryMB
+	}
+	if l.Max.CPUMilli > sandbox.MaxCPUMilli {
+		l.Max.CPUMilli = sandbox.MaxCPUMilli
+	}
+	return l
+}

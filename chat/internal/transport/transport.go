@@ -18,6 +18,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strconv"
@@ -304,4 +305,23 @@ func PeerIdentity(conn net.Conn) string {
 		}
 	}
 	return IdentityOf(tc.ConnectionState())
+}
+
+// ProbeQuietLog is an http.Server ErrorLog that drops the handshake errors
+// a TCP liveness or readiness probe causes on a TLS listener (the kubelet
+// connects and closes: "TLS handshake error ... EOF" every few seconds)
+// and passes everything else to the standard logger.
+func ProbeQuietLog() *log.Logger {
+	return log.New(probeFilter{}, "", 0)
+}
+
+type probeFilter struct{}
+
+func (probeFilter) Write(p []byte) (int, error) {
+	line := string(p)
+	if strings.Contains(line, "TLS handshake error") && (strings.HasSuffix(strings.TrimSpace(line), "EOF") || strings.Contains(line, "connection reset by peer")) {
+		return len(p), nil
+	}
+	log.Print(strings.TrimSuffix(line, "\n"))
+	return len(p), nil
 }

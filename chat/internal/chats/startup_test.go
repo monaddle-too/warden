@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 	"time"
+	"warden/chat/internal/agent"
 	cv "warden/chat/internal/conversation"
 	"warden/chat/internal/sandbox"
 )
@@ -21,7 +22,7 @@ func startupOf(e *Engine, id string) Startup {
 // runner's while prepare runs, and nothing once the turn is confirmed.
 func TestStartupStagesFollowTheRunner(t *testing.T) {
 	e, w, _ := setup(t)
-	id, err := e.Create("Test", "", "")
+	id, err := e.Create("Test", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,12 +47,15 @@ func TestStartupStagesFollowTheRunner(t *testing.T) {
 		t.Fatal("chat should be running while it starts")
 	}
 	close(gate)
-	// After prepare the engine launches and connects, then clears the report
-	// once the turn is confirmed.
+	// After prepare the engine launches, initializes, connects and sends;
+	// the turn confirmed, the start waits for the model's first reply.
 	until(t, func() bool {
 		c := e.View().chat(id)
-		return c.Startup == nil && len(c.Conversation.Entries) > 0 && c.Conversation.Entries[0].Delivery == "sent"
+		return c.Startup != nil && c.Startup.Stage == stageFirstResponse && len(c.Conversation.Entries) > 0 && c.Conversation.Entries[0].Delivery == "sent"
 	})
+	// The first item of the turn ends the start.
+	w.send(agent.Frame{Method: "item/started", Params: map[string]any{"turnId": "turn-one", "item": map[string]any{"id": "item-1", "type": "agentMessage", "text": "Hi"}}})
+	until(t, func() bool { return e.View().chat(id).Startup == nil })
 	w.mu.Lock()
 	var ops []string
 	for _, r := range w.requests {
@@ -75,7 +79,7 @@ func TestStartupStagesFollowTheRunner(t *testing.T) {
 // on once the workspace is free.
 func TestQueuedStartupNamesTheBlocker(t *testing.T) {
 	e, w, _ := setup(t)
-	first, err := e.Create("First", "", "")
+	first, err := e.Create("First", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +92,7 @@ func TestQueuedStartupNamesTheBlocker(t *testing.T) {
 	}
 	until(t, func() bool { return startupOf(e, first).Stage == stagePreparing })
 	sandboxID := e.Store.Snapshot().chat(first).SandboxID
-	second, err := e.Create("Second", sandboxID, "")
+	second, err := e.Create("Second", sandboxID, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -41,7 +41,10 @@ func TestParseUsageReadsProvisionedAndUsed(t *testing.T) {
 
 func TestUsageReportsSizingWhenStoppedAndSamplesTheGuestWhenRunning(t *testing.T) {
 	w, d, _, r := managedFixture(t)
-	w.MemoryMB = 2048
+	// The sandbox's own size (its record), as the panel reports it stopped.
+	w.mu.Lock()
+	w.managed.Sandboxes[r.SandboxID].Resources = Resources{CPUMilli: 1000, MemoryMB: 2048}
+	w.mu.Unlock()
 	clock := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
 	w.Now = func() time.Time { return clock }
 	r.Operation = "usage"

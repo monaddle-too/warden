@@ -48,14 +48,41 @@ type PodInfo struct {
 	Component string `json:"component,omitempty"`
 	// Requests and Limits are the summed container requests and limits;
 	// Usage is the summed live usage from metrics.k8s.io.
-	Requests Resources  `json:"requests"`
-	Limits   Resources  `json:"limits"`
-	Usage    *Resources `json:"usage"`
+	Requests Amounts  `json:"requests"`
+	Limits   Amounts  `json:"limits"`
+	Usage    *Amounts `json:"usage"`
+	// Events are the pod's recent events, newest first: what the
+	// scheduler, the autoscaler and the kubelet said about it.
+	Events []Event `json:"events"`
 }
 
-// Resources is a CPU and memory pair: millicores and bytes. Zero means
-// unset (no request or limit declared).
-type Resources struct {
+// Event is one Kubernetes event as the owner sees it: what happened to
+// which object, in the reporter's words and, when Hint is set, in the
+// owner's. Count is how many times the same event repeated; At is the
+// latest.
+type Event struct {
+	At      time.Time `json:"at"`
+	Type    string    `json:"type"` // Normal or Warning
+	Reason  string    `json:"reason"`
+	Message string    `json:"message"`
+	// Hint is the owner's-words reading of the event, for the reasons
+	// that matter to a start (a node being added, none available, the
+	// image pulling, a volume that will not mount); empty otherwise.
+	Hint  string `json:"hint,omitempty"`
+	Count int    `json:"count"`
+	// Kind, Namespace and Name are the object the event is about.
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	// Source is the reporting component (kubelet, default-scheduler,
+	// cluster-autoscaler).
+	Source string `json:"source,omitempty"`
+}
+
+// Amounts is a CPU and memory pair as the cluster reports them: millicores
+// and bytes. Zero means unset (no request or limit declared). A workspace's
+// size is Resources (resources.go).
+type Amounts struct {
 	CPUMilli    int64 `json:"cpuMilli"`
 	MemoryBytes int64 `json:"memoryBytes"`
 }
@@ -71,11 +98,11 @@ type NodeInfo struct {
 	Architecture     string     `json:"architecture,omitempty"`
 	Created          *time.Time `json:"created,omitempty"`
 	// Unschedulable is a cordoned node.
-	Unschedulable bool      `json:"unschedulable,omitempty"`
-	Capacity      Resources `json:"capacity"`
-	Allocatable   Resources `json:"allocatable"`
+	Unschedulable bool    `json:"unschedulable,omitempty"`
+	Capacity      Amounts `json:"capacity"`
+	Allocatable   Amounts `json:"allocatable"`
 	// Usage is the node's live usage from metrics.k8s.io, nil without it.
-	Usage *Resources `json:"usage"`
+	Usage *Amounts `json:"usage"`
 	// SandboxPods counts the sandbox pods placed on the node.
 	SandboxPods int `json:"sandboxPods"`
 }
@@ -102,14 +129,19 @@ type ClusterStatus struct {
 	// ServicePodsError explains empty ServicePods when the runner may not
 	// list its own namespace.
 	ServicePodsError string `json:"servicePodsError,omitempty"`
+	// Events are the newest events of the sandbox and service namespaces,
+	// newest first; EventsError explains an empty list the runner may not
+	// read.
+	Events      []Event `json:"events"`
+	EventsError string  `json:"eventsError,omitempty"`
 }
 
 // Add sums two resource pairs.
-func (r Resources) Add(o *Resources) Resources {
+func (r Amounts) Add(o *Amounts) Amounts {
 	if o == nil {
 		return r
 	}
-	return Resources{CPUMilli: r.CPUMilli + o.CPUMilli, MemoryBytes: r.MemoryBytes + o.MemoryBytes}
+	return Amounts{CPUMilli: r.CPUMilli + o.CPUMilli, MemoryBytes: r.MemoryBytes + o.MemoryBytes}
 }
 
 // LogQuery selects pod logs. Tail 0 means the default (200); the inspector
@@ -142,7 +174,7 @@ var errBindingRequired = errors.New("chat is not authorized for this project san
 func (w *Worker) clusterOp(ctx context.Context, r Request) (Response, error) {
 	if w.Cluster == nil {
 		if r.Operation == "cluster.status" {
-			return Response{Cluster: &ClusterStatus{At: w.now(), Nodes: []NodeInfo{}, SandboxPods: []PodInfo{}, ServicePods: []PodInfo{}}}, nil
+			return Response{Cluster: &ClusterStatus{At: w.now(), Nodes: []NodeInfo{}, SandboxPods: []PodInfo{}, ServicePods: []PodInfo{}, Events: []Event{}}}, nil
 		}
 		return Response{}, ErrClusterUnavailable
 	}

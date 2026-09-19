@@ -94,8 +94,16 @@ fallback) and writes `{"token","login","scopes","obtained"}` to a private
 0600 file, by default `<state>/provider/github.json`. `warden-policy
 --github-auth-file PATH` selects that file as the credential source; it is
 mutually exclusive with `WARDEN_GITHUB_APP_BROKER`. The token is read on every
-use, never copied into a guest and never refreshed; a missing or rejected file
-fails closed with "Refresh the GitHub sign-in before using repositories".
+use, never copied into a guest and never refreshed by Warden; a missing or
+rejected file fails closed with "Refresh the GitHub sign-in before using
+repositories". The owner refreshes it from the browser: the admin console's
+"Sign in with GitHub" / "Refresh sign-in" (and the repository dialog, when
+the sign-in has lapsed) run the same device flow through the policy service
+(`sharing/github_login_start`, owner-only at the edge), which stores the
+confirmed token where it reads (the file, or the Secret in Kubernetes). A
+refresh as the same account keeps the repository selections; a different
+account drops them, as a disconnect does. See
+[github-browser-login-plan](github-browser-login-plan.md).
 Injection happens at the same gateway point as installation tokens, only
 after a grant matched, with the repository rechecked on each approval; the
 repository list comes from `GET /user/repos` (owner, collaborator and

@@ -6,16 +6,19 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	stdlog "log"
 	neturl "net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"warden/chat/internal/bugreport"
 	"warden/chat/internal/config"
 	"warden/chat/internal/handshake"
 )
@@ -34,8 +37,10 @@ func (c *cli) start(args []string) error {
 	vendorDir := fs.String("vendor-dir", "", "GitHub catalog directory when warden.json has no paths.githubCatalog")
 	template := fs.String("policy-template", "", "sandbox policy template when warden.json has no paths.sandboxPolicyTemplate")
 	withoutEdge := fs.Bool("without-edge", false, "do not start the edge (no previews; the app is reachable on the chat port only)")
-	detach := fs.Bool("detach", false, "run in the background; logs to <state>/warden.log, stop with `warden stop`")
-	popupsMode := fs.String("popups", popupsAuto, "how pending approvals are surfaced: auto (browser when detached, notify otherwise), browser, notify, none")
+	detach := fs.Bool("detach", false, "run in the background without a service manager; logs to <state>/warden.log, stop with `warden stop`")
+	foreground := fs.Bool("foreground", false, "run the services in this terminal even though a service is registered (stop it first)")
+	serviceMode := fs.Bool("service", false, "internal: this process is the registered service's; output goes to <state>/warden.log")
+	popupsMode := fs.String("popups", popupsNone, "how pending approvals are surfaced: none (default: they wait in the app and the terminal client), notify (desktop notification), browser (notification and the chat opened in the browser), auto (browser when detached, notify otherwise), silent (nothing at all). A review only the app can do (a pull request proposal, document suggestions, a document choice) opens the app under every mode but silent")
 	detachedChild := fs.Bool("detached-child", false, "internal: this process was started by --detach")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
@@ -47,8 +52,29 @@ func (c *cli) start(args []string) error {
 	if _, err = os.Stat(path); err != nil {
 		return fmt.Errorf("%s: %w; run `warden install` first", path, err)
 	}
+	if !*serviceMode && !*foreground && !*detachedChild {
+		// Once a service is registered, "start" means the service.
+		if svc := c.registeredService(cfg); svc != nil {
+			if *detach {
+				fmt.Fprintln(c.stdout, "warden: a service is registered; starting it (--detach is for hosts without one)")
+			}
+			return c.startService(cfg, svc)
+		}
+	}
 	if *detach {
 		return c.detach(cfg, args)
+	}
+	if *serviceMode {
+		// Under launchd or systemd nobody reads stdout; the launcher keeps
+		// its own rotated log, as a detached run does.
+		log, err := openLog(cfg)
+		if err != nil {
+			return err
+		}
+		defer log.Close()
+		stdlog.SetOutput(log)
+		c = &cli{stdin: c.stdin, stdout: log, stderr: log, openFn: c.openFn, notifyFn: c.notifyFn, serviceFn: c.serviceFn, menuFn: c.menuFn}
+		*detachedChild = true
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -57,10 +83,8 @@ func (c *cli) start(args []string) error {
 	if exe, err = filepath.EvalSymlinks(exe); err != nil {
 		return err
 	}
-	switch *popupsMode {
-	case popupsAuto, popupsBrowser, popupsNotify, popupsNone:
-	default:
-		return fmt.Errorf("--popups must be auto, browser, notify or none, not %q", *popupsMode)
+	if !slices.Contains(popupModes, *popupsMode) {
+		return fmt.Errorf("--popups must be auto, browser, notify, none or silent, not %q", *popupsMode)
 	}
 	l := &launcher{c: c, cfg: cfg, configPath: path, exe: exe, withoutEdge: *withoutEdge, popups: *popupsMode, detached: *detachedChild}
 	if l.assets, err = locateAssets(cfg, filepath.Dir(exe), *webDir, *vendorDir, *template); err != nil {
@@ -132,13 +156,56 @@ type launcher struct {
 	detached    bool   // started by --detach: nobody is watching this terminal
 
 	procs []*service
+	// bugs drafts the launcher's own reports (a service exiting); drafts
+	// watches the pending directory and presents each new draft once.
+	bugs   *bugreport.Capturer
+	drafts *draftWatcher
 }
 
 type service struct {
-	name string
-	cmd  *exec.Cmd
-	log  *os.File
-	done chan error
+	name    string
+	cmd     *exec.Cmd
+	log     *os.File
+	done    chan error
+	stopped bool // shutdown has dealt with it
+}
+
+// launcherLockWait is how long a replacement instance waits for the
+// previous one to release the launcher lock.
+var launcherLockWait = 30 * time.Second
+
+// launcherLock takes the state directory's launcher lock, which one running
+// stack holds until its services have stopped. A detached or service
+// instance replacing a previous one waits for it: launchd's `kickstart -k`
+// (a restart, a redeploy) starts the replacement while the old stack is
+// still shutting down, and exiting here would cost a throttled respawn,
+// during which `warden start` reports a start that failed. A foreground
+// start reports what holds the lock instead.
+func (l *launcher) launcherLock(state string) (*os.File, error) {
+	lock, err := os.OpenFile(filepath.Join(state, "launcher.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+		return lock, nil
+	}
+	if !l.detached {
+		lock.Close()
+		if svc := l.c.registeredService(l.cfg); svc != nil && svc.status().Running {
+			return nil, fmt.Errorf("Warden is already running as a %s (%s); `warden stop` it before a foreground start.", svc.kind(), svc.status())
+		}
+		return nil, errors.New("Warden is already running or shutting down in this state directory.")
+	}
+	fmt.Fprintln(l.c.stdout, "warden: waiting for the previous instance to exit")
+	deadline := time.Now().Add(launcherLockWait)
+	for time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+		if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+			return lock, nil
+		}
+	}
+	lock.Close()
+	return nil, fmt.Errorf("Warden is already running in this state directory; the previous instance did not exit within %s.", launcherLockWait)
 }
 
 func (l *launcher) run() error {
@@ -149,14 +216,11 @@ func (l *launcher) run() error {
 			return err
 		}
 	}
-	lock, err := os.OpenFile(filepath.Join(state, "launcher.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	lock, err := l.launcherLock(state)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return errors.New("Warden is already running or shutting down in this state directory.")
-	}
 	fmt.Fprintf(l.c.stdout, "warden: %s\n", handshake.Self("warden"))
 	wrapper := wrapperPath(state)
 	if err = executableFile(wrapper); err != nil {
@@ -197,13 +261,47 @@ func (l *launcher) run() error {
 	// Surface approvals while the stack runs: a desktop notification, and
 	// when nobody is watching a terminal, the app opened on the chat.
 	go popups(ctx, cfg, l.popups, l.detached, l.c.stdout)
+	// Bug reports: every draft a service (or the launcher itself) writes is
+	// shown once on the review page (docs/bug-reporting-plan.md).
+	l.bugs = bugreport.New(cfg, l.configPath, bugreport.ComponentLauncher)
+	l.drafts = &draftWatcher{state: state, log: l.c.stdout, present: func(ctx context.Context, path string) (bugreport.Outcome, error) {
+		return l.c.presenter(l.cfg, l.detached).Present(ctx, path)
+	}}
+	if waiting := l.drafts.start(); waiting > 0 && l.bugs.Enabled() {
+		fmt.Fprintf(l.c.stdout, "warden: %d bug report draft(s) waiting for a decision; `warden bugs pending` shows them\n", waiting)
+	}
+	go l.drafts.run(ctx)
 	select {
 	case <-ctx.Done():
 		fmt.Fprintln(l.c.stdout, "warden: stopping")
 		return nil
 	case name := <-l.anyExit():
-		return fmt.Errorf("%s stopped; inspect %s", name, filepath.Join(state, name+".log"))
+		err := fmt.Errorf("%s stopped; inspect %s", name, filepath.Join(state, name+".log"))
+		// The stack is down either way; stop the rest first, then draft
+		// and show the report (the service's log tail and the launcher's).
+		l.shutdown()
+		l.reportExit(ctx, name)
+		return err
 	}
+}
+
+// reportExit drafts the service-exit report for name and presents every
+// draft not yet shown (the new one, or the panic draft the service wrote
+// on its way down).
+func (l *launcher) reportExit(ctx context.Context, name string) {
+	if !l.bugs.Enabled() {
+		return
+	}
+	exit := "exited"
+	for _, s := range l.procs {
+		if s.name == name && s.cmd.ProcessState != nil {
+			exit = s.cmd.ProcessState.String()
+		}
+	}
+	if _, _, err := exitDraft(l.bugs, name, exit, time.Now()); err != nil {
+		fmt.Fprintf(l.c.stdout, "warden: bug report of the %s exit not written: %v\n", name, err)
+	}
+	l.drafts.presentNew(ctx)
 }
 
 // launch starts one service (this executable with the service subcommand
@@ -216,6 +314,7 @@ func (l *launcher) launch(ctx context.Context, name string, env, args []string, 
 		previous = fileStamp(ready)
 	}
 	logPath := filepath.Join(l.cfg.Paths.State, name+".log")
+	rotateLog(logPath)
 	log, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
@@ -280,9 +379,14 @@ func (l *launcher) anyExit() <-chan string {
 }
 
 // shutdown stops the services in reverse order: SIGTERM, 15 s, then SIGKILL.
+// A second call finds nothing running.
 func (l *launcher) shutdown() {
 	for i := len(l.procs) - 1; i >= 0; i-- {
 		s := l.procs[i]
+		if s.stopped {
+			continue
+		}
+		s.stopped = true
 		if s.cmd.ProcessState != nil {
 			s.log.Close()
 			continue
@@ -296,7 +400,6 @@ func (l *launcher) shutdown() {
 		}
 		s.log.Close()
 	}
-	l.procs = nil
 }
 
 // Service arguments: the configuration file plus the resolved asset paths
@@ -335,24 +438,28 @@ func (c *cli) open(args []string) error {
 	state := fs.String("state", "", "state directory when no warden.json exists yet")
 	print := fs.Bool("print", false, "print the URL instead of opening a browser")
 	withoutEdge := fs.Bool("without-edge", false, "open the chat origin directly (when warden start ran with --without-edge)")
+	chatID := fs.String("chat", "", "open the app on this chat")
+	newChat := fs.Bool("new", false, "open the app on the New chat form")
 	if err := fs.Parse(args); err != nil {
+		return errUsage
+	}
+	if *chatID != "" && *newChat {
+		fmt.Fprintln(c.stderr, "warden open: --chat and --new exclude each other")
 		return errUsage
 	}
 	cfg, _, err := loadConfig(*configPath, *state)
 	if err != nil {
 		return err
 	}
-	url, err := launchURL(cfg.OwnerTokenFile(), time.Now())
+	url, err := appURL(cfg, *withoutEdge, time.Now())
 	if err != nil {
 		return err
 	}
-	// In owner mode the edge fronts the chat: opening the app through it
-	// gives the browser the owner session that preview navigations need.
-	if cfg.Auth.Mode == config.AuthOwner && cfg.Auth.PublicURL != "" && !*withoutEdge {
-		url, err = throughEdge(url, cfg.Auth.PublicURL)
-		if err != nil {
-			return err
-		}
+	switch {
+	case *chatID != "":
+		url = withQuery(url, "chat="+neturl.QueryEscape(*chatID))
+	case *newChat:
+		url = withQuery(url, "new=1")
 	}
 	if *print {
 		fmt.Fprintln(c.stdout, url)
@@ -362,6 +469,35 @@ func (c *cli) open(args []string) error {
 		fmt.Fprintf(c.stdout, "open this URL in your browser:\n%s\n", url)
 	}
 	return nil
+}
+
+// appURL is the URL that opens the app with the owner capability. In
+// owner mode the edge fronts the chat: opening the app through it gives
+// the browser the owner session that preview navigations need.
+func appURL(cfg config.Config, withoutEdge bool, now time.Time) (string, error) {
+	url, err := launchURL(cfg.OwnerTokenFile(), now)
+	if err != nil {
+		return "", err
+	}
+	if cfg.Auth.Mode == config.AuthOwner && cfg.Auth.PublicURL != "" && !withoutEdge {
+		return throughEdge(url, cfg.Auth.PublicURL)
+	}
+	return url, nil
+}
+
+// withQuery adds a query parameter to a launch URL, before its fragment
+// (tui.PopupURL does the same for chat=).
+func withQuery(launch, param string) string {
+	base, fragment, _ := strings.Cut(launch, "#")
+	sep := "?"
+	if strings.Contains(base, "?") {
+		sep = "&"
+	}
+	u := base + sep + param
+	if fragment != "" {
+		u += "#" + fragment
+	}
+	return u
 }
 
 // throughEdge rewrites the chat launch URL onto the edge origin, keeping
@@ -406,9 +542,15 @@ func copyToClipboard(text string) error {
 	return errors.New("no clipboard command found")
 }
 
+// openBrowser opens url in the person's browser: the command $BROWSER
+// names when set (the convention xdg-open and gh follow; a script that
+// records the URL serves a headless machine or a test), else /usr/bin/open
+// on macOS or xdg-open.
 func openBrowser(url string) error {
 	var cmd *exec.Cmd
 	switch {
+	case os.Getenv("BROWSER") != "":
+		cmd = exec.Command(os.Getenv("BROWSER"), url)
 	case executableFile("/usr/bin/open") == nil:
 		cmd = exec.Command("/usr/bin/open", url)
 	default:

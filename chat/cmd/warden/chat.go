@@ -8,23 +8,30 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"warden/chat/internal/sandbox"
 	"warden/chat/internal/tui"
 )
 
 const chatUsage = `usage: warden chat [flags] [CHAT]           interactive terminal client
        warden chat list [flags]               list chats
        warden chat new [flags] [TITLE]        create a chat and print its id
-       warden chat send [flags] CHAT TEXT     send a message (--wait streams the reply)
+       warden chat send [flags] CHAT TEXT     send a message (--wait streams its turn,
+                                              --wait-all the chat until idle)
        warden chat approve [flags] CHAT [--decline] [--answer TEXT]
                                               answer the first pending approval
 
 CHAT is a chat id, an id prefix, a title, or a number from 'warden chat list'.
-Flags: --config PATH, --state DIR, --provider codex|claude, --model NAME.
+Flags: --config PATH, --state DIR, --provider codex|claude, --model NAME,
+       --cpus N and --memory SIZE (new: the fresh workspace's size, e.g.
+       --cpus 2 --memory 4g; default: the runner's, whole CPUs on SBX),
+       --network restricted|open (new: the fresh workspace's own network
+       access; default: the install's setting; the owner's choice).
 `
 
 // endpoint reads the running chat service's URL and capability.
@@ -59,11 +66,15 @@ func (c *cli) chat(args []string) error {
 	state := fs.String("state", "", "state directory when no warden.json exists yet")
 	provider := fs.String("provider", "", "provider for a new chat: codex or claude (default: codex)")
 	model := fs.String("model", "", "model for a new chat (default: the provider's default)")
-	wait := fs.Bool("wait", false, "send: stream the transcript until the agent is idle")
+	cpus := fs.Float64("cpus", 0, "new: CPUs for the fresh workspace (default: the runner's)")
+	memory := fs.String("memory", "", "new: memory for the fresh workspace, e.g. 4g or 2048m (default: the runner's)")
+	network := fs.String("network", "", "new: the fresh workspace's own network access, restricted or open (default: the install's setting)")
+	wait := fs.Bool("wait", false, "send: stream the message's own turn until it ends")
+	waitAll := fs.Bool("wait-all", false, "send: stream the transcript until the agent is idle, queued messages included")
 	decline := fs.Bool("decline", false, "approve: decline instead of allowing")
 	answer := fs.String("answer", "", "approve: the answer to the agent's question")
 	all := fs.Bool("all", false, "list: include archived chats")
-	if err := fs.Parse(interleaved(args, map[string]bool{"config": true, "state": true, "provider": true, "model": true, "answer": true})); err != nil {
+	if err := fs.Parse(interleaved(args, map[string]bool{"config": true, "state": true, "provider": true, "model": true, "answer": true, "cpus": true, "memory": true, "network": true})); err != nil {
 		return errUsage
 	}
 	cfg, _, err := loadConfig(*configPath, *state)
@@ -96,15 +107,29 @@ func (c *cli) chat(args []string) error {
 		}
 		return nil
 	case "new":
+		// No title: the chat is named from its first exchange (the
+		// service's automatic titles, chats/title.go).
 		title := strings.Join(fs.Args(), " ")
-		if title == "" {
-			title = "Terminal chat " + time.Now().Format("Jan 2 15:04")
-		}
 		p := *provider
 		if p == "" {
 			p = "codex"
 		}
-		id, err := client.Create(ctx, title, p, *model, "")
+		var resources *sandbox.Resources
+		if *cpus != 0 || *memory != "" {
+			resources = &sandbox.Resources{CPUMilli: sandbox.CPUMilli(*cpus)}
+			if *cpus != 0 && resources.CPUMilli == 0 {
+				return errors.New("--cpus must be a positive number")
+			}
+			if *memory != "" {
+				if resources.MemoryMB, err = sandbox.ParseMemoryMB(*memory); err != nil {
+					return err
+				}
+			}
+		}
+		if *network != "" && *network != "restricted" && *network != "open" {
+			return errors.New("--network must be restricted or open")
+		}
+		id, err := client.Create(ctx, title, p, *model, "", resources, *network)
 		if err != nil {
 			return err
 		}
@@ -121,7 +146,7 @@ func (c *cli) chat(args []string) error {
 		}
 		text := strings.Join(fs.Args()[1:], " ")
 		seen := map[string]bool{}
-		if *wait {
+		if *wait || *waitAll {
 			if s, err := client.State(ctx); err == nil {
 				if ch := s.Chat(id); ch != nil {
 					for _, e := range ch.Conversation.Entries {
@@ -130,14 +155,20 @@ func (c *cli) chat(args []string) error {
 				}
 			}
 		}
-		if err := client.Message(ctx, id, text, tui.NewMessageID()); err != nil {
+		messageID := tui.NewMessageID()
+		if err := client.Message(ctx, id, text, messageID); err != nil {
 			return err
 		}
-		if !*wait {
+		if !*wait && !*waitAll {
 			fmt.Fprintln(c.stdout, "sent")
 			return nil
 		}
-		status, err := tui.Follow(ctx, client, id, c.stdout, seen)
+		// --wait follows this message's own turn; --wait-all the whole
+		// chat until it is idle, the queue included.
+		if *waitAll {
+			messageID = ""
+		}
+		status, err := tui.Follow(ctx, client, id, c.stdout, seen, messageID)
 		if err != nil {
 			return err
 		}
@@ -185,7 +216,7 @@ func (c *cli) chat(args []string) error {
 		return nil
 	}
 	// Interactive.
-	app := &tui.App{Client: client, Provider: *provider, OpenURL: openBrowser, Clipboard: copyToClipboard}
+	app := &tui.App{Client: client, Provider: *provider, OpenURL: openBrowser, Clipboard: copyToClipboard, HistoryDir: filepath.Join(cfg.Paths.State, "tui", "history"), BellFile: filepath.Join(cfg.Paths.State, "tui", "bell"), VimFile: filepath.Join(cfg.Paths.State, "tui", "vim"), SeenFile: filepath.Join(cfg.Paths.State, "tui", "seen.json")}
 	if url, err := launchURL(cfg.OwnerTokenFile(), time.Now()); err == nil {
 		if cfg.Auth.Mode == "owner" && cfg.Auth.PublicURL != "" {
 			url, _ = throughEdge(url, cfg.Auth.PublicURL)

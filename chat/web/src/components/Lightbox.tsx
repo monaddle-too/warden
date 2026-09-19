@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { isKey } from "../shortcuts";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 /* Full-size view of a transcript image in a native modal dialog: Escape,
@@ -31,7 +32,7 @@ export function Lightbox({
       // Explicit as well as the dialog's own cancel handling, which some
       // synthetic key events do not reach.
       onKeyDown={(event) => {
-        if (event.key === "Escape") dialog.current?.close();
+        if (isKey(event, "dialog-close")) dialog.current?.close();
       }}
     >
       <button

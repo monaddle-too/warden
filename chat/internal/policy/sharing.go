@@ -334,8 +334,18 @@ func (g *GoogleConnection) Document(id string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if status != 200 || len(raw) > docResponseLimit {
-		return nil, errors.New("Google document unavailable; check access to it and Google before retrying")
+	if len(raw) > docResponseLimit {
+		return nil, errors.New("Google document unavailable: the document is larger than Warden reads")
+	}
+	if status != 200 {
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		message, _ := body["error"].(map[string]any)
+		s := "Google returned HTTP " + strconv.Itoa(status) + " for the document"
+		if text := stringField(message, "message"); text != "" {
+			s += ": " + text
+		}
+		return nil, errors.New(s)
 	}
 	var data map[string]any
 	if err = json.Unmarshal(raw, &data); err != nil {
@@ -445,12 +455,16 @@ type Sharing struct {
 	GitHubConfigured bool
 	GitHubAppSlug    string
 	GitHub           GitHubCredentials
-	DB               *sql.DB
-	Images           *Images
-	PullRequests     *PullRequests
-	Documents        *DocumentProposals
+	// SignIn is the console's GitHub device-flow sign-in for the user-token
+	// source ("github_login_start" and friends).
+	SignIn       GitHubSignIn
+	DB           *sql.DB
+	Images       *Images
+	PullRequests *PullRequests
+	Documents    *DocumentProposals
 	// Egress, when set, is the registry's runtime egress switch exposed to
-	// the console (the "egress" and "egress_set" operations).
+	// the console and the workspace panel (the "egress" and "egress_set"
+	// operations, install-wide or for one sandbox).
 	Egress EgressSwitch
 	// Network, when set, applies owner-approved temporary host grants to a
 	// sandbox's engine (the "network_allow" operation).
@@ -467,11 +481,16 @@ type NetworkGrants interface {
 	AllowHost(sandbox, host string, until float64) error
 }
 
-// EgressSwitch is the registry as the console sees it: the current mode
-// and where it came from, and a setter that applies everywhere.
+// EgressSwitch is the registry as the console and the workspace panel see
+// it: the install's mode and where it came from, a setter that applies to
+// every sandbox without a mode of its own, and one sandbox's own mode
+// (its choice, "" when it follows the install, and the mode in effect).
 type EgressSwitch interface {
 	EgressMode() (mode, source string)
 	SetEgressMode(mode string) error
+	SandboxEgress(sandbox string) (own, effective string)
+	SetSandboxEgress(sandbox, mode string) error
+	EgressOverrides() int
 }
 
 // Egress mode names as the console and warden.json use them, mapped to the
@@ -503,6 +522,7 @@ func NewSharing(root string, google GoogleSharing, clock Clock, github GitHubCre
 	if s.Clock == nil {
 		s.Clock = wallClock
 	}
+	s.SignIn.Clock = s.Clock
 	for _, statement := range []string{
 		`CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, chat TEXT, sandbox TEXT, reason TEXT, status TEXT, created REAL, expires REAL, documents TEXT, delivered INTEGER DEFAULT 0)`,
 		`CREATE TABLE IF NOT EXISTS repositories (chat TEXT, sandbox TEXT, owner TEXT, app INTEGER, name TEXT, id INTEGER, grant_id TEXT, PRIMARY KEY(chat,sandbox,name))`,
@@ -594,6 +614,7 @@ func ensureTextColumns(db *sql.DB, table string, columns [][2]string) error {
 }
 
 func (s *Sharing) Close() {
+	s.SignIn.Cancel()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.DB != nil {
@@ -745,6 +766,13 @@ func (s *Sharing) Dispatch(op string, data map[string]any) (map[string]any, erro
 		return s.Documents.Dispatch(op, data)
 	case op == "github_write":
 		return s.githubWrite(data)
+	case strings.HasPrefix(op, "github_login_"):
+		// The console's sign-in works without a current identity: it is
+		// how one is obtained.
+		if s.GitHub == nil {
+			return nil, errors.New("GitHub is not configured")
+		}
+		return s.githubSignIn(op, data)
 	case strings.HasPrefix(op, "github_"):
 		return s.githubDispatch(op, data)
 	}
@@ -804,25 +832,43 @@ func (s *Sharing) dispatchLocked(op string, data map[string]any) (map[string]any
 		return map[string]any{"host": host, "expires_at": until}, nil
 	case "github_write":
 		return s.githubWrite(data)
-	case "egress":
+	case "egress", "egress_set":
+		// The install's switch, or with a sandboxID one workspace's own
+		// mode: "" (egress_set clears it) means it follows the install.
 		if s.Egress == nil {
 			return nil, errors.New("egress switch unavailable")
 		}
+		sandbox := stringField(data, "sandboxID")
+		if sandbox != "" && !validIdentifier(sandbox) {
+			return nil, errors.New("invalid sandbox")
+		}
+		if op == "egress_set" {
+			name := stringField(data, "mode")
+			mode, ok := egressModes[name]
+			switch {
+			case sandbox != "" && name == "":
+				mode = ""
+			case !ok && sandbox != "":
+				return nil, errors.New("mode must be restricted, open or empty")
+			case !ok:
+				return nil, errors.New("mode must be restricted or open")
+			}
+			var err error
+			if sandbox != "" {
+				err = s.Egress.SetSandboxEgress(sandbox, mode)
+			} else {
+				err = s.Egress.SetEgressMode(mode)
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
 		mode, source := s.Egress.EgressMode()
-		return map[string]any{"mode": egressNames[mode], "source": source}, nil
-	case "egress_set":
-		if s.Egress == nil {
-			return nil, errors.New("egress switch unavailable")
+		if sandbox == "" {
+			return map[string]any{"mode": egressNames[mode], "source": source, "overrides": s.Egress.EgressOverrides()}, nil
 		}
-		mode, ok := egressModes[stringField(data, "mode")]
-		if !ok {
-			return nil, errors.New("mode must be restricted or open")
-		}
-		if err := s.Egress.SetEgressMode(mode); err != nil {
-			return nil, err
-		}
-		mode, source := s.Egress.EgressMode()
-		return map[string]any{"mode": egressNames[mode], "source": source}, nil
+		own, effective := s.Egress.SandboxEgress(sandbox)
+		return map[string]any{"mode": egressNames[own], "effective": egressNames[effective], "install": egressNames[mode], "source": source}, nil
 	case "disconnect":
 		// Forget one provider's sign-in. Everything that credential backed
 		// is revoked with it: Google document grants, GitHub repository

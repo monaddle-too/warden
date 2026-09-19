@@ -10,7 +10,7 @@ import (
 // typed prefix and passes its answer through as JSON.
 func TestPathsRouteCompletesWorkspacePaths(t *testing.T) {
 	e, w, _ := setup(t)
-	id, err := e.Create("Paths", "", "")
+	id, err := e.Create("Paths", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,618 @@
+package chats
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+	"warden/chat/internal/agent"
+	cv "warden/chat/internal/conversation"
+	"warden/chat/internal/sandbox"
+)
+
+// oneTurn sends text and waits for its turn to end.
+func oneTurn(t *testing.T, e *Engine, id, text string) string {
+	t.Helper()
+	mid := cv.ID()
+	if err := e.Message(id, text, mid); err != nil {
+		t.Fatal(err)
+	}
+	idle(t, e, id)
+	return mid
+}
+
+// A fork of a Claude chat copies the transcript (entry IDs, turns, the
+// allow-always rules, the mode, the style), marks where it came from, and
+// carries the source's session to be copied at its first launch: the
+// runner is asked to fork it, the agent reports a new session, and from
+// then on the fork resumes its own while the source keeps the original.
+func TestForkCopiesTranscriptAndForksTheSession(t *testing.T) {
+	e, w, id := claudeSetup(t)
+	first := oneTurn(t, e, id, "remember the codeword")
+	if err := e.SetMode(context.Background(), id, ModeAsk); err != nil {
+		t.Fatal(err)
+	}
+	_ = e.Store.update(func(st *State) error {
+		st.chat(id).Rules = []Rule{{Kind: RuleAllow, Pattern: "Bash(git status *)"}}
+		st.chat(id).OutputStyle = "Learning"
+		return nil
+	})
+	result, err := e.Fork(context.Background(), id, "", false, cv.Actor{PrincipalID: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Session != "forked" || result.Title != "Modes (fork)" || result.ID == id {
+		t.Fatalf("%+v", result)
+	}
+	st := e.Store.Snapshot()
+	source, fork := st.chat(id), st.chat(result.ID)
+	if fork == nil || fork.SandboxID != source.SandboxID || fork.Provider != "claude" || fork.Mode != ModeAsk || len(fork.Rules) != 1 || fork.OutputStyle != "Learning" || fork.Status != "idle" {
+		t.Fatalf("fork: %+v", fork)
+	}
+	if fork.Conversation.ThreadID == nil || *fork.Conversation.ThreadID != "claude-session" || !fork.ForkSession || fork.Rewind != nil || fork.Recap != "" || fork.NewSession {
+		t.Fatalf("fork session: thread %v fork %v rewind %v recap %q", fork.Conversation.ThreadID, fork.ForkSession, fork.Rewind, fork.Recap)
+	}
+	entries := fork.Conversation.Entries
+	n := len(source.Conversation.Entries)
+	if len(entries) != n+1 || entries[0].ID != first || entries[0].Role != "user" || entries[n].Role != "fork" {
+		t.Fatalf("fork transcript: %d entries vs %d, last %+v", len(entries), n, entries[len(entries)-1])
+	}
+	marker := entries[n]
+	if marker.Text != "Forked from “Modes”" || marker.Fork == nil || marker.Fork.ChatID != id || marker.Fork.MessageID != "" || !strings.Contains(marker.Detail, "copy of its session") {
+		t.Fatalf("marker: %+v", marker)
+	}
+	if len(fork.Conversation.Turns) != len(source.Conversation.Turns) || len(fork.Conversation.Turns) == 0 {
+		t.Fatalf("turns: %d vs %d", len(fork.Conversation.Turns), len(source.Conversation.Turns))
+	}
+	// The fork's first run: the runner forks the source's session and the
+	// agent reports the copy's own, which the fork keeps.
+	w.mu.Lock()
+	w.session = "forked-session"
+	w.mu.Unlock()
+	oneTurn(t, e, result.ID, "what was it?")
+	prepares, streams := w.requestsOf("prepare"), w.requestsOf("stream")
+	if len(prepares) < 2 || len(streams) < 2 {
+		t.Fatalf("requests: %d prepares, %d streams", len(prepares), len(streams))
+	}
+	prep, stream := prepares[len(prepares)-1], streams[len(streams)-1]
+	if prep.ChatID != result.ID || !prep.ForkSession || prep.ThreadID != "claude-session" {
+		t.Fatalf("fork prepare: %+v", prep)
+	}
+	if stream.ChatID != result.ID || !stream.ForkSession || stream.ThreadID != "claude-session" || stream.OutputStyle != "Learning" {
+		t.Fatalf("fork stream: %+v", stream)
+	}
+	st = e.Store.Snapshot()
+	source, fork = st.chat(id), st.chat(result.ID)
+	if *fork.Conversation.ThreadID != "forked-session" || fork.ForkSession {
+		t.Fatalf("fork after its first turn: thread %s fork %v", *fork.Conversation.ThreadID, fork.ForkSession)
+	}
+	if *source.Conversation.ThreadID != "claude-session" || len(source.Conversation.Entries) != n {
+		t.Fatalf("source changed: %s, %d entries", *source.Conversation.ThreadID, len(source.Conversation.Entries))
+	}
+	// The next run of the fork resumes its own session, no fork.
+	oneTurn(t, e, result.ID, "again")
+	streams = w.requestsOf("stream")
+	if last := streams[len(streams)-1]; last.ForkSession || last.ThreadID != "" {
+		t.Fatalf("second stream of the fork: %+v", last)
+	}
+	if prepares = w.requestsOf("prepare"); prepares[len(prepares)-1].ThreadID != "forked-session" || prepares[len(prepares)-1].ForkSession {
+		t.Fatalf("second prepare of the fork: %+v", prepares[len(prepares)-1])
+	}
+}
+
+// A fork cut before a message keeps only what came before and rewinds
+// the copied session to that message as soon as the copy starts.
+func TestForkAtAMessageRewindsTheCopy(t *testing.T) {
+	e, w, id := claudeSetup(t)
+	first := oneTurn(t, e, id, "first")
+	second := oneTurn(t, e, id, "second")
+	result, err := e.Fork(context.Background(), id, second, false, cv.Actor{PrincipalID: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork := e.Store.Snapshot().chat(result.ID)
+	for _, v := range fork.Conversation.Entries {
+		if v.ID == second || v.Text == "second" {
+			t.Fatalf("the cut message is in the fork: %+v", v)
+		}
+	}
+	if fork.Conversation.Entries[0].ID != first || fork.Rewind == nil || fork.Rewind.TargetID != second || fork.Rewind.LastSeenID != second {
+		t.Fatalf("fork: first %s rewind %+v", fork.Conversation.Entries[0].ID, fork.Rewind)
+	}
+	marker := fork.Conversation.Entries[len(fork.Conversation.Entries)-1]
+	if marker.Role != "fork" || marker.Text != "Forked from “Modes” at “second”" || marker.Fork.MessageID != second {
+		t.Fatalf("marker: %+v", marker)
+	}
+	w.mu.Lock()
+	w.session = "forked-session"
+	w.mu.Unlock()
+	oneTurn(t, e, result.ID, "go on")
+	w.mu.Lock()
+	rewinds := append([]map[string]any(nil), w.rewinds...)
+	w.mu.Unlock()
+	if len(rewinds) != 1 || rewinds[0]["target_message_uuid"] != second || rewinds[0]["last_seen_user_message_uuid"] != second {
+		t.Fatalf("rewinds: %+v", rewinds)
+	}
+	fork = e.Store.Snapshot().chat(result.ID)
+	if fork.Rewind != nil || *fork.Conversation.ThreadID != "forked-session" {
+		t.Fatalf("fork after its first turn: %+v", fork)
+	}
+	// A fork at a message that is not the chat's is refused, as is one
+	// while the chat runs.
+	if _, err := e.Fork(context.Background(), id, "nope", false, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "no such message") {
+		t.Fatalf("bad target: %v", err)
+	}
+	w.mu.Lock()
+	w.hold = make(chan struct{})
+	hold := w.hold
+	w.mu.Unlock()
+	if err := e.Message(id, "third", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "running" })
+	if _, err := e.Fork(context.Background(), id, "", false, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "wait for the agent") {
+		t.Fatalf("fork while running: %v", err)
+	}
+	close(hold)
+	idle(t, e, id)
+}
+
+// A chat whose agent cannot copy its session (Codex) forks as a fresh
+// session with the copied transcript as its recap; a chat with no
+// session yet forks with nothing to copy.
+func TestForkWithoutASessionCopyIsFresh(t *testing.T) {
+	e, w := residentSetup(t)
+	id, first, _ := twoTurns(t, e, w)
+	result, err := e.Fork(context.Background(), id, "", false, cv.Actor{PrincipalID: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork := e.Store.Snapshot().chat(result.ID)
+	if result.Session != "fresh" || !fork.NewSession || fork.Conversation.ThreadID != nil || !strings.HasPrefix(fork.Recap, forkPreamble) || !strings.Contains(fork.Recap, "User: first") || !strings.Contains(fork.Recap, "Assistant: done") {
+		t.Fatalf("%+v %+v", result, fork)
+	}
+	if fork.Conversation.Entries[0].ID != first {
+		t.Fatal("entry ids not kept")
+	}
+	// The fork's first message carries the recap ahead of it and starts a
+	// new session; the source's is untouched.
+	if err := e.Message(result.ID, "continue", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return w.turnCount() == 3 })
+	items := w.lastInput()
+	if len(items) != 2 || !strings.HasPrefix(agent.String(agent.Map(items[0])["text"]), forkPreamble) || agent.String(agent.Map(items[1])["text"]) != "continue" {
+		t.Fatalf("fork's first input: %+v", items)
+	}
+	if prepares := w.requestsOf("prepare"); !prepares[len(prepares)-1].NewSession || prepares[len(prepares)-1].ForkSession {
+		t.Fatalf("fork prepare: %+v", prepares[len(prepares)-1])
+	}
+	empty, _ := e.Create("Empty", "", "", nil)
+	result, err = e.Fork(context.Background(), empty, "", false, cv.Actor{})
+	if err != nil || result.Session != "none" {
+		t.Fatalf("%+v %v", result, err)
+	}
+	if fork := e.Store.Snapshot().chat(result.ID); len(fork.Conversation.Entries) != 1 || fork.Conversation.Entries[0].Role != "fork" || fork.Recap != "" {
+		t.Fatalf("empty fork: %+v", fork)
+	}
+}
+
+// A side question runs while the session is idle, as an aside entry the
+// question and answer make (never a turn, never in the recap), and is
+// refused while a turn runs, without a live session, and for Codex.
+func TestAsideAnswersFromAnIdleSession(t *testing.T) {
+	e, w, id := claudeResidentSetup(t)
+	if _, err := e.Aside(context.Background(), id, "early?", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "no agent session") {
+		t.Fatalf("aside before any session: %v", err)
+	}
+	oneTurn(t, e, id, "hello")
+	until(t, func() bool { return e.sessionIdle(id) })
+	_ = e.Store.update(func(st *State) error { st.chat(id).OutputStyle = "Explanatory"; return nil })
+	result, err := e.Aside(context.Background(), id, "what did I say?", cv.Actor{PrincipalID: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "the answer" || result.Cost != 0.01 || result.Input != 100 || result.Error != "" {
+		t.Fatalf("%+v", result)
+	}
+	asides := w.requestsOf("aside")
+	if len(asides) != 1 || asides[0].Command != "what did I say?" || asides[0].ThreadID != "claude-session" || asides[0].OutputStyle != "Explanatory" || asides[0].ChatID != id {
+		t.Fatalf("aside request: %+v", asides)
+	}
+	c := e.Store.Snapshot().chat(id)
+	entry := c.Conversation.Entries[len(c.Conversation.Entries)-1]
+	if entry.ID != result.ID || entry.Role != "aside" || entry.Text != "what did I say?" || entry.Detail != "the answer" || entry.IsStreaming || entry.Aside == nil || entry.Aside.Status != "completed" || entry.Aside.CostUSD != 0.01 || entry.Sender == nil || entry.EndedAt == 0 {
+		t.Fatalf("aside entry: %+v", entry)
+	}
+	if c.Status != "idle" || w.turns != 1 {
+		t.Fatalf("an aside became a turn: status %s, %d turns", c.Status, w.turns)
+	}
+	if r := recap(c.Conversation.Entries); strings.Contains(r, "what did I say") || strings.Contains(r, "the answer") {
+		t.Fatalf("the recap carries the aside: %q", r)
+	}
+	// A failed one-shot is a failed entry with the reason.
+	w.mu.Lock()
+	w.aside = &sandbox.AsideResult{Error: "API Error: 503"}
+	w.mu.Unlock()
+	result, err = e.Aside(context.Background(), id, "again?", cv.Actor{})
+	if err != nil || result.Error != "API Error: 503" {
+		t.Fatalf("%+v %v", result, err)
+	}
+	c = e.Store.Snapshot().chat(id)
+	if entry := c.Conversation.Entries[len(c.Conversation.Entries)-1]; entry.Aside.Status != "failed" || entry.Aside.Error != "API Error: 503" {
+		t.Fatalf("failed aside: %+v", entry)
+	}
+	// While a turn runs the question is refused for after the turn, not
+	// queued.
+	w.mu.Lock()
+	w.hold = make(chan struct{})
+	hold := w.hold
+	w.aside = nil
+	w.mu.Unlock()
+	if err := e.Message(id, "work", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "running" })
+	if _, err := e.Aside(context.Background(), id, "now?", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "after this turn") {
+		t.Fatalf("aside during a turn: %v", err)
+	}
+	if entries := e.Store.Snapshot().chat(id).Conversation.Entries; entries[len(entries)-1].Role == "aside" && entries[len(entries)-1].Text == "now?" {
+		t.Fatal("a refused question left an entry")
+	}
+	close(hold)
+	idle(t, e, id)
+	codex, _ := e.Create("Codex", "", "", nil, "codex", "")
+	if _, err := e.Aside(context.Background(), codex, "hm?", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "Claude chat") {
+		t.Fatalf("aside on Codex: %v", err)
+	}
+}
+
+// A side question on a chat whose session was released (idle past its
+// timeout) starts the session for it — a run with nothing to send that
+// resumes the session and waits idle, the chat showing its startup
+// stages and the entry "starting" meanwhile — and is answered from it;
+// no turn is made. A start that fails fails the question with the
+// reason; a held queue (messages the start would send) is refused.
+func TestAsideStartsAReleasedSession(t *testing.T) {
+	e, w, id := claudeResidentSetup(t)
+	oneTurn(t, e, id, "hello")
+	until(t, func() bool { return e.sessionIdle(id) })
+	e.releaseChat(context.Background(), id)
+	until(t, func() bool { return !e.sessionAlive(id) })
+	gate := make(chan struct{})
+	w.mu.Lock()
+	w.prepareGate = gate
+	w.mu.Unlock()
+	streams := len(w.requestsOf("stream"))
+	type outcome struct {
+		result AsideResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		r, err := e.Aside(context.Background(), id, "still there?", cv.Actor{PrincipalID: "user-2", Name: "Ann"})
+		done <- outcome{r, err}
+	}()
+	until(t, func() bool {
+		c := e.Store.Snapshot().chat(id)
+		last := c.Conversation.Entries[len(c.Conversation.Entries)-1]
+		return c.Status == "running" && last.Role == "aside" && last.Aside != nil && last.Aside.Status == "starting" && last.IsStreaming
+	})
+	var startup *Startup
+	for _, c := range e.View().Chats {
+		if c.ID == id {
+			startup = c.Startup
+		}
+	}
+	if startup == nil || startup.Stage != stagePreparing {
+		t.Fatalf("startup while the session starts: %+v", startup)
+	}
+	close(gate)
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("the side question did not finish")
+	}
+	if got.err != nil || got.result.Text != "the answer" || got.result.Cost != 0.01 {
+		t.Fatalf("%+v %v", got.result, got.err)
+	}
+	if n := len(w.requestsOf("stream")); n != streams+1 {
+		t.Fatalf("%d sessions started, want 1", n-streams)
+	}
+	if prepares := w.requestsOf("prepare"); prepares[len(prepares)-1].ThreadID != "claude-session" {
+		t.Fatalf("the session was not resumed: %+v", prepares[len(prepares)-1])
+	}
+	if asides := w.requestsOf("aside"); len(asides) != 1 || asides[0].ThreadID != "claude-session" || asides[0].PrincipalID != "user-2" {
+		t.Fatalf("aside request: %+v", asides)
+	}
+	c := e.Store.Snapshot().chat(id)
+	last := c.Conversation.Entries[len(c.Conversation.Entries)-1]
+	if last.Role != "aside" || last.Aside.Status != "completed" || last.Detail != "the answer" || last.IsStreaming || last.Sender == nil || last.Sender.Name != "Ann" {
+		t.Fatalf("aside entry: %+v", last)
+	}
+	if c.Status != "idle" || !e.sessionIdle(id) || w.turns != 1 || len(c.Conversation.Turns) != 1 {
+		t.Fatalf("after the aside: status %s, alive %v, %d turns", c.Status, e.sessionIdle(id), w.turns)
+	}
+	if c.Startup != nil {
+		t.Fatalf("startup left on the chat: %+v", c.Startup)
+	}
+	// The session started for the question takes the next message as any
+	// resident session does.
+	oneTurn(t, e, id, "and now a turn")
+	if len(w.requestsOf("stream")) != streams+1 || w.turns != 2 {
+		t.Fatalf("the next message started another session: %d streams, %d turns", len(w.requestsOf("stream")), w.turns)
+	}
+	// A start that fails fails the question with the chat's error.
+	e.releaseChat(context.Background(), id)
+	until(t, func() bool { return !e.sessionAlive(id) })
+	w.mu.Lock()
+	w.prepareGate = nil
+	w.prepareErr = errors.New("no sandbox for you")
+	w.mu.Unlock()
+	result, err := e.Aside(context.Background(), id, "again?", cv.Actor{})
+	if err != nil || !strings.Contains(result.Error, "could not start") || !strings.Contains(result.Error, "no sandbox for you") {
+		t.Fatalf("aside on a failed start: %+v %v", result, err)
+	}
+	c = e.Store.Snapshot().chat(id)
+	if last := c.Conversation.Entries[len(c.Conversation.Entries)-1]; last.Role != "aside" || last.Aside.Status != "failed" || !strings.Contains(last.Aside.Error, "no sandbox for you") || last.IsStreaming {
+		t.Fatalf("failed aside: %+v", last)
+	}
+	if c.Status != "failed" {
+		t.Fatalf("chat after the failed start: %s", c.Status)
+	}
+	w.mu.Lock()
+	w.prepareErr = nil
+	w.mu.Unlock()
+	// A held queue on a released session: the start would send the held
+	// messages, so the question is refused until they are sent or
+	// withdrawn.
+	_ = e.Store.update(func(st *State) error {
+		c := st.chat(id)
+		c.Status = "interrupted"
+		v := cv.NewEntry("user", "held one")
+		v.Delivery = "queued"
+		c.Conversation.Entries = append(c.Conversation.Entries, v)
+		return nil
+	})
+	if _, err := e.Aside(context.Background(), id, "held?", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "1 message is held") {
+		t.Fatalf("aside with a held queue: %v", err)
+	}
+	if c := e.Store.Snapshot().chat(id); c.Status != "interrupted" {
+		t.Fatalf("the refusal changed the chat: %s", c.Status)
+	}
+}
+
+// A completed side question can be asked in chat: its question goes as a
+// message of the person's with the answer quoted, and the entry records
+// the message; a running, failed or already promoted one is refused.
+func TestPromoteAside(t *testing.T) {
+	e, w, id := claudeResidentSetup(t)
+	oneTurn(t, e, id, "hello")
+	until(t, func() bool { return e.sessionIdle(id) })
+	w.mu.Lock()
+	w.aside = &sandbox.AsideResult{Text: "Two things:\n- a\n- b", CostUSD: 0.01}
+	w.mu.Unlock()
+	result, err := e.Aside(context.Background(), id, "what next?", cv.Actor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.PromoteAside(id, "nope", cv.Actor{}); err == nil || !strings.Contains(err.Error(), "no such") {
+		t.Fatalf("promote of nothing: %v", err)
+	}
+	promoted, err := e.PromoteAside(id, result.ID, cv.Actor{PrincipalID: "user-2", Name: "Ann"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "what next?\n\n(I asked this as a side question of a copy of your session; its answer, to build on:)\n> Two things:\n> - a\n> - b"
+	if promoted.Text != want || len(promoted.MessageID) != 32 {
+		t.Fatalf("%+v", promoted)
+	}
+	idle(t, e, id)
+	c := e.Store.Snapshot().chat(id)
+	var message, aside *cv.Entry
+	for i := range c.Conversation.Entries {
+		v := &c.Conversation.Entries[i]
+		switch v.ID {
+		case promoted.MessageID:
+			message = v
+		case result.ID:
+			aside = v
+		}
+	}
+	if message == nil || message.Role != "user" || message.Text != want || message.Sender == nil || message.Sender.Name != "Ann" || message.Delivery != "sent" {
+		t.Fatalf("promoted message: %+v", message)
+	}
+	if aside == nil || aside.Aside.Promoted != promoted.MessageID {
+		t.Fatalf("aside after the promotion: %+v", aside)
+	}
+	if w.turns != 2 {
+		t.Fatalf("%d turns, want the promoted message's", w.turns)
+	}
+	if _, err := e.PromoteAside(id, result.ID, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "already") {
+		t.Fatalf("second promotion: %v", err)
+	}
+	w.mu.Lock()
+	w.aside = &sandbox.AsideResult{Error: "API Error: 503"}
+	w.mu.Unlock()
+	failed, _ := e.Aside(context.Background(), id, "hm?", cv.Actor{})
+	if _, err := e.PromoteAside(id, failed.ID, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "no answer") {
+		t.Fatalf("promotion of a failed aside: %v", err)
+	}
+	_ = e.Store.update(func(st *State) error {
+		c := st.chat(id)
+		for i := range c.Conversation.Entries {
+			if v := &c.Conversation.Entries[i]; v.ID == failed.ID {
+				v.Aside.Status = "running"
+			}
+		}
+		return nil
+	})
+	if _, err := e.PromoteAside(id, failed.ID, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "still being answered") {
+		t.Fatalf("promotion of a running aside: %v", err)
+	}
+}
+
+// The output style is a Claude chat's launch setting: set while idle, the
+// resident session ends so the next message launches with it.
+func TestOutputStyleAppliesAtTheNextLaunch(t *testing.T) {
+	e, w, id := claudeResidentSetup(t)
+	oneTurn(t, e, id, "hello")
+	until(t, func() bool { return e.sessionIdle(id) })
+	for _, bad := range []string{"explanatory", "Nope"} {
+		if err := e.SetOutputStyle(context.Background(), id, bad); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+	if err := e.SetOutputStyle(context.Background(), id, "Explanatory"); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return !e.sessionAlive(id) })
+	if c := e.Store.Snapshot().chat(id); c.OutputStyle != "Explanatory" || c.Status != "idle" {
+		t.Fatalf("%+v", c)
+	}
+	oneTurn(t, e, id, "again")
+	streams := w.requestsOf("stream")
+	if last := streams[len(streams)-1]; last.OutputStyle != "Explanatory" || last.ForkSession {
+		t.Fatalf("stream: %+v", last)
+	}
+	if err := e.SetOutputStyle(context.Background(), id, ""); err != nil {
+		t.Fatal(err)
+	}
+	codex, _ := e.Create("Codex", "", "", nil, "codex", "")
+	if err := e.SetOutputStyle(context.Background(), codex, "Learning"); err == nil {
+		t.Fatal("style set on a Codex chat")
+	}
+	if styles := OutputStyles(); len(styles) != 3 || styles[0] != "" || styles[1] != "Explanatory" {
+		t.Fatalf("%v", styles)
+	}
+}
+
+func TestForkAsideAndStyleRoutes(t *testing.T) {
+	e, w, id := claudeResidentSetup(t)
+	first := oneTurn(t, e, id, "first")
+	until(t, func() bool { return e.sessionIdle(id) })
+	h := &HTTP{Engine: e, Token: "private", Host: "127.0.0.1:18780", Origin: "http://127.0.0.1:18780", WebDir: t.TempDir()}
+	call := func(path, body string) (int, map[string]any) {
+		t.Helper()
+		r := httptest.NewRequest("POST", h.Origin+"/api/"+path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer private")
+		out := httptest.NewRecorder()
+		h.ServeHTTP(out, r)
+		var v map[string]any
+		_ = json.Unmarshal(out.Body.Bytes(), &v)
+		return out.Code, v
+	}
+	code, v := call("chats/"+id+"/aside", `{"text":"why?"}`)
+	if code != 200 || v["text"] != "the answer" || v["id"] == "" {
+		t.Fatalf("aside route: %d %v", code, v)
+	}
+	code, v = call("chats/"+id+"/aside/"+agent.String(v["id"])+"/promote", `{}`)
+	if code != 200 || len(agent.String(v["messageID"])) != 32 || !strings.HasPrefix(agent.String(v["text"]), "why?\n\n(I asked this") {
+		t.Fatalf("promote route: %d %v", code, v)
+	}
+	idle(t, e, id)
+	code, v = call("chats/"+id+"/style", `{"style":"Learning"}`)
+	if code != 200 || e.Store.Snapshot().chat(id).OutputStyle != "Learning" {
+		t.Fatalf("style route: %d %v", code, v)
+	}
+	if code, _ = call("chats/"+id+"/style", `{"style":"bad"}`); code == 200 {
+		t.Fatal("bad style accepted")
+	}
+	code, v = call("chats/"+id+"/fork", `{"turnID":"`+first+`"}`)
+	if code != 200 || v["session"] != "forked" || v["id"] == "" {
+		t.Fatalf("fork route: %d %v", code, v)
+	}
+	if fork := e.Store.Snapshot().chat(agent.String(v["id"])); fork == nil || fork.Rewind == nil || fork.Rewind.TargetID != first || len(fork.Conversation.Entries) != 1 {
+		t.Fatalf("fork: %+v", fork)
+	}
+	_ = w
+}
+
+// A fork with a copy of the workspace: the runner clones the source
+// sandbox for a new workspace (its idle sessions released first), the
+// fork lives there with the source's size and a record of where it came
+// from, both chats get a marker naming the other, the environments view
+// says what the new workspace was copied from, and the fork's first run
+// binds and prepares the new sandbox.
+func TestForkWithACopyOfTheWorkspace(t *testing.T) {
+	e, w, id := claudeSetup(t)
+	oneTurn(t, e, id, "make a file")
+	_ = e.Store.update(func(st *State) error {
+		st.chat(id).Resources = &sandbox.Resources{CPUMilli: 2000, MemoryMB: 3072}
+		return nil
+	})
+	result, err := e.Fork(context.Background(), id, "", true, cv.Actor{PrincipalID: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := e.Store.Snapshot()
+	source, fork := st.chat(id), st.chat(result.ID)
+	if result.Workspace != "copied" || result.SandboxID == source.SandboxID || result.SandboxID != fork.SandboxID || result.Session != "forked" {
+		t.Fatalf("%+v (source workspace %s)", result, source.SandboxID)
+	}
+	clones := w.requestsOf("clone")
+	if len(clones) != 1 || clones[0].Source != source.SandboxID || clones[0].SandboxID != fork.SandboxID || clones[0].ChatID != fork.ID {
+		t.Fatalf("clone requests: %+v", clones)
+	}
+	if fork.Origin == nil || fork.Origin.SandboxID != source.SandboxID || fork.Origin.ChatID != id || fork.Origin.Name != "Modes" || fork.Origin.At == 0 || fork.Resources == nil || fork.Resources.CPUMilli != 2000 {
+		t.Fatalf("fork origin %+v resources %+v", fork.Origin, fork.Resources)
+	}
+	marker := fork.Conversation.Entries[len(fork.Conversation.Entries)-1]
+	if marker.Role != "fork" || marker.Text != "Forked from “Modes” with a copy of the workspace" || marker.Fork == nil || !marker.Fork.Workspace || marker.Fork.Into || marker.Fork.ChatID != id || !strings.Contains(marker.Detail, "access grants") {
+		t.Fatalf("fork marker %+v", marker)
+	}
+	into := source.Conversation.Entries[len(source.Conversation.Entries)-1]
+	if into.Role != "fork" || into.Fork == nil || !into.Fork.Into || !into.Fork.Workspace || into.Fork.ChatID != fork.ID || into.Fork.Title != fork.Title || !strings.Contains(into.Text, "Forked into “Modes (fork)”") {
+		t.Fatalf("source marker %+v", into)
+	}
+	envs, err := e.Environments(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var copied *Environment
+	for i := range envs {
+		if envs[i].ID == fork.SandboxID {
+			copied = &envs[i]
+		}
+	}
+	if copied == nil || copied.CopiedFrom == nil || copied.CopiedFrom.SandboxID != source.SandboxID || copied.CopiedFrom.Name != "Modes" || copied.Name != "Modes (fork)" || len(copied.Chats) != 1 {
+		t.Fatalf("copied environment %+v", copied)
+	}
+	// The fork runs on its own workspace.
+	oneTurn(t, e, result.ID, "what is in the file?")
+	binds := w.requestsOf("bind-chat")
+	if last := binds[len(binds)-1]; last.ChatID != fork.ID || last.SandboxID != fork.SandboxID || last.Resources == nil || last.Resources.CPUMilli != 2000 {
+		t.Fatalf("fork bind %+v", last)
+	}
+	prepares := w.requestsOf("prepare")
+	if last := prepares[len(prepares)-1]; last.SandboxID != fork.SandboxID || !last.ForkSession {
+		t.Fatalf("fork prepare %+v", last)
+	}
+	// A running sibling on the workspace refuses the copy; a runner
+	// failure leaves no chat behind.
+	w.mu.Lock()
+	w.cloneErr = errors.New("template save failed")
+	w.mu.Unlock()
+	before := len(e.Store.Snapshot().Chats)
+	if _, err := e.Fork(context.Background(), id, "", true, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "template save failed") {
+		t.Fatal("runner failure not reported", err)
+	}
+	if n := len(e.Store.Snapshot().Chats); n != before {
+		t.Fatalf("a failed copy left %d chats, was %d", n, before)
+	}
+	_ = e.Store.update(func(st *State) error {
+		st.chat(result.ID).Status = "running"
+		st.chat(result.ID).SandboxID = source.SandboxID // a busy sibling on the source workspace
+		return nil
+	})
+	if _, err := e.Fork(context.Background(), id, "", true, cv.Actor{}); err == nil || !strings.Contains(err.Error(), "on this workspace") {
+		t.Fatal("busy sibling not refused", err)
+	}
+	if _, err := e.Fork(context.Background(), id, "", false, cv.Actor{}); err != nil {
+		t.Fatal("a plain fork does not need the siblings idle", err)
+	}
+}

@@ -52,6 +52,13 @@ type fakeAPI struct {
 	forbidden map[string]bool
 	// refuseClone refuses a claim created with a dataSource.
 	refuseClone bool
+	// resizeMode says what pods/resize does: "" applies the patch and, after
+	// startDelay, reports the container running at the new size as a
+	// kubelet does; "infeasible" accepts the patch and reports the
+	// PodResizePending Infeasible condition; "deferred" accepts it and
+	// reports Deferred for good (no room on the node); "absent" is a
+	// server without the subresource (404).
+	resizeMode string
 	// nodes, nodeMetrics and podMetrics are the cluster view (cluster_test.go):
 	// nodes under /api/v1/nodes, usage under metrics.k8s.io when metrics is
 	// set (otherwise that group is not served, as without a metrics server);
@@ -109,7 +116,7 @@ func (api *fakeAPI) client() *kube.Client {
 
 // options are driver options for the fake.
 func testOptions() Options {
-	return Options{Namespace: testNamespace, Tier: "gvisor", RuntimeClass: "gvisor", GuestImage: "ghcr.io/monaddle-too/warden-guest-base", GuestImageDigest: "sha256:" + strings.Repeat("ab", 32), StorageClass: "local-path", WorkspaceSizeGi: 4, TrustConfigMap: "warden-guest-trust", MemoryMB: 1024}
+	return Options{Namespace: testNamespace, Tier: "gvisor", RuntimeClass: "gvisor", GuestImage: "ghcr.io/monaddle-too/warden-guest-base", GuestImageDigest: "sha256:" + strings.Repeat("ab", 32), StorageClass: "local-path", WorkspaceSizeGi: 4, TrustConfigMap: "warden-guest-trust", MemoryMB: 1024, SparePriorityClass: "warden-warden-sandboxes-spare"}
 }
 
 func newTestDriver(t *testing.T, api *fakeAPI, opts Options) *Driver {
@@ -119,6 +126,7 @@ func newTestDriver(t *testing.T, api *fakeAPI, opts Options) *Driver {
 		t.Fatal(err)
 	}
 	d.execRetry = 10 * time.Millisecond
+	d.resizeWait = 300 * time.Millisecond
 	return d
 }
 
@@ -261,6 +269,8 @@ func (api *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	verb := ""
 	switch {
+	case sub == "resize" && r.Method == http.MethodPatch:
+		verb = "resize"
 	case sub == "exec":
 		verb = "exec"
 	case sub == "log":
@@ -284,6 +294,8 @@ func (api *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch verb {
+	case "resize":
+		api.serveResize(w, r, name, body)
 	case "exec":
 		api.serveExec(w, r, name)
 	case "log":
@@ -435,6 +447,10 @@ func (api *fakeAPI) serveCreate(w http.ResponseWriter, resource string, body []b
 	}
 	api.stamp(obj, resource, true)
 	if resource == "pods" {
+		// The workspace claim binds when its first pod is created, as a
+		// WaitForFirstConsumer class does (the disk lands where the pod
+		// schedules); a claim without a pod stays Pending.
+		api.bindClaimOf(obj)
 		obj["status"] = map[string]any{"phase": "Pending"}
 		if api.failStart != "" {
 			obj["status"] = map[string]any{"phase": "Pending", "containerStatuses": []any{map[string]any{"name": ContainerName, "state": map[string]any{"waiting": map[string]any{"reason": api.failStart, "message": "image not present"}}}}}
@@ -444,11 +460,36 @@ func (api *fakeAPI) serveCreate(w http.ResponseWriter, resource string, body []b
 		}
 	}
 	if resource == "persistentvolumeclaims" {
-		obj["status"] = map[string]any{"phase": "Bound"}
+		obj["status"] = map[string]any{"phase": "Pending"}
 	}
 	api.objects[resource+"/"+name] = obj
 	api.emit(kube.Added, resource, obj)
 	writeJSON(w, http.StatusCreated, obj)
+}
+
+// bindClaimOf binds the claims a pod mounts: phase Bound and a volume
+// name, as the provisioner does once the pod is scheduled. Called with
+// api.mu held.
+func (api *fakeAPI) bindClaimOf(pod map[string]any) {
+	spec, _ := pod["spec"].(map[string]any)
+	volumes, _ := spec["volumes"].([]any)
+	for _, v := range volumes {
+		vol, _ := v.(map[string]any)
+		pvc, _ := vol["persistentVolumeClaim"].(map[string]any)
+		name, _ := pvc["claimName"].(string)
+		claim, ok := api.objects["persistentvolumeclaims/"+name]
+		if !ok {
+			continue
+		}
+		claimSpec, _ := claim["spec"].(map[string]any)
+		if claimSpec == nil {
+			claimSpec = map[string]any{}
+			claim["spec"] = claimSpec
+		}
+		claimSpec["volumeName"] = "pv-" + name
+		claim["status"] = map[string]any{"phase": "Bound"}
+		api.emit(kube.Modified, "persistentvolumeclaims", claim)
+	}
 }
 
 // startPod moves a pod to Running with an address after startDelay.
@@ -460,9 +501,103 @@ func (api *fakeAPI) startPod(name, ip string) {
 	if !ok {
 		return
 	}
-	obj["status"] = map[string]any{"phase": "Running", "podIP": ip, "podIPs": []any{map[string]any{"ip": ip}}, "containerStatuses": []any{map[string]any{"name": ContainerName, "ready": true, "imageID": "ghcr.io/monaddle-too/warden-guest-base@sha256:" + strings.Repeat("ab", 32), "state": map[string]any{"running": map[string]any{}}}}}
+	// The kubelet reports the size the container runs at (1.33+).
+	status := map[string]any{"name": ContainerName, "ready": true, "imageID": "ghcr.io/monaddle-too/warden-guest-base@sha256:" + strings.Repeat("ab", 32), "state": map[string]any{"running": map[string]any{}}}
+	if resources := containerResources(obj); resources != nil {
+		status["resources"] = cloneObject(resources)
+	}
+	obj["status"] = map[string]any{"phase": "Running", "podIP": ip, "podIPs": []any{map[string]any{"ip": ip}}, "containerStatuses": []any{status}}
 	api.stamp(obj, "pods", false)
 	api.emit(kube.Modified, "pods", obj)
+}
+
+// containerResources is the guest container's resources in a pod object.
+func containerResources(pod map[string]any) map[string]any {
+	spec, _ := pod["spec"].(map[string]any)
+	containers, _ := spec["containers"].([]any)
+	for _, c := range containers {
+		container, _ := c.(map[string]any)
+		if container["name"] == ContainerName {
+			resources, _ := container["resources"].(map[string]any)
+			return resources
+		}
+	}
+	return nil
+}
+
+// serveResize is pods/resize under resizeMode: the strategic patch is
+// applied to the guest container's resources (only what the kubelet's
+// resize path needs is modelled), and the status follows as the mode
+// says. The patch must be a strategic one, as kubectl sends.
+func (api *fakeAPI) serveResize(w http.ResponseWriter, r *http.Request, name string, body []byte) {
+	if r.Header.Get("Content-Type") != "application/strategic-merge-patch+json" {
+		writeStatus(w, http.StatusUnsupportedMediaType, "UnsupportedMediaType", r.Header.Get("Content-Type"))
+		return
+	}
+	api.mu.Lock()
+	mode := api.resizeMode
+	obj, ok := api.objects["pods/"+name]
+	if !ok || mode == "absent" {
+		api.mu.Unlock()
+		writeNotFound(w, "pods", name)
+		return
+	}
+	var patch struct {
+		Spec struct {
+			Containers []struct {
+				Name      string         `json:"name"`
+				Resources map[string]any `json:"resources"`
+			} `json:"containers"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(body, &patch); err != nil || len(patch.Spec.Containers) != 1 || patch.Spec.Containers[0].Name != ContainerName {
+		api.mu.Unlock()
+		writeStatus(w, http.StatusUnprocessableEntity, "Invalid", "resize patch must name the guest container's resources")
+		return
+	}
+	spec := obj["spec"].(map[string]any)
+	for _, c := range spec["containers"].([]any) {
+		container := c.(map[string]any)
+		if container["name"] == ContainerName {
+			container["resources"] = patch.Spec.Containers[0].Resources
+		}
+	}
+	status, _ := obj["status"].(map[string]any)
+	if status != nil {
+		if mode == "infeasible" {
+			status["conditions"] = []any{map[string]any{"type": "PodResizePending", "status": "True", "reason": "Infeasible", "message": "Node didn't have enough capacity: cpu, requested: 4000, capacity: 2000"}}
+		} else if mode == "deferred" {
+			status["conditions"] = []any{map[string]any{"type": "PodResizePending", "status": "True", "reason": "Deferred", "message": "Node didn't have enough resource: memory"}}
+		} else {
+			status["conditions"] = []any{map[string]any{"type": "PodResizeInProgress", "status": "True"}}
+		}
+	}
+	api.stamp(obj, "pods", false)
+	api.emit(kube.Modified, "pods", obj)
+	response := cloneObject(obj)
+	api.mu.Unlock()
+	writeJSON(w, http.StatusOK, response)
+	if mode == "" && status != nil {
+		go func() {
+			time.Sleep(api.startDelay)
+			api.mu.Lock()
+			defer api.mu.Unlock()
+			obj, ok := api.objects["pods/"+name]
+			if !ok {
+				return
+			}
+			status := obj["status"].(map[string]any)
+			delete(status, "conditions")
+			for _, c := range status["containerStatuses"].([]any) {
+				cs := c.(map[string]any)
+				if cs["name"] == ContainerName {
+					cs["resources"] = cloneObject(containerResources(obj))
+				}
+			}
+			api.stamp(obj, "pods", false)
+			api.emit(kube.Modified, "pods", obj)
+		}()
+	}
 }
 
 func (api *fakeAPI) serveDelete(w http.ResponseWriter, resource, name string, body []byte) {
@@ -598,11 +733,26 @@ func selectorsMatch(obj map[string]any, labels, fields string) bool {
 			continue
 		}
 		k, v, _ := strings.Cut(term, "=")
-		if k != "metadata.name" || metaString(obj, "name") != v {
+		if fieldString(obj, k) != v {
 			return false
 		}
 	}
 	return true
+}
+
+// fieldString reads a dotted path of string values (metadata.name,
+// involvedObject.uid), as a field selector names them.
+func fieldString(obj map[string]any, path string) string {
+	var cur any = obj
+	for _, part := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return ""
+		}
+		cur = m[part]
+	}
+	s, _ := cur.(string)
+	return s
 }
 
 func metaString(obj map[string]any, key string) string {

@@ -728,7 +728,9 @@ Decisions this changes:
       before its runtime-phase check (a stopped pod has no pod); RBAC for
       `pods/exec` GET, PVC reads and the trust ConfigMap; the state PVCs
       get owned by an init container; the policy pod probes on the gateway
-      port and the labelled canary retries; `sandboxes.cpuMillis`.
+      port and the labelled canary retries; `sandboxes.cpuMillis`
+      (since replaced by `sandboxes.cpus`/`maxCPUs`/`maxMemoryMB`, the
+      workspace-size feature).
       The preview hop then moved to one mutual-TLS preview listener on the
       runner (`services.runner.previews`, merged 0a8345b), and the page
       served from the gVisor pod reached the browser at

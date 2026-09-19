@@ -2,7 +2,9 @@
 // as a private file in the provider directory. `warden login github` calls
 // GitHub; a pasted `gh auth token` value goes through GitHubPaste. The
 // policy service reads the resulting file (GitHubUserCredentials) and never
-// refreshes it.
+// refreshes it by itself; the owner console runs the same DeviceFlow through
+// the policy service ("github_login_start") and stores the result where the
+// service reads.
 package login
 
 import (
@@ -60,6 +62,86 @@ type GitHubFile struct {
 	Obtained int64    `json:"obtained"`
 }
 
+// DeviceCode is one device-flow attempt as GitHub describes it: the code the
+// person types on the verification page, how long it lasts and how often to
+// poll.
+type DeviceCode struct {
+	DeviceCode      string `json:"device_code"`
+	UserCode        string `json:"user_code"`
+	VerificationURI string `json:"verification_uri"`
+	ExpiresIn       int    `json:"expires_in"`
+	Interval        int    `json:"interval"`
+}
+
+// DeviceFlow runs GitHub's OAuth device flow: RequestCode, then Wait for
+// the person to authorise. The CLI and the policy service (the owner
+// console's "Sign in with GitHub") share it; tests point it at a fake
+// GitHub. NewDeviceFlow fills in this release's client ID and the real
+// endpoints; a nil Client or Sleep means the package's own.
+type DeviceFlow struct {
+	OAuthBase string
+	APIBase   string
+	ClientID  string
+	Client    *http.Client
+	Sleep     func(ctx context.Context, d time.Duration) error
+}
+
+// NewDeviceFlow returns the flow the CLI uses, built from the package
+// defaults at call time.
+func NewDeviceFlow() *DeviceFlow {
+	return &DeviceFlow{OAuthBase: githubOAuthBase, APIBase: githubAPIBase, ClientID: githubClientID, Client: httpClient, Sleep: sleep}
+}
+
+func (d *DeviceFlow) client() *http.Client {
+	if d.Client != nil {
+		return d.Client
+	}
+	return httpClient
+}
+
+func (d *DeviceFlow) sleep(ctx context.Context, wait time.Duration) error {
+	if d.Sleep != nil {
+		return d.Sleep(ctx, wait)
+	}
+	return sleep(ctx, wait)
+}
+
+// Configured reports whether a client ID exists to start the flow with.
+func (d *DeviceFlow) Configured() bool { return d.ClientID != "" }
+
+// ErrNoClientID is returned when the release ships no OAuth client ID.
+var ErrNoClientID = errors.New("the GitHub OAuth client ID is not configured in this release; paste a token with `warden login github --token` instead")
+
+// RequestCode starts one attempt: GitHub returns the user code to show and
+// the device code to poll with.
+func (d *DeviceFlow) RequestCode(ctx context.Context) (*DeviceCode, error) {
+	if !d.Configured() {
+		return nil, ErrNoClientID
+	}
+	return d.requestDeviceCode(ctx)
+}
+
+// Wait polls until the person authorises the code (or it expires, is
+// refused or ctx ends), confirms the token with GET /user and returns the
+// record to store.
+func (d *DeviceFlow) Wait(ctx context.Context, code *DeviceCode) (GitHubFile, error) {
+	token, scopes, err := d.pollDeviceToken(ctx, code)
+	if err != nil {
+		return GitHubFile{}, err
+	}
+	login, headerScopes, err := d.verifyToken(ctx, token)
+	if err != nil {
+		return GitHubFile{}, err
+	}
+	if len(scopes) == 0 {
+		scopes = headerScopes
+	}
+	if scopes == nil {
+		scopes = []string{}
+	}
+	return GitHubFile{Token: token, Login: login, Scopes: scopes, Obtained: time.Now().Unix()}, nil
+}
+
 // GitHub runs GitHub's OAuth device flow with Warden's client ID, prints
 // the verification URL and user code to w, polls at the server's interval
 // (adding five seconds on slow_down), records the signed-in login from
@@ -72,10 +154,8 @@ var (
 )
 
 func GitHub(ctx context.Context, w io.Writer, authFile string) error {
-	if githubClientID == "" {
-		return errors.New("the GitHub OAuth client ID is not configured in this release; paste a token with `warden login github --token` instead")
-	}
-	code, err := requestDeviceCode(ctx)
+	flow := NewDeviceFlow()
+	code, err := flow.RequestCode(ctx)
 	if err != nil {
 		return err
 	}
@@ -93,21 +173,14 @@ func GitHub(ctx context.Context, w io.Writer, authFile string) error {
 		fmt.Fprintf(w, "Open %s in a browser and enter the code %s\n", code.VerificationURI, code.UserCode)
 	}
 	fmt.Fprintf(w, "Waiting for GitHub (the code expires in %d minutes)...\n", code.ExpiresIn/60)
-	token, scopes, err := pollDeviceToken(ctx, code)
+	record, err := flow.Wait(ctx, code)
 	if err != nil {
 		return err
 	}
-	login, headerScopes, err := verifyToken(ctx, token)
-	if err != nil {
+	if err = writeGitHubFile(authFile, record); err != nil {
 		return err
 	}
-	if len(scopes) == 0 {
-		scopes = headerScopes
-	}
-	if err = writeGitHubFile(authFile, GitHubFile{Token: token, Login: login, Scopes: scopes, Obtained: time.Now().Unix()}); err != nil {
-		return err
-	}
-	fmt.Fprintf(w, "Signed in to GitHub as %s; sign-in stored at %s\n", login, authFile)
+	fmt.Fprintf(w, "Signed in to GitHub as %s; sign-in stored at %s\n", record.Login, authFile)
 	return nil
 }
 
@@ -120,22 +193,14 @@ func GitHubPaste(token, authFile string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	login, scopes, err := verifyToken(ctx, token)
+	login, scopes, err := NewDeviceFlow().verifyToken(ctx, token)
 	if err != nil {
 		return err
 	}
 	return writeGitHubFile(authFile, GitHubFile{Token: token, Login: login, Scopes: scopes, Obtained: time.Now().Unix()})
 }
 
-type deviceCode struct {
-	DeviceCode      string `json:"device_code"`
-	UserCode        string `json:"user_code"`
-	VerificationURI string `json:"verification_uri"`
-	ExpiresIn       int    `json:"expires_in"`
-	Interval        int    `json:"interval"`
-}
-
-func postForm(ctx context.Context, endpoint string, form url.Values) (map[string]any, error) {
+func (d *DeviceFlow) postForm(ctx context.Context, endpoint string, form url.Values) (map[string]any, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
@@ -143,7 +208,7 @@ func postForm(ctx context.Context, endpoint string, form url.Values) (map[string
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "Warden-GitHub-Login")
-	res, err := httpClient.Do(req)
+	res, err := d.client().Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -162,9 +227,9 @@ func postForm(ctx context.Context, endpoint string, form url.Values) (map[string
 	return result, nil
 }
 
-func requestDeviceCode(ctx context.Context) (*deviceCode, error) {
-	form := url.Values{"client_id": {githubClientID}, "scope": {GitHubScopes}}
-	result, err := postForm(ctx, githubOAuthBase+"/login/device/code", form)
+func (d *DeviceFlow) requestDeviceCode(ctx context.Context) (*DeviceCode, error) {
+	form := url.Values{"client_id": {d.ClientID}, "scope": {GitHubScopes}}
+	result, err := d.postForm(ctx, d.OAuthBase+"/login/device/code", form)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +237,7 @@ func requestDeviceCode(ctx context.Context) (*deviceCode, error) {
 		return nil, fmt.Errorf("GitHub refused the device code request (%s); check that the Warden OAuth App has device flow enabled", e)
 	}
 	raw, _ := json.Marshal(result)
-	var code deviceCode
+	var code DeviceCode
 	if err = json.Unmarshal(raw, &code); err != nil {
 		return nil, errors.New("GitHub returned an unexpected device code response")
 	}
@@ -188,18 +253,18 @@ func requestDeviceCode(ctx context.Context) (*deviceCode, error) {
 // pollDeviceToken follows the device flow: wait interval seconds between
 // requests, add five on slow_down, keep waiting on authorization_pending
 // and stop on any other error or on expiry.
-func pollDeviceToken(ctx context.Context, code *deviceCode) (string, []string, error) {
+func (d *DeviceFlow) pollDeviceToken(ctx context.Context, code *DeviceCode) (string, []string, error) {
 	interval := time.Duration(code.Interval) * time.Second
 	deadline := time.Now().Add(time.Duration(code.ExpiresIn) * time.Second)
-	form := url.Values{"client_id": {githubClientID}, "device_code": {code.DeviceCode}, "grant_type": {deviceGrant}}
+	form := url.Values{"client_id": {d.ClientID}, "device_code": {code.DeviceCode}, "grant_type": {deviceGrant}}
 	for {
-		if err := sleep(ctx, interval); err != nil {
+		if err := d.sleep(ctx, interval); err != nil {
 			return "", nil, err
 		}
 		if time.Now().After(deadline) {
 			return "", nil, errors.New("the GitHub sign-in code expired; run the login again")
 		}
-		result, err := postForm(ctx, githubOAuthBase+"/login/oauth/access_token", form)
+		result, err := d.postForm(ctx, d.OAuthBase+"/login/oauth/access_token", form)
 		if err != nil {
 			return "", nil, err
 		}
@@ -232,8 +297,8 @@ func pollDeviceToken(ctx context.Context, code *deviceCode) (string, []string, e
 
 // verifyToken calls GET /user with the token and returns the login and the
 // classic scopes GitHub reports in X-OAuth-Scopes.
-func verifyToken(ctx context.Context, token string) (string, []string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", githubAPIBase+"/user", nil)
+func (d *DeviceFlow) verifyToken(ctx context.Context, token string) (string, []string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", d.APIBase+"/user", nil)
 	if err != nil {
 		return "", nil, err
 	}
@@ -241,7 +306,7 @@ func verifyToken(ctx context.Context, token string) (string, []string, error) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", "Warden-GitHub-Login")
-	res, err := httpClient.Do(req)
+	res, err := d.client().Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", nil, ctx.Err()

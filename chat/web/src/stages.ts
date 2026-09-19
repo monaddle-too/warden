@@ -1,3 +1,4 @@
+import { runningLabel } from "./activity";
 import type { Chat, Startup } from "./types";
 
 /* The startup stages the chat and the runner report
@@ -14,7 +15,10 @@ const labels: Record<string, string> = {
   installing: "Installing the agent runtime",
   cloning: "Fetching the repository",
   launching: "Starting the agent",
+  initializing: "Waiting for the agent to answer",
   connecting: "Connecting to the agent",
+  sending: "Sending your message",
+  firstResponse: "Waiting for the first reply",
 };
 
 export const stageLabel = (stage: string) => labels[stage] || "Starting";
@@ -25,25 +29,39 @@ export function startupLine(s: Startup, now = Date.now() / 1000): string {
   const elapsed = Math.max(0, Math.floor(now - s.since));
   const parts = [stageLabel(s.stage)];
   if (s.detail) parts.push(s.detail);
-  if (elapsed >= 15) parts.push(`${elapsed} s`);
+  // The wait for the model's first reply is the one people watch: count
+  // it from the start; the others only once they are long.
+  if (elapsed >= (s.stage === "firstResponse" ? 3 : 15))
+    parts.push(`${elapsed} s`);
   return parts.join(" · ");
 }
 
 /* What a chat's status means for people: the startup stage while it is
-   starting, otherwise the status itself. */
-export function chatStatusLabel(c: Pick<Chat, "status" | "startup">): string {
+   starting, what the agent is doing while its turn runs (activity.ts),
+   otherwise the status itself. */
+export function chatStatusLabel(
+  c: Pick<Chat, "status" | "startup"> & Partial<Pick<Chat, "conversation">>,
+): string {
   if (c.startup && (c.status === "running" || c.status === "queued"))
     return stageLabel(c.startup.stage);
+  const entries = c.conversation?.entries ?? [];
+  // Messages queued behind the turn, or held once it was stopped (queue.ts).
+  const queued = entries.filter(
+    (e) => e.role === "user" && !e.parentID && e.delivery === "queued",
+  ).length;
+  const held = queued
+    ? ` · ${queued} message${queued === 1 ? "" : "s"} held`
+    : "";
   switch (c.status) {
     case "running":
-      return "Agent is running";
+      return runningLabel(entries) + (queued ? ` · ${queued} queued` : "");
     case "queued":
       return "Waiting to start";
     case "stopping":
       return "Stopping…";
     case "idle":
-      return "Agent is idle";
+      return "Agent is idle" + held;
     default:
-      return c.status;
+      return c.status + held;
   }
 }

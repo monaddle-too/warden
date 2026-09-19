@@ -71,20 +71,37 @@ sandboxNamespace:
   keep: true
 
 # Sandbox sizing; mirrors sandboxes.* in warden.json and also sizes the
-# sandbox namespace's ResourceQuota and LimitRange.
+# sandbox namespace's ResourceQuota and LimitRange. A workspace is created
+# at the default size unless its creator chose one, and the owner (from
+# the workspace panel) or an approved agent request resizes it live, up to
+# the ceiling (docs/warden-workspace-resources-plan.md).
 sandboxes:
-  # Memory per sandbox in MiB (512-16384). The LimitRange makes it both the
-  # request and the limit of every container in the sandbox namespace.
+  # Default memory per sandbox in MiB (512-65536). The LimitRange makes it
+  # the request and limit of a container that names none.
   memoryMB: 1536
-  # CPU per sandbox in millicores (the LimitRange default and maximum).
-  cpuMillis: 1000
+  # Default CPUs per sandbox, in quarters (0.25, 0.5, 1, 1.5, ...).
+  cpus: 1
+  # The most any one workspace may be given; the quota allows maxRunning +
+  # warmSpares sandboxes at this size, so it is what the cluster must be
+  # able to hold in the worst case.
+  maxMemoryMB: 8192
+  maxCPUs: 4
   # Resident sandboxes at most.
   maxRunning: 2
   # Pre-started sandboxes waiting for a chat.
   warmSpares: 1
-  # Stop a sandbox with no chat activity after this long, unless it has a
-  # published preview.
-  stopAfterIdleMinutes: 15
+  # Spare pods carry a PriorityClass of -10 (never preempting anything
+  # themselves), so a sandbox pod that finds no node with room — a
+  # resume, a fork's copy, a second chat — preempts a spare and starts in
+  # its slot within seconds instead of waiting for a node; the runner
+  # replaces the spare in the background. One spare then serves whichever
+  # arrives first. Off keeps spares at the default priority.
+  preemptibleSpares: true
+  # Stop a sandbox this long after its last chat activity (the agent's
+  # last reply, a message, a person's command, a preview or review), unless
+  # it has a published preview. The idle agent session's release does not
+  # count.
+  stopAfterIdleMinutes: 30
   # Stopped sandboxes (their workspace PVCs) kept before the oldest is
   # removed.
   keepStopped: 32
@@ -155,6 +172,21 @@ edge:
   service:
     type: ClusterIP
     annotations: {}
+  # The bug-report receiver (docs/bug-reporting-plan.md): POST
+  # /api/bug-reports, unauthenticated, answered by the edge itself and
+  # stored on its state PVC under bug-reports/<date>/<id>.json; the owner
+  # reads them in the admin console. Off by default: only the one Warden
+  # that other installs report to turns it on (edge.bugReports in
+  # warden.json).
+  bugReports:
+    enabled: false
+    # Days a report is kept; the oldest go first, and never more than
+    # 10 000 files.
+    retentionDays: 90
+    # Reports accepted per source IP per hour and overall per day; beyond
+    # them the edge answers 429.
+    maxPerHour: 30
+    maxPerDay: 500
 
 # The policy service's shared gateway (plan decision 4): one listener behind
 # the warden-gateway Service; sandbox pods with the egress label may reach
@@ -208,8 +240,19 @@ providers:
   # Set to false to run without that provider (rendered as JSON null).
   codex:
     enabled: true
+    # The model new Codex chats start with; empty means Warden's built-in
+    # default (GPT-5.6 Sol).
+    defaultModel: ""
   claude:
     enabled: true
+    # The model new Claude chats start with; empty means Warden's built-in
+    # default (Opus).
+    defaultModel: ""
+    # Session features chats may turn on; both cost more than the defaults.
+    # Fast mode is Claude Code's faster Opus serving; long context offers
+    # the 1M-context model variants (sonnet[1m], opus[1m]).
+    allowFastMode: false
+    allowLongContext: false
   google:
     enabled: true
     # "builtin" is the shared Warden Docs client; otherwise the path of a
@@ -271,19 +314,23 @@ podSecurityContext:
   fsGroup: 1000
   fsGroupChangePolicy: OnRootMismatch
 
-# Resources per service container.
+# Resources per service container. Requests are what Autopilot bills, so
+# they sit a little above what the services use at rest (a few tens of
+# millicores, under 40Mi each); the limits leave room for a burst — the
+# policy service inspects every sandbox's egress, the runner clones
+# workspaces.
 resources:
   policy:
-    requests: {cpu: 250m, memory: 256Mi}
+    requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 1Gi}
   runner:
-    requests: {cpu: 250m, memory: 256Mi}
+    requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 1Gi}
   chat:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 512Mi}
   edge:
-    requests: {cpu: 100m, memory: 64Mi}
+    requests: {cpu: 50m, memory: 64Mi}
     limits: {memory: 256Mi}
 
 # Scheduling of the four service pods (not the sandboxes; see

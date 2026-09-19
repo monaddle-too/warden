@@ -608,6 +608,19 @@
   background: var(--del-soft);
   color: var(--del-text);
 }
+.doc-failure {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--del-soft);
+}
+.doc-failure p {
+  margin: 0;
+}
+.doc-failure p + p {
+  margin-top: 6px;
+  font-size: 12px;
+}
 .pr-branches {
   display: flex;
   flex-wrap: wrap;
@@ -1217,6 +1230,49 @@ button.danger:hover {
   margin: 0;
   flex: 1 1 240px;
 }
+/* The GitHub device-flow sign-in: the code to type at GitHub, a link to
+   the verification page styled as the primary action, and the wait. */
+.github-signin-code {
+  font-family: var(--mono);
+  font-size: 18px;
+  letter-spacing: 0.08em;
+  margin: 0 6px 0 2px;
+}
+.github-signin-pending > p {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0;
+}
+.github-signin-pending .ghost {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+.github-signin a.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.github-signin a.button:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+.github-signin .error,
+.github-signin .admin-notice {
+  margin: 8px 0 0;
+}
 .admin-actions button.danger {
   margin-left: auto;
   color: var(--danger, #b3261e);
@@ -1287,10 +1343,30 @@ button.danger:hover {
   color: var(--muted);
 }
 
-/* Startup stage in the composer status line and the workspace panel. */
-.composer-startup {
-  color: var(--accent-text);
+/* What the composer says back after /bug or /test bugreporting. */
+.composer-notice {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 0 6px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--info-soft);
+  color: var(--info-text);
+  font-size: 13px;
 }
+.composer-notice > button.link {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--info-text);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Startup stage in the composer status line and the workspace panel. */
 .workspace-facts {
   margin: 0 0 8px;
   padding: 0;
@@ -1310,6 +1386,13 @@ button.danger:hover {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Admin console: the Spend section's table shares the cluster tables'
+   look; numbers line up. */
+.spend-table td {
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -1383,6 +1466,116 @@ button.danger:hover {
   background: var(--accent);
   border-radius: 2px;
 }
+/* Events (Events.tsx): one row each, newest first; a Warning's when is
+   coloured; with-objects adds the object column on the cluster page. */
+.cluster-events {
+  list-style: none;
+  margin: 4px 0 8px;
+  padding: 0;
+  font-size: 13px;
+}
+.cluster-events li {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 4px 10px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+  align-items: start;
+}
+.cluster-events li:first-child {
+  border-top: 0;
+}
+.cluster-events.with-objects li {
+  grid-template-columns: 56px minmax(120px, 220px) 1fr;
+}
+.cluster-event-when {
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.cluster-events li.warning .cluster-event-when {
+  color: var(--danger);
+  font-weight: 600;
+}
+.cluster-event-object {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cluster-event-object code {
+  font-size: 12px;
+}
+.cluster-event-object button.link {
+  display: inline;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cluster-event-object button.link:hover {
+  text-decoration: underline;
+  background: transparent;
+}
+.cluster-event-what {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cluster-event-what small {
+  color: var(--muted);
+}
+/* The panel is narrow: the event's time sits above its text. */
+.workspace-panel .cluster-events li {
+  grid-template-columns: 1fr;
+  gap: 1px;
+}
+.workspace-panel .cluster-events .cluster-event-when {
+  font-size: 12px;
+}
+.workspace-subhead {
+  margin: 10px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.workspace-startup {
+  margin: 0 0 8px;
+}
+.workspace-startup > strong {
+  display: block;
+  color: var(--accent-text);
+}
+.workspace-startup > p {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+.cluster-actions {
+  white-space: nowrap;
+}
+.cluster-actions .status-dot {
+  margin-left: 2px;
+}
+.cluster-events-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  scroll-margin-top: 12px;
+}
+.cluster-events-head .muted {
+  font-weight: 400;
+}
+.cluster-events-head button.ghost {
+  height: 26px;
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
 .cluster-logs {
   margin: 12px 0;
   border: 1px solid var(--line);
@@ -1435,6 +1628,128 @@ button.danger:hover {
   display: block;
   padding: 4px 12px;
   margin: 0;
+}
+
+/* Admin console: the Bug reports section. */
+.bug-reports h2 button.ghost {
+  margin-left: auto;
+  height: 26px;
+  padding: 0 6px;
+}
+.bug-table tbody tr {
+  cursor: pointer;
+}
+.bug-table tbody tr:hover td {
+  background: var(--surface-2);
+}
+.bug-table tbody tr.selected td {
+  background: var(--accent-soft);
+}
+.bug-table td.bug-summary {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bug-table td.bug-when,
+.bug-table td.bug-platform {
+  white-space: nowrap;
+}
+.bug-kind {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.bug-kind.error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.bug-report {
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 0 12px 12px;
+}
+.bug-report > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+.bug-report > header strong {
+  margin-right: auto;
+  overflow-wrap: anywhere;
+}
+.bug-report > header button {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+.bug-report h4 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 14px 0 6px;
+}
+.bug-report h4 code {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}
+.bug-report pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 360px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.bug-description {
+  white-space: pre-wrap;
+  margin: 0;
+}
+.bug-error-message {
+  color: var(--danger);
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+}
+.bug-environment th {
+  width: 120px;
+  white-space: nowrap;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+.bug-environment td {
+  font-size: 13px;
+}
+.bug-raw {
+  margin-top: 14px;
+}
+.bug-raw summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}
+.bug-raw pre {
+  margin-top: 6px;
+  max-height: 480px;
 }
 
 .workspace-section li.expired > a,
@@ -1497,6 +1812,48 @@ button.danger:hover {
   font-size: 13px;
 }
 
+/* Workspace size: two selects side by side, in the new-chat form and the
+   workspace panel's Size section. */
+.size-select {
+  display: flex;
+  gap: 12px;
+}
+.size-select label {
+  flex: 1;
+  margin: 0;
+}
+.size-capacity {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.size-capacity.warning {
+  color: var(--danger);
+}
+.size-fieldset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 12px 4px;
+  margin: 14px 0;
+}
+.size-fieldset legend {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  padding: 0 4px;
+}
+.size-fieldset p {
+  margin: 8px 0 6px;
+  font-size: 12px;
+}
+.size-form p {
+  margin: 8px 0;
+  font-size: 12px;
+}
+.size-form .button-row {
+  margin: 8px 0 6px;
+}
+
 /* Google Docs suggestions review: the page itself is Panta's suggestion
    layer (src/documents/suggestions); this is the dialog around it. */
 .doc-review {
@@ -1522,4 +1879,455 @@ button.danger:hover {
 .pr-badge.returned {
   background: var(--info-soft);
   color: var(--info-text);
+}
+
+/* Rewind chooser and session diff (rewind.ts). */
+.rewind-dialog {
+  width: min(560px, 100%);
+}
+.rewind-targets {
+  list-style: none;
+  margin: 12px 0 16px;
+  padding: 0;
+  max-height: 40vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.rewind-target {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-weight: 400;
+  border-bottom: 1px solid var(--line);
+}
+.rewind-targets li:last-child .rewind-target {
+  border-bottom: 0;
+}
+.rewind-target.selected {
+  background: var(--surface-2, var(--surface));
+}
+.rewind-target input {
+  margin-top: 3px;
+}
+.rewind-number {
+  min-width: 1.6em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.rewind-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.rewind-text > span {
+  overflow-wrap: anywhere;
+}
+.rewind-text small {
+  color: var(--muted);
+}
+.rewind-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+  padding: 6px 0;
+  border-top: 1px dashed var(--line);
+  border-bottom: 1px dashed var(--line);
+}
+.rewind-entry svg {
+  vertical-align: -2px;
+}
+.rewind-entry small {
+  color: var(--muted);
+}
+.fork-entry a {
+  color: inherit;
+  font-weight: 600;
+}
+/* A read of an image, a PDF or a notebook (ToolCard ReadBody). */
+.tool-read-image .image-attachment {
+  margin: 4px 0 0;
+}
+.tool-read-image .image-attachment img {
+  max-width: min(100%, 360px);
+  max-height: 240px;
+}
+.tool-read-cells {
+  margin: 4px 0 0;
+  padding-left: 1.6em;
+  font-size: 0.9em;
+}
+.tool-read-cells li {
+  overflow-wrap: anywhere;
+}
+/* The fork dialog's "copy the workspace" choice. */
+.fork-copy {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 12px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.fork-copy input {
+  margin-top: 3px;
+}
+.fork-copy > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.fork-copy small {
+  color: var(--muted);
+}
+.workspace-origin a {
+  color: inherit;
+  font-weight: 600;
+}
+.session-diff {
+  width: min(900px, 100%);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+.session-diff-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.session-diff-files {
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.session-diff-files details {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.session-diff-files summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.session-diff-files .diff-view {
+  border-top: 1px solid var(--line);
+}
+.session-diff-files .diff-head {
+  display: none; /* the summary row names the file and its counts */
+}
+
+/* The workspace panel's Memory section (parity item 13): a details block
+   like Access history, files grouped under small headings, each a link
+   that opens the editor; the create/refresh row under them. */
+.workspace-memory > details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  list-style: none;
+}
+.workspace-memory > details > summary::-webkit-details-marker {
+  display: none;
+}
+.workspace-memory > details[open] > summary {
+  color: var(--text);
+}
+.workspace-memory .workspace-note {
+  margin: 6px 0 4px;
+  font-size: 12.5px;
+}
+.workspace-memory-group {
+  margin: 6px 0 2px;
+}
+.workspace-memory-group h3 {
+  margin: 6px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.workspace-memory li > button.link {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: flex-start;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: var(--accent-text);
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.workspace-memory li > button.link code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.workspace-memory li > button.link:hover:not(:disabled) code {
+  text-decoration: underline;
+}
+.workspace-memory li > button.link:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+.workspace-memory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 6px 0 4px;
+}
+.workspace-memory-actions button.ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px;
+  margin-left: -6px;
+  font-size: 13px;
+  color: var(--accent-text);
+}
+
+/* The instructions and memory editors: a wider modal with a monospace
+   textarea that takes the height. */
+.instructions-dialog,
+.memory-dialog {
+  width: min(720px, 100%);
+}
+.instructions-dialog textarea,
+.memory-dialog textarea {
+  font-family: var(--mono);
+  font-size: 13px;
+  min-height: 240px;
+  margin-top: 8px;
+}
+.memory-dialog h2 code {
+  font-size: 16px;
+}
+.instructions-dialog .button-row,
+.memory-dialog .button-row {
+  align-items: center;
+}
+.instructions-updated {
+  margin-right: auto;
+}
+
+/* Permission rules (parity round 2 B): the workspace panel's Permissions
+   section — one row per rule with its kind, pattern and origin, an add
+   form — and the chat menu's permission history. */
+.workspace-permissions li.rule-row {
+  align-items: baseline;
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+.workspace-permissions li.rule-row > code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-permissions li.rule-row > small {
+  flex-basis: 100%;
+  order: 3;
+  font-size: 12px;
+  margin: -6px 0 6px 52px;
+}
+.workspace-permissions li.rule-row > button.ghost {
+  order: 2;
+}
+.rule-kind {
+  flex-shrink: 0;
+  width: 44px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 2px 0;
+  color: var(--text-2);
+  background: var(--surface-3);
+}
+.rule-kind.rule-allow {
+  color: var(--success);
+  background: var(--success-soft);
+}
+.rule-kind.rule-deny {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.rule-kind.rule-ask {
+  color: var(--info-text);
+  background: var(--info-soft);
+}
+.rule-form {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0 8px;
+}
+.rule-form select {
+  flex: 0 0 auto;
+  width: 84px;
+}
+.rule-form input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.rule-form button.primary {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 12px;
+}
+.rule-chat h3 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.rule-chat h3 small {
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 12px;
+}
+.permission-history {
+  width: min(760px, 100%);
+}
+.permission-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 60vh;
+  overflow: auto;
+}
+.permission-list li {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  column-gap: 10px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.permission-list li:first-child {
+  border-top: 0;
+}
+.permission-decision {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: center;
+  border-radius: 999px;
+  padding: 2px 0;
+  color: var(--success);
+  background: var(--success-soft);
+}
+.permission-deny .permission-decision {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.permission-what {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+.permission-tool {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.permission-what code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+.permission-list li > small {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* The `?` overlay: every shortcut by area (shortcuts.ts). */
+.shortcuts-dialog {
+  width: min(820px, 100%);
+}
+.shortcuts-dialog h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.shortcuts-areas {
+  max-height: 65vh;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  column-gap: 24px;
+  row-gap: 4px;
+}
+.shortcuts-areas h3 {
+  margin: 10px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.shortcuts-areas table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.shortcuts-areas th {
+  text-align: left;
+  font-weight: normal;
+  white-space: nowrap;
+  vertical-align: top;
+  padding: 4px 12px 4px 0;
+  width: 1%;
+}
+.shortcuts-areas td {
+  padding: 4px 0;
+  vertical-align: top;
+}
+.shortcuts-areas tr + tr th,
+.shortcuts-areas tr + tr td {
+  border-top: 1px solid var(--line);
+}
+.shortcuts-areas kbd {
+  display: inline-block;
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--surface);
 }

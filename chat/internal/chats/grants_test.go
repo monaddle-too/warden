@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -82,6 +83,20 @@ func (f *fakeSharing) op(i int) map[string]any {
 	return f.ops[i]
 }
 
+// actions returns the ops with one of the named actions, in order (the
+// engine's delivery poll adds pr_state/doc_state ops of its own).
+func (f *fakeSharing) actions(names ...string) []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []map[string]any
+	for _, op := range f.ops {
+		if slices.Contains(names, agent.String(op["action"])) {
+			out = append(out, op)
+		}
+	}
+	return out
+}
+
 // Grant tools park a pending approval with the exact request shown to the
 // owner; the answer performs the effect with the answering person recorded
 // and becomes the agent's tool result. Host directories need local mode.
@@ -149,6 +164,17 @@ func TestGrantRequestsBecomeApprovalsAndResolve(t *testing.T) {
 	if len(e.Store.Snapshot().chat(c.ID).Approvals) != before {
 		t.Fatal("invalid request became an approval")
 	}
+	// GitHub is brokered, not firewalled: a network grant for it is refused
+	// with the right tool named, before the owner sees anything.
+	for _, host := range []string{"github.com", "API.github.com", "codeload.github.com"} {
+		err := e.requestGrant(c, nil, agent.Frame{ID: json.RawMessage(`1`), Params: map[string]any{"tool": "request_network_access", "arguments": map[string]any{"host": host, "reason": "git clone"}}})
+		if err == nil || !strings.Contains(err.Error(), "request_repository_access") {
+			t.Fatalf("%s: %v", host, err)
+		}
+	}
+	if len(e.Store.Snapshot().chat(c.ID).Approvals) != before {
+		t.Fatal("GitHub network request became an approval")
+	}
 	// Host directories: refused unless local mode; then a worker operation.
 	_ = e.requestGrant(c, nil, agent.Frame{ID: json.RawMessage(`1`), Params: map[string]any{"tool": "request_host_directory", "arguments": map[string]any{"path": "/tmp/x", "reason": "r"}}})
 	if len(e.Store.Snapshot().chat(c.ID).Approvals) != before {
@@ -205,5 +231,34 @@ func TestRepositoryAccessAlreadySharedAndFailures(t *testing.T) {
 	msg := text(e.requestGrant(c, nil, agent.Frame{ID: json.RawMessage(`1`), Params: map[string]any{"tool": "request_repository_access", "arguments": map[string]any{"repository": "owner/new", "categories": []any{"contents"}, "reason": "r"}}}))
 	if !strings.Contains(msg, "GitHub is not connected") || !strings.Contains(msg, "warden login github") || len(e.Store.Snapshot().chat(c.ID).Approvals) != before+1 {
 		t.Fatalf("listing failure: %q", msg)
+	}
+}
+
+// The workspace panel lists a shared repository as soon as it is shared,
+// on a chat that has not sent its first message: the environments listing
+// asks the policy service for the workspace's repositories whether or not
+// a chat has run.
+func TestEnvironmentsListRepositoriesBeforeTheFirstTurn(t *testing.T) {
+	sharing, socket := newFakeSharing(t)
+	sharing.results["github_list"] = map[string]any{"repositories": []any{map[string]any{"full_name": "monaddle-too/warden", "access": []any{"contents"}}}}
+	e, _ := residentSetup(t, func(e *Engine) { e.PolicyAddress = "unix://" + socket })
+	id, err := e.Create("Fresh", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := e.Store.Snapshot().chat(id)
+	if ranChat([]*Chat{c}) != nil {
+		t.Fatal("a fresh chat counts as run")
+	}
+	envs, err := e.Environments(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(envs) != 1 || len(envs[0].Repositories) != 1 || agent.String(agent.Map(envs[0].Repositories[0])["full_name"]) != "monaddle-too/warden" {
+		t.Fatalf("%+v", envs)
+	}
+	asked := sharing.actions("github_list")
+	if len(asked) != 1 || agent.String(agent.Map(asked[0]["data"])["chatID"]) != id || agent.String(agent.Map(asked[0]["data"])["sandboxID"]) != c.SandboxID {
+		t.Fatalf("github_list asked with %+v", asked)
 	}
 }

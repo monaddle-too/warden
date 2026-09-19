@@ -67,7 +67,7 @@ func TestAttachmentNamesKindsAndNote(t *testing.T) {
 // message that names them is delivered.
 func TestAttachmentUploadSendAndDelivery(t *testing.T) {
 	e, w, _ := setup(t)
-	id, err := e.Create("Files", "", "")
+	id, err := e.Create("Files", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestAttachmentUploadSendAndDelivery(t *testing.T) {
 // Uploads nobody sent are forgotten after a day; sent ones stay.
 func TestAttachmentPruning(t *testing.T) {
 	e, _, _ := setup(t)
-	id, err := e.Create("Files", "", "")
+	id, err := e.Create("Files", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

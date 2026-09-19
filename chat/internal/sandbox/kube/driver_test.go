@@ -99,12 +99,21 @@ func TestCreateIsClaimThenPodAndIdempotent(t *testing.T) {
 // pod of the new generation is created, and the handle is a no-op. On a
 // running runtime it confirms the pod and creates nothing.
 func TestPrepareRecreatesThePodAfterAStop(t *testing.T) {
-	api, d := readyFake(t)
+	api := newFakeAPI(t)
+	api.publishTrust("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
+	// A deployment pinned to one zone (deploy/k8s/gke/values.yaml): the
+	// first pod carries the pin so the disk is created there.
+	o := testOptions()
+	o.NodeSelector = map[string]string{"topology.kubernetes.io/zone": "us-central1-c"}
+	d := newTestDriver(t, api, o)
 	ctx := testContext(t)
 	if err := d.Create(ctx, sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace", SandboxID: "s1", Generation: "gen-1"}); err != nil {
 		t.Fatal(err)
 	}
 	first, _ := d.Runtime(runtimeName)
+	if pod, _ := api.pod(runtimeName); pod.Spec.NodeSelector["topology.kubernetes.io/zone"] != "us-central1-c" {
+		t.Fatalf("first pod selector %v", pod.Spec.NodeSelector)
+	}
 	before := len(api.recorded())
 	h, err := d.Prepare(ctx, sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace", SandboxID: "s1", Generation: "gen-1"})
 	if err != nil || h == nil {
@@ -133,7 +142,16 @@ func TestPrepareRecreatesThePodAfterAStop(t *testing.T) {
 	if !ok || pod.Status.Phase != "Running" || pod.Metadata.UID == first.PodUID || pod.Metadata.Annotations[AnnotationGeneration] != "gen-2" {
 		t.Fatalf("resumed pod %+v", pod.Metadata)
 	}
+	// The resumed pod mounts a bound disk, whose zone is fixed: the pin is
+	// left off so a disk from before the pin (or in another zone) still
+	// finds its node.
+	if pod.Spec.NodeSelector != nil {
+		t.Fatalf("resumed pod selector %v", pod.Spec.NodeSelector)
+	}
 	claim, _ := api.claim(runtimeName)
+	if claim.Spec.VolumeName == "" || claim.Status.Phase != "Bound" {
+		t.Fatalf("resumed claim %+v", claim)
+	}
 	if rt, _ := d.Runtime(runtimeName); rt.ClaimUID != first.ClaimUID || claim.Metadata.UID != first.ClaimUID || rt.PodUID != pod.Metadata.UID || rt.Generation != "gen-2" || rt.PodIP != pod.Status.PodIP {
 		t.Fatalf("resumed record %+v", rt)
 	}
@@ -315,16 +333,22 @@ func TestReadinessWaitsForTheTrustBundle(t *testing.T) {
 	}
 }
 
-// Reconcile at startup deletes every pod under the driver's labels (the
-// worker has stopped everything it knows), deletes unregistered spare
-// claims and keeps every other claim; the policy service's pods in the
-// namespace are not touched.
-func TestReconcileRetiresStalePodsAndSpareClaims(t *testing.T) {
+// Reconcile at startup keeps the pod of a sandbox the worker registered
+// as resident when it runs at the registered generation, rebuilding the
+// driver's view of it so a later Create adopts it without a manifest
+// check; it deletes every other pod under the driver's labels (a
+// registered sandbox not resident, one whose pod is of another
+// generation, an unregistered one), deletes unregistered spare claims and
+// keeps every other claim; the policy service's pods in the namespace
+// are not touched.
+func TestReconcileKeepsResidentPodsAndRetiresTheRest(t *testing.T) {
 	api, d := readyFake(t)
 	ctx := testContext(t)
 	for _, spec := range []sandbox.RuntimeSpec{
-		{Name: "wc-registered", Directory: "/home/agent/workspace", SandboxID: "s1"},
-		{Name: "wc-orphan", Directory: "/home/agent/workspace", SandboxID: "s2"},
+		{Name: "wc-resident", Directory: "/home/agent/workspace", SandboxID: "s1", Generation: "g1"},
+		{Name: "wc-registered", Directory: "/home/agent/workspace", SandboxID: "s2", Generation: "g2"},
+		{Name: "wc-regenerated", Directory: "/home/agent/workspace", SandboxID: "s3", Generation: "g3"},
+		{Name: "wc-orphan", Directory: "/home/agent/workspace", SandboxID: "s4"},
 		{Name: "wc-spare-adopted", Directory: "/home/agent/workspace", Spare: true},
 		{Name: "wc-spare-lost", Directory: "/home/agent/workspace", Spare: true},
 	} {
@@ -332,19 +356,47 @@ func TestReconcileRetiresStalePodsAndSpareClaims(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	before, _ := d.Runtime("wc-resident")
 	api.mu.Lock()
 	api.objects["pods/canary"] = map[string]any{"metadata": map[string]any{"name": "canary", "uid": "canary", "labels": map[string]any{LabelSandbox: "canary", LabelManagedBy: "warden-policy"}}, "status": map[string]any{"phase": "Running"}}
 	api.mu.Unlock()
 	fresh := newTestDriver(t, api, testOptions())
-	if err := fresh.Reconcile(ctx, []string{"wc-registered", "wc-spare-adopted"}); err != nil {
+	resident, err := fresh.Reconcile(ctx, []sandbox.RegisteredRuntime{
+		{Name: "wc-resident", Generation: "g1", Resident: true},
+		{Name: "wc-registered", Generation: "g2"},
+		{Name: "wc-regenerated", Generation: "g3-next", Resident: true},
+		{Name: "wc-spare-adopted", Resident: true},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
+	if strings.Join(resident, ",") != "wc-resident" {
+		t.Fatalf("resident after reconcile: %v", resident)
+	}
 	time.Sleep(3 * api.deleteDelay)
-	if names := api.names("pods"); strings.Join(names, ",") != "canary" {
+	if names := api.names("pods"); strings.Join(names, ",") != "canary,wc-resident" {
 		t.Fatalf("pods after reconcile: %v", names)
 	}
-	if names := api.names("persistentvolumeclaims"); strings.Join(names, ",") != "wc-orphan,wc-registered,wc-spare-adopted" {
+	if names := api.names("persistentvolumeclaims"); strings.Join(names, ",") != "wc-orphan,wc-regenerated,wc-registered,wc-resident,wc-spare-adopted" {
 		t.Fatalf("claims after reconcile: %v", names)
+	}
+	kept, ok := fresh.Runtime("wc-resident")
+	if !ok || kept.PodUID != before.PodUID || kept.PodIP != before.PodIP || kept.ClaimUID != before.ClaimUID || kept.Generation != "g1" || kept.Workspace != WorkspaceFresh {
+		t.Fatalf("kept runtime not rebuilt: %+v (was %+v)", kept, before)
+	}
+	// The next Create (the worker's Prepare) adopts the kept pod as known:
+	// no manifest check, no new pod.
+	requests := len(api.recorded())
+	if err := fresh.Create(ctx, sandbox.RuntimeSpec{Name: "wc-resident", Directory: "/home/agent/workspace", SandboxID: "s1", Generation: "g1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range api.recorded()[requests:] {
+		if r.Method == "POST" && strings.Contains(r.Path, "/pods") {
+			t.Fatalf("kept pod replaced or probed: %s %s", r.Method, r.Path)
+		}
+	}
+	if after, _ := fresh.Runtime("wc-resident"); after.PodUID != before.PodUID {
+		t.Fatalf("kept pod replaced: %+v", after)
 	}
 }
 
@@ -651,5 +703,129 @@ func TestForkClonesOrCopiesTheHome(t *testing.T) {
 	}
 	if err := d.Create(ctx, sandbox.RuntimeSpec{Name: "wc-late", Directory: "/home/agent/workspace", SandboxID: "s5", Source: "wc-source"}); err == nil || !strings.Contains(err.Error(), "source pod is not running") {
 		t.Fatalf("fork of a stopped source: %v", err)
+	}
+}
+
+// A pod is created at the spec's size; Resize patches pods/resize with a
+// strategic patch naming only the guest container's resources, waits for
+// the kubelet to report the container at the new size, and never
+// replaces the pod. A stopped runtime has no pod and nothing to do; the
+// same size again is a no-op.
+func TestResizePatchesThePodInPlace(t *testing.T) {
+	api, d := readyFake(t)
+	ctx := testContext(t)
+	spec := sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace", SandboxID: "sandbox-one", Generation: "gen-1", Resources: sandbox.Resources{CPUMilli: 500, MemoryMB: 2048}}
+	if err := d.Create(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	pod, _ := api.pod(runtimeName)
+	if got := pod.Spec.Containers[0].Resources.Limits; got["cpu"] != "500m" || got["memory"] != "2048Mi" {
+		t.Fatalf("created at %v", got)
+	}
+	before, _ := d.Runtime(runtimeName)
+	restarted, err := d.Resize(ctx, runtimeName, sandbox.Resources{CPUMilli: 1500, MemoryMB: 4096})
+	if err != nil || restarted {
+		t.Fatalf("resize: restarted=%v %v", restarted, err)
+	}
+	pod, _ = api.pod(runtimeName)
+	if got := pod.Spec.Containers[0].Resources; got.Limits["cpu"] != "1500m" || got.Limits["memory"] != "4096Mi" || got.Requests["cpu"] != "1500m" || got.Requests["memory"] != "4096Mi" {
+		t.Fatalf("pod after resize %+v", got)
+	}
+	if applied := pod.Status.ContainerStatuses[0].Resources; applied == nil || applied.Limits["cpu"] != "1500m" {
+		t.Fatalf("status after resize %+v", applied)
+	}
+	if after, _ := d.Runtime(runtimeName); after.PodUID != before.PodUID {
+		t.Fatal("the pod was replaced")
+	}
+	var patches []fakeRequest
+	for _, r := range api.recorded() {
+		if r.Method == "PATCH" {
+			patches = append(patches, r)
+		}
+	}
+	if len(patches) != 1 || !strings.HasSuffix(patches[0].Path, "/pods/"+runtimeName+"/resize") || !strings.Contains(string(patches[0].Body), `"name":"guest"`) || strings.Contains(string(patches[0].Body), `"image"`) {
+		t.Fatalf("patches %+v", patches)
+	}
+	seen := len(api.recorded())
+	if _, err = d.Resize(ctx, runtimeName, sandbox.Resources{CPUMilli: 1500, MemoryMB: 4096}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range api.recorded()[seen:] {
+		if r.Method == "PATCH" {
+			t.Fatal("the same size was patched again")
+		}
+	}
+	if err = d.Stop(ctx, runtimeName); err != nil {
+		t.Fatal(err)
+	}
+	if restarted, err = d.Resize(ctx, runtimeName, sandbox.Resources{CPUMilli: 250, MemoryMB: 1024}); err != nil || restarted {
+		t.Fatalf("stopped resize: restarted=%v %v", restarted, err)
+	}
+	if _, err = d.Prepare(ctx, sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace", Generation: "gen-2", Resources: sandbox.Resources{CPUMilli: 250, MemoryMB: 1024}}); err != nil {
+		t.Fatal(err)
+	}
+	pod, _ = api.pod(runtimeName)
+	if got := pod.Spec.Containers[0].Resources.Limits; got["cpu"] != "250m" || got["memory"] != "1024Mi" {
+		t.Fatalf("next generation at %v", got)
+	}
+}
+
+// A resize the node cannot fit, one the kubelet keeps deferring, and a
+// server without the subresource are ErrResizeInfeasible: the worker
+// replaces the pod at the size instead. A pod the runner may not resize
+// (no Role verb) is the same answer. A patch that was accepted but not
+// applied is reverted, so the pod's spec still says what it runs at.
+func TestResizeReportsInfeasible(t *testing.T) {
+	for _, mode := range []string{"infeasible", "deferred", "absent", "forbidden"} {
+		api, d := readyFake(t)
+		ctx := testContext(t)
+		if err := d.Create(ctx, sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace"}); err != nil {
+			t.Fatal(err)
+		}
+		if mode == "forbidden" {
+			api.mu.Lock()
+			api.forbidden = map[string]bool{"resize pods": true}
+			api.mu.Unlock()
+		} else {
+			api.mu.Lock()
+			api.resizeMode = mode
+			api.mu.Unlock()
+		}
+		restarted, err := d.Resize(ctx, runtimeName, sandbox.Resources{CPUMilli: 4000, MemoryMB: 8192})
+		if !errors.Is(err, sandbox.ErrResizeInfeasible) || restarted {
+			t.Fatalf("%s: restarted=%v %v", mode, restarted, err)
+		}
+		pod, ok := api.pod(runtimeName)
+		if !ok {
+			t.Fatalf("%s: the driver removed the pod", mode)
+		}
+		if got := pod.Spec.Containers[0].Resources.Limits; got["cpu"] != "1000m" || got["memory"] != "1024Mi" {
+			t.Fatalf("%s: spec left at %v", mode, got)
+		}
+	}
+}
+
+// Resident tells a spare whose pod was preempted from one still there: the
+// driver's pod, by UID, not terminating and not ended.
+func TestResidentSeesAPreemptedPod(t *testing.T) {
+	api, d := readyFake(t)
+	ctx := testContext(t)
+	if _, err := d.Resident(ctx, "wc-spare-1"); err != nil {
+		t.Fatal(err)
+	} else if ok, _ := d.Resident(ctx, "wc-spare-1"); ok {
+		t.Fatal("an unknown runtime is resident")
+	}
+	if err := d.Create(ctx, sandbox.RuntimeSpec{Name: "wc-spare-1", Directory: "/home/agent/workspace", Spare: true}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := d.Resident(ctx, "wc-spare-1"); err != nil || !ok {
+		t.Fatalf("running spare: resident=%v err=%v", ok, err)
+	}
+	// Preempted: the scheduler deletes the pod.
+	api.mu.Lock()
+	delete(api.objects, "pods/wc-spare-1")
+	api.mu.Unlock()
+	if ok, err := d.Resident(ctx, "wc-spare-1"); err != nil || ok {
+		t.Fatalf("preempted spare: resident=%v err=%v", ok, err)
 	}
 }

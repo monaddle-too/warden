@@ -11,9 +11,12 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	"warden/chat/internal/bugreport"
+	"warden/chat/internal/config"
 	"warden/chat/internal/edge"
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/services"
+	"warden/chat/internal/transport"
 )
 
 // Main runs the edge and returns the exit status.
@@ -49,8 +52,12 @@ func run(args []string) error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	go handler.Run(ctx)
-	server := &http.Server{Addr: c.Listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	// Bug reports (docs/bug-reporting-plan.md): a recovered panic in a
+	// handler or the background loop is drafted for the launcher to show.
+	bugs := bugCapturer(*file)
+	bugreport.SetDefault(bugs)
+	go func() { defer bugs.Recover("edge run loop"); handler.Run(ctx) }()
+	server := &http.Server{Addr: c.Listen, Handler: bugs.Handler(handler), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10, ErrorLog: transport.ProbeQuietLog()}
 	go func() {
 		<-ctx.Done()
 		c, done := context.WithTimeout(context.Background(), 10*time.Second)
@@ -62,4 +69,18 @@ func run(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// bugCapturer is the edge's capturer when the configuration is a
+// warden.json (the original edge JSON has no reporting section: nil, which
+// guards nothing).
+func bugCapturer(path string) *bugreport.Capturer {
+	if path == "" {
+		path = os.Getenv(config.Env)
+	}
+	cfg, err := config.Load(path, "")
+	if err != nil {
+		return nil
+	}
+	return bugreport.New(cfg, path, bugreport.ComponentEdge)
 }

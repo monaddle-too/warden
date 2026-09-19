@@ -5,7 +5,9 @@ import (
 	"regexp"
 )
 
-var modelName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
+// modelName admits a model identifier or alias, with Claude Code's
+// 1M-context suffix (`sonnet[1m]`).
+var modelName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(\[1m\])?$`)
 
 func ValidateAgent(provider, model string) error {
 	if provider != "" && provider != "codex" && provider != "claude" {

@@ -500,6 +500,72 @@ func TestGatewayClaudeLeaseRoutesOnlyClaudeAndStripsGuestCredentials(t *testing.
 	}
 }
 
+func (f *gatewayFixture) beginClaudeLease(t *testing.T) map[string]any {
+	t.Helper()
+	f.registry.End(f.value)
+	value := runContext(map[string]any{"runID": "claude-run", "provider": "claude"})
+	f.registry.ClaudeSource = fakeSource{available: true, routes: map[string][2]string{"/v1/messages": {"api.anthropic.com", "/v1/messages"}, "/v1/messages/count_tokens": {"api.anthropic.com", "/v1/messages/count_tokens"}},
+		headers: map[string]string{"Authorization": "Bearer synthetic-claude-host-secret"}}
+	if r, err := f.registry.Begin(value, false); err != nil || !ready(r) {
+		t.Fatalf("claude begin: %v %v", r, err)
+	}
+	return value
+}
+
+func TestGatewayClaudeMessagesStreamDeliversEventsBeforeUpstreamEOF(t *testing.T) {
+	f := newGatewayFixture(t)
+	f.beginClaudeLease(t)
+	release := make(chan struct{})
+	first := "event: message_start\ndata: {\"type\":\"message_start\"}\n\n"
+	rest := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hello\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	f.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.WriteHeader(200)
+		w.Write([]byte(first))
+		w.(http.Flusher).Flush()
+		<-release
+		w.Write([]byte(rest))
+	})
+	req, _ := http.NewRequest("POST", "http://host.docker.internal:"+itoa(f.port)+"/anthropic/v1/messages?beta=true", strings.NewReader(`{"stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip, br")
+	res, err := f.client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 || res.ContentLength != -1 || res.Header.Get("Alt-Svc") != "clear" {
+		t.Fatalf("stream response: %v", res)
+	}
+	reader := bufio.NewReader(res.Body)
+	head := make([]byte, len(first))
+	if _, err := io.ReadFull(reader, head); err != nil || string(head) != first {
+		t.Fatalf("first event %q %v", head, err)
+	}
+	close(release)
+	tail, err := io.ReadAll(reader)
+	if err != nil || string(tail) != rest {
+		t.Fatalf("stream tail %q %v", tail, err)
+	}
+	r := f.upstreamRequests()[0]
+	if r.host != "api.anthropic.com" || r.path != "/v1/messages" || r.headers.Get("Accept-Encoding") != "identity" || r.headers.Get("Authorization") != "Bearer synthetic-claude-host-secret" {
+		t.Fatalf("upstream: %+v", r)
+	}
+	if !f.auditContains("http.response.started") || !f.auditContains(`"phase":"completed"`) || f.auditContains("hello") {
+		t.Fatal("stream audit")
+	}
+	// count_tokens is not an SSE route; it keeps the buffered path even if
+	// the upstream labels the reply as an event stream.
+	f.setHandler(sseHandler([]string{"data: n\n\n"}, nil))
+	res, body, err := f.do("POST", "http://host.docker.internal:"+itoa(f.port)+"/anthropic/v1/messages/count_tokens", map[string]string{"Content-Type": "application/json"}, `{}`)
+	if err != nil || res.StatusCode != 200 || res.ContentLength != int64(len(body)) || string(body) != "data: n\n\n" {
+		t.Fatalf("count_tokens: %v %q %v", res, body, err)
+	}
+	if r := f.upstreamRequests()[1]; r.headers.Get("Accept-Encoding") == "identity" {
+		t.Fatalf("count_tokens forced identity: %+v", r)
+	}
+}
+
 func TestGatewayGoogleSharingInjectionAndRevocation(t *testing.T) {
 	f := newGatewayFixture(t)
 	google := &fakeGoogle{authorization: "Bearer synthetic-google-credential", canWrite: true, connected: true, configured: true}
