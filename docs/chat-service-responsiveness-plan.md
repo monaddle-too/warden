@@ -76,9 +76,11 @@ with a symbolised build of the live release (`sample` on the process):
    typing + startup + limits changes), shared by every client and `GET
    state`; the stream sends when the generation changed (paced to 200 ms
    at most) or 5 s passed, and does nothing while idle.
-5. Edge: one `ReverseProxy`-shaped transport for the server's lifetime;
-   the per-request pieces (identity headers, binding path) stay in the
-   `Director`, which reads them from the request context.
+5. Edge: one `http.Transport` (`Server.upstream`) for the server's
+   lifetime, carrying every proxied request and the edge's own calls;
+   the `ReverseProxy` value with its per-request `Director` (identity
+   headers, binding path) is still built per request, which costs
+   nothing.
 
 Each step verified by the package's tests, then the whole by a local
 deploy: `sample` on `warden serve` idle (no JSON work), `GET state`
