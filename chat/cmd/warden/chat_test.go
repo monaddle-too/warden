@@ -67,6 +67,9 @@ func chatFixture(t *testing.T) (configPath string, calls func() []string) {
 			if network, ok := body["network"]; ok {
 				seen = append(seen, "network="+network.(string))
 			}
+			if body["jailbreak"] == true {
+				seen = append(seen, "jailbreak=true")
+			}
 			mu.Unlock()
 			w.Write([]byte(`{"id":"def456"}`))
 		case strings.HasSuffix(path, "/message"):
@@ -115,6 +118,10 @@ func TestChatListNewSendApprove(t *testing.T) {
 	if code, out = runCLI("", false, "chat", "new", "--config", configPath, "--network", "public", "Bad"); code == 0 || !strings.Contains(out, "restricted or open") {
 		t.Fatalf("new --network public (%d):\n%s", code, out)
 	}
+	// --jailbreak asks for host access (docs/host-dogfood-plan.md).
+	if code, out = runCLI("", false, "chat", "new", "--config", configPath, "--jailbreak", "Dogfood"); code != 0 || strings.TrimSpace(out) != "def456" {
+		t.Fatalf("new --jailbreak (%d):\n%s", code, out)
+	}
 	// A chat can be named by number, id prefix or title.
 	for _, ref := range []string{"1", "abc", "First"} {
 		code, out = runCLI("", false, "chat", "send", "--config", configPath, ref, "hello", "world")
@@ -142,7 +149,7 @@ func TestChatListNewSendApprove(t *testing.T) {
 		t.Fatalf("unknown chat (%d):\n%s", code, out)
 	}
 	joined := strings.Join(calls(), "\n")
-	for _, want := range []string{"POST chats", "network=open", "POST chats/abc123/message", "POST chats/abc123/approvals/ap1"} {
+	for _, want := range []string{"POST chats", "network=open", "jailbreak=true", "POST chats/abc123/message", "POST chats/abc123/approvals/ap1"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing call %q in:\n%s", want, joined)
 		}
