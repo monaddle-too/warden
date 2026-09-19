@@ -477,3 +477,35 @@ Candidate order, to be settled once the owner has read the plan:
   Remaining ideas, none blocking: `instance list` counting sandboxes,
   the Kubernetes driver and `namePrefix`, the tracked `chat/warden` binary
   that `go build ./cmd/warden` rewrites in place.
+- 2026-09-19: **the full dogfood loop, end to end, from a chat.** An outer
+  instance `dogfood` (`warden instance create dogfood --from default
+  --dev`, `warden release build . --instance dogfood`, `dogfood.jailbreak`
+  on, started detached) hosted a chat created with `--jailbreak` in auto
+  mode. Unprompted, through `host_run`/`host_status`/`host_expose`, the
+  agent created `inner` from `default`, built the mainline checkout into
+  it (`warden release build … --instance inner`, 16 s with a warm build
+  cache), started it, opened a chat there and got `pong` back
+  (`warden chat send --instance inner … --wait`, 11 s), exposed inner's
+  chat port through the outer edge (`http://<binding>.localhost:18783/`,
+  a signed-in preview) and read its log. Four bugs surfaced on the way,
+  each fixed with a unit test and re-deployed with `warden release build
+  --instance dogfood --restart` between attempts:
+  1. `host_run`'s `HOME` was the runner's SBX namespace (the wrapper's
+     `HOME`/`XDG_*_HOME`), so `--from default` resolved the default
+     instance under `~/.warden/sbx/home` (`hostEnv`, 860ffcc; a
+     `description` argument Claude Code adds is now ignored too).
+  2. `host_run` inherited the launcher's `WARDEN_CONFIG`, so `warden
+     instance create` read the outer instance's config and failed
+     (dropped from the host environment, da69515).
+  3. That failure offered a bug-report review and waited five minutes for
+     it: `isTerminal` took `/dev/null` for a terminal (now
+     `term.IsTerminal`), and the chat service's worker-socket deadline was
+     a flat five minutes regardless of the host command's timeout (now the
+     command's timeout plus a minute; da69515).
+  4. `warden start --instance inner` from the outer launcher ran the
+     outer binary against inner's state; the agent noticed the log header
+     disagreed with `instance list`. `start` now re-executes the
+     instance's own `<state>/release/bin/warden` (0368f85), verified: the
+     inner process is `…/releases/warden-v0.0.0-dev.0c4bc1ad4979…/bin/warden`.
+  The default instance was never touched. `inner` removed afterwards;
+  `dogfood` kept, stopped, for the next loop.
