@@ -590,13 +590,12 @@ link's, PID, CHAT, EDGE, SERVICE — registered running / registered
 stopped / detached / foreground / not registered, UP), then the default
 instance's detail lines as before; `warden status --instance NAME` is
 the detail alone plus a `running:` line; `--json` gives the rows.
-`warden versions [--json] [--remote]` lists the store: VERSION,
-INSTALLED, PINNED BY, RUNNING ON, WHERE (the store, or an instance's
-older copy), `*` on the version this launcher is; `--remote` adds the
-GitHub releases of monaddle-too/warden (tag, date, whether a tarball for
-this host and a `SHA256SUMS` exist, `installed` when the store has it),
-one line when GitHub is unreachable. Everything but `--remote` works
-offline.
+`warden versions [--json]` lists what can be installed and run: the
+GitHub releases of monaddle-too/warden first (tag, date, whether a
+tarball for this host and a `SHA256SUMS` exist, `installed` when the
+store has it; one line when GitHub is unreachable), then the store:
+VERSION, INSTALLED, PINNED BY, RUNNING ON, WHERE (the store, or an
+instance's older copy), `*` on the version this launcher is.
 
 **Running another version.** `warden start --version V [--use] [--as
 NAME]` starts the installed release V for the instance by executing its
@@ -614,7 +613,7 @@ registered service takes `--use` (the service unit runs the link) or
 `warden versions`.
 
 ```sh
-warden versions --remote                              # what is installed, what GitHub has
+warden versions                                       # what GitHub has, what is installed
 warden release install v0.1.0-alpha.13 --instance dev # download into the store, link dev
 warden start --version latest --instance dev --detach # trial: dev runs it, its link stays
 warden start --version 0368f8 --as dev-b --detach     # the same build beside dev, as dev-b

@@ -11,7 +11,7 @@
 //	warden bugs    status | on | off | send "text" | test | pending
 //	warden instance list | create NAME | rm NAME
 //	warden release  list | install TARBALL|TAG | use VERSION | build [CHECKOUT]
-//	warden versions [--remote]
+//	warden versions
 //	warden status
 //
 // Every command that takes --state also takes --instance NAME (or
@@ -89,7 +89,7 @@ const usageText = `usage: warden COMMAND [flags]
   stop      stop the running Warden (the service, or a detached one)
   restart   restart the service (after a new release)
   status    every instance: what runs (version, pid, ports, service, uptime); then this one in detail
-  versions  the releases installed in the store, who pins and runs them; --remote: GitHub's releases
+  versions  GitHub's releases (installable) and the releases in the store, who pins and runs them
   service   install | uninstall: register Warden with launchd / systemd --user (install does this too)
   open      open the running Warden in the browser (--chat ID, --new)
   menu      install | uninstall the macOS menu bar item (install does this too); feed: its model (warden-menu runs it)

@@ -148,7 +148,7 @@ func resolveRelease(rs []storeRelease, spec string) (storeRelease, error) {
 		return storeRelease{}, errors.New("no version given (`warden versions` lists them)")
 	}
 	if len(rs) == 0 {
-		return storeRelease{}, errors.New("no releases installed (`warden release install TARBALL|TAG` or `warden release build` adds one; `warden versions --remote` lists what can be installed)")
+		return storeRelease{}, errors.New("no releases installed (`warden release install TARBALL|TAG` or `warden release build` adds one; `warden versions` lists what can be installed)")
 	}
 	if spec == "latest" {
 		newest := rs[0]

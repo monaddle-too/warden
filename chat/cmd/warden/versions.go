@@ -17,19 +17,19 @@ import (
 	"time"
 )
 
-// `warden versions` lists what can run on this machine: the release store
-// (with which instances are pinned to and running each version) and, with
-// --remote, the GitHub releases of monaddle-too/warden that `warden
-// release install TAG` can download (docs/host-dogfood-plan.md, Part C).
-// Everything but --remote works offline.
+// `warden versions` lists what can be installed and run on this machine:
+// the GitHub releases of monaddle-too/warden that `warden release install
+// TAG` can download, and the release store (with which instances are
+// pinned to and running each version) (docs/host-dogfood-plan.md, Part
+// C). Offline, the GitHub half is one line and the store is listed.
 
-const versionsUsage = `usage: warden versions [--json] [--remote]
+const versionsUsage = `usage: warden versions [--json]
 
-  lists the releases in the store (~/.warden/releases) and the instances' older copies:
+  lists the GitHub releases of monaddle-too/warden (TAG, DATE, whether a tarball
+  for this host exists, whether the store has it; 10 s, offline: one line), then
+  the releases in the store (~/.warden/releases) and the instances' older copies:
   VERSION, INSTALLED, PINNED BY (the instances whose release link points at it),
   RUNNING ON (the instances running it now); * marks this launcher's own version.
-  --remote also lists the GitHub releases of monaddle-too/warden with whether a
-  tarball for this host exists and whether the store has it (10 s, offline: one line).
 `
 
 // githubReleasesURL is the public releases API of the Warden repository;
@@ -157,7 +157,6 @@ func (c *cli) versions(args []string) error {
 	fs.SetOutput(c.stderr)
 	fs.Usage = func() { fmt.Fprint(c.stderr, versionsUsage) }
 	asJSON := fs.Bool("json", false, "print the listing as JSON")
-	remote := fs.Bool("remote", false, "also list the GitHub releases of monaddle-too/warden")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
@@ -169,11 +168,7 @@ func (c *cli) versions(args []string) error {
 	if err != nil {
 		return err
 	}
-	var remotes []remoteRow
-	var remoteErr error
-	if *remote {
-		remotes, remoteErr = c.remoteRows(context.Background(), rows)
-	}
+	remotes, remoteErr := c.remoteRows(context.Background(), rows)
 	if *asJSON {
 		out := struct {
 			Installed []versionRow `json:"installed"`
@@ -190,59 +185,56 @@ func (c *cli) versions(args []string) error {
 		fmt.Fprintln(c.stdout, string(b))
 		return nil
 	}
-	store, _ := storeDir()
-	if len(rows) == 0 {
-		fmt.Fprintf(c.stdout, "no releases in %s (`warden release install TARBALL|TAG` or `warden release build` adds one; --remote lists what GitHub has)\n", store)
-	} else {
-		table := [][]string{{"", "VERSION", "INSTALLED", "PINNED BY", "RUNNING ON", "WHERE"}}
-		for _, r := range rows {
-			mark := " "
-			if r.This {
-				mark = "*"
+	switch {
+	case remoteErr != nil:
+		fmt.Fprintf(c.stdout, "GitHub releases (monaddle-too/warden): unreachable: %v\n", remoteErr)
+	case len(remotes) == 0:
+		fmt.Fprintln(c.stdout, "GitHub releases (monaddle-too/warden): none published")
+	default:
+		fmt.Fprintln(c.stdout, "GitHub releases (monaddle-too/warden):")
+		table := [][]string{{"TAG", "DATE", "FOR THIS HOST", "STORE"}}
+		for _, r := range remotes {
+			host := "no tarball for " + runtime.GOOS + "/" + runtime.GOARCH
+			switch {
+			case r.HostTarball && r.Checksums:
+				host = "yes"
+			case r.HostTarball:
+				host = "yes (no SHA256SUMS: not installable)"
 			}
-			where := "store"
-			if r.Legacy != "" {
-				where = r.Legacy + " (older copy)"
+			tag := r.Tag
+			if r.Prerelease {
+				tag += " (pre-release)"
 			}
-			table = append(table, []string{mark, r.Version, r.Installed.Local().Format("2006-01-02 15:04"), dash(strings.Join(r.PinnedBy, ",")), dash(strings.Join(r.RunningOn, ",")), where})
+			state := "-"
+			if r.Installed {
+				state = "installed"
+			}
+			table = append(table, []string{tag, r.PublishedAt.UTC().Format("2006-01-02"), host, state})
 		}
 		printTable(c.stdout, table)
-		fmt.Fprintf(c.stdout, "(* this launcher, %s; the store is %s)\n", revision, store)
-	}
-	if !*remote {
-		return nil
+		fmt.Fprintln(c.stdout, "(`warden release install TAG --instance NAME` downloads one into the store)")
 	}
 	fmt.Fprintln(c.stdout)
-	if remoteErr != nil {
-		fmt.Fprintf(c.stdout, "GitHub releases (monaddle-too/warden): unreachable: %v\n", remoteErr)
+	store, _ := storeDir()
+	if len(rows) == 0 {
+		fmt.Fprintf(c.stdout, "no releases in %s (`warden release install TARBALL|TAG` or `warden release build` adds one)\n", store)
 		return nil
 	}
-	if len(remotes) == 0 {
-		fmt.Fprintln(c.stdout, "GitHub releases (monaddle-too/warden): none published")
-		return nil
-	}
-	fmt.Fprintln(c.stdout, "GitHub releases (monaddle-too/warden):")
-	table := [][]string{{"TAG", "DATE", "FOR THIS HOST", "STORE"}}
-	for _, r := range remotes {
-		host := "no tarball for " + runtime.GOOS + "/" + runtime.GOARCH
-		switch {
-		case r.HostTarball && r.Checksums:
-			host = "yes"
-		case r.HostTarball:
-			host = "yes (no SHA256SUMS: not installable)"
+	fmt.Fprintf(c.stdout, "Installed (%s):\n", store)
+	table := [][]string{{"", "VERSION", "INSTALLED", "PINNED BY", "RUNNING ON", "WHERE"}}
+	for _, r := range rows {
+		mark := " "
+		if r.This {
+			mark = "*"
 		}
-		tag := r.Tag
-		if r.Prerelease {
-			tag += " (pre-release)"
+		where := "store"
+		if r.Legacy != "" {
+			where = r.Legacy + " (older copy)"
 		}
-		state := "-"
-		if r.Installed {
-			state = "installed"
-		}
-		table = append(table, []string{tag, r.PublishedAt.UTC().Format("2006-01-02"), host, state})
+		table = append(table, []string{mark, r.Version, r.Installed.Local().Format("2006-01-02 15:04"), dash(strings.Join(r.PinnedBy, ",")), dash(strings.Join(r.RunningOn, ",")), where})
 	}
 	printTable(c.stdout, table)
-	fmt.Fprintln(c.stdout, "(`warden release install TAG --instance NAME` downloads one into the store)")
+	fmt.Fprintf(c.stdout, "(* this launcher, %s)\n", revision)
 	return nil
 }
 
@@ -293,7 +285,7 @@ func (c *cli) placeRemoteRelease(store, tag string, force bool) (string, error) 
 		}
 	}
 	if found == nil {
-		return "", fmt.Errorf("%s is neither a file nor a GitHub release of monaddle-too/warden (`warden versions --remote` lists them)", tag)
+		return "", fmt.Errorf("%s is neither a file nor a GitHub release of monaddle-too/warden (`warden versions` lists them)", tag)
 	}
 	tarball := found.asset(hostTarball(found.Tag))
 	if tarball == nil {

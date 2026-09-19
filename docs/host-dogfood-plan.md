@@ -297,12 +297,11 @@ available for install and run.
   them keep working; with an instance: the detail plus a `running:` line
   that names a trial run's pinned release; `--json` for the rows. `instance
   list` gained RUNNING from the same rows (`describeInstance`).
-- **`warden versions [--json] [--remote]`** (`versions.go`): the store
-  (VERSION, INSTALLED, PINNED BY, RUNNING ON, WHERE, `*` for this
-  launcher's version). `--remote` adds the GitHub releases of
-  monaddle-too/warden (public API, 10 s, one line when unreachable) with
-  the tarball for this host, whether `SHA256SUMS` is attached and whether
-  the store has it. `warden release install TAG` downloads that tarball
+- **`warden versions [--json]`** (`versions.go`): the GitHub releases of
+  monaddle-too/warden first (public API, 10 s, one line when unreachable)
+  with the tarball for this host, whether `SHA256SUMS` is attached and
+  whether the store has it, then the store (VERSION, INSTALLED, PINNED
+  BY, RUNNING ON, WHERE, `*` for this launcher's version). `warden release install TAG` downloads that tarball
   into the store and verifies it against `SHA256SUMS`; a release without
   the checksums is refused. Everything else is offline.
 
@@ -312,8 +311,10 @@ available for install and run.
    a new path: the 79 releases the owner's `~/.warden` already held became
    the store with no move, and the installer's `~/.warden/releases/` +
    `~/.warden/release` convention stays true.
-2. `--remote` is a flag, never implied by an empty store: `versions`
-   stays offline unless asked.
+2. `versions` always asks GitHub (the owner: "warden versions should
+   default to listing the github releases"; the `--remote` flag of the
+   first cut is gone). Offline it prints one line for that half and the
+   store as usual.
 3. A trial run (`--version` without `--use`) under a registered service
    is refused rather than started detached beside the unit: the service
    manager would otherwise report a stopped unit while a stranger ran on
@@ -649,7 +650,7 @@ Candidate order, to be settled once the owner has read the plan:
     (directory gone), `stop --instance dogfood` → `running.json` removed
     on the clean stop, `status` back to dogfood not running, pinned
     `f61f7cc78ffb`.
-  - `warden versions --remote` (sandbox off, 0.37 s): the 13 GitHub
+  - `warden versions` (then `--remote`; sandbox off, 0.37 s): the 13 GitHub
     pre-releases `v0.1.0-alpha.1` … `alpha.13`, each with a tarball for
     darwin/arm64 and `SHA256SUMS`, `installed` where the store already
     held the tag (alpha.1–7, 11, 12).

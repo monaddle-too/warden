@@ -283,28 +283,27 @@ func TestVersionsListsTheStoreAndGitHub(t *testing.T) {
 	writeRunning(dev, runningInfo{Version: "v9.9.8", Binary: filepath.Join(a, "bin", "warden"), PID: os.Getpid(), StartedAt: time.Now()})
 	var out bytes.Buffer
 	c := &cli{stdin: strings.NewReader(""), stdout: &out, stderr: &out}
+	fakeGitHub(t, log)
 	if code := c.run([]string{"versions"}); code != 0 {
 		t.Fatalf("versions (%d):\n%s", code, out.String())
 	}
-	if !strings.Contains(out.String(), "VERSION  INSTALLED") || !strings.Contains(out.String(), "v9.9.8   ") || !strings.Contains(out.String(), "default,dev  dev         store") {
-		t.Fatalf("versions:\n%s", out.String())
-	}
-	fakeGitHub(t, log)
-	out.Reset()
-	if code := c.run([]string{"versions", "--remote"}); code != 0 {
-		t.Fatalf("versions --remote (%d):\n%s", code, out.String())
-	}
 	text := out.String()
+	if !strings.Contains(text, "VERSION  INSTALLED") || !strings.Contains(text, "v9.9.8   ") || !strings.Contains(text, "default,dev  dev         store") {
+		t.Fatalf("versions:\n%s", text)
+	}
+	if strings.Index(text, "GitHub releases") > strings.Index(text, "Installed (") {
+		t.Fatalf("GitHub releases must come first:\n%s", text)
+	}
 	for _, want := range []string{"GitHub releases (monaddle-too/warden):", "v9.9.5                2026-09-01  yes", "v9.9.4 (pre-release)  2026-08-01  yes (no SHA256SUMS: not installable)", "v9.9.3                2026-07-01  no tarball for " + runtime.GOOS} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("versions --remote lacks %q:\n%s", want, text)
+			t.Fatalf("versions lacks %q:\n%s", want, text)
 		}
 	}
 	if strings.Contains(text, "v9.9.2") {
 		t.Fatalf("a draft was listed:\n%s", text)
 	}
 	out.Reset()
-	if code := c.run([]string{"versions", "--json", "--remote"}); code != 0 {
+	if code := c.run([]string{"versions", "--json"}); code != 0 {
 		t.Fatalf("versions --json (%d):\n%s", code, out.String())
 	}
 	var got struct {
@@ -317,7 +316,7 @@ func TestVersionsListsTheStoreAndGitHub(t *testing.T) {
 	// GitHub unreachable: one line, the local listing intact.
 	githubReleasesURL = "http://127.0.0.1:1/releases"
 	out.Reset()
-	if code := c.run([]string{"versions", "--remote"}); code != 0 || !strings.Contains(out.String(), "v9.9.8") || !strings.Contains(out.String(), "GitHub releases (monaddle-too/warden): unreachable:") {
+	if code := c.run([]string{"versions"}); code != 0 || !strings.Contains(out.String(), "v9.9.8") || !strings.Contains(out.String(), "GitHub releases (monaddle-too/warden): unreachable:") {
 		t.Fatalf("offline (%d):\n%s", code, out.String())
 	}
 }
