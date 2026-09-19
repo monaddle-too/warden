@@ -233,6 +233,18 @@ func (w *Worker) initializeManaged(ctx context.Context) error {
 			// every other workspace, and the workspace panel that says what
 			// is wrong, are worth more than a clean inventory.
 			if err = w.Runtime.Stop(ctx, s.RuntimeName); err != nil {
+				if !s.Created {
+					// Creation never finished, so there is no workspace to
+					// keep: whatever the runtime made of the name goes
+					// (best effort) and the next run creates the sandbox
+					// afresh, instead of every start retrying the stop of a
+					// guest that is not there and warning about it.
+					slog.Warn("could not stop a sandbox whose creation was interrupted; it will be created afresh", "sandbox", s.ID, "runtime", s.RuntimeName, "error", err)
+					_ = w.Runtime.Remove(ctx, s.RuntimeName)
+					s.Creating = false
+					s.State = "stopped"
+					continue
+				}
 				slog.Warn("could not stop interrupted registered sandbox; marked failed", "sandbox", s.ID, "runtime", s.RuntimeName, "error", err)
 				s.State = "error"
 				continue

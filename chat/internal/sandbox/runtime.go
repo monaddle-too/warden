@@ -532,8 +532,19 @@ func (d *sbxRuntime) Address(context.Context, string) (string, error) { return l
 
 const loopbackAddress = "127.0.0.1"
 
+// Stop stops the sandbox. sbx's own words ("sandbox 'x' not found") travel
+// with the error, so a refused stop says why in the runner's log.
 func (d *sbxRuntime) Stop(ctx context.Context, name string) error {
-	return command(ctx, d.worker.Executable, "stop", name).Run()
+	cmd := command(ctx, d.worker.Executable, "stop", name)
+	var stderr bytes.Buffer
+	cmd.Stderr = &limitedWriter{W: &stderr, N: 4096}
+	if err := cmd.Run(); err != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return fmt.Errorf("%w: %s", err, detail)
+		}
+		return err
+	}
+	return nil
 }
 
 // Remove deletes the sandbox, its container state and scoped secrets. The

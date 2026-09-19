@@ -2168,3 +2168,67 @@ func TestPreemptedSpareIsReplacedAndNeverAdopted(t *testing.T) {
 		return false
 	})
 }
+
+// A restarted worker finds a sandbox whose creation was interrupted (the
+// record says creating, nothing created) and cannot stop it: sbx reports
+// the name unknown, or its daemon has lost its Docker session. Once, the
+// runner exited over it, taking every chat down; then the record was marked
+// failed and the stop retried, and warned about, at every start. The record
+// is reset to never created instead, so the next run creates the sandbox
+// afresh; a sandbox that was created keeps its workspace and is marked
+// failed.
+func TestRestartResetsAnInterruptedCreationWhoseStopIsRefused(t *testing.T) {
+	w, d, _, r := managedFixture(t)
+	prepareFixture(t, w, r)
+	w.mu.Lock()
+	s := w.managed.Sandboxes[r.SandboxID]
+	s.Created, s.Creating, s.State = false, true, "starting"
+	interrupted := s.RuntimeName
+	w.managed.Sandboxes["sandbox-two"] = &managedSandbox{SandboxInfo: SandboxInfo{ID: "sandbox-two", ProjectID: r.ProjectID, RuntimeName: "wc-two", State: "running"}, PrincipalID: r.PrincipalID, Created: true}
+	if err := w.saveManagedLocked(); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Unlock()
+	d.stopHook = func(context.Context, string) error { return errors.New("sandbox not found") }
+	fresh := NewWorker(w.Root, "/never-host-exec", "template")
+	// A driver whose guests die with the worker (SBX), so the restart
+	// stops them itself rather than handing them to a Reconciler.
+	fresh.Runtime, fresh.Gate, fresh.RuntimeDir = struct{ RuntimeDriver }{d}, w.Gate, w.RuntimeDir
+	if err := fresh.initializeManaged(context.Background()); err != nil {
+		t.Fatalf("a refused stop must not keep the runner down: %v", err)
+	}
+	fresh.mu.Lock()
+	s, two := fresh.managed.Sandboxes[r.SandboxID], fresh.managed.Sandboxes["sandbox-two"]
+	fresh.mu.Unlock()
+	if s.Creating || s.Created || s.State != "stopped" {
+		t.Fatalf("interrupted creation not reset: creating=%v created=%v state=%s", s.Creating, s.Created, s.State)
+	}
+	if two.State != "error" || !two.Created {
+		t.Fatalf("a created sandbox whose stop is refused must be marked failed, got state=%s created=%v", two.State, two.Created)
+	}
+	removed := false
+	d.mu.Lock()
+	for _, c := range d.calls {
+		if c == "remove:"+interrupted {
+			removed = true
+		}
+	}
+	d.mu.Unlock()
+	if !removed {
+		t.Fatal("what the runtime made of the interrupted name must be removed", d.calls)
+	}
+	// The next run creates the sandbox afresh rather than resuming a guest
+	// that is not there.
+	d.stopHook = nil
+	r.RunID = "run-two"
+	prepareFixture(t, fresh, r)
+	created := false
+	for _, name := range d.created() {
+		if name == interrupted {
+			created = true
+		}
+	}
+	if !created {
+		t.Fatal("the reset sandbox was not created afresh", d.created())
+	}
+}
