@@ -124,3 +124,16 @@ the startup detail says the scheduler's verdict in the owner's words.
   fixed larger machine type (`n2d-standard-8`), which needs its own gVisor
   admission test; otherwise the warm spare is the answer for fresh chats
   and resumes keep the ~1–2 min cold start.
+- 2026-09-19, capacity provisioning probed (Google's documented Autopilot
+  pattern): a gVisor pause pod shaped like a sandbox (1 CPU / 1.5 GiB,
+  zone c) under a PriorityClass of value -10 / `preemptionPolicy: Never`
+  scheduled onto the spare's node in 5 s (GKE shrank the balloon for
+  it), and 100 s later a normal-priority sandbox-shaped pod preempted it
+  and was Running on that node in **3 s** — no node boot. This is the
+  fix if the cold start ever matters: a chart-level
+  `sandboxes.capacitySpares: N` (PriorityClass + a Deployment of
+  placeholder pods with the sandbox's runtime class, size, node
+  selector and tolerations, in a sibling namespace so the sandbox
+  namespace's admission and quota are untouched); each slot bills like a
+  spare (~$38/mo at 1 CPU / 1.5 GiB) and, unlike the warm spare, serves
+  resumes and a second chat. Not built; owner's call.
