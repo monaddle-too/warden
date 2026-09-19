@@ -129,3 +129,4 @@ latency while a workspace stops, edge→chat connection count.
   `GET state` p90 12 ms, max 38 ms, peak 30 % of a core (was 48 %); the
   event stream idle sends keepalives only; edge→chat connections 7 for 3
   tabs (was 280 for 6). Not merged.
+- 2026-09-18: merged to main as cde9bca (fast-forward; Go 25 packages and web 292 tests green on the merged tree). GKE deploy next.
