@@ -175,6 +175,13 @@ Known: accepted-state does not carry into a revision; the fixture used by
 the UI check has an empty table (the projection of real tables carries
 cell text and renders read-only).
 
+Third pass (f8bd439, landed on main 2026-09-19 as dd5aac4 after a clean
+merge): **two-way card/range selection.** Selecting a suggestion card
+highlights its range on the page and placing the caret in a suggested
+range selects its card (`suggestions/active.ts`); the same applies to
+comments and their anchored text. Vendored from Panta's layer; the
+commit in `PROVENANCE.md` is bumped.
+
 ## Out of scope / later
 
 Editing tables and images (the compiler is text-only); multiple tabs;
