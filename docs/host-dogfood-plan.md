@@ -1,6 +1,6 @@
 # Dogfooding on the host: instances and the jailbreak
 
-Status: implementing, started 2026-09-19 on branch `plan/host-dogfood` from
+Status: landed on main 14216d4 (2026-09-19); started 2026-09-19 on branch `plan/host-dogfood` from
 `plan/workspace-vm` ad03d67; Part A on `feat/warden-instances`, Part B on
 `feat/jailbreak` (done, live-tested, awaiting merge), both integrated here.
 Companion to [workspace-vm-plan.md](workspace-vm-plan.md), whose decisions
@@ -470,3 +470,10 @@ Candidate order, to be settled once the owner has read the plan:
   transcript card the tool would have made never appeared. Torn down
   afterwards (`~/.warden-jb`, the daemon, the host file); the live
   `~/.warden` was never touched.
+- 2026-09-19: **merged to main** at 14216d4 (`feat/warden-instances` and
+  `feat/jailbreak` integrated on `plan/host-dogfood`, main merged in twice
+  without conflicts beyond both-sides additions; `go test ./...` and the
+  web suite green on the merged tree). Not deployed to `~/.warden`.
+  Remaining ideas, none blocking: `instance list` counting sandboxes,
+  the Kubernetes driver and `namePrefix`, the tracked `chat/warden` binary
+  that `go build ./cmd/warden` rewrites in place.
