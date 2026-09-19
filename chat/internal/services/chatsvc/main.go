@@ -22,6 +22,7 @@ import (
 	"warden/chat/internal/conversation"
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/imageguard"
+	"warden/chat/internal/release"
 	"warden/chat/internal/sandbox"
 	"warden/chat/internal/services"
 	"warden/chat/internal/transport"
@@ -124,6 +125,9 @@ func run(args []string) error {
 	// single-owner install on a machine with such directories, which the
 	// Kubernetes shape is not (the runner is a pod).
 	engine.LocalMode = s.cfg.Auth.Mode == config.AuthOwner && s.cfg.RuntimeKind() != config.RuntimeKubernetes
+	// Which Warden this is, for the sidebar header and the browser title
+	// of a non-default instance (docs/host-dogfood-plan.md).
+	engine.Instance = chats.InstanceInfo{Name: config.InstanceName(s.cfg.Paths.State), Version: release.Revision}
 	engine.DefaultModels = map[string]string{}
 	if claude := s.cfg.Providers.Claude; claude != nil {
 		engine.AllowFastMode, engine.AllowLongContext = claude.AllowFastMode, claude.AllowLongContext

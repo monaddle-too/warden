@@ -2230,9 +2230,16 @@ func (a *App) statusRows(width, height int) []string {
 		if n := a.unreadElsewhere(c); n > 0 && !c.Running() {
 			parts = append(parts, fmt.Sprintf("%s%d unread%s", cyan, n, reset))
 		}
+		if label := InstanceLabel(a.agentOptions()); label != "" {
+			parts = append(parts, dim+label+reset)
+		}
 		parts = append(parts, dim+"/help"+reset)
 	case a.state != nil:
-		parts = []string{dim + "Warden · no chat selected · /help" + reset}
+		line := "Warden · no chat selected · /help"
+		if label := InstanceLabel(a.agentOptions()); label != "" {
+			line = "Warden · " + label + " · no chat selected · /help"
+		}
+		parts = []string{dim + line + reset}
 	default:
 		return []string{""}
 	}

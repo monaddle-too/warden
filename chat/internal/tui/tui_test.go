@@ -5427,3 +5427,26 @@ func TestBugAndTestBugreportingCommands(t *testing.T) {
 		t.Fatalf("%v", names)
 	}
 }
+
+// A non-default instance is named in the status line, with its build;
+// the default instance shows nothing new.
+func TestStatusLineNamesTheInstance(t *testing.T) {
+	app := &App{Now: func() time.Time { return time.Unix(0, 0) }}
+	c := sampleChat()
+	app.state = &State{Chats: []*Chat{c}, AgentOptions: AgentOptions{Instance: &InstanceInfo{Name: "dogfood-a", Version: "v0.0.0-dev.abc"}}}
+	app.ChatID = "chat1"
+	if joined := plain(strings.Join(app.statusRows(120, 30), "\n")); !strings.Contains(joined, "dogfood-a v0.0.0-dev.abc") {
+		t.Fatalf("status without the instance:\n%s", joined)
+	}
+	app.ChatID = "missing"
+	if joined := plain(strings.Join(app.statusRows(120, 30), "\n")); !strings.Contains(joined, "Warden · dogfood-a v0.0.0-dev.abc · no chat selected") {
+		t.Fatalf("no-chat status without the instance:\n%s", joined)
+	}
+	app.state.AgentOptions.Instance = nil
+	if joined := plain(strings.Join(app.statusRows(120, 30), "\n")); strings.Contains(joined, "dogfood") {
+		t.Fatalf("default instance marked:\n%s", joined)
+	}
+	if InstanceLabel(AgentOptions{Instance: &InstanceInfo{Name: "default", Version: "v1"}}) != "" {
+		t.Fatal("the default instance has a label")
+	}
+}

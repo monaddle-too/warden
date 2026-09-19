@@ -96,6 +96,10 @@ type Engine struct {
 	// LocalMode: a single-owner install (auth.mode owner). Host directory
 	// grants exist only there.
 	LocalMode bool
+	// Instance is which Warden this is (the state directory's instance
+	// name and the build revision), shown by the clients when it is not
+	// the default instance.
+	Instance InstanceInfo
 	// AllowFastMode and AllowLongContext are the operator's leave for the
 	// costlier Claude session features (config providers.claude.*): fast
 	// mode as a chat setting, the 1M-context model variants as choices.
@@ -592,13 +596,29 @@ type AgentOptions struct {
 	// path (localfiles.go; a local install, where the service runs on the
 	// owner's machine).
 	LocalFiles bool `json:"localFiles"`
+	// Instance says which Warden this is when it is not the default
+	// instance (docs/host-dogfood-plan.md): the clients show its name and
+	// version so a person with several Wardens on one machine knows
+	// which one they are looking at. Absent for the default instance.
+	Instance *InstanceInfo `json:"instance,omitempty"`
+}
+
+// InstanceInfo names a Warden instance and the build it runs.
+type InstanceInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
 func (e *Engine) View() View {
 	st := e.state()
 	models := catalogRows(st.Catalog)
 	st.Catalog = nil // clients get it as agentOptions.models
-	return View{State: st, Sandboxes: e.Limits(context.Background()), AgentOptions: AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models, Defaults: e.defaultModels(), LocalFiles: e.LocalMode}}
+	options := AgentOptions{FastMode: e.AllowFastMode, LongContext: e.AllowLongContext, Models: models, Defaults: e.defaultModels(), LocalFiles: e.LocalMode}
+	if e.Instance.Name != "" && e.Instance.Name != "default" {
+		instance := e.Instance
+		options.Instance = &instance
+	}
+	return View{State: st, Sandboxes: e.Limits(context.Background()), AgentOptions: options}
 }
 
 // viewKey names a generation of the view: the store's version and the

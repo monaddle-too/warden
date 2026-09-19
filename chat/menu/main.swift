@@ -37,6 +37,7 @@ struct Feed: Decodable {
     let service: String // running, starting, stopped
     let registered: Bool
     let state: String
+    let instance: String? // a non-default instance's name (docs/host-dogfood-plan.md)
     let attention: [Attention]
     let chats: [Chat]
     let more: Int
@@ -191,22 +192,27 @@ final class MenuBar: NSObject, NSMenuDelegate {
         guard let button = item.button else { return }
         var symbol = "shield.slash"
         var title = ""
-        var tip = "Warden: unavailable"
+        var tip = "\(brand): unavailable"
         if let m = model {
             switch m.service {
             case "running":
                 symbol = m.working > 0 ? "shield.lefthalf.filled" : "shield"
-                tip = m.working > 0 ? "Warden: \(m.working) working" : "Warden: running"
+                tip = m.working > 0 ? "\(brand): \(m.working) working" : "\(brand): running"
             case "starting":
                 symbol = "shield"
-                tip = "Warden: starting"
+                tip = "\(brand): starting"
             default:
-                tip = "Warden: stopped"
+                tip = "\(brand): stopped"
             }
             if !m.attention.isEmpty {
                 symbol = "exclamationmark.shield.fill"
                 title = " \(m.attention.count)"
-                tip = "Warden: \(m.attention.count) waiting on you"
+                tip = "\(brand): \(m.attention.count) waiting on you"
+            }
+            // A non-default instance's item carries its name, so several
+            // Wardens' items in one menu bar tell apart.
+            if let name = m.instance, !name.isEmpty {
+                title = " \(name)" + title
             }
         }
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
@@ -287,17 +293,23 @@ final class MenuBar: NSObject, NSMenuDelegate {
         action("Quit Menu Bar Item", #selector(quit), symbol: nil, key: "q")
     }
 
+    // brand is "Warden", or "Warden (name)" for a non-default instance.
+    var brand: String {
+        if let name = model?.instance, !name.isEmpty { return "Warden (\(name))" }
+        return "Warden"
+    }
+
     func header(_ m: Feed?) -> NSMenuItem {
-        var text = "Warden · unavailable"
+        var text = "\(brand) · unavailable"
         if let m {
             switch m.service {
             case "running":
-                text = "Warden · running"
+                text = "\(brand) · running"
                 if m.working > 0 { text += " · \(m.working) working" }
             case "starting":
-                text = "Warden · starting…"
+                text = "\(brand) · starting…"
             default:
-                text = m.registered ? "Warden · stopped" : "Warden · stopped (no service registered)"
+                text = m.registered ? "\(brand) · stopped" : "\(brand) · stopped (no service registered)"
             }
         }
         let row = NSMenuItem(title: text, action: nil, keyEquivalent: "")

@@ -410,7 +410,12 @@ export type AgentOptions = {
   /* The composer may attach files from this computer by path (a local
      install, where the chat service runs on the owner's machine). */
   localFiles?: boolean;
+  /* Which Warden this is: present for a non-default instance only (its
+     state directory's name and the build it runs), so a person with
+     several Wardens on one machine knows which one they are looking at. */
+  instance?: InstanceInfo;
 };
+export type InstanceInfo = { name: string; version: string };
 export type State = {
   version: number;
   chats: Chat[];

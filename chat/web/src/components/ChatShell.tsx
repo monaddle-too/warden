@@ -37,6 +37,7 @@ import { api, setOutputStyle, signedIn, subscribe } from "../api";
 import { ForkDialog } from "./ForkDialog";
 import { useNotifications } from "./Notifications";
 import { plural, providerName } from "../export";
+import { documentTitle, instanceLabel } from "../instance";
 import {
   PullRequestReview,
   type PullRequestReviewHandle,
@@ -186,6 +187,11 @@ export function ChatShell({
   useEffect(() => {
     sessionStorage.setItem("warden-workspace-open", workspaceOpen ? "1" : "0");
   }, [workspaceOpen]);
+  // A non-default instance names itself in the tab's title (instance.ts).
+  const instance = state.agentOptions?.instance;
+  useEffect(() => {
+    document.title = documentTitle("Warden — Chats", instance);
+  }, [instance?.name, instance?.version]);
   // ⌘K / Ctrl+K opens the search palette from anywhere; again closes it.
   // `?` outside an input opens the shortcuts overlay (shortcuts.ts).
   useEffect(() => {
@@ -478,6 +484,14 @@ export function ChatShell({
         <div className="chat-brand">
           <Shield size={22} />
           <span>Warden</span>
+          {instanceLabel(instance) && (
+            <span
+              className="chat-brand-instance"
+              title={`This is the ${instance?.name} instance, running ${instance?.version}`}
+            >
+              {instanceLabel(instance)}
+            </span>
+          )}
         </div>
         <button
           className="chat-new-project"

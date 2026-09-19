@@ -380,6 +380,24 @@ type AgentOptions struct {
 	Models      map[string][]ModelInfo `json:"models"`
 	// Defaults is the model a chat of each provider starts with.
 	Defaults map[string]string `json:"defaults"`
+	// Instance is which Warden this is, present for a non-default
+	// instance only (docs/host-dogfood-plan.md).
+	Instance *InstanceInfo `json:"instance,omitempty"`
+}
+
+// InstanceInfo mirrors chats.InstanceInfo: an instance's name and build.
+type InstanceInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// InstanceLabel is the status line's mark of a non-default instance,
+// "name version"; "" for the default instance, which shows nothing new.
+func InstanceLabel(o AgentOptions) string {
+	if o.Instance == nil || o.Instance.Name == "" || o.Instance.Name == "default" {
+		return ""
+	}
+	return strings.TrimSpace(o.Instance.Name + " " + o.Instance.Version)
 }
 
 // ModelInfo mirrors chats.ModelInfo: one row of a provider's catalog as
