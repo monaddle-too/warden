@@ -501,6 +501,82 @@ chats but keeps sandboxes and logins; deleting only `provider/<file>` (or
 `sbx/login.json` makes the next install run the SBX sign-in again. Your
 own sbx namespace is unaffected by any of this.
 
+## Instances and releases
+
+Several Wardens can run on one machine (docs/host-dogfood-plan.md, Part
+A): a stable one and a development one, say, or one per checkout under
+test. **An instance is a state directory with a name.** The default
+instance is the default state directory (`~/.warden` on macOS, name
+`default`); a named one is `~/.warden-<name>` (`[A-Za-z0-9-]+`, not
+`spare`). Every command that takes `--state DIR` also takes `--instance
+NAME`, and `WARDEN_INSTANCE=NAME` is the default for it (`--state` and
+`--instance` together is an error).
+
+```sh
+warden instance list                       # name, state, release, chat and edge ports, service, dev
+warden instance create dev --from default --dev
+warden release build . --instance dev --restart   # from a Warden checkout
+warden start --instance dev --detach       # or: warden service install --instance dev
+warden chat new --instance dev --provider claude "try it"
+warden instance rm dev --yes
+```
+
+`instance create NAME [--dev] [--from SOURCE] [--sbx PATH] [--service]
+[--menu]` runs `warden install` into `~/.warden-NAME` (ports picked free
+and unlike any other instance's), then copies from the source instance
+what a device flow or a download would otherwise produce again: the
+provider sign-ins under `provider/`, the `runtimes/` (APFS clones on
+macOS, seconds and no extra disk; sockets and lock files skipped) and the
+guest image pin. The new instance **shares the source's SBX namespace and
+daemon** (its `sbx.privateHome` is `<source>/sbx`, its `bin/warden-sbx`
+points there, no second daemon or Docker sign-in, no keychain link), and
+its sandboxes carry its name (`sandboxes.namePrefix`: runtime names
+`wc-<name>-<hex>` and `wc-<name>-spare-<hex>` instead of the default
+instance's `wc-<hex>`), so the instances never see each other's sandboxes
+in that one inventory. `--dev` marks `install.json` (`dev: true`): later
+installs of builds with other Codex / Claude pins are accepted without
+`--upgrade`, since a development instance's pins are expected to move.
+The instance is created stopped and unregistered; `--service` / `--menu`
+register it with launchd as `warden install` would (labels
+`com.monaddle.warden.warden-NAME`, `….menu`).
+
+`instance rm NAME [--yes]` is `warden uninstall` for a named instance:
+the menu bar item and the service unregistered, a detached Warden
+stopped, only its own sandboxes (its name prefix) removed from the shared
+namespace, the daemon left running, the state directory deleted. It
+refuses `default`. Removing the default instance (`warden uninstall`)
+still deletes every sandbox in its namespace and stops its daemon, the
+instances sharing that namespace included: remove those first.
+
+**Releases.** An instance keeps every release it has run under
+`<state>/releases/<name>/` (`warden-<version>-<os>-<arch>`, what
+`scripts/release.sh` builds) and runs from the one `<state>/release`
+links to, which is what the service unit and your PATH entry name.
+`warden release install TARBALL|DIR [--instance NAME] [--restart]`
+unpacks a tarball there (or copies an unpacked directory in), repoints the
+link, runs that release's own `warden install --upgrade` into the instance
+(registering nothing) and, with `--restart`, restarts what runs: the
+service, or a detached Warden by `stop` + `start --detach`. `warden
+release list` shows the versions with the current one marked; `warden
+release use VERSION [--restart]` switches the link back (and installs
+that release's pins again). `warden release build [CHECKOUT] --instance
+NAME [--restart] [--test]` builds a checkout with `scripts/release.sh
+--skip-tests` (`--test` runs the tests first), versioned as the script
+does (the tag at HEAD, else `v0.0.0-dev.<12-character sha>`), and installs
+the tarball for this host; it insists on `--instance` or `--state` so a
+bare command never deploys over the default instance.
+`scripts/deploy-local.sh` is now a wrapper over it (`WARDEN_HOME` names
+the instance's `release` link; `--no-restart`, `--test` as before).
+
+**Which Warden is this.** A non-default instance names itself: the web
+sidebar header and the browser title show `Warden · <name> <version>`,
+the terminal client's status line ends with `<name> <version>`, the menu
+bar item's title carries the name and its dropdown header reads `Warden
+(<name>)`. The default instance shows nothing new. `warden doctor` ends
+with an `instances:` table of every instance on the machine and fails on
+a chat or edge port two of them share, or two state directories that map
+to one service label.
+
 ## What an agent can ask for
 
 Besides sharing documents and repositories yourself, an agent can ask, and

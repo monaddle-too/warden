@@ -327,3 +327,62 @@ Candidate order, to be settled once the owner has read the plan:
   (`grantTools`/`LocalMode`, runner `exec`, the gateway's loopback refusal,
   `validateAttachment`, `serviceNames`, `install`'s free-port choice,
   `deploy-local.sh`'s `releases/` layout); no code written.
+- 2026-09-19: **Part A landed on `feat/warden-instances`** (steps 1 and 2).
+  `--instance NAME` / `$WARDEN_INSTANCE` on every command that takes
+  `--state` (`cmd/warden/state.go`: `instanceDir`, `instanceName`,
+  `stateFlags`); `installRecord.Name` / `Dev`, a dev record accepts pin
+  drift without `--upgrade`, `warden install --dev`; `warden instance
+  list|create|rm` (`instance.go`); `warden release list|install|use|build`
+  (`release.go`) and `scripts/deploy-local.sh` as a wrapper over `release
+  build`; sandbox runtime names carry the instance
+  (`sandboxes.namePrefix`, `sandbox/names.go`: `wc-<name>-<hex>`,
+  `Owned` filters an inventory; the default instance keeps `wc-<hex>`);
+  `agentOptions.instance {name, version}` shown by the web header and
+  browser title, the TUI status line and the menu bar item; `doctor`'s
+  `instances:` table with port / label collisions. Two things the plan
+  did not foresee: (1) an install of a release that pins no guest image
+  now keeps the instance's (or the source's) loaded pin instead of the
+  stock template (`localGuestImage`), without which a created instance
+  would have lost the default instance's `warden-guest:db0102d-arm64`
+  (the same fix `feat/install-keep-guest-image` carries, unmerged);
+  (2) `instance create` reads the source's `warden.json` raw when this
+  launcher's config package refuses it (`loadSourceConfig`): the owner's
+  `~/.warden` was meanwhile running a build with a `vms` section this
+  branch does not know. A fresh install also avoids every other
+  instance's ports, running or not (`otherInstancePorts`).
+  **Live test on this Mac** (the default instance never touched; its
+  namespace held 30 `wc-spare-*` sandboxes before and after):
+  `dist/chat/warden instance create dogfood-a --from default --dev` →
+  `~/.warden-dogfood-a` with `provider/` (3 files) and `runtimes/` (8)
+  cloned, `sbx.privateHome = ~/.warden/sbx`, the wrapper pointing there,
+  "sbx daemon: running" (none started), "sbx login: already signed in",
+  the guest image kept, chat :18782 / edge :18783, `namePrefix:
+  dogfood-a`, `install.json` `name: dogfood-a, dev: true`; `warden
+  release build . --instance dogfood-a` → `scripts/release.sh
+  --skip-tests`, `releases/warden-v0.0.0-dev.1519a42d04e8-darwin-arm64`
+  unpacked, the link repointed, the release's own `warden install
+  --upgrade --service=false --menu=false --sbx /opt/homebrew/bin/sbx`
+  run; `warden start --instance dogfood-a --detach` (pid 63270);
+  `warden instance list` showed default (running, pid 58780), dogfood-a
+  (running detached, dev yes), p20, vm; `GET state` answered
+  `agentOptions.instance = {dogfood-a, v0.0.0-dev.1519a42d04e8}`;
+  `warden chat new --instance dogfood-a --provider claude "instance
+  smoke"` + `chat send … "reply with the single word ok" --wait` →
+  `claude: ok` in 14 s; `warden-sbx ls` then listed exactly two new
+  names, `wc-dogfood-a-spare-06e9…` (adopted by the chat) and
+  `wc-dogfood-a-spare-f2c0…`, beside the untouched `wc-spare-*`;
+  `warden stop --instance dogfood-a`, `warden instance rm dogfood-a
+  --yes` → "sandboxes: 2 removed", "sbx daemon: left running (the
+  namespace … is shared)", the directory gone; afterwards the default
+  instance's sandbox list was identical to before, its daemon running,
+  `com.monaddle.warden` and `.menu` still running. `warden doctor
+  --state ~/.warden-p20` printed the `instances:` table with no
+  collisions. Unit tests: `cmd/warden/instance_test.go`,
+  `release_test.go`, `menu_test.go`, `sandbox/names_test.go`,
+  `config/config_test.go`, `tui/tui_test.go`, `web/src/instance.test.ts`;
+  `go test ./...` and the web suite green. Not done: `instance list`
+  does not count sandboxes per instance (it would need the daemon
+  answering on every listing); the Kubernetes driver's `validName` still
+  wants lower-case names (the prefix is lower-cased for it, kube
+  otherwise out of scope); `~/.warden/instances.json` for `--state`
+  directories elsewhere was not added (list scans `~/.warden*`).
