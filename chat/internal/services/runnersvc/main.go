@@ -50,6 +50,7 @@ func run(args []string) error {
 	tlsCert := fs.String("tls-cert", "", "This runner's certificate (tls.certFile)")
 	tlsKey := fs.String("tls-key", "", "This runner's private key (tls.keyFile)")
 	kubeconfig := fs.String("kubeconfig", "", "Kubernetes kind only: reach the API server through this kubeconfig instead of the pod's service account (development and tests)")
+	jailbreak := fs.Bool("jailbreak", false, "Answer the host.* operations of jailbroken workspaces (dogfood.jailbreak; a local owner install only)")
 	if err := services.ParseFlags(fs, args); err != nil {
 		return err
 	}
@@ -67,6 +68,16 @@ func run(args []string) error {
 	// Bug reports (docs/bug-reporting-plan.md): a recovered panic in a
 	// worker op or the preview server is drafted for the launcher to show.
 	bugreport.SetDefault(bugreport.New(s.cfg, s.configPath, bugreport.ComponentRunner))
+	if *jailbreak || s.cfg.Dogfood.Jailbreak {
+		// The flag is the launcher's `warden start --jailbreak`; the file
+		// is the standing setting. Neither is honoured off a local owner
+		// install (the file is refused at validation already).
+		if !s.cfg.JailbreakAllowed() {
+			slog.Error("configuration", "error", config.ErrJailbreakRefused)
+			return services.ExitCode(1)
+		}
+		*jailbreak = true
+	}
 	limits := sizeLimits(s)
 	driver, err := runtimeDriver(s, limits, *kubeconfig)
 	if err != nil {
@@ -123,6 +134,10 @@ func run(args []string) error {
 	w.Spares = *spares
 	w.Gate = &sandbox.PolicyEnforcement{Address: s.policy, TLS: s.tls}
 	w.IdleTimeout = *idle
+	w.Jailbreak = *jailbreak
+	if *jailbreak {
+		slog.Warn("host access (dogfood.jailbreak) is on: jailbroken workspaces may run commands on this machine")
+	}
 	w.MaxResident = *residents
 	w.MemoryMB = *memoryMB
 	w.Limits = limits
