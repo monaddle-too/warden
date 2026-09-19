@@ -62,7 +62,13 @@ renamed `cancelled-runs.migrated`. Neither backup is read again.
   binding and the adopted spare's row. The first send after the deploy
   failed with "worker has 32 retained sandboxes": a pre-existing hard cap
   in `bindLocked` (the `--retained` flag / `sandboxes.keepStopped` is read
-  into `Worker.Retained` but never consulted), not the store.
+  into `Worker.Retained` but never consulted), not the store. Fixed on
+  `fix/runner-retained-cap` (2026-09-19): `bindLocked` honours
+  `Worker.Retained` (default 32) and, when the inventory is full, retires
+  the oldest stopped sandboxes that no chat is bound to and no run holds
+  (runtime removed, rows dropped) before refusing; it refuses only when
+  every retained sandbox is still bound or running
+  (`TestFullInventoryRetiresTheOldestUnboundStoppedSandbox`).
 
 ## Decisions
 

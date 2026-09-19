@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -2225,4 +2226,90 @@ func savedManaged(t *testing.T, w *Worker) *managedState {
 	}
 	other.closeStore()
 	return other.managed
+}
+
+// A full inventory (Retained sandboxes) makes room for a new environment by
+// retiring the oldest stopped sandbox that no chat is bound to and no run
+// holds: its runtime is removed and its rows go. Bound or running sandboxes
+// are never retired; when nothing else is left the bind is refused.
+func TestFullInventoryRetiresTheOldestUnboundStoppedSandbox(t *testing.T) {
+	d := &testRuntime{servers: map[int]*http.Server{}}
+	w := NewWorker(t.TempDir(), "/never-host-exec", "template")
+	w.Runtime, w.Gate, w.RuntimeDir = d, &testGate{}, "/fake-pinned-linux-bundle"
+	w.Retained = 3
+	base := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	clock := base
+	w.Now = func() time.Time { return clock }
+	bind := func(chat, sandbox string) error {
+		_, err := w.dispatch(context.Background(), Request{Version: 2, Operation: "bind-chat", ProjectID: "project-one", ChatID: chat, SandboxID: sandbox, PrincipalID: "owner"})
+		return err
+	}
+	for i, id := range []string{"sb-old", "sb-mid", "sb-new"} {
+		clock = base.Add(time.Duration(i) * time.Hour)
+		if err := bind("chat-"+id, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.mu.Lock()
+	for _, id := range []string{"sb-old", "sb-mid", "sb-new"} {
+		w.managed.Sandboxes[id].Created = true
+	}
+	// sb-old and sb-mid lost their chats (deleted from the chat service);
+	// sb-new keeps its binding. sb-mid is the older of the two orphans.
+	w.managed.Sandboxes["sb-mid"].LastActivity = base.Add(-time.Hour)
+	for _, chat := range []string{"chat-sb-old", "chat-sb-mid"} {
+		delete(w.managed.Chats, chat)
+	}
+	if err := w.saveManagedLocked(); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Unlock()
+
+	if err := bind("chat-four", "sb-four"); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	_, midKept := w.managed.Sandboxes["sb-mid"]
+	_, oldKept := w.managed.Sandboxes["sb-old"]
+	_, fourKept := w.managed.Sandboxes["sb-four"]
+	count := len(w.managed.Sandboxes)
+	w.mu.Unlock()
+	if midKept || !oldKept || !fourKept || count != 3 {
+		t.Fatalf("expected sb-mid retired for sb-four: mid=%v old=%v four=%v count=%d", midKept, oldKept, fourKept, count)
+	}
+	if !slices.Contains(d.calls, "remove:"+RuntimeName("", "sb-mid")) || slices.Contains(d.calls, "remove:"+RuntimeName("", "sb-old")) {
+		t.Fatalf("runtime calls: %v", d.calls)
+	}
+	// The retirement reached the store: a restart does not bring sb-mid back.
+	saved := savedManaged(t, w)
+	if _, ok := saved.Sandboxes["sb-mid"]; ok {
+		t.Fatal("retired sandbox still in the inventory store")
+	}
+
+	// A running orphan is not retirable: sb-old is the only candidate now;
+	// under a run it stays and the bind is refused.
+	w.mu.Lock()
+	w.managed.Sandboxes["sb-old"].State = "running"
+	w.mu.Unlock()
+	err := bind("chat-five", "sb-five")
+	if err == nil || !strings.Contains(err.Error(), "3 retained sandboxes") {
+		t.Fatalf("bind with every sandbox bound or running: %v", err)
+	}
+	w.mu.Lock()
+	_, fiveKept := w.managed.Sandboxes["sb-five"]
+	w.mu.Unlock()
+	if fiveKept {
+		t.Fatal("refused bind registered a sandbox")
+	}
+	// Stopped again, it makes room.
+	w.mu.Lock()
+	w.managed.Sandboxes["sb-old"].State = "stopped"
+	w.mu.Unlock()
+	if err = bind("chat-five", "sb-five"); err != nil {
+		t.Fatal(err)
+	}
+	// Rebinding an existing chat never counts against the cap.
+	if err = bind("chat-five", "sb-five"); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -117,6 +118,9 @@ func (w *Worker) defaultsLocked() {
 	}
 	if w.MaxResident <= 0 {
 		w.MaxResident = 3
+	}
+	if w.Retained <= 0 {
+		w.Retained = defaultRetained
 	}
 	if w.Gate == nil {
 		w.Gate = &PolicyEnforcement{}
@@ -294,7 +298,7 @@ func (w *Worker) bindingLocked(r Request) (*managedSandbox, *chatBinding, error)
 	}
 	return s, c, nil
 }
-func (w *Worker) bindLocked(r Request) (Response, error) {
+func (w *Worker) bindLocked(ctx context.Context, r Request) (Response, error) {
 	if !validIdentity(r.ProjectID) || !validIdentity(r.ChatID) || !validIdentity(r.SandboxID) || !validIdentity(r.PrincipalID) {
 		return Response{}, errors.New("valid project, chat, sandbox and principal IDs required")
 	}
@@ -323,8 +327,8 @@ func (w *Worker) bindLocked(r Request) (Response, error) {
 	}
 	c := &chatBinding{ID: r.ChatID, ProjectID: r.ProjectID, SandboxID: r.SandboxID}
 	if s == nil {
-		if len(w.managed.Sandboxes) >= 32 {
-			return Response{}, errors.New("worker has 32 retained sandboxes")
+		if err := w.makeRoomLocked(ctx); err != nil {
+			return Response{}, err
 		}
 		s = &managedSandbox{SandboxInfo: SandboxInfo{ID: r.SandboxID, ProjectID: r.ProjectID, RuntimeName: RuntimeName(w.Instance, r.SandboxID), Directory: "/home/agent/workspace", State: "stopped", Resources: w.Limits.Default}, PrincipalID: r.PrincipalID, LastActivity: w.now()}
 		if r.Resources != nil {
@@ -743,7 +747,7 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 	defer w.mu.Unlock()
 	w.defaultsLocked()
 	if r.Operation == "bind-chat" {
-		return w.bindLocked(r)
+		return w.bindLocked(ctx, r)
 	}
 	if r.Operation == "clone" {
 		// A new sandbox as a copy of a registered one (clone.go).
@@ -1300,15 +1304,25 @@ func (w *Worker) removeSandboxLocked(ctx context.Context, s *managedSandbox) (Re
 			return Response{}, fmt.Errorf("sandbox removal failed: %w", err)
 		}
 	}
+	w.forgetSandboxLocked(s)
+	info := s.SandboxInfo
+	info.State = "removed"
+	return Response{Version: ProtocolVersion, Sandbox: &info}, w.saveManagedLocked()
+}
+
+// forgetSandboxLocked drops every inventory record of a sandbox whose
+// runtime is gone: its attachments, its chat bindings, the sandbox row;
+// its publications are marked removed (their 410 listeners stay). The
+// caller saves.
+func (w *Worker) forgetSandboxLocked(s *managedSandbox) {
 	for id, a := range w.managed.Attachments {
 		if a.SandboxID == s.ID {
 			delete(w.managed.Attachments, id)
 		}
 	}
-	for key, p := range w.managed.Publications {
+	for _, p := range w.managed.Publications {
 		if p.SandboxID == s.ID {
 			p.State = "removed"
-			_ = key
 		}
 	}
 	for id, c := range w.managed.Chats {
@@ -1321,9 +1335,71 @@ func (w *Worker) removeSandboxLocked(ctx context.Context, s *managedSandbox) (Re
 		}
 	}
 	delete(w.managed.Sandboxes, s.ID)
-	info := s.SandboxInfo
-	info.State = "removed"
-	return Response{Version: ProtocolVersion, Sandbox: &info}, w.saveManagedLocked()
+}
+
+// defaultRetained is how many sandboxes the inventory keeps when the
+// runner is not told otherwise (`--retained`, `sandboxes.keepStopped`).
+const defaultRetained = 32
+
+// retirableLocked says whether a sandbox may go to make room for a new
+// one: stopped, with no run, no review, and no chat bound to it (a bound
+// chat may resume its workspace at any time).
+func (w *Worker) retirableLocked(s *managedSandbox) bool {
+	if s.State != "stopped" || s.Active != nil || s.Reviewing || s.Creating {
+		return false
+	}
+	for _, c := range w.managed.Chats {
+		if c.SandboxID == s.ID {
+			return false
+		}
+	}
+	return true
+}
+
+// makeRoomLocked keeps the inventory under Retained before a new sandbox
+// is registered: while it is full, the oldest retirable sandbox (by last
+// activity) has its runtime removed and its rows dropped. A runtime that
+// refuses to go is left in the inventory marked error and the next
+// candidate is tried. Only when nothing retirable is left does a new
+// sandbox get refused: every retained one is still bound or running.
+func (w *Worker) makeRoomLocked(ctx context.Context) error {
+	limit := w.Retained
+	if limit <= 0 {
+		limit = defaultRetained
+	}
+	if len(w.managed.Sandboxes) < limit {
+		return nil
+	}
+	candidates := make([]*managedSandbox, 0, len(w.managed.Sandboxes))
+	for _, s := range w.managed.Sandboxes {
+		if w.retirableLocked(s) {
+			candidates = append(candidates, s)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].LastActivity.Equal(candidates[j].LastActivity) {
+			return candidates[i].LastActivity.Before(candidates[j].LastActivity)
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+	for _, s := range candidates {
+		if len(w.managed.Sandboxes) < limit {
+			break
+		}
+		if s.Created || s.Creating {
+			if err := w.Runtime.Remove(ctx, s.RuntimeName); err != nil {
+				slog.Warn("could not retire a stopped sandbox to make room; marked failed", "sandbox", s.ID, "runtime", s.RuntimeName, "error", err)
+				s.State = "error"
+				continue
+			}
+		}
+		slog.Info("retired a stopped sandbox to make room", "sandbox", s.ID, "runtime", s.RuntimeName, "lastActivity", s.LastActivity, "retained", limit)
+		w.forgetSandboxLocked(s)
+	}
+	if len(w.managed.Sandboxes) >= limit {
+		return fmt.Errorf("worker has %d retained sandboxes, all bound or running", limit)
+	}
+	return nil
 }
 func (w *Worker) SweepIdle(ctx context.Context) error {
 	w.mu.Lock()

@@ -61,7 +61,7 @@ func TestWorkerNamesCarryTheInstance(t *testing.T) {
 			t.Fatal(err)
 		}
 		w.mu.Lock()
-		resp, err := w.bindLocked(Request{ProjectID: "proj-1", ChatID: "chat-1", SandboxID: "sb-1", PrincipalID: "user-1"})
+		resp, err := w.bindLocked(context.Background(), Request{ProjectID: "proj-1", ChatID: "chat-1", SandboxID: "sb-1", PrincipalID: "user-1"})
 		w.mu.Unlock()
 		if err != nil {
 			t.Fatal(err)
