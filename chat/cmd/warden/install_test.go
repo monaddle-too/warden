@@ -53,7 +53,7 @@ case "$*" in
   "policy ls --json --include-inactive") echo "{\"rules\":[$(cat "$D/rules")]}" ;;
   "policy check network --json example.com:443") echo "{\"allowed\":false,\"deny_kind\":\"implicit\",\"governance\":{\"active\":false}}"; exit 1 ;;
   "login") touch "$D/login"; echo "device login complete" ;;
-  "template ls --json") echo "{\"templates\":[]}" ;;
+  "template ls --json") if [ -f "$D/templates" ]; then echo "{\"templates\":[$(cat "$D/templates")]}"; else echo "{\"templates\":[]}"; fi ;;
   *) echo "fake sbx: unexpected command: $*" >&2; exit 2 ;;
 esac
 `

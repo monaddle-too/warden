@@ -32,7 +32,7 @@ func (c *cli) start(args []string) error {
 	fs := flag.NewFlagSet("warden start", flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	configPath := fs.String("config", "", "warden.json (default: <state>/warden.json or $WARDEN_CONFIG)")
-	state := fs.String("state", "", "state directory when no warden.json exists yet")
+	state := addStateFlags(fs)
 	webDir := fs.String("web-dir", "", "built chat UI when warden.json has no paths.webAssets (default: found beside the binaries)")
 	vendorDir := fs.String("vendor-dir", "", "GitHub catalog directory when warden.json has no paths.githubCatalog")
 	template := fs.String("policy-template", "", "sandbox policy template when warden.json has no paths.sandboxPolicyTemplate")
@@ -45,7 +45,7 @@ func (c *cli) start(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
-	cfg, path, err := loadConfig(*configPath, *state)
+	cfg, path, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}
@@ -435,7 +435,7 @@ func (c *cli) open(args []string) error {
 	fs := flag.NewFlagSet("warden open", flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	configPath := fs.String("config", "", "warden.json (default: <state>/warden.json or $WARDEN_CONFIG)")
-	state := fs.String("state", "", "state directory when no warden.json exists yet")
+	state := addStateFlags(fs)
 	print := fs.Bool("print", false, "print the URL instead of opening a browser")
 	withoutEdge := fs.Bool("without-edge", false, "open the chat origin directly (when warden start ran with --without-edge)")
 	chatID := fs.String("chat", "", "open the app on this chat")
@@ -447,7 +447,7 @@ func (c *cli) open(args []string) error {
 		fmt.Fprintln(c.stderr, "warden open: --chat and --new exclude each other")
 		return errUsage
 	}
-	cfg, _, err := loadConfig(*configPath, *state)
+	cfg, _, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}

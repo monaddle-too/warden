@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"warden/chat/internal/config"
@@ -21,11 +22,11 @@ func (c *cli) doctor(args []string) error {
 	fs := flag.NewFlagSet("warden doctor", flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	configPath := fs.String("config", "", "warden.json (default: <state>/warden.json or $WARDEN_CONFIG)")
-	state := fs.String("state", "", "state directory when no warden.json exists yet")
+	state := addStateFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
-	cfg, path, err := loadConfig(*configPath, *state)
+	cfg, path, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}
@@ -35,11 +36,78 @@ func (c *cli) doctor(args []string) error {
 		checks = append(checks, row)
 	}
 	printChecks(c.stdout, checks)
+	// Every instance on this machine, not only the one doctor was pointed
+	// at, with what collides between them (docs/host-dogfood-plan.md).
+	if infos, err := c.instances(); err == nil && len(infos) > 0 {
+		fmt.Fprintln(c.stdout, "instances:")
+		printInstances(indentWriter{c.stdout}, infos)
+		collisions := instanceCollisions(infos)
+		for _, line := range collisions {
+			checks = append(checks, fail("instances", line, "give one of them another port in its warden.json (chat.listen, previews.edgeListen) or state directory; `warden install` picks free ports only on a fresh install"))
+		}
+		printChecks(c.stdout, checks[len(checks)-len(collisions):])
+	}
 	if failed(checks) {
 		return errDoctor
 	}
 	fmt.Fprintln(c.stdout, "all checks passed")
 	return nil
+}
+
+// instanceCollisions names what two instances share and must not: a chat
+// or edge port, a service label (two state directories that map to one
+// launchd label / systemd unit), a state directory listed twice.
+func instanceCollisions(infos []instanceInfo) []string {
+	var lines []string
+	seen := map[string][]string{}
+	note := func(key, name string) {
+		seen[key] = append(seen[key], name)
+	}
+	for _, i := range infos {
+		if i.ChatPort != 0 {
+			note(fmt.Sprintf("chat port %d", i.ChatPort), i.Name)
+			note(fmt.Sprintf("port %d", i.ChatPort), i.Name+" (chat)")
+		}
+		if i.EdgePort != 0 {
+			note(fmt.Sprintf("edge port %d", i.EdgePort), i.Name)
+			note(fmt.Sprintf("port %d", i.EdgePort), i.Name+" (edge)")
+		}
+		if i.Label != "" {
+			note("service label "+i.Label, i.Name)
+		}
+	}
+	var keys []string
+	for key, names := range seen {
+		if len(names) > 1 {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		// "port N" catches a chat port equal to another's edge port; the
+		// same-kind keys already report a plain duplicate, so skip a
+		// "port N" line that only repeats one.
+		if strings.HasPrefix(key, "port ") {
+			kinds := map[string]bool{}
+			for _, n := range seen[key] {
+				kinds[n[strings.LastIndex(n, "(")+1:]] = true
+			}
+			if len(kinds) < 2 {
+				continue
+			}
+		}
+		lines = append(lines, key+" is used by "+strings.Join(seen[key], " and "))
+	}
+	return lines
+}
+
+// indentWriter indents every line it writes by two spaces.
+type indentWriter struct{ w io.Writer }
+
+func (i indentWriter) Write(p []byte) (int, error) {
+	text := strings.TrimSuffix(string(p), "\n")
+	_, err := fmt.Fprint(i.w, "  "+strings.ReplaceAll(text, "\n", "\n  ")+"\n")
+	return len(p), err
 }
 
 // serviceCheck: a registered service must be this launcher's unit and

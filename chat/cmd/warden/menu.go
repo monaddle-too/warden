@@ -30,6 +30,9 @@ type menuState struct {
 	Service    string `json:"service"`
 	Registered bool   `json:"registered"` // the service is registered with the manager
 	State      string `json:"state"`      // the state directory (Show Logs)
+	// Instance names a non-default instance (docs/host-dogfood-plan.md):
+	// the item's title and header carry it. Absent for the default.
+	Instance string `json:"instance,omitempty"`
 	// Attention is what waits on the owner, oldest chat first: pending
 	// approvals, reviews only the app can settle, a recent failure.
 	Attention []menuAttention `json:"attention"`
@@ -148,7 +151,7 @@ func (c *cli) menuCommand(args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return errUsage
 	}
-	cfg, _, err := loadConfig(*configPath, *state)
+	cfg, _, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}
@@ -253,6 +256,9 @@ func (f *menuFeeder) refreshSpend(ctx context.Context, client *tui.Client, s *tu
 // emit writes the model when it differs from the last line written.
 func (f *menuFeeder) emit(m menuState) {
 	m.State = f.cfg.Paths.State
+	if name := instanceName(f.cfg.Paths.State); name != defaultInstance {
+		m.Instance = name
+	}
 	m.Registered = f.service() != nil
 	line, err := json.Marshal(m)
 	if err != nil || string(line) == f.last {

@@ -32,7 +32,7 @@ func (c *cli) login(args []string) error {
 	fs := flag.NewFlagSet("warden login "+provider, flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	configPath := fs.String("config", "", "warden.json (default: <state>/warden.json or $WARDEN_CONFIG)")
-	state := fs.String("state", "", "state directory when no warden.json exists yet")
+	state := addStateFlags(fs)
 	replace := fs.Bool("replace", false, "replace an existing sign-in file")
 	var codexCLI, pasteToken string
 	var pasteStdin bool
@@ -50,7 +50,7 @@ func (c *cli) login(args []string) error {
 	if err := fs.Parse(rest); err != nil {
 		return errUsage
 	}
-	cfg, _, err := loadConfig(*configPath, *state)
+	cfg, _, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}

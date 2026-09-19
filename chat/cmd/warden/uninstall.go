@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"warden/chat/internal/config"
+	"warden/chat/internal/sandbox"
 )
 
 // uninstall reverses `warden install` on this machine: a background Warden
@@ -27,13 +28,13 @@ func (c *cli) uninstall(args []string) error {
 	fs := flag.NewFlagSet("warden uninstall", flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	configPath := fs.String("config", "", "warden.json (default: <state>/warden.json or $WARDEN_CONFIG)")
-	state := fs.String("state", "", "state directory when no warden.json exists yet")
+	state := addStateFlags(fs)
 	keepState := fs.Bool("keep-state", false, "delete the sandboxes and stop the private sbx daemon, but keep the state directory (config, chats, sign-ins)")
 	yes := fs.Bool("yes", false, "do not ask for confirmation")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
-	cfg, _, err := loadConfig(*configPath, *state)
+	cfg, _, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}
@@ -41,33 +42,74 @@ func (c *cli) uninstall(args []string) error {
 	if _, err := os.Stat(root); err != nil {
 		return fmt.Errorf("%s: %w; nothing to uninstall", root, err)
 	}
-	// A foreground `warden start` holds the launcher lock; it must be
-	// stopped by its own terminal, a detached one is stopped here.
-	if lock, err := os.OpenFile(filepath.Join(root, "launcher.lock"), os.O_RDWR, 0o600); err == nil {
-		held := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil
-		lock.Close()
-		_, detached := runningPID(cfg)
-		service := c.registeredService(cfg) != nil && c.registeredService(cfg).status().Running
-		if held && !detached && !service {
-			return errors.New("Warden is running in the foreground (warden start); stop it with Ctrl+C first")
-		}
+	if err := c.refuseForeground(cfg); err != nil {
+		return err
 	}
 	if !*yes {
-		fmt.Fprintf(c.stdout, "This deletes every sandbox in Warden's private sbx namespace and stops its daemon")
-		if *keepState {
-			fmt.Fprintf(c.stdout, "; %s is kept.\n", root)
-		} else {
-			fmt.Fprintf(c.stdout, ", then removes %s (config, chats, sign-ins, runtimes, logs).\n", root)
-		}
-		if !isTerminal(c.stdin) {
-			return errors.New("not a terminal; pass --yes to confirm")
-		}
-		fmt.Fprint(c.stdout, "Type yes to continue: ")
-		line, _ := bufio.NewReader(c.stdin).ReadString('\n')
-		if strings.TrimSpace(line) != "yes" {
-			return errors.New("cancelled")
+		if err := c.confirmRemoval(cfg, *keepState); err != nil {
+			return err
 		}
 	}
+	return c.removeInstall(cfg, *keepState)
+}
+
+// refuseForeground refuses to remove an install while a foreground `warden
+// start` holds the launcher lock: it must be stopped by its own terminal,
+// a detached one or the service is stopped by removeInstall.
+func (c *cli) refuseForeground(cfg config.Config) error {
+	lock, err := os.OpenFile(filepath.Join(cfg.Paths.State, "launcher.lock"), os.O_RDWR, 0o600)
+	if err != nil {
+		return nil
+	}
+	held := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil
+	lock.Close()
+	_, detached := runningPID(cfg)
+	service := c.registeredService(cfg) != nil && c.registeredService(cfg).status().Running
+	if held && !detached && !service {
+		return errors.New("Warden is running in the foreground (warden start); stop it with Ctrl+C first")
+	}
+	return nil
+}
+
+// confirmRemoval says what removeInstall is about to do and asks for a
+// typed yes on the terminal.
+func (c *cli) confirmRemoval(cfg config.Config, keepState bool) error {
+	root := cfg.Paths.State
+	if sharedNamespace(cfg) {
+		fmt.Fprintf(c.stdout, "This deletes the sandboxes of the %s instance in the shared sbx namespace %s (the daemon keeps running)", instanceName(root), cfg.SBX.PrivateHome)
+	} else {
+		fmt.Fprintf(c.stdout, "This deletes every sandbox in Warden's private sbx namespace and stops its daemon")
+	}
+	if keepState {
+		fmt.Fprintf(c.stdout, "; %s is kept.\n", root)
+	} else {
+		fmt.Fprintf(c.stdout, ", then removes %s (config, chats, sign-ins, runtimes, logs).\n", root)
+	}
+	if !isTerminal(c.stdin) {
+		return errors.New("not a terminal; pass --yes to confirm")
+	}
+	fmt.Fprint(c.stdout, "Type yes to continue: ")
+	line, _ := bufio.NewReader(c.stdin).ReadString('\n')
+	if strings.TrimSpace(line) != "yes" {
+		return errors.New("cancelled")
+	}
+	return nil
+}
+
+// sharedNamespace reports whether the install's SBX namespace is another
+// instance's (docs/host-dogfood-plan.md, decision 3): then only its own
+// sandboxes (sandbox.Owned) are its to remove and the daemon is not.
+func sharedNamespace(cfg config.Config) bool {
+	return cfg.SBX.PrivateHome != "" && !within(cfg.SBX.PrivateHome, cfg.Paths.State)
+}
+
+// removeInstall is uninstall after the confirmation: the menu bar item
+// and the service unregistered, a detached Warden stopped, the sandboxes
+// removed (every one in an own namespace, only the instance's own in a
+// shared one), the daemon stopped (own namespace only) and, unless
+// keepState, the state directory deleted.
+func (c *cli) removeInstall(cfg config.Config, keepState bool) error {
+	root := cfg.Paths.State
 	if m := c.registeredMenu(cfg); m != nil {
 		if err := m.uninstall(); err != nil {
 			return err
@@ -103,22 +145,31 @@ func (c *cli) uninstall(args []string) error {
 				out, _ = sbx.command(time.Minute, "ls", "--quiet")
 			}
 		}
+		names := strings.Fields(out)
+		shared := sharedNamespace(cfg)
+		if shared {
+			names = sandbox.Owned(cfg.Sandboxes.NamePrefix, names)
+		}
 		removed := 0
-		for _, name := range strings.Fields(out) {
+		for _, name := range names {
 			if _, err := sbx.command(3*time.Minute, "rm", "--force", name); err != nil {
 				return fmt.Errorf("removing sandbox %s: %w", name, err)
 			}
 			removed++
 		}
 		fmt.Fprintf(c.stdout, "sandboxes:   %d removed\n", removed)
-		if out, err := sbx.command(time.Minute, "daemon", "stop"); err != nil && !strings.Contains(strings.ToLower(out), "not running") {
-			return fmt.Errorf("stopping Warden's sbx daemon: %w", err)
+		if shared {
+			fmt.Fprintf(c.stdout, "sbx daemon:  left running (the namespace %s is shared)\n", cfg.SBX.PrivateHome)
+		} else {
+			if out, err := sbx.command(time.Minute, "daemon", "stop"); err != nil && !strings.Contains(strings.ToLower(out), "not running") {
+				return fmt.Errorf("stopping Warden's sbx daemon: %w", err)
+			}
+			fmt.Fprintln(c.stdout, "sbx daemon:  stopped")
 		}
-		fmt.Fprintln(c.stdout, "sbx daemon:  stopped")
 	} else {
 		fmt.Fprintf(c.stdout, "sbx:         no namespace wrapper at %s; no sandboxes or daemon to remove\n", wrapper)
 	}
-	if *keepState {
+	if keepState {
 		fmt.Fprintf(c.stdout, "state:       kept %s (delete it yourself to finish)\n", root)
 	} else {
 		if err := os.RemoveAll(root); err != nil {

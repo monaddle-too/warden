@@ -45,7 +45,7 @@ func (c *cli) bugs(args []string) error {
 	fs := flag.NewFlagSet("warden bugs", flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	configPath := fs.String("config", "", "warden.json (default: <state>/warden.json or $WARDEN_CONFIG)")
-	state := fs.String("state", "", "state directory when no warden.json exists yet")
+	state := addStateFlags(fs)
 	listOnly := fs.Bool("list", false, "pending: list the drafts without offering them again")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
@@ -62,7 +62,7 @@ func (c *cli) bugs(args []string) error {
 		fmt.Fprintf(c.stderr, "warden bugs: unknown command %q\n%s", sub, bugsUsage)
 		return errUsage
 	}
-	cfg, path, err := loadConfig(*configPath, *state)
+	cfg, path, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}

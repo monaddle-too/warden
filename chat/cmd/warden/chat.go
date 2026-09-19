@@ -63,7 +63,7 @@ func (c *cli) chat(args []string) error {
 	fs.SetOutput(c.stderr)
 	fs.Usage = func() { fmt.Fprint(c.stderr, chatUsage) }
 	configPath := fs.String("config", "", "warden.json (default: <state>/warden.json or $WARDEN_CONFIG)")
-	state := fs.String("state", "", "state directory when no warden.json exists yet")
+	state := addStateFlags(fs)
 	provider := fs.String("provider", "", "provider for a new chat: codex or claude (default: codex)")
 	model := fs.String("model", "", "model for a new chat (default: the provider's default)")
 	cpus := fs.Float64("cpus", 0, "new: CPUs for the fresh workspace (default: the runner's)")
@@ -74,10 +74,10 @@ func (c *cli) chat(args []string) error {
 	decline := fs.Bool("decline", false, "approve: decline instead of allowing")
 	answer := fs.String("answer", "", "approve: the answer to the agent's question")
 	all := fs.Bool("all", false, "list: include archived chats")
-	if err := fs.Parse(interleaved(args, map[string]bool{"config": true, "state": true, "provider": true, "model": true, "answer": true, "cpus": true, "memory": true, "network": true})); err != nil {
+	if err := fs.Parse(interleaved(args, map[string]bool{"config": true, "state": true, "instance": true, "provider": true, "model": true, "answer": true, "cpus": true, "memory": true, "network": true})); err != nil {
 		return errUsage
 	}
-	cfg, _, err := loadConfig(*configPath, *state)
+	cfg, _, err := loadConfigFlags(*configPath, state)
 	if err != nil {
 		return err
 	}
