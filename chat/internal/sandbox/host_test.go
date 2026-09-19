@@ -36,15 +36,15 @@ func TestRunHostCommand(t *testing.T) {
 	shell := fakeShell(t)
 	tracker := &hostExecs{byRun: map[string]map[*hostExec]struct{}{}}
 	dir := realDir(t)
-	res, err := runHostCommand(context.Background(), tracker, "chat:run", shell, "pwd; echo out; echo err 1>&2; exit 3", dir, time.Minute, 1000)
+	res, err := runHostCommand(context.Background(), tracker, "chat:run", shell, "pwd; echo home=$HOME; echo out; echo err 1>&2; exit 3", dir, dir, time.Minute, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.ExitCode != 3 || res.TimedOut || res.Output != dir+"\nout\nerr\n" || res.Bytes != int64(len(dir)+9) || res.DurationMS < 0 {
+	if res.ExitCode != 3 || res.TimedOut || res.Output != dir+"\nhome="+dir+"\nout\nerr\n" || res.Bytes != int64(2*len(dir)+15) || res.DurationMS < 0 {
 		t.Fatalf("%+v", res)
 	}
 	// Too much output: the tail, with a note.
-	res, err = runHostCommand(context.Background(), tracker, "chat:run", shell, "i=0; while [ $i -lt 500 ]; do echo line-$i; i=$((i+1)); done", dir, time.Minute, 200)
+	res, err = runHostCommand(context.Background(), tracker, "chat:run", shell, "i=0; while [ $i -lt 500 ]; do echo line-$i; i=$((i+1)); done", dir, dir, time.Minute, 200)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestRunHostCommand(t *testing.T) {
 	// The timeout kills the whole group, a grandchild included.
 	pidFile := filepath.Join(dir, "pid")
 	start := time.Now()
-	res, err = runHostCommand(context.Background(), tracker, "chat:run", shell, "sleep 30 & echo $! > "+pidFile+"; wait", dir, 300*time.Millisecond, 1000)
+	res, err = runHostCommand(context.Background(), tracker, "chat:run", shell, "sleep 30 & echo $! > "+pidFile+"; wait", dir, dir, 300*time.Millisecond, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestRunHostCommand(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		cancel()
 	}()
-	if _, err = runHostCommand(ctx, tracker, "chat:run", shell, "sleep 30 & echo $! > "+pidFile+"; wait", dir, time.Minute, 1000); err == nil || !strings.Contains(err.Error(), "cancelled") {
+	if _, err = runHostCommand(ctx, tracker, "chat:run", shell, "sleep 30 & echo $! > "+pidFile+"; wait", dir, dir, time.Minute, 1000); err == nil || !strings.Contains(err.Error(), "cancelled") {
 		t.Fatalf("cancel: %v", err)
 	}
 	expectDead(t, pidFile)
@@ -77,7 +77,7 @@ func TestRunHostCommand(t *testing.T) {
 		t.Fatalf("tracker kept %v", tracker.byRun)
 	}
 	// A shell that is not a login shell is reported through its output.
-	res, err = runHostCommand(context.Background(), tracker, "chat:run", shell, "true", dir, time.Minute, 1000)
+	res, err = runHostCommand(context.Background(), tracker, "chat:run", shell, "true", dir, dir, time.Minute, 1000)
 	if err != nil || res.ExitCode != 0 {
 		t.Fatalf("%+v %v", res, err)
 	}
@@ -430,5 +430,16 @@ func TestHostStatus(t *testing.T) {
 	}
 	if errors.Is(err, context.Canceled) {
 		t.Fatal("unreachable")
+	}
+}
+
+// A host command sees the owner's home, not the SBX namespace the runner
+// itself is pointed at (the first dogfood run resolved `~/.warden` under
+// the namespace).
+func TestHostEnvRestoresTheOwnersHome(t *testing.T) {
+	env := hostEnv([]string{"PATH=/bin", "HOME=/Users/o/.warden/sbx/home", "XDG_DATA_HOME=/Users/o/.warden/sbx/data", "SHELL=/bin/zsh"}, "/Users/o")
+	want := []string{"PATH=/bin", "SHELL=/bin/zsh", "HOME=/Users/o"}
+	if strings.Join(env, " ") != strings.Join(want, " ") {
+		t.Fatalf("hostEnv = %q, want %q", env, want)
 	}
 }

@@ -218,7 +218,7 @@ func (w *Worker) hostExecOp(ctx context.Context, r Request) (Response, error) {
 	if _, err := w.hostBinding(r); err != nil {
 		return Response{}, err
 	}
-	result, err := runHostCommand(ctx, w.hosts(), runKey(r), hostShell(), cmdline, dir, timeout, HostExecOutputLimit)
+	result, err := runHostCommand(ctx, w.hosts(), runKey(r), hostShell(), cmdline, dir, w.HostHome, timeout, HostExecOutputLimit)
 	if err != nil {
 		return Response{}, err
 	}
@@ -229,7 +229,7 @@ func (w *Worker) hostExecOp(ctx context.Context, r Request) (Response, error) {
 // session so the kill reaches what it started, a bounded tail of the
 // merged output, stopped reading shortly after the exit (a background
 // process it left holding the pipe does not keep the caller waiting).
-func runHostCommand(ctx context.Context, tracker *hostExecs, key, shell, cmdline, dir string, timeout time.Duration, cap int) (ExecResult, error) {
+func runHostCommand(ctx context.Context, tracker *hostExecs, key, shell, cmdline, dir, home string, timeout time.Duration, cap int) (ExecResult, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	e := &hostExec{cancel: cancel}
@@ -244,9 +244,13 @@ func runHostCommand(ctx context.Context, tracker *hostExecs, key, shell, cmdline
 	cmd.Stdin = nil
 	cmd.Stdout, cmd.Stderr = pw, pw
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// The runner's own environment plus what a login shell derives; the
-	// chat service's capability never reaches here (it is the chat's).
-	cmd.Env = os.Environ()
+	// The runner's own environment plus what a login shell derives, with
+	// the owner's real home in place of the SBX namespace the runner is
+	// pointed at (HOME and the XDG_*_HOME variables the sbx wrapper sets):
+	// the first dogfood run resolved `~` and the default Warden instance to
+	// a directory under the namespace. The chat service's capability never
+	// reaches here (it is the chat's).
+	cmd.Env = hostEnv(os.Environ(), home)
 	started := time.Now()
 	if err = cmd.Start(); err != nil {
 		pr.Close()
@@ -605,3 +609,19 @@ const UpstreamHost = "host"
 // HostAccessPrompt is what a jailbroken workspace's agent is told beside
 // its tools (chats/host.go adds it to the developer instructions).
 const HostAccessPrompt = "This workspace has host access: the host_run, host_put, host_get, host_expose and host_status tools act on the owner's own computer, outside the sandbox, as the owner. Use them only for what the owner asked that needs the host (building and running Warden there, driving a second Warden instance, reading its logs); everything else stays in the sandbox. Each host call is shown to the owner and subject to their permission rules."
+
+// hostEnv is env with HOME set to home and the XDG_*_HOME variables the
+// sbx namespace wrapper exports removed, so a host command sees the
+// owner's account the way a terminal does.
+func hostEnv(env []string, home string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		switch key {
+		case "HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME":
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "HOME="+home)
+}

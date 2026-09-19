@@ -148,6 +148,9 @@ func (e *Engine) hostCall(ctx context.Context, c *Chat, name string, raw []byte)
 		To      string `json:"to"`
 		Port    int    `json:"port"`
 		Name    string `json:"name"`
+		// Description is accepted and ignored: Claude Code adds one to
+		// Bash-like tools out of habit, and a refused call costs a turn.
+		Description string `json:"description"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
