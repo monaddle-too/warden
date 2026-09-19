@@ -259,6 +259,20 @@ func TestHostCallsRunOnTheRunnerAndAreAudited(t *testing.T) {
 	if _, err := call(c, "host_bogus", `{}`); err == nil {
 		t.Fatal("unknown host tool accepted")
 	}
+	// Host access turned off while the session runs refuses the next
+	// call at once, even though the run's copy of the chat still says on
+	// (found live: the switch was read from the run's snapshot).
+	if err := e.SetWorkspaceJailbreak(ctx, c.SandboxID, false, cv.Actor{PrincipalID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(w.requestsOf("host.exec"))
+	if _, err := call(c, "host_run", `{"command":"echo should-be-refused"}`); err == nil || err.Error() != "host access is off for this workspace" || len(w.requestsOf("host.exec")) != before {
+		t.Fatalf("call after the switch: %v", err)
+	}
+	if err := e.SetWorkspaceJailbreak(ctx, c.SandboxID, true, cv.Actor{PrincipalID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	e.PublicPreviewSuffix = "localhost"
 	// Without previews configured the exposure is refused with the reason.
 	e.PublicPreviewSuffix = ""
 	if _, err := call(c, "host_expose", `{"port":1}`); err == nil || !strings.Contains(err.Error(), "previews are not configured") {

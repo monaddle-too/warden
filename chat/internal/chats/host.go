@@ -133,7 +133,11 @@ func (e *Engine) hostTool(ctx context.Context, c *Chat, client *agent.Client, f 
 // the tool's, and an audit entry.
 func (e *Engine) hostCall(ctx context.Context, c *Chat, name string, raw []byte) (any, error) {
 	reply := func(value any, err error) (any, error) { return value, err }
-	if !e.Jailbreak || !c.Jailbroken {
+	// The workspace's switch as it is now, not as the run started: host
+	// access turned off from the panel refuses the resident session's
+	// next call at once.
+	live := e.Store.Chat(c.ID)
+	if !e.Jailbreak || live == nil || !live.Jailbroken {
 		return reply(nil, errHostAccessOff)
 	}
 	var in struct {
