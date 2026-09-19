@@ -290,12 +290,17 @@ func (a *launchdAgent) status() serviceStatus {
 		return serviceStatus{}
 	}
 	st := serviceStatus{Loaded: true}
+	// Only the service's own "state = ..." line counts: launchctl nests
+	// further "state = active" lines under the endpoints, and the last
+	// one of those used to mask a running service as stopped.
+	sawState := false
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "state = ") {
+		if strings.HasPrefix(line, "state = ") && !sawState {
+			sawState = true
 			st.Running = strings.TrimPrefix(line, "state = ") == "running"
 		}
-		if strings.HasPrefix(line, "pid = ") {
+		if strings.HasPrefix(line, "pid = ") && st.PID == 0 {
 			st.PID, _ = strconv.Atoi(strings.TrimPrefix(line, "pid = "))
 		}
 	}

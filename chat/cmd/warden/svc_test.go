@@ -233,7 +233,8 @@ func TestLaunchdAgentCommands(t *testing.T) {
 				return "", errors.New("Could not find service")
 			}
 			if running {
-				return "com.monaddle.warden.t = {\n\tstate = running\n\tpid = 4242\n}\n", nil
+				// launchctl nests endpoint blocks with their own "state = active" lines after the service's.
+				return "com.monaddle.warden.t = {\n\tstate = running\n\tpid = 4242\n\tpid-local endpoints = {\n\t\t\"x\" = {\n\t\t\tstate = active\n\t\t}\n\t}\n}\n", nil
 			}
 			return "com.monaddle.warden.t = {\n\tstate = not running\n}\n", nil
 		case strings.HasPrefix(call, "launchctl bootstrap"), strings.HasPrefix(call, "launchctl kickstart"):
