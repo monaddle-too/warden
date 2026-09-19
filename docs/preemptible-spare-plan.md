@@ -101,4 +101,10 @@ the background (where the node boot is felt by nobody). One paid slot
   (`CanaryOptions.PriorityClass` from `kubernetes.sparePriorityClass`),
   so a policy restart no longer evicts the spare; a canary that finds no
   room waits for a node inside its 3-minute bound, as it already did on
-  an empty cluster. Follow-up not done: an `EventHint` for `Preempted`.
+  an empty cluster. Merged to main 44dc61e (with the host-dogfood
+  landing that main brought meanwhile; Go, web and chart suites green on
+  the merged tree) and deployed to GKE (image
+  `v0.1.0-alpha.13-129-g44dc61e`, helm rev 35): the policy restart's
+  canaries ran at priority -10 and Succeeded, no spare was preempted, the
+  runner's restart replaced the spare as it always does. Follow-up not
+  done: an `EventHint` for `Preempted`.
