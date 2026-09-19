@@ -934,6 +934,12 @@ func (e *Engine) Authorize(request map[string]any) (map[string]any, error) {
 	case stringList(e.Policy["deny_operations"])[n.Operation.OperationID] || lowerList(e.Policy["deny_repositories"])[strings.ToLower(n.Repository)]:
 		reason = "denied by local policy"
 	}
+	if reason == "" && e.GitHubApp != nil && !(isFigma || isGoogle) && actionsRead[n.Operation.OperationID] {
+		// Warden reads check runs and job logs itself (view_ci_results,
+		// pullrequests.go Checks); the sandbox never gets them through
+		// the proxy, with or without an approval.
+		reason = "CI results are read by Warden: call view_ci_results instead of the GitHub Actions API"
+	}
 	if reason == "" && e.GitHubApp != nil && !(isFigma || isGoogle) {
 		if _, err := GitHubPermissions(n.Operation.OperationID); err != nil {
 			reason = "operation is not supported by the GitHub App broker"

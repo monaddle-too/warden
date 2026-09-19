@@ -111,10 +111,17 @@ func TestAppNoTokenNeededOrMintedBeforeApproval(t *testing.T) {
 
 func TestAppHostOwnerAndOperationBoundary(t *testing.T) {
 	f := newAppFixture(t)
-	for _, p := range []string{"/repos/other/repo", "/user", "/repos/owner/repo/actions/runs"} {
+	// The Actions API is refused with a pointer at view_ci_results: Warden
+	// reads check runs and job logs itself (pullrequests.go Checks).
+	for _, p := range []string{"/repos/other/repo", "/user", "/repos/owner/repo/actions/runs", "/repos/owner/repo/commits/abc/check-runs", "/repos/owner/repo/actions/jobs/5/logs"} {
 		r, _ := f.engine.Authorize(f.req(p, ""))
 		if statusOf(r) != 403 {
 			t.Fatalf("expected 403 for %s: %v", p, r)
+		}
+		if strings.Contains(p, "/actions/") || strings.Contains(p, "/check-runs") {
+			if reason, _ := r["reason"].(string); !strings.Contains(reason, "view_ci_results") {
+				t.Fatalf("reason for %s: %v", p, r)
+			}
 		}
 	}
 	if len(f.calls) != 0 {
