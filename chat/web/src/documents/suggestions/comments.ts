@@ -9,10 +9,7 @@ import type { DocComment } from "./schema";
 
 export const commentHighlightsKey = new PluginKey("commentHighlights");
 
-export function commentHighlights(
-  comments: () => DocComment[],
-  onSelect: (index: number) => void,
-) {
+export function commentHighlights(comments: () => DocComment[]) {
   return Extension.create({
     name: "commentHighlights",
     addProseMirrorPlugins() {
@@ -37,14 +34,6 @@ export function commentHighlights(
                 );
               });
               return DecorationSet.create(state.doc, decorations);
-            },
-            handleClick(_view, _pos, event) {
-              const index = (event.target as HTMLElement)
-                .closest("[data-comment-index]")
-                ?.getAttribute("data-comment-index");
-              if (index !== undefined && index !== null)
-                onSelect(Number(index));
-              return false;
             },
           },
         }),

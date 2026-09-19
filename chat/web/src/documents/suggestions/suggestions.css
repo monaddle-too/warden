@@ -132,13 +132,32 @@
 .suggest-block-restyle {
   border-left-style: dashed;
 }
-.suggest-active,
-.suggest-active .suggest-insert,
-.suggest-active .suggest-delete {
-  background: var(--suggest-soft);
+/* The selected suggestion, on the page: its runs and blocks light up. */
+.suggest-active {
+  background: rgb(24 128 56 / 0.18);
+  border-radius: 2px;
+  box-shadow: 0 0 0 2px rgb(24 128 56 / 0.18);
+}
+.suggest-delete.suggest-active,
+.suggest-block-delete.suggest-active {
+  background: rgb(179 38 30 / 0.16);
+  box-shadow: 0 0 0 2px rgb(179 38 30 / 0.16);
+}
+.suggest-active[data-author="owner"],
+.suggest-active[data-author="both"] {
+  background: rgb(26 86 196 / 0.16);
+  box-shadow: 0 0 0 2px rgb(26 86 196 / 0.16);
+}
+.suggest-block.suggest-active {
+  box-shadow: none;
+  background: rgb(24 128 56 / 0.08);
 }
 .suggest-block-delete.suggest-active {
-  background: var(--suggest-del-soft);
+  background: rgb(179 38 30 / 0.08);
+}
+.suggest-block[data-author="owner"].suggest-active,
+.suggest-block[data-author="both"].suggest-active {
+  background: rgb(26 86 196 / 0.08);
 }
 
 /* Frozen content */
@@ -172,7 +191,8 @@
   cursor: pointer;
 }
 .suggestion-document .comment-highlight.suggest-active {
-  background: #f6db8680;
+  background: #f6db8699;
+  box-shadow: 0 0 0 2px #f6db8699;
 }
 .suggestion-comment-button {
   position: absolute;
@@ -203,11 +223,19 @@
   font-size: 13px;
   line-height: 1.45;
   cursor: pointer;
-  transition: top 120ms ease;
 }
+/* The selected card is raised and pulled towards the page, as in Docs. */
 .suggestion-card.active {
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.16);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.22);
   border-color: var(--suggest);
+  transform: translateX(-10px);
+  z-index: 1;
+}
+.suggestion-card {
+  transition:
+    top 120ms ease,
+    transform 120ms ease,
+    box-shadow 120ms ease;
 }
 .suggestion-card-comment,
 .suggestion-card-composer {
