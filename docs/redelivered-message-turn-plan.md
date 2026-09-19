@@ -106,3 +106,4 @@ rows came and went with the chats' status.
   deployed from the unmerged feat/menu-bar build bb1cf87 and overwritten
   by later deploys; the feed process started at 11:51 keeps working on
   the old binary until the menu agent restarts).
+- 2026-09-18: merged to main as f55de51 (main merged in first, 04ad636; the edge retention test `TestBugReportRetentionAndCap` re-based on the real clock, since its hardcoded 2026-09-18 days expired once UTC reached 2026-09-19).
