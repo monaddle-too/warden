@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	"warden/chat/internal/bugreport"
@@ -51,6 +53,7 @@ func run(args []string) error {
 	tlsKey := fs.String("tls-key", "", "This runner's private key (tls.keyFile)")
 	kubeconfig := fs.String("kubeconfig", "", "Kubernetes kind only: reach the API server through this kubeconfig instead of the pod's service account (development and tests)")
 	jailbreak := fs.Bool("jailbreak", false, "Answer the host.* operations of jailbroken workspaces (dogfood.jailbreak; a local owner install only)")
+	hostHome := fs.String("host-home", "", "With --jailbreak: the owner's home directory host paths stay under (default: the account's; the launcher passes its own, since this process runs with HOME set to the sbx namespace)")
 	if err := services.ParseFlags(fs, args); err != nil {
 		return err
 	}
@@ -136,7 +139,8 @@ func run(args []string) error {
 	w.IdleTimeout = *idle
 	w.Jailbreak = *jailbreak
 	if *jailbreak {
-		slog.Warn("host access (dogfood.jailbreak) is on: jailbroken workspaces may run commands on this machine")
+		w.HostHome = ownerHome(*hostHome, s.cfg.Paths.State)
+		slog.Warn("host access (dogfood.jailbreak) is on: jailbroken workspaces may run commands on this machine", "home", w.HostHome)
 	}
 	w.MaxResident = *residents
 	w.MemoryMB = *memoryMB
@@ -230,4 +234,28 @@ func kubernetesOptions(k *config.Kubernetes, size sandbox.Resources) sandboxkube
 		NodeSelector:     k.NodeSelector,
 		Tolerations:      k.Tolerations,
 	}
+}
+
+// ownerHome is the home directory host paths of a jailbroken workspace
+// stay under: the --host-home flag (the launcher's own home), else the
+// account's home from the user database, else $HOME — unless that lies
+// under the state directory, which is where the launcher points HOME for
+// the sbx namespace and is never the owner's home.
+func ownerHome(flag, state string) string {
+	if flag != "" {
+		return filepath.Clean(flag)
+	}
+	if u, err := user.Current(); err == nil && u.HomeDir != "" && !underDir(u.HomeDir, state) {
+		return filepath.Clean(u.HomeDir)
+	}
+	if home, err := os.UserHomeDir(); err == nil && !underDir(home, state) {
+		return filepath.Clean(home)
+	}
+	return ""
+}
+
+// underDir reports whether p is dir or under it.
+func underDir(p, dir string) bool {
+	p, dir = filepath.Clean(p), filepath.Clean(dir)
+	return p == dir || strings.HasPrefix(p, dir+string(filepath.Separator))
 }

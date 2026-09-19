@@ -187,7 +187,7 @@ func TestHostCallsRunOnTheRunnerAndAreAudited(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("%v", events)
 	}
-	if d := agent.Map(events[0]["data"]); d["event"] != "host.exec" || d["command"] != "uname -a && echo hello-from-host" || d["cwd"] != "/Users/me/src" || d["exit"] != 0.0 || d["bytes"] != 16.0 || d["duration_ms"] != 5.0 || d["chatID"] != id || d["sandboxID"] != c.SandboxID || d["principal"] != "agent" {
+	if d := agent.Map(events[0]["data"]); d["event"] != "host.exec" || d["command"] != "uname -a && echo hello-from-host" || d["cwd"] != "/Users/me/src" || d["exit"] != 0.0 || d["bytes"] != 16.0 || d["duration_ms"] != 5.0 || d["chatID"] != id || d["sandboxID"] != c.SandboxID || d["principal"] != "agent" || d["actor"] != "agent" {
 		t.Fatalf("host.exec audit: %v", d)
 	}
 	// host_put and host_get: the paths each way, the size moved.

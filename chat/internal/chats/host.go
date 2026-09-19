@@ -253,7 +253,7 @@ func (e *Engine) hostCall(ctx context.Context, c *Chat, name string, raw []byte)
 // fatal to the call, since the runner's own record and the transcript
 // stand.
 func (e *Engine) hostAudit(c *Chat, event string, fields map[string]any) {
-	data := map[string]any{"event": event, "chatID": c.ID, "sandboxID": c.SandboxID}
+	data := map[string]any{"event": event, "chatID": c.ID, "sandboxID": c.SandboxID, "actor": "agent"}
 	for k, v := range fields {
 		data[k] = v
 	}

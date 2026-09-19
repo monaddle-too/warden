@@ -220,3 +220,21 @@ func TestResourceLimitsDeriveTheCeilingFromTheHost(t *testing.T) {
 		t.Fatalf("clamped ceiling %+v", huge.Max)
 	}
 }
+
+// The owner's home for a jailbroken workspace's host paths is the flag,
+// else the account's home, never a directory under the state (where the
+// launcher points HOME for the sbx namespace).
+func TestOwnerHomeAvoidsTheStateDirectory(t *testing.T) {
+	if got := ownerHome("/Users/me/", "/Users/me/.warden"); got != "/Users/me" {
+		t.Fatalf("flag: %s", got)
+	}
+	state := t.TempDir()
+	t.Setenv("HOME", filepath.Join(state, "sbx", "home"))
+	got := ownerHome("", state)
+	if got == "" || underDir(got, state) {
+		t.Fatalf("home under the state: %q", got)
+	}
+	if !underDir("/a/b/c", "/a/b") || !underDir("/a/b", "/a/b") || underDir("/a/bc", "/a/b") {
+		t.Fatal("underDir")
+	}
+}

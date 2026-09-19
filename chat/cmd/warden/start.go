@@ -427,6 +427,13 @@ func (l *launcher) policyArgs() []string {
 
 func (l *launcher) runnerArgs() []string {
 	args := []string{"--config", l.configPath}
+	if l.jailbreak || l.cfg.Dogfood.Jailbreak {
+		// The runner runs with HOME set to the sbx namespace; the owner's
+		// home, where host paths must stay, is this process's.
+		if home, err := os.UserHomeDir(); err == nil {
+			args = append(args, "--host-home", home)
+		}
+	}
 	if l.jailbreak {
 		args = append(args, "--jailbreak")
 	}
