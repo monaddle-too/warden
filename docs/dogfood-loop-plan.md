@@ -94,3 +94,17 @@ widening what the jailbreak already allows.
   rewrites `Host`, which it does. Merged to main 57f46e1 (the PR merge and
   the fixes; `go test ./...`, web build and 298 web tests green), tagged
   `v0.1.0-alpha.14` for `release.yml` on the Mac runner.
+- 2026-09-19: **release v0.1.0-alpha.14** built by `release.yml` on the Mac
+  runner in 3 min (tarballs, `SHA256SUMS`, chart). `warden release install
+  v0.1.0-alpha.14 --restart` into `~/.warden` downloaded and verified it,
+  but the service crash-looped: the runner refused `--retained 64`
+  ("invalid worker limits", `runnersvc/main.go` still caps retained at 32
+  although 78adb90 made `sandboxes.keepStopped` configurable), and the
+  owner's `warden.json` had meanwhile been raised to `keepStopped: 64` by
+  another session that was running its fix for exactly that
+  (`fix/runner-retained-limit` 3960909, `.local/warden-retained-limit`,
+  unmerged) on the default instance. That build was restored
+  (`release use v0.0.0-dev.3960909b652e --restart`); the release was
+  installed into `dogfood` instead (its config keeps 32), from GitHub with
+  the checksum check. Once 3960909 lands, the next tag carries it and
+  `warden release install <tag>` into `~/.warden` is the remaining step.
