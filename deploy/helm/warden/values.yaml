@@ -95,7 +95,9 @@ sandboxes:
   # resume, a fork's copy, a second chat — preempts a spare and starts in
   # its slot within seconds instead of waiting for a node; the runner
   # replaces the spare in the background. One spare then serves whichever
-  # arrives first. Off keeps spares at the default priority.
+  # arrives first. The policy service's canaries share the class, so a
+  # policy restart never evicts a spare. Off keeps spares (and canaries)
+  # at the default priority.
   preemptibleSpares: true
   # Stop a sandbox this long after its last chat activity (the agent's
   # last reply, a message, a person's command, a preview or review), unless

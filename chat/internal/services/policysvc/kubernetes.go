@@ -159,7 +159,7 @@ func (r *kubernetesRuntime) enforce(ctx context.Context, registry *policy.Regist
 		TrustConfigMap:   k.TrustConfigMap,
 		State:            r.settings.state,
 		StorageFailed:    func() { registry.StorageFailed = true },
-		Canary:           kubepolicy.CanaryOptions{Image: os.Getenv("WARDEN_CANARY_IMAGE")},
+		Canary:           kubepolicy.CanaryOptions{Image: os.Getenv("WARDEN_CANARY_IMAGE"), PriorityClass: k.SparePriorityClass},
 	})
 	if err != nil {
 		return errors.New("inspector: " + err.Error())
