@@ -10,7 +10,9 @@
 //	warden open    [--config PATH]
 //	warden bugs    status | on | off | send "text" | test | pending
 //	warden instance list | create NAME | rm NAME
-//	warden release  list | install TARBALL | use VERSION | build [CHECKOUT]
+//	warden release  list | install TARBALL|TAG | use VERSION | build [CHECKOUT]
+//	warden versions [--remote]
+//	warden status
 //
 // Every command that takes --state also takes --instance NAME (or
 // $WARDEN_INSTANCE): the default instance is the default state directory,
@@ -82,17 +84,19 @@ const usageText = `usage: warden COMMAND [flags]
   install   create the private state, SBX namespace and runtimes; write warden.json
   doctor    check every host and runtime invariant and print the remediation
   login     codex | claude | github: store one provider sign-in, owner-only
-  start     start Warden: the registered service, or the four services here (--foreground) or detached (--detach)
+  start     start Warden: the registered service, or the four services here (--foreground) or detached (--detach);
+            --version V [--use] [--as NAME] runs an installed release (a trial unless --use; --as beside this instance)
   stop      stop the running Warden (the service, or a detached one)
   restart   restart the service (after a new release)
-  status    show whether Warden is running and how
+  status    every instance: what runs (version, pid, ports, service, uptime); then this one in detail
+  versions  the releases installed in the store, who pins and runs them; --remote: GitHub's releases
   service   install | uninstall: register Warden with launchd / systemd --user (install does this too)
   open      open the running Warden in the browser (--chat ID, --new)
   menu      install | uninstall the macOS menu bar item (install does this too); feed: its model (warden-menu runs it)
   chat      terminal client: warden chat [CHAT] | list | new | send | approve
   uninstall stop Warden, unregister the service, delete its sandboxes, stop its private sbx daemon and remove the state
   instance  list | create NAME [--dev --from SOURCE] | rm NAME: several Wardens on this machine (--instance NAME on every command)
-  release   list | install TARBALL|DIR | use VERSION | build [CHECKOUT]: the releases an instance runs from (--restart)
+  release   list | install TARBALL|DIR|TAG | use VERSION | build [CHECKOUT]: the release store and an instance's link (--restart)
   bugs      bug reports: status | on | off | send "text" | test | pending (you review every report before it is sent)
   tls       bootstrap: write a deployment CA and the four service certificates for tls:// transport
   version   print the build revision and protocol number
@@ -128,6 +132,8 @@ func (c *cli) run(args []string) int {
 		err = c.restartService(args[1:])
 	case "status":
 		err = c.status(args[1:])
+	case "versions":
+		err = c.versions(args[1:])
 	case "service":
 		err = c.serviceCommand(args[1:])
 	case "menu":

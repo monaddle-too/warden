@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"warden/chat/internal/config"
 )
@@ -82,6 +83,19 @@ type instanceInfo struct {
 	// Sandboxes counts the instance's sandboxes in the namespace when the
 	// daemon answers (-1 when it does not).
 	Sandboxes int `json:"sandboxes"`
+	// Running is the version the instance runs now (running.json with a
+	// live pid), "" when it is not running; RunningBinary that launcher,
+	// PID its process, StartedAt when it came up. A running instance
+	// whose launcher predates running.json shows "running" as its
+	// version. PID is also filled for a service or a detached Warden
+	// known only by its pid.
+	Running       string    `json:"running,omitempty"`
+	RunningBinary string    `json:"runningBinary,omitempty"`
+	PID           int       `json:"pid,omitempty"`
+	StartedAt     time.Time `json:"startedAt,omitempty"`
+	// Shape is the background shape in a word: registered running,
+	// registered stopped, detached, foreground, not registered, none.
+	Shape string `json:"shape"`
 }
 
 // instanceDirs lists every state directory that is an instance: the
@@ -137,22 +151,38 @@ func (c *cli) describeInstance(state string) instanceInfo {
 		}
 		if pid, alive := runningPID(cfg); alive {
 			info.Service = fmt.Sprintf("running detached (pid %d)", pid)
+			info.PID = pid
 		}
 	}
 	svc, _ := c.service(state)
+	var st serviceStatus
+	if svc != nil && svc.registered() {
+		st = svc.status()
+	}
 	switch {
 	case info.Service != "":
+		info.Shape = "detached"
 	case svc == nil:
-		info.Service = "none"
+		info.Service, info.Shape = "none", "none"
 	case !svc.registered():
-		info.Service = "not registered"
-	case svc.status().Running:
-		info.Service = svc.status().String()
+		info.Service, info.Shape = "not registered", "not registered"
+	case st.Running:
+		info.Service, info.Shape = st.String(), "registered running"
+		info.PID = st.PID
 	default:
-		info.Service = "stopped"
+		info.Service, info.Shape = "stopped", "registered stopped"
 	}
 	if svc != nil {
 		info.Label = svc.label()
+	}
+	if r, alive, _ := readRunning(state); alive {
+		info.Running, info.RunningBinary, info.PID, info.StartedAt = r.Version, r.Binary, r.PID, r.StartedAt
+		if info.Shape == "not registered" || info.Shape == "none" || info.Shape == "registered stopped" {
+			info.Shape = "foreground"
+		}
+	} else if info.PID != 0 {
+		// A launcher from before running.json: running, version unknown.
+		info.Running = "running"
 	}
 	return info
 }
@@ -240,16 +270,54 @@ func (c *cli) instanceList(args []string) error {
 	return nil
 }
 
-// printInstances writes the table.
+// printInstances writes the `instance list` table.
 func printInstances(w io.Writer, infos []instanceInfo) {
-	rows := [][]string{{"NAME", "STATE", "RELEASE", "CHAT", "EDGE", "SERVICE", "DEV"}}
+	rows := [][]string{{"NAME", "STATE", "PINNED", "RUNNING", "CHAT", "EDGE", "SERVICE", "DEV"}}
 	for _, i := range infos {
 		dev := "no"
 		if i.Dev {
 			dev = "yes"
 		}
-		rows = append(rows, []string{i.Name, i.State, i.Release, port(i.ChatPort), port(i.EdgePort), i.Service, dev})
+		rows = append(rows, []string{i.Name, i.State, i.Release, dash(i.Running), port(i.ChatPort), port(i.EdgePort), i.Service, dev})
 	}
+	printTable(w, rows)
+}
+
+// printStatusTable writes the `warden status` table: what runs where.
+func printStatusTable(w io.Writer, infos []instanceInfo, now time.Time) {
+	rows := [][]string{{"NAME", "RUNNING", "PINNED", "PID", "CHAT", "EDGE", "SERVICE", "UP"}}
+	for _, i := range infos {
+		pid, up := "-", "-"
+		if i.PID != 0 {
+			pid = strconv.Itoa(i.PID)
+		}
+		if !i.StartedAt.IsZero() && i.Running != "" {
+			up = uptime(now.Sub(i.StartedAt))
+		}
+		rows = append(rows, []string{i.Name, dash(i.Running), i.Release, pid, port(i.ChatPort), port(i.EdgePort), i.Shape, up})
+	}
+	printTable(w, rows)
+}
+
+// uptime is a duration in the largest two units that matter.
+func uptime(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	d = d.Round(time.Second)
+	switch {
+	case d >= 24*time.Hour:
+		return fmt.Sprintf("%dd%dh", int(d.Hours())/24, int(d.Hours())%24)
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%ds", int(d.Seconds()))
+}
+
+// printTable writes rows (the first is the header) in aligned columns.
+func printTable(w io.Writer, rows [][]string) {
 	widths := make([]int, len(rows[0]))
 	for _, r := range rows {
 		for i, cell := range r {
@@ -268,7 +336,7 @@ func printInstances(w io.Writer, infos []instanceInfo) {
 				line.WriteString(cell + strings.Repeat(" ", widths[i]-len(cell)))
 			}
 		}
-		fmt.Fprintln(w, line.String())
+		fmt.Fprintln(w, strings.TrimRight(line.String(), " "))
 	}
 }
 

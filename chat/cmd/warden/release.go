@@ -9,33 +9,37 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strings"
-	"time"
 
 	"warden/chat/internal/config"
 )
 
 // `warden release` is the Go version of scripts/deploy-local.sh
-// (docs/host-dogfood-plan.md, Part A): an instance keeps every release it
-// has run under <state>/releases/<name>/ and runs from the one
+// (docs/host-dogfood-plan.md, Parts A and C): releases are unpacked once
+// into the shared store (store.go) and an instance runs from the one
 // <state>/release links to (the service unit and the shell alias name
 // <state>/release/bin/warden, so switching is repointing the link).
-// install unpacks a tarball there, repoints the link, runs the new
-// release's own `warden install --upgrade` into the instance and, with
-// --restart, restarts whatever runs; use switches back to an installed
-// version; build builds a checkout with scripts/release.sh and installs
-// the result (decision 5: a non-release build, versioned v0.0.0-dev.<sha>).
+// install unpacks a tarball into the store (or downloads a GitHub release
+// by its tag), repoints the link, runs the new release's own `warden
+// install --upgrade` into the instance and, with --restart, restarts
+// whatever runs; use switches to an installed version; build builds a
+// checkout with scripts/release.sh and installs the result (decision 5: a
+// non-release build, versioned v0.0.0-dev.<sha>).
 
 const releaseUsage = `usage: warden release COMMAND [--instance NAME | --state DIR] [flags]
 
-  list                             the releases under <state>/releases, the current one marked
-  install TARBALL|DIR [--restart]  unpack warden-<version>-<os>-<arch>.tar.gz (or take an unpacked
-                                   release directory) under <state>/releases, point <state>/release
+  list                             the releases in the store (and the instance's own older ones),
+                                   with the instances pinned to and running each; * marks the instance's
+  install TARBALL|DIR|TAG [--restart] [--force]
+                                   unpack warden-<version>-<os>-<arch>.tar.gz (or take an unpacked
+                                   release directory, or download the GitHub release TAG for this host,
+                                   checked against its SHA256SUMS) into the store, point <state>/release
                                    at it, run its own warden install --upgrade into the instance;
+                                   a release already in the store is reused unless --force;
                                    --restart restarts the running Warden (service or detached)
-  use VERSION [--restart]          point <state>/release at an installed release again
-  build [CHECKOUT] [--restart] [--test]
+  use VERSION [--restart]          point <state>/release at an installed release again (a tag, a dev
+                                   version or a sha prefix of one, latest, or a release directory name)
+  build [CHECKOUT] [--restart] [--test] [--force]
                                    build CHECKOUT (default: .) with scripts/release.sh --skip-tests
                                    (--test runs the tests first) and install the tarball for this host;
                                    --instance or --state is required (never the default by accident)
@@ -54,16 +58,10 @@ func parseReleaseName(base string) (version, goos, goarch string, ok bool) {
 	return m[1], m[2], m[3], true
 }
 
+// releasesDir is an instance's legacy releases directory (the store, for
+// the default instance).
 func releasesDir(state string) string { return filepath.Join(state, "releases") }
 func releaseLink(state string) string { return filepath.Join(state, "release") }
-
-// installedRelease is one directory under <state>/releases.
-type installedRelease struct {
-	Version string    `json:"version"`
-	Path    string    `json:"path"`
-	Current bool      `json:"current"`
-	At      time.Time `json:"installedAt"`
-}
 
 // currentRelease is where <state>/release points, "" without a link.
 func currentRelease(state string) string {
@@ -75,34 +73,6 @@ func currentRelease(state string) string {
 		target = filepath.Join(state, target)
 	}
 	return filepath.Clean(target)
-}
-
-// releasesOf lists the installed releases of a state directory, newest
-// first.
-func releasesOf(state string) ([]installedRelease, error) {
-	entries, err := os.ReadDir(releasesDir(state))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	current := currentRelease(state)
-	var out []installedRelease
-	for _, e := range entries {
-		version, goos, goarch, ok := parseReleaseName(e.Name())
-		if !ok || !e.IsDir() || goos != runtime.GOOS || goarch != runtime.GOARCH {
-			continue
-		}
-		path := filepath.Join(releasesDir(state), e.Name())
-		r := installedRelease{Version: version, Path: path, Current: filepath.Clean(path) == current}
-		if info, err := e.Info(); err == nil {
-			r.At = info.ModTime()
-		}
-		out = append(out, r)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
-	return out, nil
 }
 
 func (c *cli) releaseCommand(args []string) error {
@@ -117,6 +87,7 @@ func (c *cli) releaseCommand(args []string) error {
 	state := addStateFlags(fs)
 	restart := fs.Bool("restart", false, "restart the running Warden of the instance afterwards (the service, or stop + start --detach)")
 	test := fs.Bool("test", false, "build: run the full test suite first (release.sh without --skip-tests)")
+	force := fs.Bool("force", false, "unpack again over a release already in the store")
 	switch sub {
 	case "list", "install", "use", "build":
 	case "help", "-h", "--help":
@@ -148,7 +119,7 @@ func (c *cli) releaseCommand(args []string) error {
 			fmt.Fprint(c.stderr, releaseUsage)
 			return errUsage
 		}
-		return c.releaseInstall(cfg, fs.Arg(0), *restart)
+		return c.releaseInstall(cfg, fs.Arg(0), *restart, *force)
 	case "use":
 		if fs.NArg() != 1 {
 			fmt.Fprint(c.stderr, releaseUsage)
@@ -163,44 +134,91 @@ func (c *cli) releaseCommand(args []string) error {
 			fmt.Fprint(c.stderr, releaseUsage)
 			return errUsage
 		}
-		return c.releaseBuild(cfg, checkout, *restart, *test)
+		return c.releaseBuild(cfg, checkout, *restart, *test, *force)
 	}
 }
 
+// releaseUsers says, per release path, which instances are pinned to it
+// (their release link) and which run it (running.json alive).
+type releaseUsers struct{ pinned, running map[string][]string }
+
+func (c *cli) releaseUsersOf(infos []instanceInfo) releaseUsers {
+	u := releaseUsers{pinned: map[string][]string{}, running: map[string][]string{}}
+	for _, i := range infos {
+		if p := currentRelease(i.State); p != "" {
+			u.pinned[p] = append(u.pinned[p], i.Name)
+		}
+		if i.RunningBinary != "" {
+			if dir, _ := releaseDirOf(i.RunningBinary); dir != "" {
+				u.running[filepath.Clean(dir)] = append(u.running[filepath.Clean(dir)], i.Name)
+			}
+		}
+	}
+	return u
+}
+
 func (c *cli) releaseList(state string) error {
-	releases, err := releasesOf(state)
+	releases, err := availableReleases(state)
 	if err != nil {
 		return err
 	}
+	store, _ := storeDir()
 	if len(releases) == 0 {
-		fmt.Fprintf(c.stdout, "no releases under %s (`warden release install TARBALL` unpacks one)\n", releasesDir(state))
+		fmt.Fprintf(c.stdout, "no releases under %s (`warden release install TARBALL|TAG` unpacks one)\n", store)
 		return nil
 	}
+	infos, err := c.instances()
+	if err != nil {
+		return err
+	}
+	users := c.releaseUsersOf(infos)
+	current := currentRelease(state)
 	for _, r := range releases {
 		mark := " "
-		if r.Current {
+		if filepath.Clean(r.Path) == current {
 			mark = "*"
 		}
-		fmt.Fprintf(c.stdout, "%s %-40s %s  %s\n", mark, r.Version, r.At.Local().Format("2006-01-02 15:04"), r.Path)
+		line := fmt.Sprintf("%s %-40s %s  %s", mark, r.Version, r.At.Local().Format("2006-01-02 15:04"), r.Path)
+		var notes []string
+		if r.Legacy != "" {
+			notes = append(notes, "older copy of "+r.Legacy)
+		}
+		if p := users.pinned[filepath.Clean(r.Path)]; len(p) > 0 {
+			notes = append(notes, "pinned by "+strings.Join(p, ", "))
+		}
+		if p := users.running[filepath.Clean(r.Path)]; len(p) > 0 {
+			notes = append(notes, "running on "+strings.Join(p, ", "))
+		}
+		if len(notes) > 0 {
+			line += "  (" + strings.Join(notes, "; ") + ")"
+		}
+		fmt.Fprintln(c.stdout, line)
 	}
-	if currentRelease(state) == "" {
+	if current == "" {
 		fmt.Fprintf(c.stdout, "(%s does not link to any of them)\n", releaseLink(state))
 	}
 	return nil
 }
 
-// releaseInstall unpacks (or adopts) source under <state>/releases, points
-// the link at it, runs the release's own install into the instance and
-// restarts when asked.
-func (c *cli) releaseInstall(cfg config.Config, source string, restart bool) error {
+// releaseInstall unpacks (adopts, or downloads) source into the store,
+// points the link at it, runs the release's own install into the
+// instance and restarts when asked.
+func (c *cli) releaseInstall(cfg config.Config, source string, restart, force bool) error {
 	state := cfg.Paths.State
 	if _, err := os.Stat(filepath.Join(state, installFile)); err != nil {
 		return fmt.Errorf("%s is not an installed instance: %w", state, err)
 	}
-	path, err := c.placeRelease(state, source)
+	path, err := c.placeRelease(source, force)
 	if err != nil {
 		return err
 	}
+	return c.linkAndInstall(cfg, path, restart)
+}
+
+// linkAndInstall points the instance at the release at path, runs its
+// install into the instance and restarts when asked.
+func (c *cli) linkAndInstall(cfg config.Config, path string, restart bool) error {
+	state := cfg.Paths.State
 	if err := relink(state, path); err != nil {
 		return err
 	}
@@ -217,12 +235,20 @@ func (c *cli) releaseInstall(cfg config.Config, source string, restart bool) err
 	return nil
 }
 
-// placeRelease puts source under <state>/releases and returns its path: a
-// tarball is unpacked (replacing a directory of the same name), a
-// directory outside releases/ is copied in, one inside is used as is. The
-// name must be a release for this host.
-func (c *cli) placeRelease(state, source string) (string, error) {
-	source, err := filepath.Abs(source)
+// placeRelease puts source in the store and returns its path: a tarball
+// is unpacked, a directory outside the store is copied in, one inside is
+// used as is, a name that is no file but a release tag is downloaded from
+// GitHub. A release already in the store is reused unless force. The name
+// must be a release for this host.
+func (c *cli) placeRelease(source string, force bool) (string, error) {
+	store, err := storeDir()
+	if err != nil {
+		return "", err
+	}
+	if _, statErr := os.Stat(source); statErr != nil && looksLikeTag(source) {
+		return c.placeRemoteRelease(store, source, force)
+	}
+	source, err = filepath.Abs(source)
 	if err != nil {
 		return "", err
 	}
@@ -238,18 +264,23 @@ func (c *cli) placeRelease(state, source string) (string, error) {
 	if goos != runtime.GOOS || goarch != runtime.GOARCH {
 		return "", fmt.Errorf("%s is for %s/%s; this host is %s/%s", base, goos, goarch, runtime.GOOS, runtime.GOARCH)
 	}
-	releases := releasesDir(state)
-	if err := ensurePrivateDir(releases); err != nil {
+	if err := ensurePrivateDir(store); err != nil {
 		return "", err
 	}
-	dest := filepath.Join(releases, strings.TrimSuffix(base, ".tar.gz"))
-	switch {
-	case info.IsDir() && within(source, releases):
+	dest := filepath.Join(store, strings.TrimSuffix(base, ".tar.gz"))
+	if info.IsDir() && within(source, store) {
 		if err := executableFile(filepath.Join(source, "bin", "warden")); err != nil {
 			return "", fmt.Errorf("%s: %w", source, err)
 		}
 		return source, nil
-	case info.IsDir():
+	}
+	if !force {
+		if err := executableFile(filepath.Join(dest, "bin", "warden")); err == nil {
+			fmt.Fprintf(c.stdout, "release:         %s is already in the store (--force unpacks it again)\n", filepath.Base(dest))
+			return dest, nil
+		}
+	}
+	if info.IsDir() {
 		if err := executableFile(filepath.Join(source, "bin", "warden")); err != nil {
 			return "", fmt.Errorf("%s: %w", source, err)
 		}
@@ -264,26 +295,40 @@ func (c *cli) placeRelease(state, source string) (string, error) {
 		}
 		fmt.Fprintf(c.stdout, "release:         copied %s to %s\n", source, dest)
 		return dest, nil
-	default:
-		tmp := dest + ".unpack"
-		os.RemoveAll(tmp)
-		if err := extractTarGz(source, tmp); err != nil {
-			os.RemoveAll(tmp)
-			return "", err
-		}
-		unpacked := filepath.Join(tmp, filepath.Base(dest))
-		if err := executableFile(filepath.Join(unpacked, "bin", "warden")); err != nil {
-			os.RemoveAll(tmp)
-			return "", fmt.Errorf("%s does not unpack to %s/bin/warden: %w", base, filepath.Base(dest), err)
-		}
-		if err := replaceDir(unpacked, dest); err != nil {
-			os.RemoveAll(tmp)
-			return "", err
-		}
-		os.RemoveAll(tmp)
-		fmt.Fprintf(c.stdout, "release:         unpacked %s (%s) to %s\n", base, version, dest)
-		return dest, nil
 	}
+	if err := unpackRelease(source, dest); err != nil {
+		return "", err
+	}
+	fmt.Fprintf(c.stdout, "release:         unpacked %s (%s) to %s\n", base, version, dest)
+	return dest, nil
+}
+
+// looksLikeTag says whether a source that is no file could be a GitHub
+// release tag: no path separator, not a tarball name.
+func looksLikeTag(source string) bool {
+	return !strings.ContainsRune(source, '/') && !strings.HasSuffix(source, ".tar.gz") && source != "" && source != "." && source != ".."
+}
+
+// unpackRelease extracts a tarball to dest (its top directory must be
+// dest's basename), replacing what is there.
+func unpackRelease(tarball, dest string) error {
+	tmp := dest + ".unpack"
+	os.RemoveAll(tmp)
+	if err := extractTarGz(tarball, tmp); err != nil {
+		os.RemoveAll(tmp)
+		return err
+	}
+	unpacked := filepath.Join(tmp, filepath.Base(dest))
+	if err := executableFile(filepath.Join(unpacked, "bin", "warden")); err != nil {
+		os.RemoveAll(tmp)
+		return fmt.Errorf("%s does not unpack to %s/bin/warden: %w", filepath.Base(tarball), filepath.Base(dest), err)
+	}
+	if err := replaceDir(unpacked, dest); err != nil {
+		os.RemoveAll(tmp)
+		return err
+	}
+	os.RemoveAll(tmp)
+	return nil
 }
 
 // replaceDir moves fresh to dest, putting an existing dest aside first
@@ -380,31 +425,20 @@ func (c *cli) restartWith(cfg config.Config, bin string) error {
 // releaseUse repoints the link at an installed version and installs it
 // into the instance (its pins may differ).
 func (c *cli) releaseUse(cfg config.Config, version string, restart bool) error {
-	releases, err := releasesOf(cfg.Paths.State)
+	releases, err := availableReleases(cfg.Paths.State)
 	if err != nil {
 		return err
 	}
-	for _, r := range releases {
-		if r.Version == version || r.Version == "v"+version {
-			if err := relink(cfg.Paths.State, r.Path); err != nil {
-				return err
-			}
-			fmt.Fprintf(c.stdout, "release:         %s -> %s\n", releaseLink(cfg.Paths.State), r.Path)
-			if err := c.installWith(cfg, filepath.Join(r.Path, "bin", "warden")); err != nil {
-				return err
-			}
-			if restart {
-				return c.restartWith(cfg, filepath.Join(r.Path, "bin", "warden"))
-			}
-			return nil
-		}
+	r, err := resolveRelease(releases, version)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("no release %s under %s (`warden release list` shows them)", version, releasesDir(cfg.Paths.State))
+	return c.linkAndInstall(cfg, r.Path, restart)
 }
 
 // releaseBuild builds a checkout as scripts/deploy-local.sh did and
 // installs the tarball for this host.
-func (c *cli) releaseBuild(cfg config.Config, checkout string, restart, test bool) error {
+func (c *cli) releaseBuild(cfg config.Config, checkout string, restart, test, force bool) error {
 	checkout, err := filepath.Abs(checkout)
 	if err != nil {
 		return err
@@ -432,7 +466,7 @@ func (c *cli) releaseBuild(cfg config.Config, checkout string, restart, test boo
 	if _, err := os.Stat(tarball); err != nil {
 		return fmt.Errorf("no tarball for this host: %w", err)
 	}
-	return c.releaseInstall(cfg, tarball, restart)
+	return c.releaseInstall(cfg, tarball, restart, force)
 }
 
 // buildVersion is the version scripts/release.sh gives a checkout: the

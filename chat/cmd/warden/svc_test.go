@@ -15,11 +15,23 @@ import (
 )
 
 // The tests never reach launchctl or systemctl: the default manager is
-// none, and the tests that want one install a fake.
+// none, and the tests that want one install a fake. Nor do they reach the
+// person's own home: the default state directory (and with it the
+// release store, ~/.warden/releases) is under a temporary home for the
+// whole run (a release test once unpacked its stub into the live store).
 func TestMain(m *testing.M) {
 	defaultServiceFn = func(string) (serviceManager, string) { return nil, "no service manager in tests" }
 	defaultMenuFn = func(string) (serviceManager, string) { return nil, "" }
-	os.Exit(m.Run())
+	home, err := os.MkdirTemp("/tmp", "wtest")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", home)
+	os.Setenv("XDG_DATA_HOME", home)
+	os.Setenv(instanceEnv, "")
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
 }
 
 // newFakeMenu is a fake manager for the menu bar item, with its own unit

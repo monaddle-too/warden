@@ -43,6 +43,13 @@ func (c *cli) start(args []string) error {
 	popupsMode := fs.String("popups", popupsNone, "how pending approvals are surfaced: none (default: they wait in the app and the terminal client), notify (desktop notification), browser (notification and the chat opened in the browser), auto (browser when detached, notify otherwise), silent (nothing at all). A review only the app can do (a pull request proposal, document suggestions, a document choice) opens the app under every mode but silent")
 	detachedChild := fs.Bool("detached-child", false, "internal: this process was started by --detach")
 	jailbreak := fs.Bool("jailbreak", false, "for this run, let the owner opt workspaces into host access (the standing setting is dogfood.jailbreak in warden.json; a local owner install only; docs/host-dogfood-plan.md)")
+	version := fs.String("version", "", "run this installed release (a tag, a dev version or a sha prefix of one, latest; `warden versions` lists them) instead of the instance's pinned one: a trial unless --use")
+	use := fs.Bool("use", false, "with --version: also point the instance's release link at it (`warden release use`)")
+	as := fs.String("as", "", "with --version: run it as the instance NAME beside this one, created from this instance (`instance create NAME --from … --dev`) when it does not exist")
+	if err := bareVersionFlag(args); err != nil {
+		fmt.Fprintln(c.stderr, err)
+		return errUsage
+	}
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
@@ -52,6 +59,13 @@ func (c *cli) start(args []string) error {
 	}
 	if _, err = os.Stat(path); err != nil {
 		return fmt.Errorf("%s: %w; run `warden install` first", path, err)
+	}
+	if *version != "" {
+		return c.startVersion(cfg, *version, *use, *as, *foreground, args)
+	}
+	if *use || *as != "" {
+		fmt.Fprintln(c.stderr, "warden start: --use and --as go with --version")
+		return errUsage
 	}
 	if !*serviceMode && !*detachedChild {
 		if err = c.execInstanceRelease(cfg.Paths.State, args); err != nil {
@@ -270,6 +284,10 @@ func (l *launcher) run() error {
 	} else if err = l.launch(ctx, "warden-edge", env, []string{"edge", "--config", l.configPath}, ""); err != nil {
 		return err
 	}
+	if err = writeRunning(state, l.runningInfo(time.Now())); err != nil {
+		return err
+	}
+	defer removeRunning(state)
 	fmt.Fprintf(l.c.stdout, "Warden started with state %s. Run `warden open` to open it. Ctrl+C stops this stack.\n", state)
 	// Surface approvals while the stack runs: a desktop notification, and
 	// when nobody is watching a terminal, the app opened on the chat.
@@ -296,6 +314,16 @@ func (l *launcher) run() error {
 		l.reportExit(ctx, name)
 		return err
 	}
+}
+
+// runningInfo is what this launcher records in <state>/running.json.
+func (l *launcher) runningInfo(now time.Time) runningInfo {
+	_, name := releaseDirOf(l.exe)
+	r := runningInfo{Version: revision, Release: name, Binary: l.exe, PID: os.Getpid(), StartedAt: now.UTC(), Chat: l.cfg.Chat.Listen}
+	if !l.withoutEdge {
+		r.Edge = l.cfg.Previews.EdgeListen
+	}
+	return r
 }
 
 // reportExit drafts the service-exit report for name and presents every
@@ -610,6 +638,151 @@ func namespaceEnv(env []string, privateHome string) []string {
 		out = append(out, d.env+"="+filepath.Join(privateHome, d.dir))
 	}
 	return out
+}
+
+// bareVersionFlag catches `warden start --version` with no value (the
+// flag package would report a bare "flag needs an argument").
+func bareVersionFlag(args []string) error {
+	for i, a := range args {
+		if a == "--" {
+			return nil
+		}
+		if (a == "--version" || a == "-version") && (i+1 >= len(args) || strings.HasPrefix(args[i+1], "-")) {
+			return errNoVersion
+		}
+	}
+	return nil
+}
+
+// startFlagsWithValues are start's flags that take a value, for
+// stripping them from a pass-through.
+var startFlagsWithValues = map[string]bool{"config": true, "state": true, "instance": true, "web-dir": true, "vendor-dir": true, "policy-template": true, "popups": true, "version": true, "as": true}
+
+// withoutFlags drops the named flags (and their values) from args.
+func withoutFlags(args []string, drop map[string]bool) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return append(out, args[i:]...)
+		}
+		if !strings.HasPrefix(a, "-") {
+			out = append(out, a)
+			continue
+		}
+		name, _, hasValue := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if !drop[name] {
+			out = append(out, a)
+			if !hasValue && startFlagsWithValues[name] && i+1 < len(args) {
+				i++
+				out = append(out, args[i])
+			}
+			continue
+		}
+		if !hasValue && startFlagsWithValues[name] {
+			i++
+		}
+	}
+	return out
+}
+
+// startVersion runs an installed release for an instance
+// (docs/host-dogfood-plan.md, Part C): the release is found in the store
+// (or the instance's older copies), the instance must not be running
+// (--as NAME runs it as another instance instead, created from this one
+// when missing), --use repoints the instance's link first, and the
+// release's own launcher is executed with the other flags passed through.
+// Without --use the pinned release stays: a trial run, which `warden
+// status` shows as a running version differing from the pinned one.
+func (c *cli) startVersion(cfg config.Config, spec string, use bool, as string, foreground bool, args []string) error {
+	state := cfg.Paths.State
+	releases, err := availableReleases(state)
+	if err != nil {
+		return err
+	}
+	r, err := resolveRelease(releases, spec)
+	if err != nil {
+		return err
+	}
+	if err := executableFile(r.bin()); err != nil {
+		return fmt.Errorf("release %s: %w", r.Version, err)
+	}
+	child := withoutFlags(args, map[string]bool{"version": true, "use": true, "as": true})
+	target := cfg
+	name := instanceName(state)
+	if as != "" {
+		if as == name {
+			return fmt.Errorf("--as %s names this instance; leave --as out to run %s here", as, r.Version)
+		}
+		dir, err := instanceDir(as)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(filepath.Join(dir, installFile)); err != nil {
+			if !isInstanceDir(state) {
+				return fmt.Errorf("--as %s: %s is not a named instance to create %s from", as, state, as)
+			}
+			fmt.Fprintf(c.stdout, "warden: creating instance %s from %s\n", as, name)
+			if err := c.instanceCreate([]string{as, "--from", name, "--dev"}); err != nil {
+				return err
+			}
+		}
+		target, _, err = loadConfig("", dir)
+		if err != nil {
+			return err
+		}
+		use = true
+		child = append([]string{"--instance", as}, withoutFlags(child, map[string]bool{"instance": true, "state": true, "config": true})...)
+		if !foreground && !containsFlag(child, "detach") {
+			child = append(child, "--detach")
+		}
+	}
+	if running, version := c.runningVersion(target); running {
+		return fmt.Errorf("instance %s is running %s; stop it, or add --as NAME to run %s beside it", instanceName(target.Paths.State), version, r.Version)
+	}
+	if svc := c.registeredService(target); svc != nil && !use && !foreground {
+		return fmt.Errorf("instance %s has a registered %s that runs its pinned release; add --use to switch the link (then the service runs %s), or --foreground for a trial run", instanceName(target.Paths.State), svc.kind(), r.Version)
+	}
+	if use && filepath.Clean(currentRelease(target.Paths.State)) != filepath.Clean(r.Path) {
+		if err := c.linkAndInstall(target, r.Path, false); err != nil {
+			return err
+		}
+	}
+	if c.execve == nil {
+		return errors.New("cannot re-execute the release from here")
+	}
+	fmt.Fprintf(c.stderr, "warden: starting %s as instance %s from %s\n", r.Version, instanceName(target.Paths.State), r.Path)
+	env := append(os.Environ(), releaseReexecEnv+"=1")
+	return c.execve(r.bin(), append([]string{r.bin(), "start"}, child...), env)
+}
+
+// runningVersion says whether an instance runs and which version:
+// running.json when it is alive, else the service's or the detached pid's
+// (version unknown).
+func (c *cli) runningVersion(cfg config.Config) (bool, string) {
+	if r, alive, _ := readRunning(cfg.Paths.State); alive {
+		return true, r.Version
+	}
+	if running, how := c.runningShape(cfg); running {
+		return true, "an unknown version (as a " + how + ")"
+	}
+	return false, ""
+}
+
+// isInstanceDir says whether state is the default instance's directory or
+// a ~/.warden-<name> sibling, i.e. something instanceDir can name.
+func isInstanceDir(state string) bool {
+	dir, err := instanceDir(instanceName(state))
+	return err == nil && filepath.Clean(dir) == filepath.Clean(state)
+}
+
+func containsFlag(args []string, name string) bool {
+	for _, a := range args {
+		if a == "--"+name || a == "-"+name || strings.HasPrefix(a, "--"+name+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // releaseReexecEnv marks a launcher that already re-executed itself into

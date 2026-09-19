@@ -53,6 +53,7 @@ func releaseTarball(t *testing.T, dir, version, goos, goarch, log string) string
 // what release install needs of an instance.
 func installedState(t *testing.T) string {
 	t.Helper()
+	fakeHome(t)
 	base, err := os.MkdirTemp("/tmp", "wr")
 	if err != nil {
 		t.Fatal(err)
@@ -101,9 +102,14 @@ func TestReleaseInstallUnpacksLinksAndUpgradesThenListsAndSwitches(t *testing.T)
 	if code := run("release", "install", newer, "--state", state); code != 0 {
 		t.Fatalf("install newer (%d):\n%s", code, out.String())
 	}
-	dest := filepath.Join(state, "releases", "warden-v9.9.9-"+runtime.GOOS+"-"+runtime.GOARCH)
+	// Releases land in the shared store, never under the instance.
+	store, _ := storeDir()
+	dest := filepath.Join(store, "warden-v9.9.9-"+runtime.GOOS+"-"+runtime.GOARCH)
 	if target, err := os.Readlink(filepath.Join(state, "release")); err != nil || target != dest {
 		t.Fatalf("link: %q %v, want %q", target, err, dest)
+	}
+	if _, err := os.Stat(filepath.Join(state, "releases")); err == nil {
+		t.Fatal("a legacy <state>/releases was written")
 	}
 	for _, rel := range []string{"bin/warden", "web/index.html", "config/policy.template.json", "vendor/README"} {
 		if _, err := os.Stat(filepath.Join(dest, rel)); err != nil {
@@ -119,9 +125,16 @@ func TestReleaseInstallUnpacksLinksAndUpgradesThenListsAndSwitches(t *testing.T)
 	if !strings.Contains(out.String(), "unpacked warden-v9.9.9") || strings.Contains(out.String(), "still runs") {
 		t.Fatalf("output:\n%s", out.String())
 	}
-	// A re-install of the same version replaces the directory in place.
-	if code := run("release", "install", newer, "--state", state); code != 0 {
+	// A re-install of a version in the store reuses it (the instance is
+	// still linked and its install step run); --force unpacks it again.
+	if code := run("release", "install", newer, "--state", state); code != 0 || !strings.Contains(out.String(), "already in the store") {
 		t.Fatalf("re-install (%d):\n%s", code, out.String())
+	}
+	if !strings.HasSuffix(logged(), want) {
+		t.Fatalf("the reused release's install step did not run:\n%s", logged())
+	}
+	if code := run("release", "install", newer, "--state", state, "--force"); code != 0 || !strings.Contains(out.String(), "unpacked warden-v9.9.9") {
+		t.Fatalf("forced re-install (%d):\n%s", code, out.String())
 	}
 	if _, err := os.Stat(dest + ".old"); err == nil {
 		t.Fatal("the replaced directory was left behind")
@@ -148,7 +161,7 @@ func TestReleaseInstallUnpacksLinksAndUpgradesThenListsAndSwitches(t *testing.T)
 	if code := run("release", "install", outside, "--state", state); code != 0 || !strings.Contains(out.String(), "copied "+outside) {
 		t.Fatalf("install of a directory (%d):\n%s", code, out.String())
 	}
-	if target, _ := os.Readlink(filepath.Join(state, "release")); target != filepath.Join(state, "releases", filepath.Base(outside)) {
+	if target, _ := os.Readlink(filepath.Join(state, "release")); target != filepath.Join(store, filepath.Base(outside)) {
 		t.Fatalf("link after a directory install: %s", target)
 	}
 	if code := run("release", "install", dest, "--state", state); code != 0 || strings.Contains(out.String(), "copied") {

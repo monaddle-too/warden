@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -286,11 +287,52 @@ func cfgPath(cfg config.Config, configPath string) string {
 	return defaultConfigPath(cfg.Paths.State)
 }
 
-// status reports whether Warden is running and how.
+// status reports whether Warden is running and how. Without --instance or
+// --state it first prints a table of every instance on the machine (what
+// each runs, from running.json, against what it is pinned to), then the
+// default instance's detail lines as before, so what reads `warden
+// status` keeps working; --json prints the table alone.
 func (c *cli) status(args []string) error {
 	fs, configPath, state := serviceFlags("warden status", c)
+	asJSON := fs.Bool("json", false, "print the instance table as JSON")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
+	}
+	dir, err := state.dir()
+	if err != nil {
+		return err
+	}
+	if dir == "" && *configPath == "" {
+		infos, err := c.instances()
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			if infos == nil {
+				infos = []instanceInfo{}
+			}
+			b, err := json.MarshalIndent(infos, "", "  ")
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(c.stdout, string(b))
+			return nil
+		}
+		if len(infos) > 0 {
+			printStatusTable(c.stdout, infos, time.Now())
+			fmt.Fprintln(c.stdout)
+		}
+	} else if *asJSON {
+		cfg, _, err := loadConfigFlags(*configPath, state)
+		if err != nil {
+			return err
+		}
+		b, err := json.MarshalIndent([]instanceInfo{c.describeInstance(cfg.Paths.State)}, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(c.stdout, string(b))
+		return nil
 	}
 	cfg, path, err := loadConfigFlags(*configPath, state)
 	if err != nil {
@@ -327,6 +369,7 @@ func (c *cli) status(args []string) error {
 	default:
 		fmt.Fprintln(c.stdout, "warden:  no background instance (a foreground `warden start` does not record a pid)")
 	}
+	fmt.Fprintf(c.stdout, "running: %s\n", runningLine(cfg.Paths.State, time.Now()))
 	if base, _, err := endpoint(cfg.OwnerTokenFile()); err == nil {
 		fmt.Fprintf(c.stdout, "chat:    %s (capability in %s)\n", base, cfg.OwnerTokenFile())
 	} else {
@@ -334,6 +377,26 @@ func (c *cli) status(args []string) error {
 	}
 	fmt.Fprintf(c.stdout, "app:     %s\n", cfg.Auth.PublicURL)
 	return nil
+}
+
+// runningLine describes running.json for the detail view: the version,
+// pid, uptime and binary, whether it differs from the pinned release, or
+// that nothing runs.
+func runningLine(state string, now time.Time) string {
+	r, alive, err := readRunning(state)
+	switch {
+	case err != nil:
+		return "unreadable " + runningPath(state) + ": " + err.Error()
+	case !alive && r.PID != 0:
+		return fmt.Sprintf("nothing (stale %s for pid %d)", runningFile, r.PID)
+	case !alive:
+		return "nothing (no " + runningFile + ")"
+	}
+	line := fmt.Sprintf("%s (pid %d, up %s, %s)", r.Version, r.PID, uptime(now.Sub(r.StartedAt)), r.Binary)
+	if pinned := releaseVersionOf(currentRelease(state)); pinned != "" && pinned != r.Version {
+		line += fmt.Sprintf("; the pinned release is %s (a trial run: `warden start --version %s --use` makes it stick)", pinned, r.Version)
+	}
+	return line
 }
 
 // serviceCommand: `warden service install` registers the service for
