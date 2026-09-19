@@ -688,6 +688,10 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 		return w.snapshotOp(ctx, r)
 	}
 	switch r.Operation {
+	case "host.exec", "host.put", "host.get", "host.expose", "host.status":
+		// The jailbreak's host operations (host.go): refused unless the
+		// runner was started with --jailbreak.
+		return w.hostOp(ctx, r)
 	case "exec":
 		// A person's own command: resolved under the lock, run without it.
 		return w.execCommand(ctx, r)
@@ -864,9 +868,9 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" || r.Operation == "capacity" {
 		slots = w.controlSlots
 	}
-	if r.Operation == "exec" {
-		// A person's command may run for a minute; it never takes a slot
-		// from the sandbox operations.
+	if r.Operation == "exec" || r.Operation == "host.exec" {
+		// A person's command may run for a minute, a host command for an
+		// hour; neither takes a slot from the sandbox operations.
 		slots = w.execSlots
 	}
 	select {
@@ -921,8 +925,18 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 		w.streamManaged(parent, c, reader, r, send)
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, w.operationTimeout(r.Operation))
+	ctx, cancel := context.WithTimeout(parent, w.operationTimeout(r))
 	defer cancel()
+	if r.Operation == "host.exec" {
+		// The chat service closes the connection when its request is
+		// cancelled (Stop, the turn interrupted, the service going away);
+		// the command is killed with it. Nothing else arrives on the
+		// connection, so a read ending is the peer gone.
+		go func() {
+			_, _ = reader.ReadByte()
+			cancel()
+		}()
+	}
 	res, err := w.dispatch(ctx, r)
 	if err != nil {
 		res.Error = err.Error()
@@ -939,12 +953,21 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 // sandbox (a fresh chat's prepare, a resume, a fork's copy, a resize that
 // restarts) take PrepareTimeout, since on Kubernetes the pod may wait for
 // a node to be provisioned first; everything else gets two minutes.
-func (w *Worker) operationTimeout(op string) time.Duration {
-	switch op {
+func (w *Worker) operationTimeout(r Request) time.Duration {
+	switch r.Operation {
 	case "prepare", "start", "clone", "resize":
 		if w.PrepareTimeout > 0 {
 			return w.PrepareTimeout
 		}
+	case "host.exec":
+		// The command's own timeout (host.go) plus room to report it.
+		timeout := time.Duration(r.Timeout) * time.Second
+		if timeout <= 0 {
+			timeout = HostExecDefaultTimeout
+		}
+		return min(timeout, HostExecMaxTimeout) + 30*time.Second
+	case "host.put", "host.get":
+		return 11 * time.Minute
 	}
 	return 2 * time.Minute
 }
@@ -1313,9 +1336,9 @@ func (w *Worker) SweepIdle(ctx context.Context) error {
 }
 func (w *Worker) hasLivePreviewLocked(s *managedSandbox) bool {
 	for _, p := range w.managed.Publications {
-		if p.SandboxID == s.ID && p.State == "available" && p.Generation == s.Generation {
+		if p.SandboxID == s.ID && p.State == "available" && p.Generation == s.Generation && p.Upstream != UpstreamHost {
 			for _, a := range w.managed.Attachments {
-				if a.SandboxID == s.ID && a.Port == p.Port && a.State == "available" {
+				if a.SandboxID == s.ID && a.Port == p.Port && a.Upstream == "" && a.State == "available" {
 					return true
 				}
 			}
@@ -1582,7 +1605,7 @@ func (w *Worker) maintainSpares(ctx context.Context) {
 	w.mu.Unlock()
 	name := "wc-spare-" + randomID()[:16]
 	go func() {
-		createCtx, done := context.WithTimeout(ctx, w.operationTimeout("prepare"))
+		createCtx, done := context.WithTimeout(ctx, w.operationTimeout(Request{Operation: "prepare"}))
 		defer done()
 		var residency io.Closer
 		spec := RuntimeSpec{Name: name, Directory: "/home/agent/workspace", Spare: true, Resources: w.Limits.Default}

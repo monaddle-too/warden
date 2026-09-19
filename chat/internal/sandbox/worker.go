@@ -92,6 +92,14 @@ type Worker struct {
 	// listener per publication and http://127.0.0.1:<port>/ URLs.
 	PreviewListener net.Listener
 	PreviewAddress  string
+	// Jailbreak enables the host.* operations (host.go): the runner was
+	// started with --jailbreak (warden.json dogfood.jailbreak). HostHome
+	// is the owner's home directory host paths must stay under (the
+	// process's when empty).
+	Jailbreak bool
+	HostHome  string
+	hostExecs *hostExecs
+	hostOnce  sync.Once
 }
 
 func (w *Worker) parallelLimit() int {
