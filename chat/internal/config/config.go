@@ -149,7 +149,9 @@ type Kubernetes struct {
 	// SparePriorityClass is the PriorityClass of warm spare pods (the
 	// chart's, value -10): a sandbox pod that finds no room preempts a
 	// spare and lands in its slot instead of waiting for a node, and the
-	// runner replaces the spare. Spares have no priority class when unset.
+	// runner replaces the spare. The policy service's canaries carry it
+	// too, so a policy restart never evicts a spare. Spares and canaries
+	// have no priority class when unset.
 	SparePriorityClass string `json:"sparePriorityClass,omitempty"`
 }
 

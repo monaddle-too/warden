@@ -71,9 +71,19 @@ func TestCanarySpecIsAdmissible(t *testing.T) {
 			t.Fatalf("%s: command: %v", role, pod.Spec.Containers[0])
 		}
 	}
-	i = newInspector(t, f, func(o *Options) { o.Canary.Image = "registry.example/busybox:1.37" })
+	if i.canarySpec(CanaryDeny, "x", nil).Spec.PriorityClassName != "" {
+		t.Fatal("a canary has a priority class with none configured")
+	}
+	i = newInspector(t, f, func(o *Options) {
+		o.Canary.Image = "registry.example/busybox:1.37"
+		o.Canary.PriorityClass = "warden-spare"
+	})
 	if i.canarySpec(CanaryDeny, "x", nil).Spec.Containers[0].Image != "registry.example/busybox:1.37" {
 		t.Fatal("canary image not configurable")
+	}
+	// The spares' priority class, so a canary never evicts a spare.
+	if i.canarySpec(CanaryGateway, "x", nil).Spec.PriorityClassName != "warden-spare" {
+		t.Fatal("canary priority class not applied")
 	}
 }
 

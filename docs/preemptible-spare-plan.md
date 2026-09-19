@@ -97,7 +97,8 @@ the background (where the node boot is felt by nobody). One paid slot
     ; it ran 24 s later on the same node, the probe having been deleted
     by then (with the probe kept, it would have booted a node in the
     background).
-  Nothing remains on the branch. Follow-ups noted, not done: the canaries
-  could carry the spare's priority too (they are short-lived), so a
-  policy restart does not evict the spare; and `Preempted` could get an
-  `EventHint`.
+- 2026-09-19: the canaries carry the spare's priority class
+  (`CanaryOptions.PriorityClass` from `kubernetes.sparePriorityClass`),
+  so a policy restart no longer evicts the spare; a canary that finds no
+  room waits for a node inside its 3-minute bound, as it already did on
+  an empty cluster. Follow-up not done: an `EventHint` for `Preempted`.

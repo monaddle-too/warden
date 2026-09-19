@@ -40,6 +40,12 @@ type CanaryOptions struct {
 	// PollInterval is how often a canary's phase is read; two seconds when
 	// zero.
 	PollInterval time.Duration
+	// PriorityClass is the canaries' PriorityClass: the warm spares' (a
+	// negative value that never preempts), so a canary that finds no room
+	// waits for a node instead of evicting a spare, whose replacement
+	// would then boot a node for nothing at every policy restart. None
+	// when empty.
+	PriorityClass string
 }
 
 const (
@@ -169,6 +175,7 @@ func (i *Inspector) canarySpec(role, suffix string, env []api.EnvVar) *api.Pod {
 	return &api.Pod{
 		Metadata: api.ObjectMeta{Name: name, Namespace: i.o.Namespace, Labels: labels},
 		Spec: api.PodSpec{
+			PriorityClassName:             i.o.Canary.PriorityClass,
 			RuntimeClassName:              api.String(i.o.RuntimeClass),
 			AutomountServiceAccountToken:  api.Bool(false),
 			RestartPolicy:                 "Never",

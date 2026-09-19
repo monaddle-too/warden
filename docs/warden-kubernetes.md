@@ -1078,7 +1078,9 @@ pod that finds no node with room preempts it and starts in its slot in
 seconds — measured 3 s from creation to Running on 2026-09-19 — while the
 runner notices the spare's guest is gone (`ResidencyChecker.Resident`,
 looked at every 10 s and at adoption) and replaces it, which is where the
-node boot now happens, watched by nobody. One paid slot serves whichever
+node boot now happens, watched by nobody. The policy service's two
+startup canaries carry the same class (`CanaryOptions.PriorityClass`),
+since at priority 0 they evicted the spare at every policy restart. One paid slot serves whichever
 arrives first; a fresh chat that arrives within the ~2 minutes after a
 resume took the spare waits for the replacement.
 
