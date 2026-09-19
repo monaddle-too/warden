@@ -79,6 +79,9 @@ func (w *claudeWorker) initModel() string {
 }
 
 func (w *claudeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
+	if r.Operation == "health" {
+		return sandbox.Response{}, nil // the refresher's, not a chat's (fakeWorker)
+	}
 	w.mu.Lock()
 	w.requests = append(w.requests, r)
 	aside, oneshot, gate := w.aside, w.oneshot, w.oneshotGate

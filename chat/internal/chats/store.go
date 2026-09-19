@@ -466,6 +466,27 @@ func (s *Store) Snapshot() State {
 	return st
 }
 
+// Chat is an independent copy of one chat, or nil: the copy costs that
+// chat's size, not the store's, so the paths that act on one chat (a
+// runner call, a route) do not decode every other chat first.
+func (s *Store) Chat(id string) *Chat {
+	s.mu.Lock()
+	c := s.state.chat(id)
+	var b []byte
+	if c != nil {
+		b, _ = json.Marshal(c)
+	}
+	s.mu.Unlock()
+	if b == nil {
+		return nil
+	}
+	var out Chat
+	if json.Unmarshal(b, &out) != nil {
+		return nil
+	}
+	return &out
+}
+
 // Version is the count of mutations so far; Wait returns once it exceeds
 // since, or ctx ends.
 func (s *Store) Version() uint64 {

@@ -521,7 +521,7 @@ func (e *Engine) Typing(id string, actor cv.Actor) error {
 	if actor.PrincipalID == "" {
 		actor.PrincipalID = "owner"
 	}
-	if e.Store.Snapshot().chat(id) == nil {
+	if e.Store.Chat(id) == nil {
 		return errors.New("chat not found")
 	}
 	label := actor.Name
@@ -965,7 +965,7 @@ func (e *Engine) endSession(ctx context.Context, id string) {
 func (e *Engine) awaitInterrupted(ctx context.Context, id string) bool {
 	deadline := time.Now().Add(interruptGrace)
 	for {
-		if c := e.Store.Snapshot().chat(id); c == nil || c.Status != "stopping" {
+		if c := e.Store.Chat(id); c == nil || c.Status != "stopping" {
 			return true
 		}
 		if time.Now().After(deadline) {
@@ -979,8 +979,7 @@ func (e *Engine) awaitInterrupted(ctx context.Context, id string) bool {
 	}
 }
 func (e *Engine) Runtime(ctx context.Context, id, op string) (sandbox.Response, error) {
-	st := e.Store.Snapshot()
-	c := st.chat(id)
+	c := e.Store.Chat(id)
 	if c == nil {
 		return sandbox.Response{}, errors.New("chat not found")
 	}
@@ -1490,7 +1489,7 @@ func (e *Engine) settleTurn(parent context.Context, id string, a *activeRun) {
 // background: the runner serialises it behind a creation in flight, which
 // can take minutes on a cluster, and the run must not wait for that.
 func (e *Engine) reportActivity(ctx context.Context, id string) {
-	c := e.Store.Snapshot().chat(id)
+	c := e.Store.Chat(id)
 	if c == nil {
 		return
 	}
@@ -2090,7 +2089,7 @@ func (e *Engine) ConfigureAgentAndRelease(ctx context.Context, id, provider, mod
 	if model == "" {
 		model = e.DefaultModel(provider)
 	}
-	if current := e.Store.Snapshot().chat(id); current != nil && current.Provider == "claude" && provider == "claude" && model != current.Model {
+	if current := e.Store.Chat(id); current != nil && current.Provider == "claude" && provider == "claude" && model != current.Model {
 		if client := e.liveClient(id); client != nil {
 			if err := e.validateAgent(provider, model); err != nil {
 				return err

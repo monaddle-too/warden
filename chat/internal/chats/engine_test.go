@@ -63,6 +63,11 @@ type fakeWorker struct {
 func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if r.Operation == "health" {
+		// The size offer (Engine.refreshLimits) is no chat's request and
+		// comes whenever the refresher runs; tests index the requests.
+		return sandbox.Response{}, nil
+	}
 	f.requests = append(f.requests, r)
 	if f.fail {
 		return sandbox.Response{}, errors.New("unverified sandbox")
@@ -325,9 +330,6 @@ func TestRunStreamingSteeringResume(t *testing.T) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, r := range w.requests {
-		if r.Operation == "health" {
-			continue // the size offer (refreshLimits) is no chat's request
-		}
 		if r.ProjectID != "warden-local" || r.PrincipalID != "owner" || r.ChatID != id || r.SandboxID == "" {
 			t.Fatalf("missing trusted binding: %+v", r)
 		}

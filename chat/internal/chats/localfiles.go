@@ -113,7 +113,7 @@ func (h *HTTP) localPathsHTTP(w http.ResponseWriter, r *http.Request, chatID str
 		http.Error(w, "path query too long", 400)
 		return
 	}
-	if h.Engine.Store.Snapshot().chat(chatID) == nil {
+	if h.Engine.Store.Chat(chatID) == nil {
 		http.Error(w, "chat not found", 404)
 		return
 	}
@@ -241,7 +241,7 @@ func (h *HTTP) attachLocalHTTP(w http.ResponseWriter, r *http.Request, chatID st
 		http.Error(w, errNoLocalFiles.Error(), 403)
 		return
 	}
-	c := h.Engine.Store.Snapshot().chat(chatID)
+	c := h.Engine.Store.Chat(chatID)
 	if c == nil {
 		http.Error(w, "chat not found", 404)
 		return
