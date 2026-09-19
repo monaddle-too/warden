@@ -65,9 +65,15 @@ pushed), fetched the sbt launcher from Maven Central and compiled
 `wartremover-annotations`, `logging-entries` and `daml-adjustable-clock`;
 spend $1.50 for two turns.
 
+## Progress
+
+- 2026-09-19: da9ea3d deployed to `~/.warden/release`; the same chat
+  printed the new `JAVA_TOOL_OPTIONS` (the gateway's host and port), fetched
+  the 21 MB semanticdb jar with a 200 (the live audit log holds the
+  `http.response.started` / `http.response` pair with `passthrough`), and
+  compiled `wartremover-annotations` with semanticdb on, the wrapper's
+  proxy override removed. Merged to main 773730a.
+
 ## Remaining
 
-- Deploy this branch to `~/.warden` and re-run the compile with semanticdb
-  enabled (the 50 MB jar) and without the agent's wrapper, to see fixes 2
-  and 3 live.
-- Merge to main.
+- Nothing for the fixes. GKE and OVH do not carry them yet.
