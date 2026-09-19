@@ -53,6 +53,11 @@ func (c *cli) start(args []string) error {
 	if _, err = os.Stat(path); err != nil {
 		return fmt.Errorf("%s: %w; run `warden install` first", path, err)
 	}
+	if !*serviceMode && !*detachedChild {
+		if err = c.execInstanceRelease(cfg.Paths.State, args); err != nil {
+			return err
+		}
+	}
 	if *jailbreak && !cfg.JailbreakAllowed() {
 		return config.ErrJailbreakRefused
 	}
@@ -605,4 +610,38 @@ func namespaceEnv(env []string, privateHome string) []string {
 		out = append(out, d.env+"="+filepath.Join(privateHome, d.dir))
 	}
 	return out
+}
+
+// releaseReexecEnv marks a launcher that already re-executed itself into
+// an instance's release, so the child never loops.
+const releaseReexecEnv = "WARDEN_RELEASE_REEXEC"
+
+// execInstanceRelease replaces this process with the instance's own
+// release (<state>/release/bin/warden, the link `warden release install`
+// and `release use` repoint) when that is a different binary from the one
+// running: `warden start --instance inner` from another instance's
+// launcher then runs the build installed into inner, not the caller's.
+// The first dogfood loop started the inner instance with the outer
+// launcher's binary and the release column of `instance list` disagreed
+// with the running process. Without a release link (a checkout's
+// dist/chat/warden, a test) nothing happens.
+func (c *cli) execInstanceRelease(state string, args []string) error {
+	if os.Getenv(releaseReexecEnv) != "" || c.execve == nil {
+		return nil
+	}
+	release := filepath.Join(state, "release", "bin", "warden")
+	target, err := filepath.EvalSymlinks(release)
+	if err != nil {
+		return nil
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	if self, err = filepath.EvalSymlinks(self); err != nil || self == target {
+		return nil
+	}
+	fmt.Fprintf(c.stderr, "warden: running the instance's release %s\n", filepath.Base(filepath.Dir(filepath.Dir(target))))
+	env := append(os.Environ(), releaseReexecEnv+"=1")
+	return c.execve(target, append([]string{target, "start"}, args...), env)
 }

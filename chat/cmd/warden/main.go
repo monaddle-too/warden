@@ -23,6 +23,7 @@ import (
 	"golang.org/x/term"
 	"io"
 	"os"
+	"syscall"
 
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/release"
@@ -43,6 +44,9 @@ type cli struct {
 	stdout   io.Writer
 	stderr   io.Writer
 	terminal bool // stdin is an interactive terminal
+	// execve replaces the process (start re-executing an instance's own
+	// release); nil never re-executes (tests).
+	execve   func(path string, argv, env []string) error
 	openFn   func(url string) error
 	notifyFn func(title, body string) error
 	// serviceFn supplies the service manager for a state directory (nil:
@@ -69,7 +73,7 @@ func (c *cli) notifyDesktop(title, body string) error {
 }
 
 func main() {
-	c := &cli{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, terminal: isTerminal(os.Stdin)}
+	c := &cli{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, terminal: isTerminal(os.Stdin), execve: syscall.Exec}
 	os.Exit(c.run(os.Args[1:]))
 }
 
