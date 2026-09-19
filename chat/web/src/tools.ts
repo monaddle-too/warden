@@ -163,9 +163,66 @@ export function diffCounts(segments: DiffSegment[]): {
   return { additions, deletions };
 }
 
-/* The card's title: the entry's text, or the tool's name. */
+/* The card's title: the entry's text, or the tool's name; a host tool
+   (chats/host.go) in its own terms — the command, the copy's paths, the
+   port — since its entry text is only "warden · host_run". */
 export function toolTitle(entry: Entry): string {
-  return entry.text || entry.tool?.name || "Agent activity";
+  const tool = entry.tool;
+  if (tool?.target === "host") {
+    const input = tool.input ?? {};
+    const str = (k: string) => (typeof input[k] === "string" ? input[k] : "");
+    switch (tool.name) {
+      case "host_run":
+        return str("command") || "host command";
+      case "host_put":
+        return `${str("from")} → ${str("to")}`;
+      case "host_get":
+        return `${str("from")} → ${str("to")}`;
+      case "host_expose":
+        return `Expose host port ${String(input.port ?? "")}`.trim();
+      case "host_status":
+        return "Host status";
+    }
+  }
+  return entry.text || tool?.name || "Agent activity";
+}
+
+/* What a host call came to (chats/host.go), read from its result: a
+   command's output with its exit status and whether it timed out, an
+   exposure's URL, a copy's size. `text` is the raw detail when the
+   result is not the tool's JSON (an error, a refusal). */
+export type HostResult = {
+  output?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  url?: string;
+  bytes?: number;
+  text?: string;
+};
+export function hostResult(detail: string): HostResult {
+  if (!detail) return {};
+  try {
+    const v = JSON.parse(detail) as Record<string, unknown>;
+    if (!v || typeof v !== "object") return { text: detail };
+    const out: HostResult = {};
+    if (typeof v.output === "string") out.output = v.output;
+    if (typeof v.exitCode === "number") out.exitCode = v.exitCode;
+    if (typeof v.timedOut === "boolean") out.timedOut = v.timedOut;
+    if (typeof v.url === "string") out.url = v.url;
+    if (typeof v.bytes === "number") out.bytes = v.bytes;
+    if (!Object.keys(out).length) out.text = detail;
+    return out;
+  } catch {
+    return { text: detail };
+  }
+}
+
+/* The status a host command's card shows beside its title: "exit 3",
+   "timed out", "" for success. */
+export function hostStatus(result: HostResult): string {
+  if (result.timedOut) return "timed out";
+  if (result.exitCode) return `exit ${result.exitCode}`;
+  return "";
 }
 
 /* What a subagent's card says about its work: how many tool calls its
@@ -288,7 +345,9 @@ export function readCount(read: ToolRead): string {
         ? `${read.width}×${read.height}`
         : "image";
     case "pdf":
-      return read.pages ? `${read.pages} page${read.pages === 1 ? "" : "s"}` : "PDF";
+      return read.pages
+        ? `${read.pages} page${read.pages === 1 ? "" : "s"}`
+        : "PDF";
     case "notebook": {
       const n = read.cells?.length ?? 0;
       return `${n} cell${n === 1 ? "" : "s"}`;

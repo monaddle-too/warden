@@ -264,6 +264,7 @@ export function WorkspacePanel({
   onChanges,
   limits,
   owner = false,
+  jailbreak = false,
 }: {
   chat: Chat;
   workspace?: Environment;
@@ -273,6 +274,9 @@ export function WorkspacePanel({
   limits?: ResourceLimits;
   // The owner may change the workspace's network access.
   owner?: boolean;
+  // This Warden has dogfood.jailbreak: the owner may give the workspace
+  // host access (chats/host.go).
+  jailbreak?: boolean;
   documentReviews?: DocumentProposal[];
   onSelectChat: (id: string) => void;
   onShareDocuments: () => void;
@@ -345,6 +349,8 @@ export function WorkspacePanel({
   const state = ws?.deleted ? "deleted" : ws?.runtime?.state || "";
   // The workspace's own network access; "" follows the install.
   const network: NetworkMode = ws?.network ?? chat.network ?? "";
+  // Host access (chats/host.go): shown when on, or when it could be.
+  const jailbroken = ws?.jailbroken ?? chat.jailbroken ?? false;
   // The size in force: the runner's record, else what the first chat asked
   // for, else the runner's default.
   const current: Resources = ws?.resources ??
@@ -653,6 +659,52 @@ export function WorkspacePanel({
       )}
       {ws?.pod && !ws.deleted && (
         <Pod pod={ws.pod} now={now} events={!starting} />
+      )}
+      {!ws?.deleted && (jailbroken || (owner && jailbreak)) && (
+        <section className="workspace-section">
+          <h2>
+            Host access
+            {jailbroken && (
+              <span
+                className="jailbroken-badge"
+                title="Drawn by Warden: the agent of this workspace can run commands on this computer as you"
+              >
+                JAILBROKEN
+              </span>
+            )}
+            {owner && (jailbroken || jailbreak) && (
+              <button
+                className="ghost"
+                disabled={!!busy}
+                title={
+                  jailbroken
+                    ? "Take host access away; the tools disappear when the agent's session next starts, and every call is refused at once"
+                    : "Let the agent run commands on this Mac as you"
+                }
+                onClick={() =>
+                  void act(
+                    "jailbreak",
+                    `environments/${chat.sandboxID}/jailbreak`,
+                    {
+                      jailbreak: !jailbroken,
+                    },
+                  )
+                }
+              >
+                {busy === "jailbreak"
+                  ? "…"
+                  : jailbroken
+                    ? "Turn off"
+                    : "Turn on…"}
+              </button>
+            )}
+          </h2>
+          <p className="muted">
+            {jailbroken
+              ? "The agent can run commands on this Mac as you (host_run), copy files each way (host_put, host_get) and expose a host port as a preview (host_expose). Every call is a HOST card here, follows the permission rules, and is in the audit log."
+              : "Off. The agent stays in its sandbox."}
+          </p>
+        </section>
       )}
       <section className="workspace-section">
         <h2>Chats in this workspace</h2>

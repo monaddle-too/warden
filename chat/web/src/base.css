@@ -127,6 +127,22 @@ button.chip[aria-pressed="true"] {
   border-color: var(--accent-line);
   color: var(--accent-text);
 }
+/* The JAILBROKEN mark of a workspace with host access and the HOST mark
+   of a call that acted on this computer (chats/host.go): drawn by
+   Warden, never by the model. */
+.jailbroken-badge {
+  flex: none;
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 4px;
+  color: #fff;
+  background: var(--danger, #c0392b);
+  text-transform: uppercase;
+}
 .status-dot {
   width: 8px;
   height: 8px;

@@ -30,6 +30,8 @@ import {
   foldText,
   formatElapsed,
   hitCount,
+  hostResult,
+  hostStatus,
   inputText,
   lineCount,
   readCount,
@@ -85,9 +87,14 @@ export const ToolSummary = memo(function ToolSummary({
   steps?: Entry[];
 }) {
   const tool = entry.tool!;
-  const Icon = ICONS[tool.kind] ?? Wrench;
+  const Icon = tool.target === "host" ? Terminal : (ICONS[tool.kind] ?? Wrench);
   const running = toolRunning(entry);
   const failed = toolFailed(tool);
+  // A host command's own outcome (chats/host.go): exit 3, timed out.
+  const host =
+    tool.target === "host" && tool.name === "host_run" && !running && !failed
+      ? hostStatus(hostResult(entry.detail))
+      : "";
   const now = useNow(tool.kind === "task" && running);
   const counts = useMemo(() => {
     if (tool.kind === "task") {
@@ -115,7 +122,9 @@ export const ToolSummary = memo(function ToolSummary({
         return `${count} ${unit}`;
       }
       case "read":
-        return tool.read ? readCount(tool.read) : `${lineCount(entry.detail)} lines`;
+        return tool.read
+          ? readCount(tool.read)
+          : `${lineCount(entry.detail)} lines`;
       default:
         return "";
     }
@@ -128,11 +137,24 @@ export const ToolSummary = memo(function ToolSummary({
           {senderLabel(entry.sender)}
         </span>
       )}
+      {tool.target === "host" && (
+        // Drawn by Warden for a host tool, never by the model: the call
+        // acted on this machine as the owner.
+        <span
+          className="jailbroken-badge"
+          title="Ran on this computer, outside the sandbox, as you"
+        >
+          HOST
+        </span>
+      )}
       <Icon size={13} className="tool-icon" aria-hidden="true" />
-      <span className={`tool-title${tool.kind === "command" ? " mono" : ""}`}>
+      <span
+        className={`tool-title${tool.kind === "command" || (tool.target === "host" && tool.name !== "host_status") ? " mono" : ""}`}
+      >
         {toolTitle(entry)}
       </span>
       {counts && <span className="tool-count">{counts}</span>}
+      {host && <span className="tool-failed">{host}</span>}
       {tool.background && (
         <span className="tool-badge" title="Runs in the background">
           background
@@ -229,6 +251,7 @@ export const ToolBody = memo(function ToolBody({
   const paths = tool.paths ?? [];
   const input =
     tool.kind === "mcp" || tool.kind === "other" ? inputText(tool.input) : "";
+  if (tool.target === "host") return <HostBody entry={entry} />;
   if (tool.kind === "todo")
     return (
       <div className="tool-body tool-todo">
@@ -322,6 +345,60 @@ export const ToolBody = memo(function ToolBody({
     </div>
   );
 });
+
+/* A host tool's card body (chats/host.go): a command's cwd and its output
+   tail with the exit status, a copy's paths and size, an exposure's URL,
+   a status call's or a refusal's text. Every value is a text node. */
+function HostBody({ entry }: { entry: Entry }) {
+  const tool = entry.tool!;
+  const running = toolRunning(entry);
+  const failed = toolFailed(tool);
+  const input = tool.input ?? {};
+  const result = useMemo(() => hostResult(entry.detail), [entry.detail]);
+  const str = (k: string) => (typeof input[k] === "string" ? input[k] : "");
+  return (
+    <div className="tool-body tool-host">
+      <p className="tool-meta">
+        <span className="muted">on this computer</span>
+        {tool.name === "host_run" && str("cwd") && (
+          <>
+            {" "}
+            · in <code>{str("cwd")}</code>
+          </>
+        )}
+        {tool.name === "host_expose" && result.url && (
+          <>
+            {" "}
+            ·{" "}
+            <a href={result.url} target="_blank" rel="noopener noreferrer">
+              {result.url}
+            </a>
+          </>
+        )}
+        {(tool.name === "host_put" || tool.name === "host_get") &&
+          result.bytes !== undefined && (
+            <>
+              {" "}
+              · {result.bytes} bytes{" "}
+              {tool.name === "host_put"
+                ? "to this computer"
+                : "into the sandbox"}
+            </>
+          )}
+      </p>
+      {tool.name === "host_run" && result.output !== undefined ? (
+        <Folded text={result.output} running={running} />
+      ) : failed || result.text ? (
+        <Folded text={result.text ?? entry.detail} />
+      ) : tool.name === "host_status" ? (
+        <Folded text={entry.detail} />
+      ) : null}
+      {tool.name === "host_run" && !running && result.output === "" && (
+        <p className="tool-meta muted">No output</p>
+      )}
+    </div>
+  );
+}
 
 /* A read that returned no text: an image (its stored copy as a thumbnail
    that opens in the lightbox, or its description when it could not be
