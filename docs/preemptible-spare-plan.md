@@ -77,3 +77,25 @@ the background (where the node boot is felt by nobody). One paid slot
   `TestPreemptedSpareIsReplacedAndNeverAdopted`,
   `TestResidentSeesAPreemptedPod`. Feature map row for spares corrected
   (it named `sandbox/pool.go`, which does not exist).
+- 2026-09-19: merged to main c34fcb4 (fast-forward; Go, web and chart
+  suites green) and **deployed to GKE** (image
+  `v0.1.0-alpha.13-101-gc34fcb4`,
+  helm rev 33). Step 5's live watch:
+  - At the deploy the runner replaced its spare (a restart always does);
+    the policy service's two startup canaries (priority 0, same
+    namespace) preempted the spare still being prepared, and the
+    autoscaler scaled the emptied node down while the next spare was
+    landing on it (FailedMount, evicted); `maintainSpares`' own 30 s
+    retry recovered without the new code. Not a bug, but every policy
+    restart now costs one spare replacement.
+  - A 1-CPU sandbox-shaped probe in the pinned zone landed beside the
+    spare in 5 s (the node still had headroom): no preemption needed.
+  - A 3-CPU probe that fit only by evicting the spare: `Insufficient
+    cpu` → `Preempted` the ready spare → Scheduled 1 s later, Running at
+    5 s. 11 s after that the runner logged "guest gone (preempted);
+    replacing it", the old claim was removed and a new spare was Pending
+    (its node booting in the background); it ran ~2 minutes later.
+  Nothing remains on the branch. Follow-ups noted, not done: the canaries
+  could carry the spare's priority too (they are short-lived), so a
+  policy restart does not evict the spare; and `Preempted` could get an
+  `EventHint`.
