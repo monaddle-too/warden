@@ -189,3 +189,39 @@ func TestReviewsReconciledWithPolicyService(t *testing.T) {
 }
 
 func jsonContains(b []byte, s string) bool { return strings.Contains(string(b), s) }
+
+// view_ci_results is a read: the policy's pr_checks answer comes back in
+// the tool result at once, no review is recorded.
+func TestViewCIResultsAnswersAtOnce(t *testing.T) {
+	e, _, c := portEngine(t, "")
+	sharing, socket := newFakeSharing(t)
+	e.PolicyAddress = "unix://" + socket
+	sharing.results["pr_checks"] = map[string]any{"repository": "owner/repo", "pull_request": 9, "conclusion": "failure", "failed_jobs": []any{map[string]any{"name": "Go", "errors": []any{"##[error]undefined: nope"}}}}
+	client, replies := pipeAgent(t)
+	if err := e.sharingTool(context.Background(), c, client, agent.Frame{ID: json.RawMessage(`8`), Params: map[string]any{"tool": "view_ci_results", "arguments": map[string]any{"repository": "owner/repo", "pull_request": 9}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(replies()) != 1 {
+		t.Fatalf("replies: %v", replies())
+	}
+	var result map[string]any
+	_ = json.Unmarshal(replies()[0].Result, &result)
+	text := agent.String(agent.Map(result["contentItems"].([]any)[0])["text"])
+	if result["success"] != true || !strings.Contains(text, `"conclusion":"failure"`) || !strings.Contains(text, "undefined: nope") {
+		t.Fatalf("reply: %s", replies()[0].Result)
+	}
+	op := sharing.op(0)
+	if op["action"] != "pr_checks" || agent.Map(op["data"])["repository"] != "owner/repo" || agent.Map(op["data"])["pull_request"] != 9.0 || agent.Map(op["data"])["chatID"] != c.ID {
+		t.Fatalf("op: %v", op)
+	}
+	if len(e.Store.Snapshot().chat(c.ID).Reviews) != 0 {
+		t.Fatal("a read recorded a review")
+	}
+	if err := e.sharingTool(context.Background(), c, client, agent.Frame{ID: json.RawMessage(`9`), Params: map[string]any{"tool": "view_ci_results", "arguments": map[string]any{"repository": "owner/repo", "bogus": 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	result = nil
+	if r := replies(); len(r) != 2 || json.Unmarshal(r[1].Result, &result) != nil || result["success"] != false {
+		t.Fatalf("unknown field accepted: %v", replies())
+	}
+}

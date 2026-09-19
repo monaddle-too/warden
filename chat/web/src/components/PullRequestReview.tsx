@@ -27,6 +27,9 @@ type Proposal = {
   base_sha: string;
   head: string;
   files: FileChange[];
+  /* An update to a pull request Warden published: the commit lands on
+     head (the pull request's branch) instead of opening a new one. */
+  pull_request?: { number: number; base: string; url: string };
 };
 type Review = {
   request_id: string;
@@ -252,10 +255,21 @@ export function PullRequestReview({
           {!p && !error && <p>Loading the saved proposal…</p>}
           {p && (
             <>
-              <p className="pr-branches">
-                <code>{p.base}</code> ← <code>{p.head}</code>
-                <span>Base commit {p.base_sha.slice(0, 12)}</span>
-              </p>
+              {p.pull_request ? (
+                <p className="pr-branches">
+                  Update to{" "}
+                  <a href={p.pull_request.url} target="_blank" rel="noreferrer">
+                    #{p.pull_request.number}
+                  </a>
+                  : a commit onto <code>{p.head}</code>
+                  <span>Current head {p.base_sha.slice(0, 12)}</span>
+                </p>
+              ) : (
+                <p className="pr-branches">
+                  <code>{p.base}</code> ← <code>{p.head}</code>
+                  <span>Base commit {p.base_sha.slice(0, 12)}</span>
+                </p>
+              )}
               <nav className="pr-tabs" aria-label="Pull request preview">
                 <button
                   aria-pressed={tab === "description"}

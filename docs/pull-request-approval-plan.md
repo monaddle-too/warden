@@ -27,3 +27,34 @@ Implementation complete. Validation: full Python suite 327 tests passed before t
 Acceptance completed locally with Claude and system Chrome. Claude submitted title/body/full text file through request_pull_request. Warden fetched main at f38fee2e7201 and displayed a +3-line diff. Edited the body in the review textarea and confirmed the rendered Markdown immediately matched. Rejected with feedback; the waiting tool returned rejected + edited_body + feedback. Claude acknowledged the exact edited body and returned to idle without resubmitting. No actual branch or PR was published. Temporary repository grant removed and acceptance conversation archived after verification.
 
 All 11 targeted tests pass, including denying an agent's direct POST with an unreviewed body (the approval grants no sandbox write access). Earlier full Python suite: 327 passing; Go race suite/vet and latest chat race tests pass; frontend production build passes. Source/runtime preserved at /Users/danielporter/Documents/warden-workspace/.local/warden-pr-approval-source. The local service remains on http://127.0.0.1:18781. Production Warden was not deployed. No user action is pending.
+
+
+## Updates and CI results (2026-09-19, docs/dogfood-loop-plan.md)
+
+Two affordances the dogfood loop lacked: an agent could open a pull
+request but not push a fix to it, and could not see whether it built.
+
+- **Update a pull request.** `request_pull_request` with `pull_request: N`
+  (and no `base`) proposes files against the open pull request's current
+  head; Warden reads the pull request (`pulls/get`), accepts only a head
+  branch it published itself (`warden/pr-…`, same repository), computes
+  the diff from that head, and stores the snapshot as before. Approval
+  (same review, same exact-body rule) creates the tree and a commit whose
+  parent is the reviewed head and fast-forwards the branch with
+  `git/update-ref` (`force: false`; a branch that moved is refused before
+  and by GitHub). The commit message is the reviewed title and body; the
+  pull request's description is not rewritten. No new branch, no new pull
+  request; the result carries `number`, `url`, `commit`.
+- **View CI results.** `view_ci_results {repository, pull_request | ref}` is
+  a read, answered at once: the head commit's check runs
+  (`checks/list-for-ref`), and for each failed GitHub Actions job its
+  steps (`actions/get-job-for-workflow-run`) and the tail of its log with
+  the `##[error]` lines (`actions/download-job-logs-for-workflow-run`,
+  the redirect followed without the credential). Owner credential, no
+  token to the agent, the repository must be selected for the chat. The
+  answer says whether checks are pending, none, success or failure and
+  what to do next.
+- **CI on pull requests.** `.github/workflows/ci.yml` (gofmt, vet,
+  `go test ./...`; web install, build, test) runs on every pull request on
+  the Mac runner, so a proposal that does not build shows up as a failed
+  check the agent can read.

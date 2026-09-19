@@ -108,3 +108,16 @@ widening what the jailbreak already allows.
   installed into `dogfood` instead (its config keeps 32), from GitHub with
   the checksum check. Once 3960909 lands, the next tag carries it and
   `warden release install <tag>` into `~/.warden` is the remaining step.
+
+## Round 2: a pull request that does not build
+
+Two affordances the loop lacked (the owner, 2026-09-19): the agent could
+open a pull request but not push a fix to it, and could not see whether it
+built. Added (details in `docs/pull-request-approval-plan.md` § Updates and
+CI results): `request_pull_request {pull_request: N}` updates a pull
+request Warden published (reviewed against its head, committed onto its
+`warden/pr-…` branch with `git/update-ref`), `view_ci_results` reads the
+check runs and failed jobs' steps and log tails, and
+`.github/workflows/ci.yml` builds and tests every pull request on the Mac
+runner so those checks exist. The task: a chat makes a Warden PR that does
+not build, reads the CI result, and pushes the fix to the same PR.

@@ -5,10 +5,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -122,6 +125,8 @@ func relevantEntries(call treeCall, root string, paths map[string]bool) (map[str
 type PullRequests struct {
 	s         *Sharing
 	Transport GitHubTransport
+	// Logs fetches a GitHub Actions job log for Checks; nil skips logs.
+	Logs LogTransport
 }
 
 type pullRow struct {
@@ -140,7 +145,7 @@ func newPullRequests(s *Sharing) (*PullRequests, error) {
 	if _, err := s.DB.Exec("UPDATE pull_requests SET status='failed', outcome=? WHERE status='publishing'", string(interrupted)); err != nil {
 		return nil, err
 	}
-	return &PullRequests{s: s, Transport: GitHubRequest}, nil
+	return &PullRequests{s: s, Transport: GitHubRequest, Logs: githubLogRequest}, nil
 }
 
 func (p *PullRequests) rowLocked(id string) (*pullRow, error) {
@@ -177,6 +182,9 @@ func (p *PullRequests) result(r *pullRow, preview bool) map[string]any {
 	_ = json.Unmarshal([]byte(r.proposal), &proposal)
 	out := map[string]any{"request_id": r.id, "kind": "pull_request", "chatID": r.chat, "sandboxID": r.sandbox,
 		"status": r.status, "repository": proposal["repository"], "title": proposal["title"], "head": proposal["head"]}
+	if update, ok := proposal["pull_request"].(map[string]any); ok {
+		out["pull_request"], out["update"] = update["number"], true
+	}
 	var outcome map[string]any
 	_ = json.Unmarshal([]byte(r.outcome), &outcome)
 	for k, v := range outcome {
@@ -279,18 +287,23 @@ func (p *PullRequests) Submit(data map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, valueErr(err.Error())
 	}
-	required := stringSet("chatID", "sandboxID", "callID", "repository", "base", "title", "body", "files")
-	present := map[string]bool{}
+	// base is the branch a new pull request targets; with pull_request
+	// (an update to a pull request Warden published) the proposal is
+	// against that pull request's head branch and base may be omitted.
+	required := stringSet("chatID", "sandboxID", "callID", "repository", "title", "body", "files")
+	optional := stringSet("images", "base", "pull_request")
 	for key := range data {
-		if key != "images" {
-			present[key] = true
+		if !required[key] && !optional[key] {
+			return nil, valueErr("Provide repository, base branch, title, body, and changed files")
 		}
 	}
-	if len(present) != len(required) {
-		return nil, valueErr("Provide repository, base branch, title, body, and changed files")
-	}
 	for key := range required {
-		if !present[key] {
+		if _, ok := data[key]; !ok {
+			return nil, valueErr("Provide repository, base branch, title, body, and changed files")
+		}
+	}
+	if _, ok := data["base"]; !ok {
+		if _, ok := data["pull_request"]; !ok {
 			return nil, valueErr("Provide repository, base branch, title, body, and changed files")
 		}
 	}
@@ -325,9 +338,36 @@ func (p *PullRequests) Submit(data map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	branch, err := proposalText(data["base"], 200, false)
-	if err != nil {
-		return nil, err
+	var branch string
+	var update map[string]any
+	if v, present := data["pull_request"]; present {
+		// An update: the change is reviewed against the pull request's
+		// current head and, approved, committed onto that branch. Only a
+		// branch Warden itself published (warden/pr-…) of an open pull
+		// request in this repository qualifies, so the write stays within
+		// what Warden created.
+		number, ok := asInt(v)
+		if !ok || number <= 0 {
+			return nil, valueErr("pull_request must be the number of an open pull request Warden published")
+		}
+		pr, err := p.api(repo, rid)("GET", "/pulls/"+strconv.FormatInt(number, 10), "pulls/get", nil)
+		if err != nil {
+			return nil, valueErr("Pull request #" + strconv.FormatInt(number, 10) + " could not be read in " + repo)
+		}
+		headRef, prBase, err := wardenPullHead(pr, repo)
+		if err != nil {
+			return nil, err
+		}
+		if given, _ := data["base"].(string); given != "" && given != prBase {
+			return nil, valueErr("base must be the pull request's base branch " + prBase + ", or omitted")
+		}
+		branch = headRef
+		update = map[string]any{"number": number, "base": prBase, "url": "https://github.com/" + repo + "/pull/" + strconv.FormatInt(number, 10)}
+	} else {
+		branch, err = proposalText(data["base"], 200, false)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if !branchShape.MatchString(branch) || strings.Contains(branch, "..") {
 		return nil, valueErr("invalid base branch")
@@ -555,6 +595,10 @@ func (p *PullRequests) Submit(data map[string]any) (map[string]any, error) {
 		return nil, err
 	}
 	proposal := map[string]any{"images": attachments, "repository": repo, "repository_id": rid, "owner": owner, "app_id": appID, "title": title, "body": body, "base": branch, "base_sha": base, "base_tree": tree, "head": "warden/pr-" + id[:24], "files": changes}
+	if update != nil {
+		// The reviewed commit lands on the pull request's own branch.
+		proposal["head"], proposal["pull_request"] = branch, update
+	}
 	encoded := mustJSON(proposal)
 	if len(encoded) > 4*proposalLimit {
 		return nil, valueErr("Rendered proposal exceeds review limit")
@@ -574,8 +618,11 @@ func (p *PullRequests) Submit(data map[string]any) (map[string]any, error) {
 	return p.result(r, false), nil
 }
 
-// Dispatch handles pr_state, pr_preview, pr_get and pr_resolve.
+// Dispatch handles pr_state, pr_preview, pr_get, pr_resolve and pr_checks.
 func (p *PullRequests) Dispatch(op string, data map[string]any) (map[string]any, error) {
+	if op == "pr_checks" {
+		return p.Checks(data)
+	}
 	p.s.mu.Lock()
 	defer p.s.mu.Unlock()
 	if op == "pr_state" {
@@ -755,7 +802,13 @@ func (p *PullRequests) Publish(id string) {
 			return err
 		}
 		phase = "creating commit"
-		commit, err := call("POST", "/git/commits", "git/create-commit", map[string]any{"message": proposal["title"], "tree": treeSHA, "parents": []any{baseSHA}})
+		message, _ := proposal["title"].(string)
+		if _, ok := proposal["pull_request"]; ok && strings.TrimSpace(body) != "" {
+			// An update's reviewed body is the commit message body: the
+			// pull request's own description is not rewritten.
+			message += "\n\n" + body
+		}
+		commit, err := call("POST", "/git/commits", "git/create-commit", map[string]any{"message": message, "tree": treeSHA, "parents": []any{baseSHA}})
 		if err != nil {
 			return err
 		}
@@ -773,6 +826,22 @@ func (p *PullRequests) Publish(id string) {
 		}
 		if current != baseSHA {
 			return valueErr("The base branch changed; submit a new proposal")
+		}
+		if update, ok := proposal["pull_request"].(map[string]any); ok {
+			// An update: fast-forward the pull request's branch to the
+			// reviewed commit (its parent is the reviewed head, so a moved
+			// branch is refused twice: by the check above and by GitHub).
+			phase = "updating branch"
+			if _, err = call("PATCH", "/git/refs/heads/"+quotePath(head), "git/update-ref", map[string]any{"sha": commitSHA, "force": false}); err != nil {
+				return err
+			}
+			number, _ := asInt(update["number"])
+			out["branch_url"] = "https://github.com/" + repo + "/tree/" + head
+			out["url"] = "https://github.com/" + repo + "/pull/" + strconv.FormatInt(number, 10)
+			out["number"] = number
+			out["commit"] = commitSHA
+			status = "published"
+			return nil
 		}
 		phase = "creating branch"
 		if _, err = call("POST", "/git/refs", "git/create-ref", map[string]any{"ref": "refs/heads/" + head, "sha": commitSHA}); err != nil {
@@ -819,3 +888,198 @@ func (p *PullRequests) Publish(id string) {
 }
 
 var _ = sql.ErrNoRows
+
+// wardenPullHead reads the branch an update proposal commits onto: the
+// pull request must be open, its head in this repository, and the branch
+// one Warden published (warden/pr-…). Returns the head ref and the base
+// branch name.
+func wardenPullHead(pr map[string]any, repo string) (head, base string, err error) {
+	if pr["state"] != "open" {
+		return "", "", valueErr("The pull request is not open")
+	}
+	headInfo, _ := pr["head"].(map[string]any)
+	headRepo, _ := headInfo["repo"].(map[string]any)
+	if lowerString(headRepo["full_name"]) != strings.ToLower(repo) {
+		return "", "", valueErr("The pull request's branch is in another repository")
+	}
+	head, _ = headInfo["ref"].(string)
+	if !strings.HasPrefix(head, "warden/pr-") || !branchShape.MatchString(head) {
+		return "", "", valueErr("Only a pull request Warden published (branch warden/pr-…) can be updated")
+	}
+	baseInfo, _ := pr["base"].(map[string]any)
+	base, _ = baseInfo["ref"].(string)
+	return head, base, nil
+}
+
+// LogTransport fetches one GitHub Actions job log (the API answers with
+// a redirect to a short-lived download URL) and returns its text.
+type LogTransport func(path, token string) (string, error)
+
+// githubLogRequest is the real log transport: the redirect is followed
+// once, the credential is not sent to the download host (net/http drops
+// Authorization across hosts), at most 4 MiB is read.
+func githubLogRequest(path, token string) (string, error) {
+	req, err := http.NewRequest("GET", "https://api.github.com"+path, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("User-Agent", "Warden-GitHub-App")
+	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", errors.New("GitHub is unavailable; retry the request")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", errors.New("the job log is not available (HTTP " + strconv.Itoa(resp.StatusCode) + ")")
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+// logTail keeps the last limit bytes of a log on a line boundary, and the
+// ##[error] lines wherever they are, so the agent reads why a job failed
+// without the whole transcript.
+func logTail(text string, limit int) (tail string, errorLines []string) {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "##[error]") && len(errorLines) < 20 {
+			errorLines = append(errorLines, strings.TrimSpace(line))
+		}
+	}
+	if len(text) > limit {
+		text = text[len(text)-limit:]
+		if i := strings.IndexByte(text, '\n'); i >= 0 {
+			text = text[i+1:]
+		}
+	}
+	return text, errorLines
+}
+
+var shaShape = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+
+// Checks answers view_ci_results: the check runs GitHub recorded for a
+// pull request's head (or a branch / commit), and for each failed GitHub
+// Actions job its steps and the tail of its log. A read with the owner's
+// credential, never a token for the agent; the repository must be
+// selected for the conversation.
+func (p *PullRequests) Checks(data map[string]any) (map[string]any, error) {
+	if p.s.GitHub == nil {
+		return nil, valueErr("GitHub is not connected")
+	}
+	repoText, err := proposalText(data["repository"], 201, false)
+	if err != nil {
+		return nil, err
+	}
+	repo := strings.ToLower(repoText)
+	rid, err := p.active(data, repo, nil)
+	if err != nil {
+		return nil, err
+	}
+	call := p.api(repo, rid)
+	out := map[string]any{"repository": repo}
+	ref := ""
+	if v, present := data["pull_request"]; present && v != nil {
+		number, ok := asInt(v)
+		if !ok || number <= 0 {
+			return nil, valueErr("pull_request must be a pull request number")
+		}
+		pr, err := call("GET", "/pulls/"+strconv.FormatInt(number, 10), "pulls/get", nil)
+		if err != nil {
+			return nil, valueErr("Pull request #" + strconv.FormatInt(number, 10) + " could not be read in " + repo)
+		}
+		headInfo, _ := pr["head"].(map[string]any)
+		ref, _ = headInfo["sha"].(string)
+		out["pull_request"], out["url"], out["state"] = number, "https://github.com/"+repo+"/pull/"+strconv.FormatInt(number, 10), pr["state"]
+		if !shaShape.MatchString(ref) {
+			return nil, valueErr("The pull request has no head commit")
+		}
+	} else {
+		ref, _ = data["ref"].(string)
+		ref = strings.TrimSpace(ref)
+		if ref == "" || !(shaShape.MatchString(ref) || (branchShape.MatchString(ref) && !strings.Contains(ref, ".."))) {
+			return nil, valueErr("Give pull_request (a number) or ref (a branch or commit)")
+		}
+	}
+	out["ref"] = ref
+	listing, err := call("GET", "/commits/"+quotePath(ref)+"/check-runs?per_page=100", "checks/list-for-ref", nil)
+	if err != nil {
+		return nil, valueErr("The checks of " + ref + " could not be read")
+	}
+	runs, _ := listing["check_runs"].([]any)
+	checks := []any{}
+	failed := []any{}
+	overall := "success"
+	if len(runs) == 0 {
+		overall = "none"
+	}
+	for _, item := range runs {
+		run, _ := item.(map[string]any)
+		output, _ := run["output"].(map[string]any)
+		app, _ := run["app"].(map[string]any)
+		status, _ := run["status"].(string)
+		conclusion, _ := run["conclusion"].(string)
+		entry := map[string]any{"name": run["name"], "status": status, "conclusion": conclusion, "url": run["html_url"], "started_at": run["started_at"], "completed_at": run["completed_at"], "title": output["title"], "summary": output["summary"]}
+		checks = append(checks, entry)
+		switch {
+		case status != "completed":
+			if overall != "failure" {
+				overall = "pending"
+			}
+		case conclusion == "failure" || conclusion == "timed_out" || conclusion == "cancelled" || conclusion == "action_required" || conclusion == "startup_failure":
+			overall = "failure"
+		}
+		failedRun := status == "completed" && (conclusion == "failure" || conclusion == "timed_out" || conclusion == "cancelled" || conclusion == "startup_failure")
+		if !failedRun || app["slug"] != "github-actions" {
+			continue
+		}
+		id, ok := asInt(run["id"])
+		if !ok {
+			continue
+		}
+		detail := map[string]any{"name": run["name"], "job_id": id, "url": run["html_url"], "conclusion": conclusion}
+		if job, err := call("GET", "/actions/jobs/"+strconv.FormatInt(id, 10), "actions/get-job-for-workflow-run", nil); err == nil {
+			steps := []any{}
+			stepList, _ := asList(job["steps"])
+			for _, s := range stepList {
+				step, _ := s.(map[string]any)
+				steps = append(steps, map[string]any{"name": step["name"], "status": step["status"], "conclusion": step["conclusion"]})
+			}
+			detail["steps"], detail["workflow_run"] = steps, job["run_id"]
+		}
+		if p.Logs != nil {
+			if token, err := p.token(repo, rid, "actions/download-job-logs-for-workflow-run"); err == nil {
+				if text, err := p.Logs("/repos/"+repo+"/actions/jobs/"+strconv.FormatInt(id, 10)+"/logs", token); err == nil {
+					detail["log_tail"], detail["errors"] = logTail(text, 16384)
+				} else {
+					detail["log_error"] = err.Error()
+				}
+			}
+		}
+		failed = append(failed, detail)
+	}
+	out["conclusion"], out["checks"], out["failed_jobs"] = overall, checks, failed
+	switch overall {
+	case "none":
+		out["hint"] = "No checks have been recorded for this commit yet; a workflow may still be queued. Check again in a minute."
+	case "pending":
+		out["hint"] = "Checks are still running; check again in a minute."
+	case "failure":
+		out["hint"] = "A check failed: read failed_jobs (steps and the log tail), fix the cause, and submit the fix with request_pull_request and pull_request set to update the same pull request."
+	}
+	return out, nil
+}
+
+// token is the credential one operation runs with, as api() obtains it.
+func (p *PullRequests) token(repo string, rid int64, operation string) (string, error) {
+	authorization, err := p.s.GitHub.Authorization(repo, operation, &rid)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(authorization, "Bearer "), nil
+}

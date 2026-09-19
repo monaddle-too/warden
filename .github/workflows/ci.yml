@@ -1,0 +1,64 @@
+name: CI
+# Builds and tests every pull request on the self-hosted Mac runner
+# (docs/ci-mac-runner.md): the Go services (vet + tests) and the web app
+# (build + tests). Its check runs are what a Warden chat reads with
+# view_ci_results after request_pull_request publishes or updates a pull
+# request (docs/dogfood-loop-plan.md), so a proposal that does not build
+# is visible to the agent that made it.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PNPM_VERSION: 11.27.0
+
+jobs:
+  go:
+    name: Go
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: chat/go.mod
+          cache: false
+      - name: gofmt, vet, test
+        working-directory: chat
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+          GOFLAGS: -mod=mod
+        run: |
+          set -eu
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "gofmt: $unformatted"; exit 1; fi
+          go vet ./...
+          go test ./...
+  web:
+    name: Web
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: pnpm via corepack
+        run: |
+          set -eu
+          corepack enable
+          corepack prepare "pnpm@${PNPM_VERSION}" --activate
+          pnpm --version
+      - name: install, build, test
+        run: |
+          set -eu
+          pnpm --dir chat/web install --frozen-lockfile
+          pnpm --dir chat/web build
+          pnpm --dir chat/web test

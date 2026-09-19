@@ -72,6 +72,10 @@ func GitHubReadCategory(operation string) (category string, ok bool) {
 	return "", false
 }
 
+// actionsRead: what view_ci_results reads (check runs, a job's steps and
+// its log); Warden performs these itself with the owner's credential.
+var actionsRead = stringSet("checks/list-for-ref", "actions/get-job-for-workflow-run", "actions/download-job-logs-for-workflow-run", "actions/list-jobs-for-workflow-run", "actions/list-workflow-runs-for-repo")
+
 var pullWrite = stringSet("pulls/create", "pulls/update", "pulls/merge", "pulls/create-review", "pulls/create-review-comment")
 
 // issuesWrite: the small writes Warden performs itself after a one-shot
@@ -104,6 +108,8 @@ func GitHubPermissions(operation string) (map[string]string, error) {
 		return map[string]string{"issues": "write", "metadata": "read"}, nil
 	case pullWrite[operation]:
 		return map[string]string{"pull_requests": "write", "metadata": "read"}, nil
+	case actionsRead[operation]:
+		return map[string]string{"checks": "read", "actions": "read", "metadata": "read"}, nil
 	}
 	return nil, errors.New("operation is not supported by the GitHub App broker")
 }

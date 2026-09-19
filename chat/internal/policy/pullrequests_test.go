@@ -515,3 +515,133 @@ func TestUnifiedDiffShape(t *testing.T) {
 		t.Fatal("identical diff not empty")
 	}
 }
+
+// An update proposal (pull_request set) is reviewed against the open pull
+// request's head and, approved, committed onto its warden/pr-… branch:
+// one tree, one commit, one ref update, no new branch or pull request.
+func TestUpdateProposalCommitsOntoTheWardenBranch(t *testing.T) {
+	f := newPRFixture(t)
+	var patches [][3]any
+	f.transport = func(method, path, token string, body map[string]any) (map[string]any, error) {
+		switch {
+		case method == "GET" && strings.HasSuffix(path, "/pulls/42"):
+			return map[string]any{"number": 42, "state": "open", "head": map[string]any{"ref": "warden/pr-abc", "sha": shaA, "repo": map[string]any{"full_name": "owner/repo"}}, "base": map[string]any{"ref": "main"}}, nil
+		case method == "GET" && strings.HasSuffix(path, "/pulls/43"):
+			return map[string]any{"number": 43, "state": "open", "head": map[string]any{"ref": "feature/hand-made", "sha": shaA, "repo": map[string]any{"full_name": "owner/repo"}}, "base": map[string]any{"ref": "main"}}, nil
+		case method == "PATCH":
+			patches = append(patches, [3]any{method, path, cloneJSON(body)})
+			return map[string]any{"ref": "refs/heads/warden/pr-abc", "object": map[string]any{"sha": body["sha"]}}, nil
+		}
+		return f.defaultTransport(method, path, token, body)
+	}
+	delete(f.data, "base")
+	f.data["pull_request"] = 43
+	if r, err := f.s.Dispatch("pr_submit", f.data); err != nil || r["status"] != "invalid" || !strings.Contains(r["error"].(string), "warden/pr-") {
+		t.Fatalf("a hand-made branch was accepted for update: %v %v", r, err)
+	}
+	f.data["pull_request"] = 42
+	f.data["callID"] = "update"
+	r := f.submit()
+	id := r["request_id"].(string)
+	if r["status"] != "pending" || r["update"] != true || r["head"] != "warden/pr-abc" {
+		t.Fatalf("submit: %v", r)
+	}
+	preview, _ := f.s.Dispatch("pr_preview", map[string]any{"id": id})
+	proposal := preview["proposal"].(map[string]any)
+	if proposal["base"] != "warden/pr-abc" || proposal["head"] != "warden/pr-abc" || proposal["pull_request"].(map[string]any)["base"] != "main" {
+		t.Fatalf("proposal: %v", proposal)
+	}
+	if _, err := f.resolve(id, true, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if f.waitPublished(id) != "published" {
+		t.Fatal("not published")
+	}
+	out, _ := f.s.Dispatch("pr_get", map[string]any{"id": id, "chatID": "chat", "sandboxID": "sandbox"})
+	if out["url"] != "https://github.com/owner/repo/pull/42" || out["commit"] != shaE || out["pull_request"] != 42.0 && out["pull_request"] != int64(42) {
+		t.Fatalf("out: %v", out)
+	}
+	writes := f.posts()
+	if len(writes) != 2 || !strings.HasSuffix(writes[0][1].(string), "/git/trees") || !strings.HasSuffix(writes[1][1].(string), "/git/commits") {
+		t.Fatalf("writes: %v", writes)
+	}
+	if msg := writes[1][2].(map[string]any)["message"]; msg != "Improve greeting\n\nA clear description." {
+		t.Fatalf("commit message: %q", msg)
+	}
+	if len(patches) != 1 || patches[0][1] != "/repos/owner/repo/git/refs/heads/warden/pr-abc" || patches[0][2].(map[string]any)["sha"] != shaE || patches[0][2].(map[string]any)["force"] != false {
+		t.Fatalf("patches: %v", patches)
+	}
+	// A base that is not the pull request's is refused.
+	f.data["callID"], f.data["base"] = "wrong-base", "develop"
+	if r, err := f.s.Dispatch("pr_submit", f.data); err != nil || r["status"] != "invalid" {
+		t.Fatalf("a foreign base was accepted: %v %v", r, err)
+	}
+}
+
+// view_ci_results: the head commit's check runs, and for a failed
+// Actions job its steps and log tail with the error lines; nothing is
+// written and the log's credential never reaches the download host.
+func TestChecksReadRunsStepsAndLogTail(t *testing.T) {
+	f := newPRFixture(t)
+	f.transport = func(method, path, token string, body map[string]any) (map[string]any, error) {
+		f.calls = append(f.calls, [3]any{method, path, cloneJSON(body)})
+		switch {
+		case method == "GET" && strings.HasSuffix(path, "/pulls/9"):
+			return map[string]any{"number": 9, "state": "open", "head": map[string]any{"ref": "warden/pr-x", "sha": shaB}}, nil
+		case method == "GET" && strings.Contains(path, "/commits/"+shaB+"/check-runs"):
+			return map[string]any{"check_runs": []any{
+				map[string]any{"id": 501, "name": "Go", "status": "completed", "conclusion": "failure", "html_url": "https://github.com/owner/repo/actions/runs/1/job/501", "app": map[string]any{"slug": "github-actions"}, "output": map[string]any{"title": "Process completed with exit code 1.", "summary": ""}},
+				map[string]any{"id": 502, "name": "Web", "status": "completed", "conclusion": "success", "app": map[string]any{"slug": "github-actions"}, "output": map[string]any{}},
+			}}, nil
+		case method == "GET" && strings.HasSuffix(path, "/actions/jobs/501"):
+			return map[string]any{"run_id": 1, "steps": []any{map[string]any{"name": "Set up job", "status": "completed", "conclusion": "success"}, map[string]any{"name": "gofmt, vet, test", "status": "completed", "conclusion": "failure"}}}, nil
+		}
+		return nil, errors.New("unexpected " + path)
+	}
+	logPath := ""
+	f.s.PullRequests.Logs = func(path, token string) (string, error) {
+		logPath = path
+		return "2026-09-19T19:00:00Z ok  \tpkg/a\n2026-09-19T19:00:01Z ##[error]internal/x/x.go:3:1: undefined: nope\n2026-09-19T19:00:02Z ##[error]Process completed with exit code 1.\n", nil
+	}
+	out, err := f.s.Dispatch("pr_checks", map[string]any{"chatID": "chat", "sandboxID": "sandbox", "repository": "owner/repo", "pull_request": 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["conclusion"] != "failure" || out["ref"] != shaB || out["url"] != "https://github.com/owner/repo/pull/9" || len(out["checks"].([]any)) != 2 {
+		t.Fatalf("out: %v", out)
+	}
+	failed := out["failed_jobs"].([]any)
+	if len(failed) != 1 {
+		t.Fatalf("failed: %v", failed)
+	}
+	job := failed[0].(map[string]any)
+	if job["name"] != "Go" || len(job["steps"].([]any)) != 2 || len(job["errors"].([]string)) != 2 || !strings.Contains(job["log_tail"].(string), "undefined: nope") || logPath != "/repos/owner/repo/actions/jobs/501/logs" {
+		t.Fatalf("job: %v", job)
+	}
+	if len(f.posts()) != 0 {
+		t.Fatal("a read wrote")
+	}
+	// Pending and absent checks say so; a bad ref is refused.
+	f.transport = func(method, path, token string, body map[string]any) (map[string]any, error) {
+		if strings.Contains(path, "/check-runs") {
+			if strings.Contains(path, "/commits/main/") {
+				return map[string]any{"check_runs": []any{map[string]any{"id": 7, "name": "Go", "status": "in_progress", "app": map[string]any{"slug": "github-actions"}}}}, nil
+			}
+			return map[string]any{"check_runs": []any{}}, nil
+		}
+		return nil, errors.New("unexpected " + path)
+	}
+	if out, err = f.s.Dispatch("pr_checks", map[string]any{"chatID": "chat", "sandboxID": "sandbox", "repository": "owner/repo", "ref": "main"}); err != nil || out["conclusion"] != "pending" {
+		t.Fatalf("pending: %v %v", out, err)
+	}
+	if out, err = f.s.Dispatch("pr_checks", map[string]any{"chatID": "chat", "sandboxID": "sandbox", "repository": "owner/repo", "ref": shaC}); err != nil || out["conclusion"] != "none" {
+		t.Fatalf("none: %v %v", out, err)
+	}
+	if _, err = f.s.Dispatch("pr_checks", map[string]any{"chatID": "chat", "sandboxID": "sandbox", "repository": "owner/repo", "ref": "../x"}); err == nil {
+		t.Fatal("bad ref accepted")
+	}
+	tail, lines := logTail("a\nb\n##[error]c\nd\n", 4)
+	if tail != "d\n" || len(lines) != 1 {
+		t.Fatalf("logTail: %q %v", tail, lines)
+	}
+}
