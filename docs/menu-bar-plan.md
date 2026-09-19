@@ -204,5 +204,20 @@ activity, eight at most.
   `outcome.detail`, a log line), `policy/sharing.go` `Document` (Google's
   status and message), `DocumentReview.tsx` (failure under the badge on
   every tab). Deployed to `~/.warden/release`.
-- Remaining: the owner's look at the dropdown; merge to main. Later: notifications from the feed (Go, `osascript`), a bundle if
+- 2026-09-19: the item vanished from the owner's Mac: later deploys of
+  main to `~/.warden/release` (builds without this branch) replaced the
+  release directory, `warden-menu` was gone, and launchd retried the
+  agent every 10 s (exit 78). Merged `origin/main` in (309752b, no
+  conflicts; Go and web suites green), deployed and `warden menu
+  install` re-registered the item. Found on the way (127d22b): on this
+  macOS `launchctl print` nests `state = active` lines under the
+  endpoints and `launchdAgent.status` kept the last one, so a running
+  service read as stopped (`warden status`, `restart`, `deploy-local`);
+  only the first state / pid line counts now. Still open: launchd kills
+  the first spawn of a replaced binary (`OS_REASON_CODESIGNING`, the
+  plist's pinned cdhash) and respawns 10 s later, past `awaitReady`'s
+  3 s liveness check, so a deploy's restart says "exited during startup"
+  although the service comes up.
+- Remaining: the owner's look at the dropdown; the codesigning respawn
+  above (wait past the throttle, or bootout + bootstrap on an upgrade). Later: notifications from the feed (Go, `osascript`), a bundle if
   Login Items' name (`warden-menu`) bothers.
