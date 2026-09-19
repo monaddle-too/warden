@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -250,12 +251,13 @@ func AgentCommand(run RunSpec, opts LaunchOptions) []string {
 		}
 		return append(args, claudeSessionArgs(broker)...)
 	}
-	args := []string{"env", "-u", "OPENAI_API_KEY", "-u", "OPENAI_BASE_URL", "-u", "CODEX_API_KEY", "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "WARDEN_API_KEY=" + broker.APIKeyPlaceholder, "WORKSPACE_DOCUMENT_API_URL=" + broker.DocumentBaseURL, paths.Codex + "/bin/codex", "app-server", "--listen", "stdio://", "-c", `model_provider="warden"`, "-c", `cli_auth_credentials_store="ephemeral"`, "-c", `forced_login_method="api"`, "-c", `model_providers.warden.base_url=` + strconv.Quote(broker.ProviderBaseURL), "-c", `model_providers.warden.name="Warden"`, "-c", `model_providers.warden.wire_api="responses"`, "-c", `model_providers.warden.env_key="WARDEN_API_KEY"`,
+	args := append([]string{"env", "-u", "OPENAI_API_KEY", "-u", "OPENAI_BASE_URL", "-u", "CODEX_API_KEY"}, proxyEnvironment(broker)...)
+	args = append(args, "WARDEN_API_KEY="+broker.APIKeyPlaceholder, "WORKSPACE_DOCUMENT_API_URL="+broker.DocumentBaseURL, paths.Codex+"/bin/codex", "app-server", "--listen", "stdio://", "-c", `model_provider="warden"`, "-c", `cli_auth_credentials_store="ephemeral"`, "-c", `forced_login_method="api"`, "-c", `model_providers.warden.base_url=`+strconv.Quote(broker.ProviderBaseURL), "-c", `model_providers.warden.name="Warden"`, "-c", `model_providers.warden.wire_api="responses"`, "-c", `model_providers.warden.env_key="WARDEN_API_KEY"`,
 		// The model's reasoning summaries stream as items, so the chat can
 		// show that the model is thinking during the long first reply of a
 		// reasoning model instead of nothing; "auto" leaves whole turns
 		// without one.
-		"-c", `model_reasoning_summary="detailed"`}
+		"-c", `model_reasoning_summary="detailed"`)
 	if opts.CodexSandboxMode != "" {
 		args = append(args, "-c", "sandbox_mode="+strconv.Quote(opts.CodexSandboxMode))
 	}
@@ -266,7 +268,38 @@ func AgentCommand(run RunSpec, opts LaunchOptions) []string {
 // takes: the variables an agent would otherwise take a credential or
 // endpoint from cleared, the brokered session's set.
 func claudeEnvironment(broker BrokerConfig) []string {
-	return []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN=" + broker.APIKeyPlaceholder, "ANTHROPIC_BASE_URL=" + broker.ProviderBaseURL, "HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "DISABLE_AUTOUPDATER=1"}
+	env := []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN=" + broker.APIKeyPlaceholder, "ANTHROPIC_BASE_URL=" + broker.ProviderBaseURL}
+	env = append(env, proxyEnvironment(broker)...)
+	return append(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "DISABLE_AUTOUPDATER=1")
+}
+
+// proxyEnvironment points everything the agent and its child processes
+// run at Warden's gateway. The guest arrives with SBX's own proxy in the
+// same variables; the `env` prefix replaces them for the agent's process
+// tree. The JVM is the exception that reads none of them: it takes its
+// proxy from JAVA_TOOL_OPTIONS, which SBX also presets to its proxy, so a
+// build tool under Warden (sbt, Maven, Gradle) got 403 on every artifact
+// while curl beside it succeeded. The same host and port go there too.
+func proxyEnvironment(broker BrokerConfig) []string {
+	env := []string{"HTTP_PROXY=" + broker.ProxyURL, "HTTPS_PROXY=" + broker.ProxyURL, "http_proxy=" + broker.ProxyURL, "https_proxy=" + broker.ProxyURL}
+	if options := javaProxyOptions(broker.ProxyURL); options != "" {
+		env = append(env, "JAVA_TOOL_OPTIONS="+options)
+	}
+	return env
+}
+
+// javaProxyOptions renders the JVM system properties for the proxy at
+// proxyURL, empty when the URL names no host.
+func javaProxyOptions(proxyURL string) string {
+	u, err := url.Parse(proxyURL)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	host, port := u.Hostname(), u.Port()
+	if port == "" {
+		port = "80"
+	}
+	return "-Dhttp.proxyHost=" + host + " -Dhttp.proxyPort=" + port + " -Dhttps.proxyHost=" + host + " -Dhttps.proxyPort=" + port + " -Dhttp.nonProxyHosts=localhost|127.*|[::1]"
 }
 
 // claudeSessionArgs are the flags that pick the session a Claude launch

@@ -1245,6 +1245,10 @@ func (f *flow) response(res *http.Response) {
 		limit = 128 * 1024 * 1024
 	}
 	if res.ContentLength > int64(limit) {
+		if f.passthroughAllowed() {
+			f.passthroughResponse(res, nil)
+			return
+		}
 		f.deny("response exceeds inspection limit", 413, "")
 		return
 	}
@@ -1253,6 +1257,103 @@ func (f *flow) response(res *http.Response) {
 		return
 	}
 	f.streamResponse(res)
+}
+
+// passthroughAllowed says whether a response too large to inspect may be
+// delivered uninspected: only from a host that is neither a model
+// provider (whose replies are scanned for the brokered credential) nor a
+// Git remote (whose RPC bodies are decoded and reviewed). A dependency
+// download from a granted host — a 50 MB jar from Maven Central, a
+// wheel, a module zip — is what arrives here, and refusing it with 413
+// broke JVM builds outright.
+func (f *flow) passthroughAllowed() bool {
+	return !providerHosts[f.host] && !f.git
+}
+
+// passthroughResponse delivers a response the gateway does not inspect:
+// the lease is checked and the response audited before the first byte
+// leaves (as for a buffered one, with the size known only afterwards),
+// then prefix (bytes already read by the buffering attempt) and the rest
+// of the body are copied through, watching for revocation, and the
+// delivered size is audited at the end.
+func (f *flow) passthroughResponse(res *http.Response, prefix []byte) {
+	if f.decisionID != "" {
+		result, err := f.control(map[string]any{"action": "active", "decision_id": f.decisionID})
+		if err != nil {
+			f.deny("audit unavailable; response withheld", 503, "")
+			return
+		}
+		if active, _ := result["active"].(bool); !active {
+			f.deny("permission expired before response delivery", 403, "")
+			return
+		}
+	}
+	declared := res.ContentLength
+	if declared < 0 {
+		declared = int64(len(prefix))
+	}
+	res.Header.Set("Alt-Svc", "clear")
+	// The pair a streamed provider reply records: started before the
+	// first byte (the declared size), the response itself at the end
+	// (the delivered size, and whether upstream finished).
+	if err := f.audit("http.response.started", map[string]any{"request_id": f.requestID, "decision_id": f.decisionID, "status": res.StatusCode,
+		"response": map[string]any{"headers": pairsToAny(f.g.Redactor.Headers(f.headerPairs(res.Header))), "body": f.g.Redactor.Body(int(declared)), "passthrough": true}}); err != nil {
+		f.deny("audit unavailable; response withheld", 503, "")
+		return
+	}
+	f.authorization = ""
+	h := f.w.Header()
+	for key, values := range res.Header {
+		if hopByHop[strings.ToLower(key)] {
+			continue
+		}
+		for _, value := range values {
+			h.Add(key, value)
+		}
+	}
+	f.w.WriteHeader(res.StatusCode)
+	f.wroteHeader = true
+	flusher, _ := f.w.(http.Flusher)
+	total := int64(0)
+	complete := false
+	if len(prefix) > 0 {
+		if _, err := f.w.Write(prefix); err != nil {
+			f.finishPassthrough(res, total, complete)
+			return
+		}
+		total += int64(len(prefix))
+	}
+	buf := make([]byte, 64*1024)
+	for {
+		n, readErr := res.Body.Read(buf)
+		if f.killed.Load() {
+			f.finishPassthrough(res, total, false)
+			f.abort()
+		}
+		if n > 0 {
+			if _, err := f.w.Write(buf[:n]); err != nil {
+				break
+			}
+			total += int64(n)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if readErr == io.EOF {
+			complete = true
+			break
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	f.finishPassthrough(res, total, complete)
+}
+
+func (f *flow) finishPassthrough(res *http.Response, total int64, complete bool) {
+	f.stopWatch()
+	_ = f.audit("http.response", map[string]any{"request_id": f.requestID, "decision_id": f.decisionID, "status": res.StatusCode,
+		"response": map[string]any{"headers": pairsToAny(f.g.Redactor.Headers(f.headerPairs(res.Header))), "body": f.g.Redactor.Body(int(total)), "passthrough": true, "complete": complete}})
 }
 
 func headerBytes(h http.Header) []byte {
@@ -1306,6 +1407,12 @@ func (f *flow) bufferedResponse(res *http.Response, limit int) {
 		}
 	}
 	if len(payload) > limit {
+		if f.passthroughAllowed() {
+			// The lease was checked above; the rest of the body is
+			// still upstream, so hand over what was read and stream on.
+			f.passthroughResponse(res, payload)
+			return
+		}
 		f.deny("response exceeds inspection limit", 413, "")
 		return
 	}

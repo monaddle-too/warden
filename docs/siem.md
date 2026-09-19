@@ -134,7 +134,12 @@ configuration and remain persisted.
 `body.capture = omitted_policy` and `body.bytes` record only the decoded byte
 count. There is no `body.content`, body hash, prefix, or encoded body copy. The
 host enforces this even for events from an older proxy. Bodies beyond the
-inspection limit are rejected. Non-GitHub URL query values are omitted.
+inspection limit are rejected when they come from a model provider (scanned
+for the brokered credential) or a Git remote (RPC bodies decoded and
+reviewed); from any other granted host — a dependency download — they are
+delivered uninspected, recorded as an `http.response.started` /
+`http.response` pair with `response.passthrough = true`, the delivered byte
+count and `response.complete`. Non-GitHub URL query values are omitted.
 
 **Redaction is not a proof that arbitrary application data contains no secrets.**
 An unknown credential in URL/header metadata, or a transformed encoding of a
