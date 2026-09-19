@@ -264,7 +264,7 @@ func (e *Engine) sharingDelivery(ctx context.Context) {
 			if active {
 				continue
 			}
-			chat := e.Store.Snapshot().chat(chatID)
+			chat := e.Store.Chat(chatID)
 			if chat == nil || chat.Archived || chat.SandboxID != agent.String(r["sandboxID"]) {
 				continue
 			}
@@ -372,7 +372,7 @@ func (h *HTTP) sharingHTTP(w http.ResponseWriter, r *http.Request, path string) 
 		return
 	}
 	if op == "select" || op == "github_select" || op == "github_list" {
-		c := h.Engine.Store.Snapshot().chat(agent.String(data["chatID"]))
+		c := h.Engine.Store.Chat(agent.String(data["chatID"]))
 		if c == nil || c.Archived {
 			http.Error(w, "conversation not found", 404)
 			return

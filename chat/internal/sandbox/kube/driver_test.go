@@ -99,12 +99,21 @@ func TestCreateIsClaimThenPodAndIdempotent(t *testing.T) {
 // pod of the new generation is created, and the handle is a no-op. On a
 // running runtime it confirms the pod and creates nothing.
 func TestPrepareRecreatesThePodAfterAStop(t *testing.T) {
-	api, d := readyFake(t)
+	api := newFakeAPI(t)
+	api.publishTrust("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
+	// A deployment pinned to one zone (deploy/k8s/gke/values.yaml): the
+	// first pod carries the pin so the disk is created there.
+	o := testOptions()
+	o.NodeSelector = map[string]string{"topology.kubernetes.io/zone": "us-central1-c"}
+	d := newTestDriver(t, api, o)
 	ctx := testContext(t)
 	if err := d.Create(ctx, sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace", SandboxID: "s1", Generation: "gen-1"}); err != nil {
 		t.Fatal(err)
 	}
 	first, _ := d.Runtime(runtimeName)
+	if pod, _ := api.pod(runtimeName); pod.Spec.NodeSelector["topology.kubernetes.io/zone"] != "us-central1-c" {
+		t.Fatalf("first pod selector %v", pod.Spec.NodeSelector)
+	}
 	before := len(api.recorded())
 	h, err := d.Prepare(ctx, sandbox.RuntimeSpec{Name: runtimeName, Directory: "/home/agent/workspace", SandboxID: "s1", Generation: "gen-1"})
 	if err != nil || h == nil {
@@ -133,7 +142,16 @@ func TestPrepareRecreatesThePodAfterAStop(t *testing.T) {
 	if !ok || pod.Status.Phase != "Running" || pod.Metadata.UID == first.PodUID || pod.Metadata.Annotations[AnnotationGeneration] != "gen-2" {
 		t.Fatalf("resumed pod %+v", pod.Metadata)
 	}
+	// The resumed pod mounts a bound disk, whose zone is fixed: the pin is
+	// left off so a disk from before the pin (or in another zone) still
+	// finds its node.
+	if pod.Spec.NodeSelector != nil {
+		t.Fatalf("resumed pod selector %v", pod.Spec.NodeSelector)
+	}
 	claim, _ := api.claim(runtimeName)
+	if claim.Spec.VolumeName == "" || claim.Status.Phase != "Bound" {
+		t.Fatalf("resumed claim %+v", claim)
+	}
 	if rt, _ := d.Runtime(runtimeName); rt.ClaimUID != first.ClaimUID || claim.Metadata.UID != first.ClaimUID || rt.PodUID != pod.Metadata.UID || rt.Generation != "gen-2" || rt.PodIP != pod.Status.PodIP {
 		t.Fatalf("resumed record %+v", rt)
 	}

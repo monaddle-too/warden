@@ -155,3 +155,5 @@ choice of its own, and says how many workspaces override it.
   passes `sandboxID` through. Not tested on GKE; not deployed.
 - 2026-09-18: merged to main as e8426c1 (main merged in twice on the way,
   no conflicts). Deploying to `~/.warden/release` and GKE next.
+- 2026-09-18: deployed to `~/.warden/release` (7dcfa5a) and to GKE as image
+  `v0.1.0-alpha.13-32-g1b24571` (main 1b24571, with workspace keepalive).

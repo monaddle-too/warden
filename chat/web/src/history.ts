@@ -5,9 +5,8 @@
    first and without repeats, so nothing is stored beyond the transcript
    itself and every device sees the same history. Up at the draft's first
    line recalls the newest prompt, Up again the one before, Down comes back
-   toward the draft, which is kept while browsing. Ctrl-R is an incremental
-   reverse search over the same list: the matches for what is typed,
-   newest first, Enter picks one and Esc gives the draft back. */
+   toward the draft, which is kept while browsing. There is no Ctrl-R
+   search: in a browser ⌘R / Ctrl+R reloads the page, as in Claude. */
 
 type UserEntry = {
   role: string;
@@ -75,19 +74,4 @@ export function recallNewer(
   const next = recall.index - 1;
   if (next < 0) return { recall: NOT_BROWSING, text: recall.draft };
   return { recall: { ...recall, index: next }, text: history[next] };
-}
-
-/* The history entries containing the query, newest first (all of them
-   for an empty query), case-insensitive. */
-export function searchHistory(history: string[], query: string): string[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return history;
-  return history.filter((h) => h.toLowerCase().includes(q));
-}
-
-/* One line of a prompt for a list row: its first line, cut to `max`. */
-export function promptLine(text: string, max = 120): string {
-  const line = text.split("\n")[0];
-  const more = text.includes("\n") ? " …" : "";
-  return (line.length > max ? line.slice(0, max - 1) + "…" : line) + more;
 }

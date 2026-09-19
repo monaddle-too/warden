@@ -535,10 +535,18 @@ edge's launch URL, which the owner already holds.
 
 **Startup stages.** While a chat's first message waits for its sandbox,
 the chat's status line says which stage the start is at, with the
-runtime's detail — `Resuming the sandbox · waiting for a node: 0/1 nodes
-are available: 1 Insufficient cpu`, `Creating the sandbox · pulling the
-container image`, `Installing the agent runtime` — so a node being
-provisioned or a slow image pull is visible where the wait is felt. The
+runtime's detail — `Resuming the sandbox · waiting for a node: none of
+the 5 nodes can take the sandbox: 2 full (cpu, memory), 3 not for
+sandboxes`, `Creating the sandbox · pulling the container image`,
+`Installing the agent runtime` — so a node being provisioned or a slow
+image pull is visible where the wait is felt. The scheduler's tally
+(`0/5 nodes are available: 2 Insufficient cpu, …`, then its preemption
+reasoning) is put in the owner's words by `SchedulerVerdict`
+(`sandbox/kube/driver.go`): a node "full" may be one whose slack a
+managed cluster's balloon pod holds, "not for sandboxes" is the runtime
+or zone selector, "in another zone than the workspace's disk" the
+PersistentVolume's affinity, "still starting or reserved" a taint; on an
+autoscaled cluster that line is what a node being added looks like. The
 runner's prepare operation allows ten minutes for that on this shape (two
 on the sbx shapes); a pod that cannot be scheduled in that time fails the
 chat with the scheduler's reason.
@@ -1036,9 +1044,24 @@ cpuset of whole physical cores that grows with the request — measured on
 1.35: 100m and 250m both get one core (two hyperthreads), 1000m two,
 2000m three — and the burst is free. So the policy service at 100m can
 still use a whole core for TLS inspection; a second core costs a 1000m
-request, about $32 a month. `sandboxes.warmSpares` is 0 in `deploy/k8s/gke/values.yaml` for
-that reason (a warm spare is billed around the clock), so the first
-sandbox after an idle period waits for a GKE Sandbox node.
+request, about $32 a month. `sandboxes.warmSpares` is 1 in `deploy/k8s/gke/values.yaml`
+(a warm spare is billed around the clock, about $38 a month), so a fresh
+workspace usually starts at once; a **resume** cannot use the spare, and
+on Autopilot's container-optimized platform it rarely finds a node
+either: the workspace's disk is a zonal `pd-balanced`, the regional
+cluster's autoscaler drains gVisor nodes per zone once they idle, and the
+nodes still up hold their slack in a `system-node-critical`
+`gke-system-balloon-pod` that no pod preempts ("Insufficient cpu" on a
+node running one 1-CPU sandbox). Every resume after a long idle then
+boots a node in the disk's zone (~45 s, plus attach and pull). The
+values pin sandbox pods to one zone (`sandboxes.nodeSelector:
+topology.kubernetes.io/zone`), so spares, new disks and the nodes they
+need share it and a resume can land on a node that is already up (GKE
+regrows it in seconds); the runner leaves the zone key off a pod whose
+claim is already bound (`Placement` in `sandbox/kube/spec.go`), since
+the disk's own node affinity places it and a disk from before the pin
+would otherwise never schedule. Changing the pinned zone strands no
+disk for the same reason; it only moves where new ones go.
 
 The domain is one delegated zone: the app is `https://<domain>/` and
 previews are `https://<binding-id>.<domain>/`, so `auth.publicURL` and

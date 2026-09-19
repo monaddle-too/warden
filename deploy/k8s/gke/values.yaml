@@ -22,11 +22,22 @@ sandboxes:
   maxRunning: 2
   # Autopilot bills a pod's requests around the clock, so a warm spare is
   # about $38 a month at 1 vCPU / 1.5 GiB. Without one the first sandbox
-  # after an idle period waits for a GKE Sandbox node (one to two minutes).
-  warmSpares: 0
+  # after an idle period waits for a GKE Sandbox node to be provisioned
+  # (two to four minutes, within the runner's ten-minute prepare budget).
+  warmSpares: 1
   # A stopped workspace keeps its claim: storage.workspaceGi of pd-balanced
   # each ($0.10 per GiB-month).
   keepStopped: 4
+  # One zone for every sandbox pod, so the spare, new workspace disks
+  # (zonal, created where the first pod schedules) and the GKE Sandbox
+  # nodes they need share it: a resume then finds a node that is already
+  # up instead of booting one in the disk's zone (~45 s each time, since
+  # Autopilot drains gVisor nodes per zone and holds the others' slack in
+  # a balloon pod nothing preempts). The runner drops this key for a pod
+  # whose claim is already bound, so disks in other zones keep resuming
+  # where they are; change the zone freely, it only moves new disks.
+  nodeSelector:
+    topology.kubernetes.io/zone: us-central1-c
 
 auth:
   mode: google

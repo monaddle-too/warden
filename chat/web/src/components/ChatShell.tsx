@@ -59,7 +59,8 @@ import {
 import { Previews } from "./Previews";
 import { Conversation, type RequestCard } from "./Conversation";
 import { chatModel, modelOptions } from "../models";
-import { SizeSelect, sameSize } from "./SizeSelect";
+import { SizeSelect } from "./SizeSelect";
+import { sameSize } from "../sizes";
 import { NetworkSelect } from "./NetworkSelect";
 import type { InstallNetwork, NetworkMode } from "../network";
 import { AdminConsole } from "./AdminConsole";
@@ -896,6 +897,10 @@ export function ChatShell({
                 requests={requests}
                 find={find}
                 onExport={() => setExporting(true)}
+                onOpenWorkspace={() => {
+                  setPreviewOpen(false);
+                  setWorkspaceOpen(true);
+                }}
                 onRewind={(entryID) => setRewinding(entryID || "")}
                 onChanges={() => setChangesOpen(true)}
                 onFork={(entryID) => setForking(entryID || "")}

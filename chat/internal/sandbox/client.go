@@ -146,6 +146,7 @@ type Response struct {
 	Version           int                    `json:"version,omitempty"`
 	Sandbox           *SandboxInfo           `json:"sandbox,omitempty"`
 	Limits            *ResourceLimits        `json:"limits,omitempty"`
+	Capacity          *Capacity              `json:"capacity,omitempty"`
 	Attachment        *PreviewAttachment     `json:"attachment,omitempty"`
 	Attachments       []PreviewAttachment    `json:"attachments,omitempty"`
 	APIKeyPlaceholder string                 `json:"apiKeyPlaceholder,omitempty"`

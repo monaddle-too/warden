@@ -592,7 +592,7 @@ func (c *Chat) record(ev PermissionEvent) {
 
 // Permissions is a chat's permission history, oldest first.
 func (e *Engine) Permissions(id string) ([]PermissionEvent, error) {
-	c := e.Store.Snapshot().chat(id)
+	c := e.Store.Chat(id)
 	if c == nil {
 		return nil, errors.New("chat not found")
 	}

@@ -63,6 +63,11 @@ type fakeWorker struct {
 func (f *fakeWorker) Call(ctx context.Context, r sandbox.Request) (sandbox.Response, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if r.Operation == "health" {
+		// The size offer (Engine.refreshLimits) is no chat's request and
+		// comes whenever the refresher runs; tests index the requests.
+		return sandbox.Response{}, nil
+	}
 	f.requests = append(f.requests, r)
 	if f.fail {
 		return sandbox.Response{}, errors.New("unverified sandbox")
@@ -1103,5 +1108,37 @@ func TestHandOverUnconfirmedWhenTheRunEnds(t *testing.T) {
 	until(t, func() bool { return e.View().chat(id).Conversation.Entries[0].Delivery == "failed" })
 	if v := e.View().chat(id).Conversation.Entries[0]; v.Detail != deliveryUnconfirmed {
 		t.Fatalf("unconfirmed: %+v", v)
+	}
+}
+
+// The service's own shutdown cuts a run short without tombstoning it on
+// the runner: a cancel would make the runner stop the sandbox, and a
+// redeploy would take every live workspace down with it. The runner sees
+// a plain disconnect and keeps the sandbox for the run that resumes.
+func TestShutdownEndsRunWithoutCancellingSandbox(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	w := &fakeWorker{}
+	w.prepareGate = make(chan struct{})
+	e := NewEngine(s, w)
+	e.ResidentProviders = []string{}
+	ctx, cancel := context.WithCancel(context.Background())
+	go e.Serve(ctx)
+	id, _ := e.Create("Shutdown", "", "", nil)
+	if err = e.Message(id, "Hello", cv.ID()); err != nil {
+		t.Fatal(err)
+	}
+	until(t, func() bool { return w.count("prepare") == 1 })
+	cancel()
+	select {
+	case <-e.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("engine did not stop")
+	}
+	if w.count("cancel") != 0 || w.count("stop") != 0 {
+		t.Fatalf("shutdown touched the sandbox: %d cancels, %d stops", w.count("cancel"), w.count("stop"))
 	}
 }

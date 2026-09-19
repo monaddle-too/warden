@@ -88,7 +88,7 @@ describe("the shortcut table", () => {
   });
   it("names every key the plan lists", () => {
     const labels = SHORTCUTS.map((s) => keysLabel(s, true)).join("\n");
-    for (const want of ["⌘K", "⌘F", "Esc Esc", "↑", "⌘R", "⇧Tab", "⌘Enter", "?", "/", "@", "!", "#"]) {
+    for (const want of ["⌘K", "⌘F", "Esc Esc", "↑", "⇧Tab", "⌘Enter", "?", "/", "@", "!", "#"]) {
       expect(labels, want).toContain(want);
     }
   });
@@ -102,8 +102,6 @@ describe("isKey", () => {
     expect(isKey(press("k", { meta: true, alt: true }), "search")).toBe(false);
     expect(isKey(press("k"), "search")).toBe(false);
     expect(isKey(press("f", { ctrl: true }), "find")).toBe(true);
-    expect(isKey(press("r", { ctrl: true }), "history-search")).toBe(true);
-    expect(isKey(press("r", { meta: true }), "history-search")).toBe(true);
     expect(isKey(press("Enter", { meta: true }), "send")).toBe(true);
     expect(isKey(press("Enter"), "send")).toBe(false);
   });
@@ -131,7 +129,6 @@ describe("isKey", () => {
     expect(arrowStep(press("ArrowDown"))).toBe(1);
     expect(arrowStep(press("ArrowUp"))).toBe(-1);
     expect(arrowStep(press("Enter"))).toBe(0);
-    expect(isKey(press("r", { ctrl: true }), "history-next")).toBe(true);
   });
   it("refuses an id the table lacks", () => {
     expect(() => shortcut("nope")).toThrow("no shortcut nope");
@@ -150,7 +147,7 @@ describe("labels", () => {
     expect(chordLabel({ key: "?", shift: "any" }, true)).toBe("?");
     expect(keysLabel(shortcut("rewind"), true)).toBe("Esc Esc");
     expect(keysLabel(shortcut("menu-pick"), false)).toBe("Enter or Tab");
-    expect(keysLabel(shortcut("history-next"), false)).toBe("↓ or Ctrl+R");
+    expect(keysLabel(shortcut("history-older"), false)).toBe("↑");
   });
   it("knows where typing goes", () => {
     expect(typingIn(null)).toBe(false);

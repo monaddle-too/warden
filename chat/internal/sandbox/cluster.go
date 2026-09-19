@@ -51,6 +51,32 @@ type PodInfo struct {
 	Requests Amounts  `json:"requests"`
 	Limits   Amounts  `json:"limits"`
 	Usage    *Amounts `json:"usage"`
+	// Events are the pod's recent events, newest first: what the
+	// scheduler, the autoscaler and the kubelet said about it.
+	Events []Event `json:"events"`
+}
+
+// Event is one Kubernetes event as the owner sees it: what happened to
+// which object, in the reporter's words and, when Hint is set, in the
+// owner's. Count is how many times the same event repeated; At is the
+// latest.
+type Event struct {
+	At      time.Time `json:"at"`
+	Type    string    `json:"type"` // Normal or Warning
+	Reason  string    `json:"reason"`
+	Message string    `json:"message"`
+	// Hint is the owner's-words reading of the event, for the reasons
+	// that matter to a start (a node being added, none available, the
+	// image pulling, a volume that will not mount); empty otherwise.
+	Hint  string `json:"hint,omitempty"`
+	Count int    `json:"count"`
+	// Kind, Namespace and Name are the object the event is about.
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	// Source is the reporting component (kubelet, default-scheduler,
+	// cluster-autoscaler).
+	Source string `json:"source,omitempty"`
 }
 
 // Amounts is a CPU and memory pair as the cluster reports them: millicores
@@ -103,6 +129,11 @@ type ClusterStatus struct {
 	// ServicePodsError explains empty ServicePods when the runner may not
 	// list its own namespace.
 	ServicePodsError string `json:"servicePodsError,omitempty"`
+	// Events are the newest events of the sandbox and service namespaces,
+	// newest first; EventsError explains an empty list the runner may not
+	// read.
+	Events      []Event `json:"events"`
+	EventsError string  `json:"eventsError,omitempty"`
 }
 
 // Add sums two resource pairs.
@@ -143,7 +174,7 @@ var errBindingRequired = errors.New("chat is not authorized for this project san
 func (w *Worker) clusterOp(ctx context.Context, r Request) (Response, error) {
 	if w.Cluster == nil {
 		if r.Operation == "cluster.status" {
-			return Response{Cluster: &ClusterStatus{At: w.now(), Nodes: []NodeInfo{}, SandboxPods: []PodInfo{}, ServicePods: []PodInfo{}}}, nil
+			return Response{Cluster: &ClusterStatus{At: w.now(), Nodes: []NodeInfo{}, SandboxPods: []PodInfo{}, ServicePods: []PodInfo{}, Events: []Event{}}}, nil
 		}
 		return Response{}, ErrClusterUnavailable
 	}

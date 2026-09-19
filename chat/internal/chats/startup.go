@@ -55,6 +55,7 @@ func (e *Engine) setStartup(id, stage, detail string) {
 		e.startupTrace[id] = append(e.startupTrace[id], fmt.Sprintf("%s %.1fs", current.Stage, now-current.Since))
 	}
 	e.startup[id] = Startup{Stage: stage, Detail: detail, Since: since}
+	e.touch()
 }
 
 // clearStartup ends the chat's start (the agent has answered, or the run
@@ -71,6 +72,7 @@ func (e *Engine) clearStartup(id string) {
 	trace := append(e.startupTrace[id], fmt.Sprintf("%s %.1fs", current.Stage, now-current.Since))
 	delete(e.startup, id)
 	delete(e.startupTrace, id)
+	e.touch()
 	total := 0.0
 	for _, step := range trace {
 		var stage string

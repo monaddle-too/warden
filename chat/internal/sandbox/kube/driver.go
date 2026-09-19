@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -197,7 +198,7 @@ func (d *Driver) ensureRunning(ctx context.Context, spec sandbox.RuntimeSpec) er
 		workspace = WorkspaceClone
 	}
 	sandbox.Report(ctx, "creating the sandbox pod")
-	pod, err := d.ensurePod(ctx, spec, workspace)
+	pod, err := d.ensurePod(ctx, spec, workspace, claim.Spec.VolumeName != "" || claim.Status.Phase == "Bound")
 	if err != nil {
 		return err
 	}
@@ -271,7 +272,7 @@ func (d *Driver) ensureClaim(ctx context.Context, spec sandbox.RuntimeSpec) (*ku
 // ensurePod returns the runtime's pod, creating it when missing. An
 // existing pod must carry this driver's labels; one being deleted is
 // waited out and replaced.
-func (d *Driver) ensurePod(ctx context.Context, spec sandbox.RuntimeSpec, workspace string) (*kube.Pod, error) {
+func (d *Driver) ensurePod(ctx context.Context, spec sandbox.RuntimeSpec, workspace string, bound bool) (*kube.Pod, error) {
 	var pod kube.Pod
 	err := d.client.Get(ctx, kube.Pods, d.opts.Namespace, spec.Name, &pod)
 	if err == nil && pod.Metadata.DeletionTimestamp != nil {
@@ -289,7 +290,7 @@ func (d *Driver) ensurePod(ctx context.Context, spec sandbox.RuntimeSpec, worksp
 	if !kube.IsNotFound(err) {
 		return nil, fmt.Errorf("sandbox %s: pod: %w", spec.Name, err)
 	}
-	desired := PodSpec(d.opts, spec, workspace)
+	desired := PodSpec(d.opts, spec, workspace, bound)
 	err = d.client.Create(ctx, kube.Pods, d.opts.Namespace, desired, &pod)
 	if kube.IsAlreadyExists(err) {
 		err = d.client.Get(ctx, kube.Pods, d.opts.Namespace, spec.Name, &pod)
@@ -306,7 +307,47 @@ func (d *Driver) ensurePod(ctx context.Context, spec sandbox.RuntimeSpec, worksp
 // volume wait lasts until ctx ends and reports the last condition seen.
 func (d *Driver) awaitRunning(ctx context.Context, name, uid string) (*kube.Pod, error) {
 	last := ""
+	// The pod object stands still while it waits for a node or an image;
+	// its events do not. A ticker re-reports the detail with the latest
+	// event's word (a node being added, none available, the pull) until
+	// the pod runs.
+	ctx, stopEvents := context.WithCancel(ctx)
+	defer stopEvents()
+	var waiting struct {
+		sync.Mutex
+		pod    *kube.Pod
+		events []sandbox.Event
+	}
+	go func() {
+		ticker := time.NewTicker(eventPoll)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			waiting.Lock()
+			pod := waiting.pod
+			waiting.Unlock()
+			if pod == nil || pod.Metadata.UID == "" {
+				continue
+			}
+			events, err := d.podEvents(ctx, d.opts.Namespace, pod.Metadata.UID)
+			if err != nil || ctx.Err() != nil {
+				continue
+			}
+			waiting.Lock()
+			waiting.events = events
+			waiting.Unlock()
+			sandbox.Report(ctx, startupDetailWithEvents(pod, events))
+		}
+	}()
 	pod, err := d.awaitPod(ctx, name, func(pod *kube.Pod, event kube.EventType) (bool, error) {
+		waiting.Lock()
+		waiting.pod = pod
+		events := waiting.events
+		waiting.Unlock()
 		if event == kube.Deleted || pod == nil {
 			return true, fmt.Errorf("sandbox %s: pod disappeared before it ran", name)
 		}
@@ -342,13 +383,95 @@ func (d *Driver) awaitRunning(ctx context.Context, name, uid string) (*kube.Pod,
 				last = c.Reason + ": " + c.Message
 			}
 		}
-		sandbox.Report(ctx, StartupDetail(pod))
+		sandbox.Report(ctx, startupDetailWithEvents(pod, events))
 		return false, nil
 	})
 	if err != nil && errors.Is(err, ctx.Err()) && last != "" {
 		return nil, fmt.Errorf("sandbox %s: pod did not start (%s): %w", name, strings.TrimSpace(last), err)
 	}
 	return pod, err
+}
+
+// SchedulerVerdict is the scheduler's Unschedulable message in the owner's
+// words. The scheduler writes "0/5 nodes are available: 2 Insufficient
+// cpu, 2 Insufficient memory, 3 node(s) didn't match Pod's node
+// affinity/selector. no new claims to deallocate, preemption: …" — a
+// per-node tally of filter failures followed by its preemption reasoning,
+// which read to the owner like a capacity outage when they mean "no node
+// fits yet". The verdict keeps the first sentence's tally, names each
+// reason as what it is for a sandbox pod (a node full or shrunk under a
+// managed cluster's balloon pod, a node without the sandbox runtime or
+// outside the pinned zone, a node in another zone than the workspace's
+// disk, a node still starting), and drops the preemption clause. On an
+// autoscaled cluster this is the moment a node is being added. A tally
+// the verdict does not know is kept verbatim, and a message that is not a
+// tally is returned as its first sentence.
+func SchedulerVerdict(message string) string {
+	message = strings.TrimSpace(message)
+	first, _, _ := strings.Cut(message, ". ")
+	first = strings.TrimSuffix(first, ".")
+	if first == "" {
+		return ""
+	}
+	head, tally, ok := strings.Cut(first, " nodes are available: ")
+	if !ok || !strings.HasPrefix(head, "0/") {
+		if strings.HasPrefix(head, "no nodes available") {
+			return "the cluster has no nodes"
+		}
+		return first
+	}
+	total := strings.TrimPrefix(head, "0/")
+	if total == "0" {
+		return "the cluster has no nodes"
+	}
+	var full, other, unknown []string
+	fullCount := 0
+	for _, item := range strings.Split(tally, ", ") {
+		if strings.HasPrefix(item, "pod has unbound immediate PersistentVolumeClaims") {
+			other = append(other, "the workspace's disk is not ready")
+			continue
+		}
+		count, reason, _ := strings.Cut(item, " ")
+		n, err := strconv.Atoi(count)
+		if err != nil {
+			unknown = append(unknown, item)
+			continue
+		}
+		switch {
+		case strings.HasPrefix(reason, "Insufficient ") || reason == "Too many pods":
+			// The same node counts once per resource it lacks.
+			if n > fullCount {
+				fullCount = n
+			}
+			full = append(full, strings.TrimPrefix(reason, "Insufficient "))
+		case strings.HasPrefix(reason, "node(s) didn't match Pod's node affinity/selector"):
+			other = append(other, count+" not for sandboxes")
+		case strings.Contains(reason, "PersistentVolume's node affinity") || strings.Contains(reason, "volume node affinity conflict"):
+			other = append(other, count+" in another zone than the workspace's disk")
+		case strings.HasPrefix(reason, "node(s) had untolerated taint") || strings.HasPrefix(reason, "node(s) had taint"):
+			other = append(other, count+" still starting or reserved")
+		case strings.HasPrefix(reason, "node(s) were unschedulable"):
+			other = append(other, count+" cordoned")
+		case strings.HasPrefix(reason, "node(s) were not ready"):
+			other = append(other, count+" not ready")
+		default:
+			unknown = append(unknown, item)
+		}
+	}
+	var parts []string
+	if fullCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d full (%s)", fullCount, strings.Join(full, ", ")))
+	}
+	parts = append(parts, other...)
+	parts = append(parts, unknown...)
+	verdict := "none of the " + total + " nodes can take the sandbox"
+	if total == "1" {
+		verdict = "the cluster's only node cannot take the sandbox"
+	}
+	if len(parts) > 0 {
+		verdict += ": " + strings.Join(parts, ", ")
+	}
+	return verdict
 }
 
 // StartupDetail says, in the owner's words, what a pod that is not yet
@@ -369,10 +492,8 @@ func StartupDetail(pod *kube.Pod) string {
 		if c.Type == "PodScheduled" {
 			scheduled = c.Status == "True"
 			if !scheduled {
-				// The scheduler's first sentence says what is missing; the
-				// rest is its preemption reasoning.
-				if message, _, _ := strings.Cut(strings.TrimSpace(c.Message), ". "); message != "" {
-					return "waiting for a node: " + strings.TrimSuffix(message, ".")
+				if verdict := SchedulerVerdict(c.Message); verdict != "" {
+					return "waiting for a node: " + verdict
 				}
 				return "waiting for a node"
 			}
@@ -501,8 +622,35 @@ func (d *Driver) watchPod(ctx context.Context, name string, done func(*kube.Pod,
 	}
 }
 
-// watchRetry is the pause before a broken pod watch is reopened.
-const watchRetry = time.Second
+// watchRetry is the pause before a broken pod watch is reopened;
+// eventPoll is how often a waiting pod's events are read for the detail.
+const (
+	watchRetry = time.Second
+	eventPoll  = 10 * time.Second
+)
+
+// startupDetailWithEvents is StartupDetail with the newest event's word
+// appended when it says more: "waiting for a node: 0/2 nodes are
+// available … · a node is being added". Events older than the pod are
+// its predecessor's and ignored; a hint that repeats the detail is not
+// added twice.
+func startupDetailWithEvents(pod *kube.Pod, events []sandbox.Event) string {
+	detail := StartupDetail(pod)
+	for _, e := range events {
+		if pod.Metadata.CreationTimestamp != nil && e.At.Before(*pod.Metadata.CreationTimestamp) {
+			continue
+		}
+		add := eventDetail(e)
+		if add == "" || add == detail || strings.Contains(detail, add) {
+			continue
+		}
+		if detail == "" {
+			return add
+		}
+		return detail + " · " + add
+	}
+	return detail
+}
 
 // awaitGone waits for a pod or claim to be deleted.
 func (d *Driver) awaitGone(ctx context.Context, r kube.Resource, name string) error {

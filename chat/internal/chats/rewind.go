@@ -151,7 +151,7 @@ func (e *Engine) beforeTurn(ctx context.Context, id string, c *Chat, messageID s
 	e.setStartup(id, stageSending, "recording a checkpoint of the workspace")
 	e.checkpoint(ctx, c, messageID)
 	e.setStartup(id, stageSending, "handing your message to the agent")
-	if current := e.Store.Snapshot().chat(id); current != nil && current.Recap != "" {
+	if current := e.Store.Chat(id); current != nil && current.Recap != "" {
 		items = append([]any{map[string]any{"type": "text", "text": current.Recap, "text_elements": []any{}}}, items...)
 	}
 	return items
@@ -159,7 +159,7 @@ func (e *Engine) beforeTurn(ctx context.Context, id string, c *Chat, messageID s
 
 // Checkpoints lists the chat's checkpoints as the runner holds them.
 func (e *Engine) Checkpoints(ctx context.Context, id string) ([]sandbox.Checkpoint, error) {
-	c := e.Store.Snapshot().chat(id)
+	c := e.Store.Chat(id)
 	if c == nil {
 		return nil, errors.New("chat not found")
 	}
@@ -177,7 +177,7 @@ func (e *Engine) Checkpoints(ctx context.Context, id string) ([]sandbox.Checkpoi
 // Diff is the workspace's changes since the chat's diff base: its first
 // checkpoint, or the one its last code rewind restored.
 func (e *Engine) Diff(ctx context.Context, id string) (*sandbox.WorkspaceChanges, error) {
-	c := e.Store.Snapshot().chat(id)
+	c := e.Store.Chat(id)
 	if c == nil {
 		return nil, errors.New("chat not found")
 	}
@@ -533,7 +533,7 @@ func (e *Engine) callRewind(ctx context.Context, client *agent.Client, thread, t
 // when the session could not rewind: the run then ends so the next one
 // starts fresh with the kept transcript as context.
 func (e *Engine) applyPendingRewind(ctx context.Context, id string, client *agent.Client, thread string) bool {
-	c := e.Store.Snapshot().chat(id)
+	c := e.Store.Chat(id)
 	if c == nil || c.Rewind == nil {
 		return true
 	}

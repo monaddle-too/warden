@@ -163,7 +163,7 @@ func (e *Engine) SetSettings(ctx context.Context, id string, s Settings) error {
 		return err
 	}
 	if client := e.liveClient(id); client != nil {
-		if c := e.Store.Snapshot().chat(id); c != nil {
+		if c := e.Store.Chat(id); c != nil {
 			e.pushSettings(ctx, client, c)
 		}
 	}
@@ -210,7 +210,7 @@ func (e *Engine) applySession(ctx context.Context, id string, c *Chat, client *a
 	if c.Provider != "claude" {
 		return
 	}
-	chat := e.Store.Snapshot().chat(id)
+	chat := e.Store.Chat(id)
 	if chat == nil {
 		return
 	}

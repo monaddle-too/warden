@@ -230,7 +230,7 @@ func (e *Engine) awaitSession(ctx context.Context, id string) error {
 		if live {
 			return nil
 		}
-		c := e.Store.Snapshot().chat(id)
+		c := e.Store.Chat(id)
 		switch {
 		case c == nil:
 			return errors.New("chat not found")
@@ -285,7 +285,7 @@ func (e *Engine) PromoteAside(id, entryID string, actor cv.Actor) (PromoteResult
 		actor.PrincipalID = "owner"
 	}
 	var text string
-	c := e.Store.Snapshot().chat(id)
+	c := e.Store.Chat(id)
 	if c == nil {
 		return PromoteResult{}, errors.New("chat not found")
 	}

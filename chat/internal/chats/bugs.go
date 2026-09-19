@@ -31,7 +31,7 @@ func (e *Engine) Bug(id, text string, actor cv.Actor) (BugResult, error) {
 	if text == "" || len(text) > MaxBugText || strings.ContainsRune(text, 0) {
 		return BugResult{}, errors.New("a description of at most 16384 characters is required")
 	}
-	c := e.Store.Snapshot().chat(id)
+	c := e.Store.Chat(id)
 	if c == nil {
 		return BugResult{}, errors.New("chat not found")
 	}

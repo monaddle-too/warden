@@ -256,6 +256,26 @@ export type ResourceLimits = {
   cpuStepMilli: number;
   restart: boolean;
 };
+// What the execution host (or the cluster's ready nodes) has and what the
+// runner's sandboxes already hold of it; GET capacity. Availability
+// fields are absent when the platform cannot report them; error explains
+// a whole that could not be read while the reservations still count.
+export type Capacity = {
+  at: string;
+  kind: "host" | "cluster";
+  cpuMilli: number;
+  memoryMB: number;
+  cpuPercent?: number;
+  load?: number[];
+  memoryAvailableMB?: number;
+  diskMB?: number;
+  diskAvailableMB?: number;
+  reserved: Resources;
+  running: number;
+  spares: number;
+  limits: ResourceLimits;
+  error?: string;
+};
 export type Chat = {
   provider?: string;
   model?: string;
@@ -387,6 +407,9 @@ export type AgentOptions = {
   models?: Record<string, CatalogModel[]>;
   /* The model a chat of each provider starts with (chats/defaults.go). */
   defaults?: Record<string, string>;
+  /* The composer may attach files from this computer by path (a local
+     install, where the chat service runs on the owner's machine). */
+  localFiles?: boolean;
 };
 export type State = {
   version: number;
@@ -463,6 +486,23 @@ export type PodInfo = {
   requests: Amounts;
   limits: Amounts;
   usage: Amounts | null;
+  /* The pod's recent events, newest first. */
+  events: ClusterEvent[];
+};
+/* One Kubernetes event: what the scheduler, the autoscaler or the kubelet
+   said about an object, with the owner's-words hint for the ones that
+   decide a start. */
+export type ClusterEvent = {
+  at: string;
+  type: "Normal" | "Warning" | string;
+  reason: string;
+  message: string;
+  hint?: string;
+  count: number;
+  kind: string;
+  namespace: string;
+  name: string;
+  source?: string;
 };
 export type NodeInfo = {
   name: string;
@@ -494,6 +534,9 @@ export type Cluster = {
   sandboxPods: PodInfo[];
   servicePods: PodInfo[];
   servicePodsError?: string;
+  /* The newest events of the sandbox and service namespaces. */
+  events: ClusterEvent[];
+  eventsError?: string;
   workspaces: Record<string, string>;
 };
 export type PodLogs = {

@@ -136,6 +136,8 @@ func (w *Worker) defaultsLocked() {
 	if _, isSBX := w.Runtime.(*sbxRuntime); isSBX {
 		w.Limits.Restart = true
 	}
+	offer := w.Limits
+	w.offer.Store(&offer)
 }
 
 // defaultMemoryMB sizes a sandbox when the configuration does not.
@@ -859,7 +861,7 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	defer bugreport.Recover("runner op " + r.Operation)
 	_ = c.SetReadDeadline(time.Time{})
 	slots := w.ordinarySlots
-	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" {
+	if r.Operation == "cancel" || r.Operation == "stats" || r.Operation == "health" || r.Operation == "status" || r.Operation == "activity" || r.Operation == "usage" || r.Operation == "capacity" {
 		slots = w.controlSlots
 	}
 	if r.Operation == "exec" {
@@ -877,11 +879,23 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	if r.Operation == "health" {
 		// The size offer travels with the health answer so the chat can
 		// validate a size and fill its form without a second operation.
-		w.mu.Lock()
-		w.defaultsLocked()
-		limits := w.Limits
-		w.mu.Unlock()
-		send(Response{Output: "sbx protocol 2; execution requires verified Warden readiness", Revision: w.Revision, Limits: &limits})
+		// It is read without w.mu (settled at initializeManaged, before
+		// the first request): the answer must not wait behind a prepare
+		// or a stop, which hold the mutex for their whole subprocess.
+		limits := w.offer.Load()
+		if limits == nil {
+			w.mu.Lock()
+			w.defaultsLocked()
+			limits = w.offer.Load()
+			w.mu.Unlock()
+		}
+		send(Response{Output: "sbx protocol 2; execution requires verified Warden readiness", Revision: w.Revision, Limits: limits})
+		return
+	}
+	if r.Operation == "capacity" {
+		ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+		defer cancel()
+		send(w.capacity(ctx))
 		return
 	}
 	if r.Operation == "stats" {
@@ -907,7 +921,7 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 		w.streamManaged(parent, c, reader, r, send)
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, w.operationTimeout(r.Operation))
 	defer cancel()
 	res, err := w.dispatch(ctx, r)
 	if err != nil {
@@ -920,6 +934,21 @@ func (w *Worker) handle(parent context.Context, c net.Conn) {
 	}
 	send(res)
 }
+
+// operationTimeout bounds one operation. The ones that create or boot a
+// sandbox (a fresh chat's prepare, a resume, a fork's copy, a resize that
+// restarts) take PrepareTimeout, since on Kubernetes the pod may wait for
+// a node to be provisioned first; everything else gets two minutes.
+func (w *Worker) operationTimeout(op string) time.Duration {
+	switch op {
+	case "prepare", "start", "clone", "resize":
+		if w.PrepareTimeout > 0 {
+			return w.PrepareTimeout
+		}
+	}
+	return 2 * time.Minute
+}
+
 func (w *Worker) streamManaged(parent context.Context, conn net.Conn, reader *bufio.Reader, r Request, send func(Response)) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -1553,7 +1582,7 @@ func (w *Worker) maintainSpares(ctx context.Context) {
 	w.mu.Unlock()
 	name := "wc-spare-" + randomID()[:16]
 	go func() {
-		createCtx, done := context.WithTimeout(ctx, 2*time.Minute)
+		createCtx, done := context.WithTimeout(ctx, w.operationTimeout("prepare"))
 		defer done()
 		var residency io.Closer
 		spec := RuntimeSpec{Name: name, Directory: "/home/agent/workspace", Spare: true, Resources: w.Limits.Default}

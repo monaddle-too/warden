@@ -4,10 +4,8 @@ import {
   onFirstLine,
   onLastLine,
   promptHistory,
-  promptLine,
   recallNewer,
   recallOlder,
-  searchHistory,
 } from "./history";
 
 const entries = [
@@ -62,21 +60,5 @@ describe("prompt history", () => {
     expect(onLastLine("two\nlines", 2)).toBe(false);
     expect(onFirstLine("two\nlines", 6)).toBe(false);
     expect(onLastLine("two\nlines", 6)).toBe(true);
-  });
-
-  it("searches the history case-insensitively, newest first", () => {
-    const history = ["Run the tests", "fix the build", "run it again"];
-    expect(searchHistory(history, "run")).toEqual([
-      "Run the tests",
-      "run it again",
-    ]);
-    expect(searchHistory(history, "  ")).toEqual(history);
-    expect(searchHistory(history, "deploy")).toEqual([]);
-  });
-
-  it("shows a prompt as one line", () => {
-    expect(promptLine("short")).toBe("short");
-    expect(promptLine("first\nsecond")).toBe("first …");
-    expect(promptLine("x".repeat(130), 20)).toBe("x".repeat(19) + "…");
   });
 });

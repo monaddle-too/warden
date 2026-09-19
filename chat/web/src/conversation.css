@@ -794,6 +794,8 @@
 }
 .composer-wrap > .error {
   margin-bottom: 10px;
+  /* One line per file /attach could not attach. */
+  white-space: pre-line;
 }
 .composer {
   position: relative;
@@ -1042,8 +1044,40 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   white-space: nowrap;
+}
+/* The startup line while the sandbox starts: the whole detail, wrapped
+   (up to three lines; the panel has the rest), and a button to the panel. */
+.composer-status > .composer-startup {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  min-width: 0;
+  height: auto;
+  min-height: 0;
+  padding: 2px 4px;
+  margin: 0 -4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.composer-status > .composer-startup:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--accent-text);
+}
+.composer-status > .composer-startup:disabled {
+  cursor: default;
 }
 .composer-hint-text {
   flex: 1;
@@ -1274,35 +1308,6 @@ button.attachment-chip {
   font-size: 13px;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-/* Ctrl-R: the reverse search over earlier prompts, its query box under
-   the list of matches (the list floats like the suggestions). */
-.history-search .suggest {
-  bottom: calc(100% + 46px);
-}
-.history-query {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px 0;
-  font-size: 13px;
-}
-.history-query .muted {
-  flex-shrink: 0;
-  font-family: var(--mono);
-  font-size: 12px;
-}
-.history-query input {
-  flex: 1;
-  min-width: 0;
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface-2);
-  font: inherit;
-  font-size: 14px;
 }
 
 /* A command the person ran ("!cmd"): their name on the card, open by

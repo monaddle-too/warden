@@ -156,7 +156,7 @@ Status per surface: ✅ have · ◐ partial · ✗ missing · — not applicable
 | Feature | Web | TUI | Notes |
 |---|---|---|---|
 | Multi-line editing, newline chord | ✅ | ✅ | |
-| Prompt history, Ctrl-R search | ✅ | ✅ | item 12 (web: from the transcript), item 6 (TUI) |
+| Prompt history, Ctrl-R search | ✅ Up/Down only | ✅ | item 12 (web: from the transcript; the Ctrl-R search was removed 2026-09-18 — in a browser ⌘R/Ctrl+R reloads the page, as in Claude), item 6 (TUI) |
 | `@path` completion | ✅ | ✗ | `paths` op |
 | `@server:resource` | ✗ | ✗ | needs MCP resources |
 | `/` menu with fuzzy match | ✅ (4) | ◐ typed | |
@@ -295,7 +295,7 @@ E–G after.
 
 ### F. TUI: vim mode, attachments, unread (`feat/parity-r2-f-tui`)
 - [x] R2.16 **Vim mode**: `/vim on|off` persisted; normal/insert, motions, operators, `u`, `:` commands. Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says.
-- [x] R2.17 **Attachments and paste**: `/attach a b c`, a local `@file` path attaches, a paste-preview chip (items 6 and 12's leftovers). Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says.
+- [x] R2.17 **Attachments and paste**: `/attach a b c`, a local `@file` path attaches, a paste-preview chip (items 6 and 12's leftovers). Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says. The web composer got the same `/attach PATH…` and local `@` mentions (path completion from this computer, a local install only) on 2026-09-18: [web-attach-from-disk-plan](web-attach-from-disk-plan.md).
 - [x] R2.18 **Unread and jump**: unread markers per chat in `/chats` and the sidebar, an unread divider on switch, `G`/End jumps to the bottom. Merged to main b7e7e8b (2026-09-18); verified as the Round 2 F section says (the TUI's status bar is the sidebar's equivalent; on the scrollback TUI the jump is a reprint).
 
 ### G. Asides and shortcuts (`feat/parity-r2-g-asides-keys`)
@@ -2219,7 +2219,10 @@ Steps:
 1. Web prompt history: Up/Down at the draft's first/last line recall this
    chat's earlier prompts (the transcript's user entries by this
    principal, newest first; the draft is kept), Ctrl-R searches them
-   (`history.ts`).
+   (`history.ts`). *2026-09-18: the Ctrl-R search was removed again — in
+   a browser ⌘R / Ctrl+R reloads the page, as it does in Claude, and the
+   owner found the search in its way; `HistorySearch.tsx` and the
+   `history-*` search rows of `shortcuts.ts` are gone, Up/Down stay.*
 2. Long paste: a paste over 8 lines or 1000 characters becomes a
    `[Pasted text #N — M lines]` placeholder in the text and a chip above
    it (hover previews, click opens, remove drops both); the message sends

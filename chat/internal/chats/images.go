@@ -91,7 +91,7 @@ func (e *Engine) keepReadImage(ctx context.Context, chatID string, item map[stri
 	if err != nil || len(raw) == 0 || len(raw) > 8<<20 {
 		return
 	}
-	c := e.Store.Snapshot().chat(chatID)
+	c := e.Store.Chat(chatID)
 	if c == nil {
 		return
 	}
@@ -176,7 +176,7 @@ func (h *HTTP) imageFileHTTP(w http.ResponseWriter, r *http.Request, chatID stri
 		http.Error(w, "image path required", 400)
 		return
 	}
-	c := h.Engine.Store.Snapshot().chat(chatID)
+	c := h.Engine.Store.Chat(chatID)
 	if c == nil {
 		http.Error(w, "chat not found", 404)
 		return
@@ -233,7 +233,7 @@ func (h *HTTP) imageHTTP(w http.ResponseWriter, r *http.Request, path string) {
 		http.NotFound(w, r)
 		return
 	}
-	c := h.Engine.Store.Snapshot().chat(parts[1])
+	c := h.Engine.Store.Chat(parts[1])
 	if c == nil {
 		http.NotFound(w, r)
 		return

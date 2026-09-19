@@ -1,6 +1,8 @@
 package chats
 
 import (
+	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -98,7 +100,9 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if r.Method == "GET" && path == "state" {
-		json.NewEncoder(w).Encode(h.Engine.View())
+		data, _, _ := h.Engine.ViewJSON()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
 		return
 	}
 	if r.Method == "GET" && path == "chats/search" {
@@ -122,6 +126,13 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" && (path == "cluster" || path == "cluster/logs") {
 		// Owner-only at the edge (ownerOnly lists api/cluster).
 		h.clusterHTTP(w, r, path)
+		return
+	}
+	if r.Method == "GET" && path == "capacity" {
+		// The host's live capacity for the size picker (capacity.go);
+		// anyone who may create a chat may see it.
+		result, err := h.Engine.Capacity(r.Context())
+		respond(w, result, err)
 		return
 	}
 	if r.Method == "GET" && path == "spend" {
@@ -153,6 +164,15 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "paths" {
 		h.pathsHTTP(w, r, parts[1])
+		return
+	}
+	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "local-paths" {
+		// A typed path on the owner's own machine (localfiles.go).
+		h.localPathsHTTP(w, r, parts[1])
+		return
+	}
+	if r.Method == "POST" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "attach-local" {
+		h.attachLocalHTTP(w, r, parts[1])
 		return
 	}
 	if r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "resources" {
@@ -471,13 +491,17 @@ func (h *HTTP) events(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("X-Accel-Buffering", "no")
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	previous := ""
+	// A frame goes when the view changed (at most every eventsPace, so a
+	// burst of streamed tokens is one frame) or every eventsKeepalive; in
+	// between the stream waits on the engine, doing nothing while Warden
+	// is idle. The encoded view is the engine's, shared with every other
+	// stream, so a change costs one encoding, not one per tab.
+	var previous []byte
+	var last viewKey
 	lastWrite := time.Time{}
 	for {
-		data, _ := json.Marshal(h.Engine.View())
-		if string(data) != previous || time.Since(lastWrite) >= 5*time.Second {
+		data, key, typing := h.Engine.ViewJSON()
+		if !bytes.Equal(data, previous) || time.Since(lastWrite) >= eventsKeepalive {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
 				return
@@ -487,12 +511,40 @@ func (h *HTTP) events(w http.ResponseWriter, r *http.Request) {
 			}
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 			lastWrite = time.Now()
-			previous = string(data)
+			previous = data
 		}
+		last = key
+		next := eventsKeepalive - time.Since(lastWrite)
+		if typing {
+			next = eventsPace // a typist expires without a change to wake on
+		}
+		keepalive := time.NewTimer(next)
+		changed := make(chan struct{})
+		waitCtx, cancel := context.WithCancel(r.Context())
+		go func() { defer close(changed); h.Engine.viewWait(waitCtx, last) }()
+		select {
+		case <-r.Context().Done():
+			cancel()
+			keepalive.Stop()
+			return
+		case <-changed:
+		case <-keepalive.C:
+		}
+		cancel()
+		keepalive.Stop()
+		// Typists expire with time and a change may come in a burst: pace
+		// the next frame.
 		select {
 		case <-r.Context().Done():
 			return
-		case <-ticker.C:
+		case <-time.After(eventsPace - time.Since(lastWrite)):
 		}
 	}
 }
+
+// eventsPace is the shortest interval between two frames of a stream;
+// eventsKeepalive the longest.
+const (
+	eventsPace      = 200 * time.Millisecond
+	eventsKeepalive = 5 * time.Second
+)

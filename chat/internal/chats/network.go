@@ -49,7 +49,7 @@ func (e *Engine) SetWorkspaceNetwork(ctx context.Context, id, mode string, actor
 // refusal discards the never-used chat and is returned as the creation's
 // error.
 func (e *Engine) createdOnNetwork(ctx context.Context, id, mode string, actor cv.Actor) (string, error) {
-	c := e.Store.Snapshot().chat(id)
+	c := e.Store.Chat(id)
 	if c == nil {
 		return "", errors.New("chat not found")
 	}

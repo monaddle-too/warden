@@ -621,6 +621,54 @@ type NodeSystemInfo struct {
 	OperatingSystem         string `json:"operatingSystem,omitempty"`
 }
 
+// CoreEvent is a core API event about an object (Event is the watch
+// stream's): who said what about it,
+// when, and how many times. The kubelet, the scheduler and the cluster
+// autoscaler all report through it; First/LastTimestamp are set on the
+// legacy path and EventTime on the events.k8s.io path, so a reader takes
+// whichever is present.
+type CoreEvent struct {
+	TypeMeta
+	Metadata           ObjectMeta      `json:"metadata"`
+	InvolvedObject     ObjectReference `json:"involvedObject"`
+	Reason             string          `json:"reason,omitempty"`
+	Message            string          `json:"message,omitempty"`
+	Type               string          `json:"type,omitempty"` // Normal or Warning
+	Count              int32           `json:"count,omitempty"`
+	FirstTimestamp     *time.Time      `json:"firstTimestamp,omitempty"`
+	LastTimestamp      *time.Time      `json:"lastTimestamp,omitempty"`
+	EventTime          *time.Time      `json:"eventTime,omitempty"`
+	Source             EventSource     `json:"source,omitempty"`
+	ReportingComponent string          `json:"reportingComponent,omitempty"`
+}
+
+// ObjectReference names the object an event is about.
+type ObjectReference struct {
+	Kind      string `json:"kind,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name,omitempty"`
+	UID       string `json:"uid,omitempty"`
+	FieldPath string `json:"fieldPath,omitempty"`
+}
+
+// EventSource is the component that reported an event.
+type EventSource struct {
+	Component string `json:"component,omitempty"`
+	Host      string `json:"host,omitempty"`
+}
+
+// At is when the event last happened: the newest of its timestamps, or
+// the creation time when none is set.
+func (e CoreEvent) At() time.Time {
+	var at time.Time
+	for _, t := range []*time.Time{e.Metadata.CreationTimestamp, e.FirstTimestamp, e.EventTime, e.LastTimestamp} {
+		if t != nil && t.After(at) {
+			at = *t
+		}
+	}
+	return at
+}
+
 // NodeMetricsItem is one node's live usage from metrics.k8s.io.
 type NodeMetricsItem struct {
 	Metadata ObjectMeta   `json:"metadata"`

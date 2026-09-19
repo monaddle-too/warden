@@ -133,3 +133,22 @@ session release not counting.
   the owner's request; main merged in twice, no conflicts; full Go suite,
   web and chart checks pass — `sandbox/kube` hit the package timeout once
   under the full parallel run and passed alone). GKE deploy of main follows.
+- 2026-09-18: deployed to GKE as image `v0.1.0-alpha.13-32-g1b24571`
+  (main 1b24571); step 5's live check still to be done there.
+- 2026-09-18: step 5's live check on GKE found two more cuts, both fixed
+  from the mainline checkout. (1) The runner's `PrepareTimeout` (ten
+  minutes on Kubernetes) was set but never read: every operation was
+  still bounded by two minutes, so a fresh chat after an idle period,
+  whose pod waits for node auto-provisioning and a new PVC (two to four
+  minutes on Autopilot), failed with "pod did not start" at 119.6 s and
+  only a retry once the node existed went through; `prepare`, `start`,
+  `clone`, `resize` and the spare creation now take `PrepareTimeout`
+  (`TestOperationTimeoutHonoursPrepareTimeout`). (2) The chat service's
+  own shutdown ended each run with an error and tombstoned it on the
+  runner (`cancel`), which the runner honours by stopping the sandbox —
+  the Kubernetes audit log showed the old runner deleting the pod at
+  21:47:20, fifteen seconds before the new one started, so a redeploy
+  took every live workspace down before `Reconcile` could adopt it. The
+  engine skips the cancel when its own context has ended
+  (`TestShutdownEndsRunWithoutCancellingSandbox`). Still to confirm live:
+  a redeploy with a running pod, which needs a signed-in chat.

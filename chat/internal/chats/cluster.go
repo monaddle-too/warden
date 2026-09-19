@@ -36,6 +36,9 @@ func (e *Engine) Cluster(ctx context.Context) (*Cluster, error) {
 	if out.ServicePods == nil {
 		out.ServicePods = []sandbox.PodInfo{}
 	}
+	if out.Events == nil {
+		out.Events = []sandbox.Event{}
+	}
 	st := e.Store.Snapshot()
 	for _, p := range out.SandboxPods {
 		if p.SandboxID == "" {

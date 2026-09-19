@@ -217,6 +217,48 @@ export async function workspacePaths(
     : [];
 }
 
+/* Paths on this computer for a local mention's prefix or an /attach
+   word (chats/localfiles.go; a local install only). */
+export async function localPaths(
+  chatID: string,
+  query: string,
+): Promise<string[]> {
+  const result = await api<{ paths?: unknown }>(
+    `chats/${encodeURIComponent(chatID)}/local-paths?q=${encodeURIComponent(query)}`,
+  );
+  return Array.isArray(result.paths)
+    ? result.paths.filter((p): p is string => typeof p === "string")
+    : [];
+}
+
+/* What attaching typed paths came to: the records stored, each with the
+   path it was typed as, and one line per path that could not be
+   attached; `missing` are the typed paths that named no file (or a
+   directory), which a mention sends as written. */
+export type LocalAttachResult = {
+  attached: (Attachment & { typed: string })[];
+  errors: string[];
+  missing: string[];
+};
+
+/* Attaches files from this computer for the chat's next message; `limit`
+   is how many more the message can take. */
+export async function attachLocal(
+  chatID: string,
+  paths: string[],
+  limit: number,
+): Promise<LocalAttachResult> {
+  const result = await api<Partial<LocalAttachResult>>(
+    `chats/${encodeURIComponent(chatID)}/attach-local`,
+    { paths, limit },
+  );
+  return {
+    attached: result.attached ?? [],
+    errors: result.errors ?? [],
+    missing: result.missing ?? [],
+  };
+}
+
 // Checkpoints, rewind and the session diff (rewind.ts). A rewind names the
 // message by its ID (or its turn's) and what to take back: the workspace,
 // the conversation, or both.

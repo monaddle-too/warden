@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RefreshCw, ScrollText, Server, X } from "lucide-react";
+import { Bell, RefreshCw, ScrollText, Server, X } from "lucide-react";
 import { api } from "../api";
-import type { Cluster, NodeInfo, PodInfo, PodLogs, Amounts } from "../types";
+import type {
+  Cluster,
+  ClusterEvent,
+  NodeInfo,
+  PodInfo,
+  PodLogs,
+  Amounts,
+} from "../types";
 import { age, cpu, memory, percent, shortenTimestamp } from "../units";
+import { EventList } from "./Events";
 
 /* The admin console's Cluster section (docs/warden-startup-visibility-
    plan.md): the nodes, the sandbox pods, the Warden service pods and a log
@@ -13,6 +21,8 @@ const LOG_REFRESH_MS = 3000;
 const TAILS = [100, 200, 500, 1000, 2000];
 
 type LogTarget = { namespace: string; pod: string; container?: string };
+/* The Recent events list narrowed to one object. */
+type EventFilter = { kind: string; namespace: string; name: string };
 
 function Meter({
   used,
@@ -126,12 +136,14 @@ function PodsTable({
   service,
   now,
   onLogs,
+  onEvents,
 }: {
   pods: PodInfo[];
   workspaces: Record<string, string>;
   service: boolean;
   now: number;
   onLogs: (t: LogTarget) => void;
+  onEvents: (f: EventFilter) => void;
 }) {
   return (
     <table className="cluster-table">
@@ -198,7 +210,7 @@ function PodsTable({
             </td>
             <td>{age(p.started, now)}</td>
             <td>{p.restarts}</td>
-            <td>
+            <td className="cluster-actions">
               <button
                 className="ghost"
                 onClick={() =>
@@ -211,6 +223,27 @@ function PodsTable({
               >
                 <ScrollText size={14} />
                 Logs
+              </button>
+              <button
+                className="ghost"
+                title={
+                  p.events.length
+                    ? `${p.events.length} recent event${p.events.length === 1 ? "" : "s"}`
+                    : "No recent events"
+                }
+                onClick={() =>
+                  onEvents({
+                    kind: "Pod",
+                    namespace: p.namespace,
+                    name: p.name,
+                  })
+                }
+              >
+                <Bell size={14} />
+                Events
+                {p.events.some((e) => e.type === "Warning") && (
+                  <span className="status-dot error" aria-label="warnings" />
+                )}
               </button>
             </td>
           </tr>
@@ -348,7 +381,13 @@ export function ClusterView() {
   const [cluster, setCluster] = useState<Cluster>();
   const [error, setError] = useState("");
   const [logs, setLogs] = useState<LogTarget>();
+  const [filter, setFilter] = useState<EventFilter>();
   const [now, setNow] = useState(() => Date.now());
+  const eventsRef = useRef<HTMLHeadingElement>(null);
+  const showEvents = (f?: EventFilter) => {
+    setFilter(f);
+    eventsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -422,6 +461,7 @@ export function ClusterView() {
           service={false}
           now={now}
           onLogs={setLogs}
+          onEvents={showEvents}
         />
       ) : (
         <p className="muted">No sandbox pods right now.</p>
@@ -438,6 +478,7 @@ export function ClusterView() {
           service
           now={now}
           onLogs={setLogs}
+          onEvents={showEvents}
         />
       ) : (
         <p className="muted">No service pods listed.</p>
@@ -449,6 +490,77 @@ export function ClusterView() {
           onClose={() => setLogs(undefined)}
         />
       )}
+      <h3 ref={eventsRef} className="cluster-events-head">
+        Recent events
+        {filter && (
+          <>
+            {" "}
+            <span className="muted">
+              · {filter.kind} <code>{filter.name}</code>
+            </span>
+            <button
+              className="ghost"
+              onClick={() => setFilter(undefined)}
+              aria-label="Show every event"
+            >
+              <X size={14} />
+              All events
+            </button>
+          </>
+        )}
+      </h3>
+      <RecentEvents
+        events={cluster.events}
+        error={cluster.eventsError}
+        filter={filter}
+        now={now}
+        onObject={(e) =>
+          setFilter({ kind: e.kind, namespace: e.namespace, name: e.name })
+        }
+      />
     </section>
+  );
+}
+
+/* The newest events of the sandbox and service namespaces, or one
+   object's: what kubectl get events shows, in the owner's words where
+   the reason has them. */
+function RecentEvents({
+  events,
+  error,
+  filter,
+  now,
+  onObject,
+}: {
+  events: ClusterEvent[];
+  error?: string;
+  filter?: EventFilter;
+  now: number;
+  onObject: (e: ClusterEvent) => void;
+}) {
+  if (error) return <p className="muted">Events are not readable: {error}</p>;
+  const shown = filter
+    ? events.filter(
+        (e) =>
+          e.kind === filter.kind &&
+          e.name === filter.name &&
+          e.namespace === filter.namespace,
+      )
+    : events;
+  if (!shown.length)
+    return (
+      <p className="muted">
+        {filter ? "No recent events for it." : "No recent events."}
+      </p>
+    );
+  return (
+    <EventList
+      key={filter ? `${filter.kind}/${filter.namespace}/${filter.name}` : "all"}
+      events={shown}
+      now={now}
+      objects={!filter}
+      limit={filter ? 0 : 25}
+      onObject={onObject}
+    />
   );
 }

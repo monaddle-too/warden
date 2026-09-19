@@ -668,3 +668,31 @@ func TestLoopbackOwnerCookieNameCarriesThePort(t *testing.T) {
 		t.Fatal("another Warden's cookie on the same address must be ignored, not overwritten", r.Code, r.Header())
 	}
 }
+
+// Proxied requests share one upstream transport: their keep-alive
+// connections to the chat service are reused, not left one per request
+// in a pool nothing reads again.
+func TestProxyReusesUpstreamConnections(t *testing.T) {
+	var mu sync.Mutex
+	remotes := map[string]bool{}
+	s, _ := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		remotes[r.RemoteAddr] = true
+		mu.Unlock()
+		w.WriteHeader(204)
+	}))
+	for i := 0; i < 20; i++ {
+		r := httptest.NewRequest("GET", "https://warden.example.com/api/state", nil)
+		r.AddCookie(&http.Cookie{Name: "main", Value: "valid"})
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, r)
+		if w.Code != 204 {
+			t.Fatalf("request %d: status %d", i, w.Code)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(remotes) > 2 {
+		t.Fatalf("20 sequential requests used %d upstream connections", len(remotes))
+	}
+}
