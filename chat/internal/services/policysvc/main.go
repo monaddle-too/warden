@@ -203,6 +203,7 @@ func run(args []string) error {
 	sharing.GitHubConfigured, sharing.GitHubAppSlug = s.githubConfigured, s.githubSlug
 	sharing.Egress = registry
 	sharing.Network = registry
+	sharing.HostAudit = registry
 	// Attached images are published for Docs edits only at an https origin.
 	if strings.HasPrefix(s.publicURL, "https://") {
 		sharing.PublicURL = s.publicURL

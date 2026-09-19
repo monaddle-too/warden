@@ -155,6 +155,42 @@ type Registry struct {
 	// install's mode; persisted as egressOverridesFile.
 	egressOverrides map[string]string
 	mu              sync.Mutex
+	// hostAudit is the install-wide audit log for the jailbreak's host
+	// events (<state>/audit/events.jsonl, its own hash chain; opened on
+	// the first event), beside the sandbox's own chain when it is bound.
+	hostAudit *Audit
+}
+
+// HostEvents are the jailbreak's audit event types (chats/host.go), the
+// only ones the sharing host_event operation records.
+var HostEvents = map[string]bool{"host.exec": true, "host.file": true, "host.expose": true, "workspace.jailbreak": true}
+
+// EmitHostEvent records one host event (docs/host-dogfood-plan.md) in the
+// install-wide audit chain and, when the sandbox is bound, in that
+// sandbox's own chain, so the record of what an agent did on the host
+// survives beside the gateway's.
+func (r *Registry) EmitHostEvent(sandbox, event string, fields map[string]any) error {
+	if !HostEvents[event] {
+		return errors.New("unknown host event")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.hostAudit == nil {
+		audit, err := NewAudit(filepath.Join(r.State, "audit", "events.jsonl"), NewRedactor())
+		if err != nil {
+			return err
+		}
+		r.hostAudit = audit
+	}
+	if _, err := r.hostAudit.EmitSeverity(event, "warning", fields); err != nil {
+		return err
+	}
+	if b := r.Bindings[sandbox]; b != nil && b.Engine != nil && b.Engine.Audit != nil {
+		if _, err := b.Engine.Audit.EmitSeverity(event, "warning", fields); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // egressFile persists an egress mode chosen from the console under the
@@ -1445,6 +1481,10 @@ func (r *Registry) Close() {
 	defer r.mu.Unlock()
 	if r.Gateways != nil {
 		r.Gateways.Close()
+	}
+	if r.hostAudit != nil {
+		r.hostAudit.Close()
+		r.hostAudit = nil
 	}
 	for _, b := range r.Bindings {
 		b.ProviderSecret = ""

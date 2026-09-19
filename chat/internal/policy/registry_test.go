@@ -642,3 +642,41 @@ func TestRegistryPassesTheDeclaredImageDigestToTheVerifier(t *testing.T) {
 		t.Fatalf("digest not restored by the request naming it: %v", seen)
 	}
 }
+
+// A host event lands in the install-wide audit chain under <state>/audit
+// and, once the sandbox is bound, in that sandbox's own chain too, as a
+// warning; an unknown event is refused.
+func TestRegistryRecordsHostEventsInBothChains(t *testing.T) {
+	dir := t.TempDir()
+	clock := &testClock{now: 1000, mono: 1000}
+	registry := newTestRegistry(t, dir, clock, &fixtureVerifier{enabled: true})
+	if err := registry.EmitHostEvent("s1", "host.reboot", nil); err == nil {
+		t.Fatal("unknown event accepted")
+	}
+	if err := registry.EmitHostEvent("s1", "workspace.jailbreak", map[string]any{"sandbox_id": "s1", "chat_id": "c1", "on": true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Register(runContext(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.EmitHostEvent("s1", "host.exec", map[string]any{"sandbox_id": "s1", "chat_id": "c1", "command": "uname -a", "exit": 0}); err != nil {
+		t.Fatal(err)
+	}
+	install, err := os.ReadFile(filepath.Join(dir, "audit", "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(install)), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], `"event_type": "workspace.jailbreak"`) && !strings.Contains(lines[0], `"event_type":"workspace.jailbreak"`) || !strings.Contains(lines[1], "host.exec") || !strings.Contains(lines[1], "uname -a") || !strings.Contains(lines[1], `"warning"`) {
+		t.Fatalf("install chain:\n%s", install)
+	}
+	b := registry.Bindings["s1"]
+	own, err := os.ReadFile(b.Engine.Audit.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(own), "host.exec") || strings.Contains(string(own), "workspace.jailbreak") {
+		t.Fatalf("sandbox chain:\n%s", own)
+	}
+	registry.Close()
+}
