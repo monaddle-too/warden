@@ -86,3 +86,19 @@ Two gaps the owner hit watching a chat start on GKE:
 ## Progress log
 
 - 2026-09-17: worktree opened, plan written.
+- 2026-09-17: steps 1–6 done in b41a828 (events on the runner: `kube.CoreEvent`
+  / `kube.Events`, `sandbox.Event` + `EventHint`, `PodInfo.Events`,
+  `ClusterStatus.Events`, the driver's 10 s event poll while a pod waits,
+  RBAC `events get/list` on both runner Roles + chart goldens), 3800698
+  (web: the startup line in full as a button to the workspace panel, the
+  panel's Starting section, pod events, the Cluster section's Recent
+  events with a per-pod filter) and 1a8a06f (`FailedScaleUp` hint, seen on
+  GKE as a GCE quota error).
+- 2026-09-19: merged origin/main in (c839288: the composer redesign moved
+  the status line to `.composer-hint`'s `.composer-status`, the button
+  now lives there; the scheduler verdict from e7233aa is what the hint
+  is appended to: `waiting for a node: none of the 2 nodes can take the
+  sandbox: 2 full (cpu) · a node is being added`). Step 7 done (feature
+  map rows for startup stage and cluster visibility). Go, web and chart
+  suites green on the merged tree. Remains: step 8's GKE deploy and a
+  watched cold start.
