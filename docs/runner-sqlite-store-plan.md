@@ -68,7 +68,8 @@ renamed `cancelled-runs.migrated`. Neither backup is read again.
   the oldest stopped sandboxes that no chat is bound to and no run holds
   (runtime removed, rows dropped) before refusing; it refuses only when
   every retained sandbox is still bound or running
-  (`TestFullInventoryRetiresTheOldestUnboundStoppedSandbox`).
+  (`TestFullInventoryRetiresTheOldestUnboundStoppedSandbox`). Merged to
+  main 78adb90 (2026-09-19); not deployed to `~/.warden` yet.
 
 ## Decisions
 
