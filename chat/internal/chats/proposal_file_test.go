@@ -10,6 +10,10 @@ func TestProposalFilePreservesReviewedBodyAndRejectsIdentity(t *testing.T) {
 	if err != nil || p["body"] != "Exact\nreviewed body" {
 		t.Fatalf("body not preserved: %v", err)
 	}
+	// An update to a published pull request travels the same way.
+	if p, err = decodeProposalFile([]byte(`{"repository":"owner/repo","pull_request":2,"title":"Fix","body":"b","files":[{"path":"a.md","content":"x"}]}`)); err != nil || p["pull_request"] != 2.0 {
+		t.Fatalf("pull_request not carried: %v %v", p, err)
+	}
 	for _, raw := range [][]byte{
 		[]byte(`{"chatID":"other"}`), []byte(`{"sandboxID":"other"}`),
 		[]byte(`{"proposal_path":"recursive.json"}`), []byte(`null`), []byte(`[]`),

@@ -34,7 +34,7 @@ func decodeProposalFile(raw []byte) (map[string]any, error) {
 	}
 	for key := range proposal {
 		switch key {
-		case "repository", "base", "title", "body", "files", "images":
+		case "repository", "base", "pull_request", "title", "body", "files", "images":
 		default:
 			return nil, errors.New("unexpected proposal field")
 		}
