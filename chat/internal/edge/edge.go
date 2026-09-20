@@ -176,7 +176,7 @@ func New(c Config) (*Server, error) {
 		// Name what was configured: the two shapes are the only ones the
 		// edge dials, and an operator who wrote services.chat.address by
 		// hand cannot tell from "required" which half is wrong.
-		return nil, fmt.Errorf("upstream %q is neither http://127.0.0.1:<port> nor tls://<host>:<port>", upstreamShape)
+		return nil, fmt.Errorf("upstream %q is neither http://127.0.0.1:<port> nor tls://<host>:<port>", c.Upstream)
 	}
 	if c.UpstreamHost == "" || strings.ContainsAny(c.PreviewSuffix, "/:@?#*") {
 		return nil, errors.New("upstream host and preview suffix required")
