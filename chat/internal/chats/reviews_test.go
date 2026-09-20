@@ -216,6 +216,16 @@ func TestViewCIResultsIsATimedGrant(t *testing.T) {
 	if op := sharing.op(0); op["action"] != "pr_ci_state" || agent.Map(op["data"])["repository"] != "owner/repo" {
 		t.Fatalf("state op: %v", op)
 	}
+	// The answer path routes every grant tool's method to resolveGrant
+	// (a hand-kept list once left this one out: "Unknown error").
+	for tool, method := range grantMethods {
+		if grantMethodOf(method) != method {
+			t.Fatalf("%s's method %s is not routed", tool, method)
+		}
+	}
+	if grantMethodOf(methodPermission) != "" {
+		t.Fatal("a permission ask reads as a grant")
+	}
 	v := e.resolveGrant(c, approvals[0], true, cv.Actor{PrincipalID: "sub", Name: "Ada"}).(map[string]any)
 	text := agent.String(agent.Map(agent.Array(v["contentItems"])[0])["text"])
 	if v["success"] != true || !strings.Contains(text, `"conclusion":"failure"`) || !strings.Contains(text, "undefined: nope") || !strings.Contains(text, `"expires_at":4600`) {

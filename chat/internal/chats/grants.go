@@ -276,6 +276,17 @@ func (e *Engine) requestGrant(c *Chat, client *agent.Client, f agent.Frame) erro
 	})
 }
 
+// grantMethodOf returns method when it is one a grant tool parks (so a
+// switch on an approval's method can name every grant in one case), else "".
+func grantMethodOf(method string) string {
+	for _, m := range grantMethods {
+		if m == method {
+			return method
+		}
+	}
+	return ""
+}
+
 // resolveGrant performs an approved grant (or reports the decline) and
 // returns the agent's tool result. actor is the person who answered.
 func (e *Engine) resolveGrant(c *Chat, a Approval, allow bool, actor cv.Actor) any {

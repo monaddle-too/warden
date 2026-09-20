@@ -1951,7 +1951,10 @@ func (e *Engine) Answer(chatID, approvalID string, answer Answer, actor cv.Actor
 	case "warden/ports/bind":
 		state := e.Store.Snapshot()
 		result = e.resolvePort(state.chat(chatID), approval, allow)
-	case methodNetworkAllow, methodRepositoryAccess, methodGitHubWrite, methodHostImport, methodHostExport, methodResources:
+	case grantMethodOf(approval.Method):
+		// Every grant tool's method (grants.go grantMethods), derived, so
+		// a new grant cannot be left out of this list: view_ci_results
+		// once answered "Unknown error" for exactly that.
 		state := e.Store.Snapshot()
 		result = e.resolveGrant(state.chat(chatID), approval, allow, actor)
 	case "item/permissions/requestApproval":
