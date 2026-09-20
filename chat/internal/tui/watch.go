@@ -14,6 +14,8 @@ func (a Approval) Summary() string {
 		return fmt.Sprintf("bind sandbox port %v (%v)", a.Params["port"], a.Params["title"])
 	case a.Method == "warden/network/allow":
 		return fmt.Sprintf("allow network access to %v for %v min: %v", a.Params["host"], a.Params["duration_minutes"], a.Params["reason"])
+	case a.Method == "warden/ci/read":
+		return fmt.Sprintf("read CI results of %v for %v min: %v", a.Params["repository"], a.Params["duration_minutes"], a.Params["reason"])
 	case a.Method == "warden/repository/access":
 		return fmt.Sprintf("share repository %v (%v): %v", a.Params["repository"], a.Params["categories"], a.Params["reason"])
 	case a.Method == "warden/github/write":

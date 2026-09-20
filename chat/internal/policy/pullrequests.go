@@ -141,6 +141,11 @@ func newPullRequests(s *Sharing) (*PullRequests, error) {
 	if err := ensureTextColumns(s.DB, "pull_requests", [][2]string{{"principal", OwnerPrincipal}}); err != nil {
 		return nil, err
 	}
+	// ci_grants: the owner's timed permission for one sandbox to read one
+	// repository's CI results (view_ci_results), like a network grant.
+	if _, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS ci_grants (sandbox TEXT, repository TEXT, expires REAL, actor TEXT, PRIMARY KEY (sandbox, repository))"); err != nil {
+		return nil, err
+	}
 	interrupted := mustJSON(map[string]any{"error": "Publication interrupted. Check the proposal branch on GitHub before submitting again; Warden will not retry automatically."})
 	if _, err := s.DB.Exec("UPDATE pull_requests SET status='failed', outcome=? WHERE status='publishing'", string(interrupted)); err != nil {
 		return nil, err
@@ -620,8 +625,19 @@ func (p *PullRequests) Submit(data map[string]any) (map[string]any, error) {
 
 // Dispatch handles pr_state, pr_preview, pr_get, pr_resolve and pr_checks.
 func (p *PullRequests) Dispatch(op string, data map[string]any) (map[string]any, error) {
-	if op == "pr_checks" {
+	switch op {
+	case "pr_checks":
 		return p.Checks(data)
+	case "pr_ci_allow":
+		return p.allowChecks(data)
+	case "pr_ci_state":
+		repo := strings.ToLower(stringField(data, "repository"))
+		expires, ok := p.ciGrant(stringField(data, "sandboxID"), repo)
+		out := map[string]any{"repository": repo, "allowed": ok}
+		if ok {
+			out["expires_at"] = expires
+		}
+		return out, nil
 	}
 	p.s.mu.Lock()
 	defer p.s.mu.Unlock()
@@ -981,8 +997,12 @@ func (p *PullRequests) Checks(data map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	expires, allowed := p.ciGrant(stringField(data, "sandboxID"), repo)
+	if !allowed {
+		return nil, valueErr(CIGrantRequired + repo)
+	}
 	call := p.api(repo, rid)
-	out := map[string]any{"repository": repo}
+	out := map[string]any{"repository": repo, "expires_at": expires}
 	ref := ""
 	if v, present := data["pull_request"]; present && v != nil {
 		number, ok := asInt(v)
@@ -1073,6 +1093,51 @@ func (p *PullRequests) Checks(data map[string]any) (map[string]any, error) {
 		out["hint"] = "A check failed: read failed_jobs (steps and the log tail), fix the cause, and submit the fix with request_pull_request and pull_request set to update the same pull request."
 	}
 	return out, nil
+}
+
+// CIGrantRequired prefixes the refusal of a read without a live grant; the
+// chat service turns it into an approval request (chats/grants.go).
+const CIGrantRequired = "CI results need the owner's approval for "
+
+// ciGrant is the live grant's expiry for a sandbox and repository.
+func (p *PullRequests) ciGrant(sandbox, repo string) (float64, bool) {
+	p.s.mu.Lock()
+	defer p.s.mu.Unlock()
+	var expires float64
+	if err := p.s.DB.QueryRow("SELECT expires FROM ci_grants WHERE sandbox=? AND repository=?", sandbox, repo).Scan(&expires); err != nil || expires <= p.s.Clock() {
+		return 0, false
+	}
+	return expires, true
+}
+
+// allowChecks records the owner's approval of view_ci_results: one
+// sandbox, one selected repository, for a bounded time (1 minute to 24
+// hours), in the repository event log.
+func (p *PullRequests) allowChecks(data map[string]any) (map[string]any, error) {
+	sandbox := stringField(data, "sandboxID")
+	repoText, err := proposalText(data["repository"], 201, false)
+	if err != nil {
+		return nil, err
+	}
+	repo := strings.ToLower(repoText)
+	seconds, ok := asInt(data["duration"])
+	if !validIdentifier(sandbox) || !ok || seconds < 60 || seconds > 86400 {
+		return nil, valueErr("a CI grant needs a sandbox and a duration of 1 minute to 24 hours")
+	}
+	if _, err := p.active(data, repo, nil); err != nil {
+		return nil, err
+	}
+	until := p.s.Clock() + float64(seconds)
+	p.s.mu.Lock()
+	defer p.s.mu.Unlock()
+	if _, err := p.s.DB.Exec("INSERT OR REPLACE INTO ci_grants (sandbox,repository,expires,actor) VALUES (?,?,?,?)", sandbox, repo, until, actorOf(data)); err != nil {
+		return nil, err
+	}
+	detail := map[string]any{"repository": repo, "until": until, "reason": stringField(data, "reason")}
+	if _, err := p.s.DB.Exec("INSERT INTO repository_events (at,sandbox,actor,kind,detail) VALUES (?,?,?,?,?)", p.s.Clock(), sandbox, actorOf(data), "ci_allowed", string(mustJSON(detail))); err != nil {
+		return nil, err
+	}
+	return map[string]any{"repository": repo, "expires_at": until}, nil
 }
 
 // token is the credential one operation runs with, as api() obtains it.

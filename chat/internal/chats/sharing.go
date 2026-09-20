@@ -27,9 +27,6 @@ func sharingTools() []any {
 		map[string]any{"type": "function", "name": "request_google_docs_access", "description": "Ask the user to select Google documents or spreadsheets and an access duration at one permission level (default read). read: Docs documents.get and Sheets reads. write: also Sheets cell value writes (values update/append/clear). structure: also Sheets spreadsheets:batchUpdate (add/delete sheets, formats, charts, merges). The write and structure levels apply to spreadsheets only: Google Docs are never written directly (batchUpdate is refused at every level); read them with read_google_document and propose changes with propose_google_document_edit, which need only read. Each level includes the ones below, on the selected IDs only. Ask for the lowest level that does the job: read for documents. Waits for their decision; returns the selected IDs with their API URLs (docs.googleapis.com for documents, sheets.googleapis.com for spreadsheets). Read them with HTTPS requests through the sandbox proxy. Never request Google credentials.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"reason": map[string]any{"type": "string", "maxLength": 2000}, "access": map[string]any{"type": "string", "enum": []string{"read", "write", "structure"}}}, "required": []string{"reason"}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "list_shared_documents", "description": "List this conversation's currently shared Google documents, API URLs and grant expiry times.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "read_google_document", "description": "Read a shared Google document (read access suffices) as numbered paragraphs: {n, style, depth, text, frozen?}. Styles: title, subtitle, h1–h6, text, bullet, numbered (depth = list nesting). Text uses Markdown-like marks: **bold**, *italic*, [text](url); backslash escapes \\\\ \\* \\[ \\]. Frozen paragraphs (tables, images, footnotes, breaks, chips) are shown as placeholders and cannot be changed or deleted. Only the first tab is shown. Pass proposal_id to read instead the draft the owner returned with that proposal (see propose_google_document_edit). Prefer this over documents.get.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"document_id": map[string]any{"type": "string"}, "proposal_id": map[string]any{"type": "string"}}, "required": []string{"document_id"}, "additionalProperties": false}},
-		map[string]any{"type": "function", "name": "view_ci_results", "description": "Read the CI results GitHub recorded for a pull request (its head commit) or for a branch or commit of a shared repository: every check run with its status and conclusion, and for each failed GitHub Actions job its steps and the tail of its log with the ##[error] lines. Warden reads them with the owner's credential; no token is handed out. Use it after request_pull_request publishes or updates a pull request: while conclusion is pending or none, wait a minute and call again; on failure, fix the cause and submit the fix with request_pull_request and pull_request set.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
-			"repository": map[string]any{"type": "string", "description": "owner/name"}, "pull_request": map[string]any{"type": "integer", "minimum": 1, "description": "pull request number (its head commit is checked)"}, "ref": map[string]any{"type": "string", "description": "a branch name or commit sha, when not a pull request"}},
-			"required": []string{"repository"}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "propose_google_document_edit", "description": "Propose edits to a shared Google document as suggestions the owner reviews in Warden; only read access is needed and nothing is written until they approve. Give a summary and ops against paragraph numbers from read_google_document: {type: replace, start, end, paragraphs, reason?} replaces paragraphs start..end (inclusive), {type: insert, after, paragraphs, reason?} inserts after paragraph number after (0 = at the top), {type: delete, start, end, reason?} deletes. Paragraphs are {style, depth?, text} as read_google_document shows them; put the paragraph's full new text in text. Ops must not overlap or touch frozen paragraphs; up to 200 ops / 256 KiB. Add a short reason to each op: the owner sees it beside the change. Waits for the decision: applied (written to the document), rejected (feedback), returned (the owner edited the draft and/or left comments: read it with read_google_document {document_id, proposal_id} and submit a new proposal with revises = that request_id and ops against the returned draft's numbering), or failed. Do not write with batchUpdate when this tool is available.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"document_id": map[string]any{"type": "string"}, "summary": map[string]any{"type": "string", "maxLength": 4000}, "revises": map[string]any{"type": "string"},
 			"ops": map[string]any{"type": "array", "minItems": 1, "maxItems": 200, "items": map[string]any{"type": "object", "properties": map[string]any{
@@ -178,35 +175,7 @@ func (e *Engine) sharingTool(ctx context.Context, c *Chat, client *agent.Client,
 		}
 		data["callID"] = c.RunID + ":" + string(f.ID)
 	}
-	if agent.String(f.Params["tool"]) == "view_ci_results" {
-		// A read: answered at once, no review.
-		op = "pr_checks"
-		var input struct {
-			Repository  string `json:"repository"`
-			PullRequest int64  `json:"pull_request"`
-			Ref         string `json:"ref"`
-		}
-		raw, _ := json.Marshal(f.Params["arguments"])
-		if v, ok := f.Params["arguments"].(string); ok {
-			raw = []byte(v)
-		}
-		dec := json.NewDecoder(strings.NewReader(string(raw)))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&input); err != nil {
-			return client.Reply(f.ID, sharingToolResult(nil, errors.New("invalid arguments: "+err.Error())))
-		}
-		data["repository"] = input.Repository
-		if input.PullRequest > 0 {
-			data["pull_request"] = input.PullRequest
-		}
-		if input.Ref != "" {
-			data["ref"] = input.Ref
-		}
-	}
 	result, err := e.sharingCall(ctx, op, data)
-	if op == "pr_checks" {
-		return client.Reply(f.ID, sharingToolResult(result, err))
-	}
 	if (op == "pr_submit" || op == "doc_submit" || op == "doc_read") && err == nil && result["status"] == "invalid" {
 		return client.Reply(f.ID, sharingToolResult(nil, errors.New(agent.String(result["error"]))))
 	}

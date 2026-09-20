@@ -45,8 +45,15 @@ request but not push a fix to it, and could not see whether it built.
   and by GitHub). The commit message is the reviewed title and body; the
   pull request's description is not rewritten. No new branch, no new pull
   request; the result carries `number`, `url`, `commit`.
-- **View CI results.** `view_ci_results {repository, pull_request | ref}` is
-  a read, answered at once: the head commit's check runs
+- **View CI results.** `view_ci_results {repository, pull_request | ref,
+  reason?, duration_minutes?}` is a timed grant, like network access (the
+  owner, 2026-09-20: "view CI results should be a grant with a time
+  period"): the first call parks an approval (`warden/ci/read`: this
+  sandbox may read the repository's CI results for N minutes, default 60,
+  1–1440), approval records the grant (`ci_grants`, event `ci_allowed`)
+  and performs the read; within the window later calls answer at once,
+  after it the owner is asked again. Without a live grant the policy
+  refuses the read before touching GitHub. The read itself: the head commit's check runs
   (`checks/list-for-ref`), and for each failed GitHub Actions job its
   steps (`actions/get-job-for-workflow-run`) and the tail of its log with
   the `##[error]` lines (`actions/download-job-logs-for-workflow-run`,

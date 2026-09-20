@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
 	"testing"
 
 	"warden/chat/internal/agent"
+	cv "warden/chat/internal/conversation"
 )
 
 // pipeAgent is an agent.Client over a pipe whose far end answers the
@@ -190,38 +192,60 @@ func TestReviewsReconciledWithPolicyService(t *testing.T) {
 
 func jsonContains(b []byte, s string) bool { return strings.Contains(string(b), s) }
 
-// view_ci_results is a read: the policy's pr_checks answer comes back in
-// the tool result at once, no review is recorded.
-func TestViewCIResultsAnswersAtOnce(t *testing.T) {
+// view_ci_results is a timed grant: without one the owner is asked for
+// the window and the approval performs the read; with a live one the
+// read answers at once, no review, no approval.
+func TestViewCIResultsIsATimedGrant(t *testing.T) {
 	e, _, c := portEngine(t, "")
 	sharing, socket := newFakeSharing(t)
 	e.PolicyAddress = "unix://" + socket
+	sharing.results["pr_ci_state"] = map[string]any{"allowed": false}
+	sharing.results["pr_ci_allow"] = map[string]any{"repository": "owner/repo", "expires_at": 4600.0}
 	sharing.results["pr_checks"] = map[string]any{"repository": "owner/repo", "pull_request": 9, "conclusion": "failure", "failed_jobs": []any{map[string]any{"name": "Go", "errors": []any{"##[error]undefined: nope"}}}}
 	client, replies := pipeAgent(t)
-	if err := e.sharingTool(context.Background(), c, client, agent.Frame{ID: json.RawMessage(`8`), Params: map[string]any{"tool": "view_ci_results", "arguments": map[string]any{"repository": "owner/repo", "pull_request": 9}}}); err != nil {
+	if err := e.requestGrant(c, client, agent.Frame{ID: json.RawMessage(`8`), Params: map[string]any{"tool": "view_ci_results", "arguments": map[string]any{"repository": "Owner/Repo", "pull_request": 9, "reason": "watch the build"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if len(replies()) != 1 {
-		t.Fatalf("replies: %v", replies())
+	approvals := e.Store.Snapshot().chat(c.ID).Approvals
+	if len(approvals) != 1 || approvals[0].Method != methodCIRead || approvals[0].Params["repository"] != "owner/repo" || fmt.Sprint(approvals[0].Params["pull_request"]) != "9" || fmt.Sprint(approvals[0].Params["duration_minutes"]) != "60" {
+		t.Fatalf("approval: %+v", approvals)
 	}
-	var result map[string]any
-	_ = json.Unmarshal(replies()[0].Result, &result)
-	text := agent.String(agent.Map(result["contentItems"].([]any)[0])["text"])
-	if result["success"] != true || !strings.Contains(text, `"conclusion":"failure"`) || !strings.Contains(text, "undefined: nope") {
-		t.Fatalf("reply: %s", replies()[0].Result)
+	if len(replies()) != 0 {
+		t.Fatal("answered before the owner decided")
 	}
-	op := sharing.op(0)
-	if op["action"] != "pr_checks" || agent.Map(op["data"])["repository"] != "owner/repo" || agent.Map(op["data"])["pull_request"] != 9.0 || agent.Map(op["data"])["chatID"] != c.ID {
-		t.Fatalf("op: %v", op)
+	if op := sharing.op(0); op["action"] != "pr_ci_state" || agent.Map(op["data"])["repository"] != "owner/repo" {
+		t.Fatalf("state op: %v", op)
+	}
+	v := e.resolveGrant(c, approvals[0], true, cv.Actor{PrincipalID: "sub", Name: "Ada"}).(map[string]any)
+	text := agent.String(agent.Map(agent.Array(v["contentItems"])[0])["text"])
+	if v["success"] != true || !strings.Contains(text, `"conclusion":"failure"`) || !strings.Contains(text, "undefined: nope") || !strings.Contains(text, `"expires_at":4600`) {
+		t.Fatalf("allow: %v", v)
+	}
+	allow, read := sharing.op(1), sharing.op(2)
+	if allow["action"] != "pr_ci_allow" || agent.Map(allow["data"])["duration"] != 3600.0 || agent.Map(allow["data"])["actor"] != "Ada" || agent.Map(allow["data"])["sandboxID"] != c.SandboxID {
+		t.Fatalf("allow op: %v", allow)
+	}
+	if read["action"] != "pr_checks" || agent.Map(read["data"])["pull_request"] != 9.0 {
+		t.Fatalf("read op: %v", read)
 	}
 	if len(e.Store.Snapshot().chat(c.ID).Reviews) != 0 {
 		t.Fatal("a read recorded a review")
 	}
-	if err := e.sharingTool(context.Background(), c, client, agent.Frame{ID: json.RawMessage(`9`), Params: map[string]any{"tool": "view_ci_results", "arguments": map[string]any{"repository": "owner/repo", "bogus": 1}}}); err != nil {
+	// A live grant: answered at once.
+	sharing.results["pr_ci_state"] = map[string]any{"allowed": true, "expires_at": 4600.0}
+	if err := e.requestGrant(c, client, agent.Frame{ID: json.RawMessage(`9`), Params: map[string]any{"tool": "view_ci_results", "arguments": map[string]any{"repository": "owner/repo", "ref": "main"}}}); err != nil {
 		t.Fatal(err)
 	}
-	result = nil
-	if r := replies(); len(r) != 2 || json.Unmarshal(r[1].Result, &result) != nil || result["success"] != false {
-		t.Fatalf("unknown field accepted: %v", replies())
+	if r := replies(); len(r) != 1 || !strings.Contains(string(r[0].Result), `conclusion\":\"failure`) {
+		t.Fatalf("immediate read: %v", replies())
+	}
+	if len(e.Store.Snapshot().chat(c.ID).Approvals) != 1 {
+		t.Fatal("a live grant still asked")
+	}
+	if err := e.requestGrant(c, client, agent.Frame{ID: json.RawMessage(`10`), Params: map[string]any{"tool": "view_ci_results", "arguments": map[string]any{"repository": "owner/repo"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if r := replies(); len(r) != 2 || !strings.Contains(string(r[1].Result), "pull_request or ref") {
+		t.Fatalf("missing target accepted: %v", replies())
 	}
 }

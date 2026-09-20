@@ -134,3 +134,8 @@ not build, reads the CI result, and pushes the fix to the same PR.
   now comes first in the refusal switch); `proposal_path` could not carry
   `pull_request` (allowed now). Left as is: `proposal_path` is relative to
   the workspace root; the sandbox clone has no git identity.
+- 2026-09-20: `view_ci_results` is a **timed grant** (the owner asked):
+  approval `warden/ci/read` with a duration, recorded by the policy service
+  (`ci_grants`), a live grant answers at once, another sandbox or an
+  expired grant is refused before GitHub is touched; cards on the web and
+  the TUI.

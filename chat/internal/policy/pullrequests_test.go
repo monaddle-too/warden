@@ -603,13 +603,49 @@ func TestChecksReadRunsStepsAndLogTail(t *testing.T) {
 		logPath = path
 		return "2026-09-19T19:00:00Z ok  \tpkg/a\n2026-09-19T19:00:01Z ##[error]internal/x/x.go:3:1: undefined: nope\n2026-09-19T19:00:02Z ##[error]Process completed with exit code 1.\n", nil
 	}
+	// No grant: refused with the prefix the chat service turns into an
+	// approval, and nothing is read from GitHub.
+	if _, err := f.s.Dispatch("pr_checks", map[string]any{"chatID": "chat", "sandboxID": "sandbox", "repository": "owner/repo", "pull_request": 9}); err == nil || !strings.HasPrefix(err.Error(), CIGrantRequired) {
+		t.Fatalf("read without a grant: %v", err)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("GitHub reached without a grant: %v", f.calls)
+	}
+	if state, _ := f.s.Dispatch("pr_ci_state", map[string]any{"sandboxID": "sandbox", "repository": "owner/repo"}); state["allowed"] != false {
+		t.Fatalf("state: %v", state)
+	}
+	// The owner's grant: this sandbox, this repository, a bounded time.
+	for _, bad := range []map[string]any{{"sandboxID": "sandbox", "repository": "owner/repo", "duration": 30}, {"sandboxID": "sandbox", "repository": "owner/unselected", "duration": 3600}} {
+		bad["chatID"] = "chat"
+		if _, err := f.s.Dispatch("pr_ci_allow", bad); err == nil {
+			t.Fatalf("bad grant accepted: %v", bad)
+		}
+	}
+	now := 1000.0
+	f.s.Clock = func() float64 { return now }
+	grant, err := f.s.Dispatch("pr_ci_allow", map[string]any{"chatID": "chat", "sandboxID": "sandbox", "repository": "Owner/Repo", "duration": 3600, "actor": "Ada", "reason": "watch PR 9"})
+	if err != nil || grant["expires_at"] != 4600.0 {
+		t.Fatalf("grant: %v %v", grant, err)
+	}
+	if state, _ := f.s.Dispatch("pr_ci_state", map[string]any{"sandboxID": "sandbox", "repository": "owner/repo"}); state["allowed"] != true || state["expires_at"] != 4600.0 {
+		t.Fatalf("state after grant: %v", state)
+	}
 	out, err := f.s.Dispatch("pr_checks", map[string]any{"chatID": "chat", "sandboxID": "sandbox", "repository": "owner/repo", "pull_request": 9})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out["conclusion"] != "failure" || out["ref"] != shaB || out["url"] != "https://github.com/owner/repo/pull/9" || len(out["checks"].([]any)) != 2 {
+	if out["conclusion"] != "failure" || out["ref"] != shaB || out["url"] != "https://github.com/owner/repo/pull/9" || len(out["checks"].([]any)) != 2 || out["expires_at"] != 4600.0 {
 		t.Fatalf("out: %v", out)
 	}
+	// Another sandbox has no grant; the grant expires.
+	if _, err := f.s.Dispatch("pr_checks", map[string]any{"chatID": "chat", "sandboxID": "other", "repository": "owner/repo", "pull_request": 9}); err == nil {
+		t.Fatal("another sandbox read on this grant")
+	}
+	now = 4601
+	if _, err := f.s.Dispatch("pr_checks", map[string]any{"chatID": "chat", "sandboxID": "sandbox", "repository": "owner/repo", "pull_request": 9}); err == nil || !strings.HasPrefix(err.Error(), CIGrantRequired) {
+		t.Fatalf("expired grant still read: %v", err)
+	}
+	now = 1000
 	failed := out["failed_jobs"].([]any)
 	if len(failed) != 1 {
 		t.Fatalf("failed: %v", failed)

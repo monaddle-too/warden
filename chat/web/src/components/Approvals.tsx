@@ -30,6 +30,13 @@ function describeGrant(approval: Approval) {
         reason,
         button: "Allow for " + s("duration_minutes") + " min",
       };
+    case "warden/ci/read":
+      return {
+        title: `Let the agent read CI results of ${s("repository")}`,
+        text: `Warden would read the check runs and failed jobs' logs of ${s("repository")}${s("pull_request") ? ` (pull request #${s("pull_request")})` : s("ref") ? ` (${s("ref")})` : ""} with your GitHub credential, for this workspace, for ${s("duration_minutes")} minutes. The agent never holds a token.`,
+        reason,
+        button: "Allow for " + s("duration_minutes") + " min",
+      };
     case "warden/repository/access":
       return {
         title: `Share ${s("repository")} with this workspace`,

@@ -26,6 +26,7 @@ import (
 
 const (
 	methodNetworkAllow     = "warden/network/allow"
+	methodCIRead           = "warden/ci/read"
 	methodRepositoryAccess = "warden/repository/access"
 	methodGitHubWrite      = "warden/github/write"
 	methodHostImport       = "warden/host/import"
@@ -35,6 +36,7 @@ const (
 
 var grantMethods = map[string]string{
 	"request_network_access":    methodNetworkAllow,
+	"view_ci_results":           methodCIRead,
 	"request_repository_access": methodRepositoryAccess,
 	"github_write":              methodGitHubWrite,
 	"request_host_directory":    methodHostImport,
@@ -60,6 +62,8 @@ func grantTools(local bool) []any {
 	tools := []any{
 		map[string]any{"type": "function", "name": "request_network_access", "description": "Ask the owner to let this sandbox reach one public website host (HTTP or HTTPS on ports 80 and 443) for a limited time through Warden's gateway, when the network policy refused it: a package index, a download site, a documentation site. Not for GitHub: github.com and api.github.com are always reachable for the repositories shared with this workspace, and a refused git clone, fetch or API call means the repository is not shared; ask with request_repository_access instead. Give the exact hostname without scheme or path, why you need it, and for how long. Waits for the decision; on approval retry the request. No credential is ever attached to a host allowed this way.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"host": str("hostname, e.g. pypi.org", 253), "reason": str("why you need it", 500), "duration_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "how long, in minutes (default 60)"}}, "required": []string{"host", "reason"}, "additionalProperties": false}},
+		map[string]any{"type": "function", "name": "view_ci_results", "description": "Read the CI results GitHub recorded for a pull request (its head commit) or for a branch or commit of a shared repository: every check run with its status and conclusion, and for each failed GitHub Actions job its steps and the tail of its log with the ##[error] lines. Warden reads them with the owner's credential; no token is handed out. The first call asks the owner to allow CI reads of that repository for a limited time (default 60 minutes); within that window later calls answer at once. Use it after request_pull_request publishes or updates a pull request: while conclusion is pending or none, wait a minute and call again; on failure, fix the cause and submit the fix with request_pull_request and pull_request set.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+			"repository": str("owner/name", 200), "pull_request": map[string]any{"type": "integer", "minimum": 1, "description": "pull request number (its head commit is checked)"}, "ref": str("a branch name or commit sha, when not a pull request", 200), "reason": str("why you need it (shown to the owner)", 500), "duration_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "how long CI reads of this repository stay allowed, in minutes (default 60)"}}, "required": []string{"repository"}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "request_repository_access", "description": "Ask the owner to share a GitHub repository with this workspace, or to widen the read categories of one already shared: contents (code, branches, commits, clone), issues (issues, comments, labels, milestones), pull_requests (pull requests, their files and reviews). This is how a repository is cloned: ask for contents, then run git clone https://github.com/owner/name.git; the sandbox proxy attaches the owner's credential, so never ask for a token or for network access to github.com. Read-only; writes need github_write or request_pull_request. Waits for the decision; a request the workspace already satisfies is answered at once without asking, and a failure says why (for example a GitHub sign-in the owner must refresh).", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"repository": str("owner/name", 200), "categories": map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"contents", "issues", "pull_requests"}}, "minItems": 1, "maxItems": 3}, "reason": str("why you need it", 500)}, "required": []string{"repository", "categories", "reason"}, "additionalProperties": false}},
 		map[string]any{"type": "function", "name": "github_write", "description": "Perform one small GitHub write on a repository shared with this workspace, after the owner approves the exact payload: comment_issue or comment_pull_request (number, body), create_issue (title, body), add_labels (number, labels). Warden posts it with the owner's credential; you never hold a token. Waits for the decision and returns the created URL. Larger changes go through request_pull_request.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
@@ -118,6 +122,9 @@ func (e *Engine) requestGrant(c *Chat, client *agent.Client, f agent.Frame) erro
 		Path       string   `json:"path"`
 		CPUs       float64  `json:"cpus"`
 		MemoryMB   int      `json:"memory_mb"`
+		// view_ci_results
+		PullRequest int64  `json:"pull_request"`
+		Ref         string `json:"ref"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
@@ -203,6 +210,38 @@ func (e *Engine) requestGrant(c *Chat, client *agent.Client, f agent.Frame) erro
 		default:
 			return fail("action must be comment_issue, comment_pull_request, create_issue or add_labels")
 		}
+	case methodCIRead:
+		// A timed grant, like network access: a live one answers at once,
+		// otherwise the owner is asked for the window.
+		in.Repository = strings.ToLower(strings.TrimSpace(in.Repository))
+		in.Ref = strings.TrimSpace(in.Ref)
+		if in.Duration == 0 {
+			in.Duration = 60
+		}
+		if !strings.Contains(in.Repository, "/") || in.Duration < 1 || in.Duration > 1440 || (in.PullRequest <= 0 && in.Ref == "") {
+			return fail("repository (owner/name), pull_request or ref, and 1–1440 minutes are required")
+		}
+		query := map[string]any{"chatID": c.ID, "sandboxID": c.SandboxID, "repository": in.Repository}
+		if in.PullRequest > 0 {
+			query["pull_request"] = in.PullRequest
+		} else {
+			query["ref"] = in.Ref
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if state, err := e.sharingCall(ctx, "pr_ci_state", query); err == nil && state["allowed"] == true {
+			result, err := e.sharingCall(ctx, "pr_checks", query)
+			if client == nil {
+				return nil
+			}
+			return client.Reply(f.ID, toolResult(result, err))
+		}
+		params = map[string]any{"repository": in.Repository, "reason": in.Reason, "duration_minutes": in.Duration}
+		if in.PullRequest > 0 {
+			params["pull_request"] = in.PullRequest
+		} else {
+			params["ref"] = in.Ref
+		}
 	case methodHostImport, methodHostExport:
 		in.Path = strings.TrimSpace(in.Path)
 		if !strings.HasPrefix(in.Path, "/") || (method == methodHostImport && in.Reason == "") {
@@ -264,6 +303,30 @@ func (e *Engine) resolveGrant(c *Chat, a Approval, allow bool, actor cv.Actor) a
 		result, err := e.sharingCall(ctx, "network_allow", map[string]any{"sandboxID": c.SandboxID, "host": a.Params["host"], "duration": minutes * 60, "reason": a.Params["reason"], "actor": who})
 		if err == nil {
 			result["note"] = "retry the request now; the host stays reachable until expires_at"
+		}
+		return toolResult(result, err)
+	case methodCIRead:
+		minutes := 60
+		switch v := a.Params["duration_minutes"].(type) {
+		case int:
+			minutes = v
+		case float64:
+			minutes = int(v)
+		}
+		query := map[string]any{"chatID": c.ID, "sandboxID": c.SandboxID, "repository": a.Params["repository"]}
+		if v, ok := a.Params["pull_request"]; ok {
+			query["pull_request"] = v
+		} else {
+			query["ref"] = a.Params["ref"]
+		}
+		grant, err := e.sharingCall(ctx, "pr_ci_allow", map[string]any{"chatID": c.ID, "sandboxID": c.SandboxID, "repository": a.Params["repository"], "duration": minutes * 60, "reason": a.Params["reason"], "actor": who})
+		if err != nil {
+			return toolResult(nil, err)
+		}
+		result, err := e.sharingCall(ctx, "pr_checks", query)
+		if err == nil {
+			result["expires_at"] = grant["expires_at"]
+			result["note"] = "CI results of this repository stay readable without asking until expires_at"
 		}
 		return toolResult(result, err)
 	case methodRepositoryAccess:
