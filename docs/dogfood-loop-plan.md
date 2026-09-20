@@ -121,3 +121,16 @@ check runs and failed jobs' steps and log tails, and
 `.github/workflows/ci.yml` builds and tests every pull request on the Mac
 runner so those checks exist. The task: a chat makes a Warden PR that does
 not build, reads the CI result, and pushes the fix to the same PR.
+- 2026-09-20: **round 2 ran end to end** on `dogfood` (build 90d2d65): the
+  chat opened [PR #2](https://github.com/monaddle-too/warden/pull/2) with
+  one deliberate undefined identifier; `ci.yml` failed in 32 s
+  (`##[error]internal/edge/edge.go:179:100: undefined: upstreamShape`);
+  the chat submitted the fix with `request_pull_request {pull_request: 2}`,
+  approved, Warden committed e92d9dc onto `warden/pr-db87d09…` and the
+  re-run passed (Go 1m11s, Web 15s). Found live and fixed: `view_ci_results`
+  answered "unsupported tool" (advertised but not in the dispatch list,
+  `preview.go`; the chat read CI through `gh` on the host instead); the
+  proxy refused `check-runs` as "repository not shared" (the Actions case
+  now comes first in the refusal switch); `proposal_path` could not carry
+  `pull_request` (allowed now). Left as is: `proposal_path` is relative to
+  the workspace root; the sandbox clone has no git identity.
