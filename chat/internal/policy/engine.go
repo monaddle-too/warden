@@ -919,6 +919,12 @@ func (e *Engine) Authorize(request map[string]any) (map[string]any, error) {
 	switch {
 	case !e.networkEnabled:
 		reason = "network disconnected"
+	case !(isFigma || isGoogle) && n.Operation != nil && actionsRead[n.Operation.OperationID]:
+		// Warden reads check runs and job logs itself (view_ci_results,
+		// pullrequests.go Checks); the sandbox never gets them through
+		// the proxy, with or without an approval, shared repository or
+		// not: said first, so the answer never reads "not shared".
+		reason = "CI results are read by Warden: call view_ci_results instead of the GitHub Actions API"
 	case isFigma && hasFigmaList && n.FileKey != "" && !stringList(e.Policy["allowed_figma_files"])[n.FileKey]:
 		reason = "Figma file outside the allowed files"
 	case isGoogle && hasGoogleList && !stringList(e.Policy["allowed_google_documents"])[n.DocumentID]:
@@ -933,12 +939,6 @@ func (e *Engine) Authorize(request map[string]any) (map[string]any, error) {
 		reason = "operation absent from pinned REST catalog"
 	case stringList(e.Policy["deny_operations"])[n.Operation.OperationID] || lowerList(e.Policy["deny_repositories"])[strings.ToLower(n.Repository)]:
 		reason = "denied by local policy"
-	}
-	if reason == "" && e.GitHubApp != nil && !(isFigma || isGoogle) && actionsRead[n.Operation.OperationID] {
-		// Warden reads check runs and job logs itself (view_ci_results,
-		// pullrequests.go Checks); the sandbox never gets them through
-		// the proxy, with or without an approval.
-		reason = "CI results are read by Warden: call view_ci_results instead of the GitHub Actions API"
 	}
 	if reason == "" && e.GitHubApp != nil && !(isFigma || isGoogle) {
 		if _, err := GitHubPermissions(n.Operation.OperationID); err != nil {

@@ -257,6 +257,11 @@ func TestUserTokenInjectedOnlyAfterApprovalWithoutOwnerBoundary(t *testing.T) {
 	if r, _ = engine.Authorize(map[string]any{"host": "api.github.com", "path": "/repos/org/repo2/actions/runs", "method": "GET", "headers": []any{}}); statusOf(r) != 403 {
 		t.Fatalf("unsupported operation: %v", r)
 	}
+	// The Actions API of a reachable repository is refused with a pointer at
+	// view_ci_results, never with "not shared" or an approval.
+	if r, _ = engine.Authorize(map[string]any{"host": "api.github.com", "path": "/repos/org/repo2/commits/main/check-runs", "method": "GET", "headers": []any{}}); statusOf(r) != 403 || !strings.Contains(r["reason"].(string), "view_ci_results") {
+		t.Fatalf("check-runs: %v", r)
+	}
 	r, _ = engine.Authorize(req)
 	engine.Approve(r["request_id"].(string), "exact", 60, nil)
 	os.Remove(path)
