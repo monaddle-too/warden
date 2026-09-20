@@ -139,3 +139,7 @@ not build, reads the CI result, and pushes the fix to the same PR.
   (`ci_grants`), a live grant answers at once, another sandbox or an
   expired grant is refused before GitHub is touched; cards on the web and
   the TUI.
+  Live (dogfood f6920df): the first call parked the approval; answering it
+  gave the agent "Unknown error": `Engine.Answer` named the grant methods
+  by hand and lacked `warden/ci/read`. The list is now derived from
+  `grantMethods` (b071ffb).
