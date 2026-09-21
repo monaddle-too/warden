@@ -246,7 +246,8 @@ func TestViewCIResultsIsATimedGrant(t *testing.T) {
 	if err := e.requestGrant(c, client, agent.Frame{ID: json.RawMessage(`9`), Params: map[string]any{"tool": "view_ci_results", "arguments": map[string]any{"repository": "owner/repo", "ref": "main"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if r := replies(); len(r) != 1 || !strings.Contains(string(r[0].Result), `conclusion\":\"failure`) {
+	until(t, func() bool { return len(replies()) == 1 })
+	if r := replies(); !strings.Contains(string(r[0].Result), `conclusion\":\"failure`) {
 		t.Fatalf("immediate read: %v", replies())
 	}
 	if len(e.Store.Snapshot().chat(c.ID).Approvals) != 1 {
@@ -255,7 +256,8 @@ func TestViewCIResultsIsATimedGrant(t *testing.T) {
 	if err := e.requestGrant(c, client, agent.Frame{ID: json.RawMessage(`10`), Params: map[string]any{"tool": "view_ci_results", "arguments": map[string]any{"repository": "owner/repo"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if r := replies(); len(r) != 2 || !strings.Contains(string(r[1].Result), "pull_request or ref") {
+	until(t, func() bool { return len(replies()) == 2 })
+	if r := replies(); !strings.Contains(string(r[1].Result), "pull_request or ref") {
 		t.Fatalf("missing target accepted: %v", replies())
 	}
 }
