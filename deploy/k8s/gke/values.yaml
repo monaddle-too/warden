@@ -43,6 +43,10 @@ sandboxes:
 
 auth:
   mode: google
+  google:
+    # Digital Asset accounts sign in with the demo role (chats, no admin
+    # console); the owner comes from deploy/k8s/gke/env at deploy time.
+    demoDomains: [digitalasset.com]
 
 previews:
   mode: public
