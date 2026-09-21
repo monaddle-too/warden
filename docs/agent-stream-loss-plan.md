@@ -72,6 +72,10 @@ because:
   the cause, the next message runs); the runner logs cancel, the stop op,
   the idle sweep, the preview runtime check and every `finishManagedRun`
   outcome. `go test` of `internal/agent`, `internal/chats`,
-  `internal/sandbox/...` green. Not deployed; the GKE cut of 16:57 UTC is
+  `internal/sandbox/...` green; `go vet ./...` clean; the whole
+  `go test ./...` green except `internal/sandbox/kube`'s
+  `TestWorkerLifecycleOverTheKubernetesDriver` hitting the 10-minute
+  timeout under the full run (untouched here, green alone in 6 s, the
+  known flake). Not deployed; the GKE cut of 16:57 UTC is
   the case to watch for after a deploy (the log line "lost its agent
   stream, the sandbox is kept").
