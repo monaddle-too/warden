@@ -3,6 +3,7 @@ package chats
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 	"warden/chat/internal/agent"
@@ -414,4 +415,41 @@ func TestAgentStartedTurnOnIdleSessionIsDriven(t *testing.T) {
 	sendAndDeliver(t, e, id, "second")
 	until(t, func() bool { return w.turnCount() == 2 })
 	completeTurn(t, e, w, id)
+}
+
+// cut closes the worker's end of the agent stream, as a broken connection
+// to the runner or the runner closing it does.
+func (f *fakeWorker) cut() {
+	f.mu.Lock()
+	c := f.conn
+	f.mu.Unlock()
+	if c != nil {
+		c.Close()
+	}
+}
+
+// The agent stream ending under the chat mid-turn fails the run with the
+// cause named, but does not tombstone it: the runner sees a plain
+// disconnect and keeps the sandbox for the run that resumes the chat,
+// instead of deleting the pod (a two-minute cold start on GKE) over a cut
+// the agent and the workspace survived.
+func TestStreamLossMidTurnKeepsSandboxAndNamesCause(t *testing.T) {
+	e, w := residentSetup(t)
+	id, _ := e.Create("Cut", "", "", nil)
+	sendAndDeliver(t, e, id, "first")
+	until(t, func() bool { return w.turnCount() == 1 })
+	w.cut()
+	until(t, func() bool { return e.Store.Snapshot().chat(id).Status == "failed" })
+	c := e.Store.Snapshot().chat(id)
+	if !strings.Contains(c.Error, "agent stream ended") || !strings.Contains(c.Error, "the execution worker closed it") {
+		t.Fatalf("cause not named: %q", c.Error)
+	}
+	if w.count("cancel") != 0 || w.count("stop") != 0 {
+		t.Fatalf("the cut touched the sandbox: %d cancels, %d stops", w.count("cancel"), w.count("stop"))
+	}
+	if e.sessionAlive(id) {
+		t.Fatal("the run outlived its stream")
+	}
+	sendAndDeliver(t, e, id, "second")
+	until(t, func() bool { return w.turnCount() == 2 })
 }

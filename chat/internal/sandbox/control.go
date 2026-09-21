@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log"
 	"sync"
 	"time"
 )
@@ -77,6 +78,7 @@ func (w *Worker) cancelManaged(r Request) error {
 	c.cancelled[key] = true
 	cancel := c.cancel[key]
 	c.mu.Unlock()
+	log.Printf("sandbox %s: run %s of chat %s cancelled by the chat service", r.SandboxID, r.RunID, r.ChatID)
 	if cancel != nil {
 		cancel()
 	}

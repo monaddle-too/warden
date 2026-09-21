@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -1942,5 +1943,64 @@ func TestClaudeRedeliveredMessageEndsTurn(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+// claudeInitialized starts a client over a fake CLI that answers the
+// adapter's initialize; the fake's end is returned for the test to drive.
+func claudeInitialized(t *testing.T, ctx context.Context) (*Client, net.Conn) {
+	t.Helper()
+	raw, fake := net.Pipe()
+	go func() {
+		d := json.NewDecoder(fake)
+		var v map[string]any
+		if claudeNext(d, &v) {
+			_ = json.NewEncoder(fake).Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "warden-init", "response": map[string]any{}}})
+		}
+	}()
+	c, err := StartStream(ctx, ClaudeStream(ctx, raw), func(*Client, Frame) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, fake
+}
+
+// The worker closing the stream names itself in the client's error, which
+// wraps ErrStreamEnded (the chat keeps the sandbox on it), instead of the
+// bare "agent worker disconnected" every end used to read as.
+func TestClaudeStreamLossNamesTheWorkerClosingIt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, fake := claudeInitialized(t, ctx)
+	defer c.Close()
+	fake.Close()
+	select {
+	case <-c.Done():
+	case <-ctx.Done():
+		t.Fatal("client did not notice the stream ending")
+	}
+	err := c.Err()
+	if !errors.Is(err, ErrStreamEnded) || !strings.Contains(err.Error(), "the execution worker closed it") {
+		t.Fatalf("cause not named: %v", err)
+	}
+}
+
+// A line from the CLI that is not a JSON object ends the stream with the
+// line's start in the error, so the owner and the log say what came.
+func TestClaudeStreamLossNamesAnUnreadableLine(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, fake := claudeInitialized(t, ctx)
+	defer c.Close()
+	defer fake.Close()
+	go func() { _, _ = fake.Write([]byte("Segmentation fault (core dumped)\n")) }()
+	select {
+	case <-c.Done():
+	case <-ctx.Done():
+		t.Fatal("client did not notice the stream ending")
+	}
+	err := c.Err()
+	if !errors.Is(err, ErrStreamEnded) || !strings.Contains(err.Error(), "not a JSON object") || !strings.Contains(err.Error(), "Segmentation fault") {
+		t.Fatalf("cause not named: %v", err)
 	}
 }

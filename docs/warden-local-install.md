@@ -236,7 +236,7 @@ provider login (a missing login is a `PASS … not signed in`; a login
 readable by others is a `FAIL`).
 
 Run it whenever a chat answers "unsupported SBX version", "unsafe SBX
-setting" or "agent worker disconnected".
+setting" or "agent stream ended: …".
 
 ## 4. Sign in to providers
 
@@ -824,8 +824,8 @@ for it: `request_network_access` stays one host for a bounded time.
 These are the failures met during the first live macOS install, in the
 order they appeared, with what you see and what to do.
 
-**"agent worker disconnected" on the first message, nothing else in the
-chat.** The guest could not start Codex. On the live run the cause was the
+**"agent stream ended: the execution worker closed it" on the first
+message, nothing else in the chat.** The guest could not start Codex. On the live run the cause was the
 extracted Codex bundle not being readable by the guest's agent user (`sbx
 cp` preserves host modes). Run `warden doctor`: its runtime checks include
 the bundle's modes and the four executables; re-running `warden install`

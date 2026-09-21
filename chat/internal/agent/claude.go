@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ import (
 // Warden's conversation protocol. The real CLI stays inside the sandbox.
 func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteCloser {
 	client, bridge := net.Pipe()
+	conn := &claudeConn{Conn: client}
 	go func() {
 		defer bridge.Close()
 		defer raw.Close()
@@ -26,10 +28,11 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 		go func() {
 			defer close(frames)
 			scan := bufio.NewScanner(raw)
-			scan.Buffer(make([]byte, 65536), 8<<20)
+			scan.Buffer(make([]byte, 65536), claudeMaxLine)
 			for scan.Scan() {
 				var v map[string]any
-				if json.Unmarshal(scan.Bytes(), &v) != nil {
+				if err := json.Unmarshal(scan.Bytes(), &v); err != nil {
+					conn.end(fmt.Errorf("the agent wrote a line that is not a JSON object (%v): %s", err, claudeCut(string(scan.Bytes()), 120)))
 					return
 				}
 				select {
@@ -37,6 +40,17 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 				case <-ctx.Done():
 					return
 				}
+			}
+			// The loop ends on the worker closing the stream (EOF), the
+			// connection to it failing, or a line too long to read; the
+			// cause is what the chat reports (rpc.go ErrStreamEnded).
+			switch err := scan.Err(); {
+			case errors.Is(err, bufio.ErrTooLong):
+				conn.end(fmt.Errorf("the agent wrote a line longer than %d MiB", claudeMaxLine>>20))
+			case err != nil:
+				conn.end(fmt.Errorf("the connection to the execution worker failed: %w", err))
+			default:
+				conn.end(errors.New("the execution worker closed it"))
 			}
 		}()
 		go func() {
@@ -47,7 +61,8 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 			scan.Buffer(make([]byte, 65536), 32<<20)
 			for scan.Scan() {
 				var f Frame
-				if json.Unmarshal(scan.Bytes(), &f) != nil {
+				if err := json.Unmarshal(scan.Bytes(), &f); err != nil {
+					conn.end(fmt.Errorf("malformed command from the chat service: %w", err))
 					return
 				}
 				select {
@@ -797,9 +812,31 @@ func ClaudeStream(ctx context.Context, raw io.ReadWriteCloser) io.ReadWriteClose
 			}
 		}
 	}()
-	return client
+	return conn
 }
-func claudeID() string { var b [16]byte; _, _ = rand.Read(b[:]); return hex.EncodeToString(b[:]) }
+
+// claudeMaxLine is the longest stream-json line the adapter reads from
+// the CLI; a tool result is cut to well under it by the CLI itself.
+const claudeMaxLine = 8 << 20
+
+// claudeConn is the chat service's end of the adapter: the bridge pipe,
+// plus why the adapter stopped reading the CLI, for the client's error
+// (rpc.go asks a stream's Cause when its read ends).
+type claudeConn struct {
+	net.Conn
+	mu    sync.Mutex
+	cause error
+}
+
+func (c *claudeConn) end(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cause == nil {
+		c.cause = err
+	}
+}
+func (c *claudeConn) Cause() error { c.mu.Lock(); defer c.mu.Unlock(); return c.cause }
+func claudeID() string             { var b [16]byte; _, _ = rand.Read(b[:]); return hex.EncodeToString(b[:]) }
 
 // claudeOutbound is a control request Warden sent the CLI: the engine call
 // it answers, what it sets (mode, model, thinking, effort, fast) and the

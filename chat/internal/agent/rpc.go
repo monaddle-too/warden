@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,6 +30,17 @@ type RPCError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
+
+// ErrStreamEnded is the agent's stream ending under the chat service: the
+// execution worker closed it, the connection to the worker broke, or the
+// agent wrote something the adapter could not read. The client's error
+// wraps it with the cause, so the chat can say what happened and tell it
+// from a failure the agent reported (chats/engine.go keeps the sandbox on
+// a stream loss).
+var ErrStreamEnded = errors.New("agent stream ended")
+
+// A stream that knows why it ended (ClaudeStream) says so through Cause.
+type causer interface{ Cause() error }
 
 func (e *RPCError) Error() string { return e.Message }
 
@@ -62,10 +74,13 @@ func StartStream(ctx context.Context, stream io.ReadWriteCloser, receive func(*C
 			}
 		}
 		err := scanner.Err()
-		if err == nil {
-			err = fmt.Errorf("agent worker disconnected")
+		if cs, ok := stream.(causer); ok && cs.Cause() != nil {
+			err = cs.Cause()
 		}
-		c.fail(err)
+		if err == nil {
+			err = errors.New("the execution worker closed it")
+		}
+		c.fail(fmt.Errorf("%w: %v", ErrStreamEnded, err))
 	}()
 	if _, err := c.Call(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "warden_chat", "title": "Warden", "version": "1.0"}, "capabilities": map[string]any{"experimentalApi": true}}); err != nil {
 		c.Close()

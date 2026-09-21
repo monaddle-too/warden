@@ -780,6 +780,7 @@ func (w *Worker) dispatch(ctx context.Context, r Request) (Response, error) {
 		if s.Active != nil {
 			return Response{}, errors.New("sandbox has an active run")
 		}
+		log.Printf("sandbox %s: stopped at the request of chat %s", s.ID, r.ChatID)
 		err = w.stopLocked(ctx, s)
 		return w.statusLocked(r), err
 	case "start":
@@ -1427,6 +1428,7 @@ func (w *Worker) SweepIdle(ctx context.Context) error {
 			continue
 		}
 		if s.State == "running" && !now.Before(s.LastActivity.Add(w.IdleTimeout)) {
+			log.Printf("sandbox %s: idle since %s; stopping", s.ID, s.LastActivity.UTC().Format(time.RFC3339))
 			if err := w.stopLocked(ctx, s); err != nil {
 				return err
 			}
@@ -1512,13 +1514,24 @@ func (w *Worker) finishManagedRun(r Request, grant GrantContext, enforcementFail
 	// after sitting idle, and the idle window counts from the last turn's
 	// end the chat service reported (the activity op) or the last user
 	// action, not from the release.
-	if explicitCancel || endErr != nil || enforcementFailed {
+	reason := ""
+	switch {
+	case explicitCancel:
+		reason = "the chat service cancelled the run"
+	case endErr != nil:
+		reason = "ending the run's permission failed: " + endErr.Error()
+	case enforcementFailed:
+		reason = "the run's permission renewal failed"
+	}
+	if reason != "" {
+		log.Printf("sandbox %s: run %s ended; stopping the sandbox: %s", s.ID, r.RunID, reason)
 		// A failed/expired broker request cannot consume the VM-stop deadline.
 		stopCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stop()
 		_ = w.stopLocked(stopCtx, s)
 		return
 	}
+	log.Printf("sandbox %s: run %s ended; the sandbox stays resident", s.ID, r.RunID)
 	_ = w.saveManagedLocked()
 }
 
@@ -1543,6 +1556,7 @@ func (w *Worker) auditPreviews(ctx context.Context) {
 		s := w.managed.Sandboxes[grant.SandboxID]
 		if s != nil && s.State == "running" && s.Grant == grant {
 			if err != nil {
+				log.Printf("sandbox %s: the runtime check of its published preview failed; stopping: %v", s.ID, err)
 				w.failEnforcementLocked(s)
 			} else {
 				s.previewAuditAt = w.now()

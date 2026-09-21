@@ -64,3 +64,14 @@ because:
 ## Progress log
 
 - 2026-09-21: plan written from the diagnosis.
+- 2026-09-21: steps 1–6 done. `agent.ErrStreamEnded` with the cause
+  (`TestClaudeStreamLossNamesTheWorkerClosingIt`,
+  `TestClaudeStreamLossNamesAnUnreadableLine`); `run` keeps the sandbox on
+  it and logs every run end (`TestStreamLossMidTurnKeepsSandboxAndNamesCause`:
+  a mid-turn cut sends no `cancel` and no `stop`, the chat is `failed` with
+  the cause, the next message runs); the runner logs cancel, the stop op,
+  the idle sweep, the preview runtime check and every `finishManagedRun`
+  outcome. `go test` of `internal/agent`, `internal/chats`,
+  `internal/sandbox/...` green. Not deployed; the GKE cut of 16:57 UTC is
+  the case to watch for after a deploy (the log line "lost its agent
+  stream, the sandbox is kept").

@@ -1064,15 +1064,29 @@ func (e *Engine) run(parent context.Context, id string) {
 			err = nil // Stop ended a run that had no turn in flight
 		}
 		if err != nil && parent.Err() == nil {
-			// A run that failed is tombstoned so the runner stops its
-			// sandbox. A run cut short by the service's own shutdown is
-			// not: the disconnect is a normal end to the runner, the
-			// sandbox stays resident, and on Kubernetes the pod outlives
-			// the restart (docs/workspace-keepalive-plan.md) for the run
-			// that resumes the chat.
-			cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
-			_, _ = e.Worker.Call(cleanup, request(&current, "cancel"))
-			done()
+			if errors.Is(err, agent.ErrStreamEnded) {
+				// The stream to the agent ended under the chat (the
+				// worker's connection broke, the worker closed it, the
+				// agent wrote something unreadable) with nothing known
+				// to be wrong in the sandbox. Not tombstoned: the runner
+				// sees a plain disconnect, ends the agent's session as
+				// after an idle release and keeps the sandbox resident,
+				// so the next message resumes the thread in seconds
+				// rather than after a cold start (the 2026-09-21 GKE cut
+				// cost a two-minute resume; docs/agent-stream-loss-plan.md).
+				log.Printf("chat %s: run %s lost its agent stream, the sandbox is kept: %v", id, current.RunID, err)
+			} else {
+				// A run that failed is tombstoned so the runner stops its
+				// sandbox. A run cut short by the service's own shutdown
+				// is not: the disconnect is a normal end to the runner,
+				// the sandbox stays resident, and on Kubernetes the pod
+				// outlives the restart (docs/workspace-keepalive-plan.md)
+				// for the run that resumes the chat.
+				log.Printf("chat %s: run %s failed, the sandbox is stopped: %v", id, current.RunID, err)
+				cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
+				_, _ = e.Worker.Call(cleanup, request(&current, "cancel"))
+				done()
+			}
 		}
 		e.mu.Lock()
 		sharingResults := append([]string(nil), a.sharingResults...)
