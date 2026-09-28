@@ -94,6 +94,16 @@ func (e *Engine) storeAttachment(ctx context.Context, c *Chat, name string, data
 		}
 		data = png
 	}
+	if e.Store.cloud {
+		if pending := e.pruneAttachments(c); pending >= maxPendingAttachments {
+			return cv.Attachment{}, errors.New("too many unsent attachments; send or remove some first")
+		}
+		a := cv.Attachment{ID: cv.ID(), Name: name, Kind: kind, Size: int64(len(data))}
+		a.Path = ".warden/attachments/" + a.ID + "." + ext
+		meta, _ := json.Marshal(a)
+		_, err := e.Store.db.ExecContext(ctx, `INSERT INTO warden_cloud.chat_attachments(organization_id,chat_id,id,metadata,data) VALUES($1,$2,$3,$4,$5)`, c.OrganizationID, c.ID, a.ID, meta, data)
+		return a, err
+	}
 	dir := e.attachmentDir(c.ID)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return cv.Attachment{}, err
@@ -117,6 +127,33 @@ func (e *Engine) storeAttachment(ctx context.Context, c *Chat, name string, data
 // pruneAttachments drops uploads that were never sent once they are a day
 // old and returns how many unsent ones remain.
 func (e *Engine) pruneAttachments(c *Chat) int {
+	if e.Store.cloud {
+		rows, err := e.Store.db.Query(`SELECT id,created_at FROM warden_cloud.chat_attachments WHERE chat_id=$1`, c.ID)
+		if err != nil {
+			return maxPendingAttachments
+		}
+		defer rows.Close()
+		pending := 0
+		for rows.Next() {
+			var id string
+			var created time.Time
+			if rows.Scan(&id, &created) != nil {
+				return maxPendingAttachments
+			}
+			if c.attachment(id) != nil {
+				continue
+			}
+			if e.now().Sub(created) > pendingAttachmentTTL {
+				_, _ = e.Store.db.Exec(`DELETE FROM warden_cloud.chat_attachments WHERE chat_id=$1 AND id=$2`, c.ID, id)
+				continue
+			}
+			pending++
+		}
+		if rows.Err() != nil {
+			return maxPendingAttachments
+		}
+		return pending
+	}
 	dir := e.attachmentDir(c.ID)
 	entries, _ := os.ReadDir(dir)
 	pending := 0
@@ -153,6 +190,14 @@ func (e *Engine) attachmentRecord(chatID, id string) (cv.Attachment, error) {
 	if !attachmentID.MatchString(id) {
 		return a, errors.New("attachment not found")
 	}
+	if e.Store.cloud {
+		var raw []byte
+		err := e.Store.db.QueryRow(`SELECT metadata FROM warden_cloud.chat_attachments WHERE chat_id=$1 AND id=$2`, chatID, id).Scan(&raw)
+		if err != nil || json.Unmarshal(raw, &a) != nil || a.ID != id {
+			return cv.Attachment{}, errors.New("attachment not found")
+		}
+		return a, nil
+	}
 	raw, err := os.ReadFile(filepath.Join(e.attachmentDir(chatID), id+".json"))
 	if err != nil || json.Unmarshal(raw, &a) != nil || a.ID != id {
 		return a, errors.New("attachment not found")
@@ -162,6 +207,16 @@ func (e *Engine) attachmentRecord(chatID, id string) (cv.Attachment, error) {
 func (e *Engine) attachmentBytes(chatID, id string) ([]byte, error) {
 	if !attachmentID.MatchString(id) {
 		return nil, errors.New("attachment not found")
+	}
+	if e.Store.cloud {
+		var data []byte
+		if e.Store.db.QueryRow(`SELECT data FROM warden_cloud.chat_attachments WHERE chat_id=$1 AND id=$2`, chatID, id).Scan(&data) != nil {
+			return nil, errors.New("attachment not found")
+		}
+		if len(data) == 0 || len(data) > sandbox.MaxAttachmentBytes {
+			return nil, errors.New("attachment unavailable")
+		}
+		return data, nil
 	}
 	f, err := os.Open(filepath.Join(e.attachmentDir(chatID), id))
 	if err != nil {
@@ -186,6 +241,10 @@ func (e *Engine) removeAttachment(chatID, id string) error {
 	}
 	if c.attachment(id) != nil {
 		return errors.New("attachment was already sent")
+	}
+	if e.Store.cloud {
+		_, err := e.Store.db.Exec(`DELETE FROM warden_cloud.chat_attachments WHERE chat_id=$1 AND id=$2`, chatID, id)
+		return err
 	}
 	dir := e.attachmentDir(chatID)
 	os.Remove(filepath.Join(dir, id))

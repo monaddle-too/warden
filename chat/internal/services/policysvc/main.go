@@ -18,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"warden/chat/internal/durablestate"
 
 	"warden/chat/internal/bugreport"
 	"warden/chat/internal/config"
@@ -100,29 +101,39 @@ func run(args []string) error {
 		return errors.New("document API origin and key file must be configured together")
 	}
 	_ = mitmdump
+	var cloudState *durablestate.Store
+	if s.cfg.Auth.Mode == config.AuthEmail {
+		cloudState, err = durablestate.Open(*state, os.Getenv("WARDEN_DATABASE_URL"), "policy")
+		if err != nil {
+			return err
+		}
+		defer cloudState.Close()
+	}
 	syscall.Umask(0o077)
-	if err := os.MkdirAll(*state, 0o700); err != nil {
-		return err
+	if cloudState == nil {
+		if err := os.MkdirAll(*state, 0o700); err != nil {
+			return err
+		}
+		info, err := os.Lstat(*state)
+		if err != nil {
+			return err
+		}
+		stat, _ := info.Sys().(*syscall.Stat_t)
+		if !info.IsDir() || stat == nil || int(stat.Uid) != os.Getuid() {
+			return errors.New("state must be an owned private directory")
+		}
+		if err = os.Chmod(*state, 0o700); err != nil {
+			return err
+		}
+		lock, err := os.OpenFile(filepath.Join(*state, "service.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+		if err != nil {
+			return err
+		}
+		if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			return errors.New("another Warden policy service holds this state directory")
+		}
+		defer lock.Close()
 	}
-	info, err := os.Lstat(*state)
-	if err != nil {
-		return err
-	}
-	stat, _ := info.Sys().(*syscall.Stat_t)
-	if !info.IsDir() || stat == nil || int(stat.Uid) != os.Getuid() {
-		return errors.New("state must be an owned private directory")
-	}
-	if err = os.Chmod(*state, 0o700); err != nil {
-		return err
-	}
-	lock, err := os.OpenFile(filepath.Join(*state, "service.lock"), os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		return err
-	}
-	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return errors.New("another Warden policy service holds this state directory")
-	}
-	defer lock.Close()
 	listen, err := transport.Parse(s.listen)
 	if err != nil {
 		return err

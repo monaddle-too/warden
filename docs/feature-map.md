@@ -25,8 +25,12 @@ identifiers were kept stable). Grep for the right-hand column.
 | **provider** (Codex / Claude) | `broker.Provider`, `agent/rpc.go` (Codex app-server), `agent/claude.go` |
 | **owner** | the single capability holder; `edge/owner.go` role `admin`; `auth.mode: owner` |
 | **principal** | who a sharing connection belongs to (`PrincipalID`), keyed for future multi-user |
+| **cloud organization** | `cloudauth.organizations` / `memberships` (PostgreSQL), `Chat.OrganizationID`, `chats/cloudstore.go` and `chats/attachments.go`, edge `X-Warden-Organization`; deployed from `feat/cloud-organizations` |
+| **cloud email and passkey sign-in** | `cloudauth/http.go`, `cloudauth/passkey.go`, `edge/edge.go`, `web/src/components/AuthRoot.tsx`; chart `auth.email` |
+| **personal settings and optional passkey setup** | `cloudauth/profile.go`, `cloudauth/passkey.go`, `web/src/components/PersonalSettings.tsx`, `web/src/account.ts`; `/auth/profile`, `/auth/profile/passkey-prompt`, `/auth/passkeys/{id}` |
+| **Panta Docs and drawings in cloud Warden** | `edge/docs.go` (session-bound private proxy), `/documents` and `/designs/*` retain `web/src/components/ChatShell.tsx` with `DocumentsView.tsx` embedding `/docs-app/*`; chart `templates/docs.yaml`; private Panta `apps/docs` in the separate repository; [integration plan](warden-docs-integration-plan.md) |
 | **policy** / **broker** / **gateway** | `warden policy` (`policysvc`), `chat/internal/policy` — the trusted control plane and inspected egress proxy |
-| **runner** / **worker** | `warden runner` (`runnersvc`), `chat/internal/sandbox` — drives sbx |
+| **runner** / **worker** | `warden runner` (`runnersvc`), `chat/internal/sandbox` — drives sbx; `sandbox/cloudstore.go` stores cloud inventory in PostgreSQL |
 | **edge** | `warden edge` (`edgesvc`), `chat/internal/edge` — sign-in, preview hosts, ingress |
 | **menu bar item** (macOS, the shield in the menu bar) | `warden-menu` (`chat/menu/main.swift`), its model `warden menu feed` (`cmd/warden/menu.go`), launchd agent `<label>.menu` (`platformMenu` in `cmd/warden/svc.go`) |
 | **guest image** | `deploy/guest/`, `release.GuestImage*`, config `sbx.guestImage` |
@@ -47,6 +51,14 @@ identifiers were kept stable). Grep for the right-hand column.
 | **side question** (`/btw`: answered from a copy of the session, never sent to it) | `chats/aside.go` (`Aside`), runner op `aside` (`sandbox/aside.go`), `Entry.Aside` (role `aside`) |
 | **output style** (Claude's `outputStyle` setting, a launch flag) | `chats/style.go` (`SetOutputStyle`), `Chat.OutputStyle`, `BrokerConfig.OutputStyle`, `sandbox.OutputStyles` |
 
+Device recordings: `chat/internal/recordings/` owns device credentials, durable PCM ingest, WebSocket `/v1/recordings/:id/stream`, HTTP upload/chunks, GCS audio and Google transcription; `cloudauth/recordings.go` binds organization browser sessions; `web/src/components/Recordings.tsx`, `web/src/recordings.ts` and `recordings.css` own `/recordings` and a copyable Python client with the newly issued device key; embedded `/recording-api/` serves OpenAPI, AsyncAPI and Python client; `cloudauth/recordings_test.go`; [plan](device-recordings-plan.md).
+
+Cloud navigation and integrated document library: `chat/web/src/components/{AuthRoot,ChatShell,DocumentsView}.tsx`, `chat/web/src/calm.css`; private Panta `apps/docs/src/{CloudLibrary,Workspace,Suggestions}.tsx`, `warden.css`; [Option A plan](calm-workspace-plan.md).
+
+Document deletion and restoration: private Panta `apps/docs/server/{documents.mjs,schema.sql,workspace-documents.mjs}`, `apps/docs/src/Workspace.tsx`; POST `/api/documents/:id/{delete,restore-deleted}`; reference tombstones in `cloudauth/references.go`, cache invalidation in `web/src/references.ts` and `components/DocumentsView.tsx`; [plan](document-deletion-plan.md).
+
+Resource references (`@title`): `cloudauth/references.go` serves organization-scoped `/api/references/search` and `/api/references/resolve`; `web/src/references.ts`, `useReferences.ts`, `components/{Conversation,DocumentsView,ChatShell}.tsx` own the shared cache, picker integration, iframe bridge and navigation; private Panta `apps/docs/src/reference-extension.ts` stores ordinary links; tests `cloudauth/references_test.go`, `web/src/references.test.ts`, `scripts/test-reference-browser.mjs`; [plan](resource-references-plan.md).
+
 ## Processes and layout
 
 One binary, `chat/cmd/warden` (module `warden/chat`). `warden start` runs the
@@ -58,7 +70,15 @@ four services as subcommands of itself; `warden install|doctor|login|open|chat
 | policy | `warden policy` | `chat/internal/services/policysvc`, `chat/internal/policy` | per-sandbox policy engines, gateway CA + inspected proxy, credentials, sharing/grants, PR proposals, audit, image store |
 | runner | `warden runner` | `chat/internal/services/runnersvc`, `chat/internal/sandbox` | sbx lifecycle, spares, agent streams, previews, repository fetch/review, host stats |
 | chat | `warden serve` | `chat/internal/services/chatsvc`, `chat/internal/chats`, `chat/web` | chat state + HTTP API + web UI |
-| edge | `warden edge` | `chat/internal/services/edgesvc`, `chat/internal/edge` | authentication (owner cookie / Google), preview hostnames, public ingress |
+| edge | `warden edge` | `chat/internal/services/edgesvc`, `chat/internal/edge` | authentication (owner cookie / Google / cloud email), preview hostnames, public ingress |
+
+Cloud internal policy persistence: `chat/internal/durablestate` imports legacy policy SQLite tables, named records and audit events into PostgreSQL; `policy/cloud_test.go` verifies import, CA preservation, and restart without legacy files.
+
+External agents and shared conversations: `cloudauth/external.go` (PostgreSQL OAuth/PKCE, callback, rotating tokens and revocation), `cloudauth/external_mcp.go` (organization-bound `/mcp`, `warden_share_conversation`, `/auth/shared-conversations`); `web/src/components/ExternalAgents.tsx` (consent and personal settings connections), `SharedConversations.tsx` (organization-only `/shared-conversations/*`), `documenttools/panta.go` (shared Panta catalog/client); tests `cloudauth/external_test.go`, `scripts/test-external-mcp.mjs`; [plan](external-agents-plan.md).
+
+Cloud document agent tools: `chat/internal/chats/panta.go` provides `panta_list_documents`, `panta_read_document`, `panta_create_document`, `panta_edit_document`, `panta_list_comments`, `panta_add_comment`, `panta_propose_document_edit`, `panta_list_suggestions`; `chatsvc` uses host-only `WARDEN_DOCS_UPSTREAM` / `WARDEN_DOCS_SERVICE_KEY`. The private service derives scope from the chat organization, with revisions and idempotency; no per-document grant required. Tests: `chats/panta_test.go`, `edge/docs_test.go`; [integration plan](warden-docs-integration-plan.md).
+
+Cloud organizations: `chat/internal/cloudauth` (PostgreSQL members, emailed codes, passkeys, sessions, SMTP sign-in codes and automatic membership invitation emails), `chat/internal/chats/tenancy.go` (chat/workspace guards), `chat/web/src/components/{EmailLogin,OrganizationAdmin}.tsx` (sign-in, platform organization list, explicit member assignment, current organization selector), Helm `auth.mode: email`, [cloud-organizations-plan](cloud-organizations-plan.md). The cloud deployment uses email sign-in and PostgreSQL; `auth.email.importLegacyState` mounts old service volumes read-only for one-time import and can then be disabled.
 
 Shared: `chat/internal/config` (the one `warden.json` schema; appendix of
 [warden-local-deployments-plan.md](warden-local-deployments-plan.md) and
@@ -204,3 +224,5 @@ Kubernetes shape: design and progress in
 [architecture.md](architecture.md); accepted gaps, each with what bounds it
 and what would close it: [known-security-issues.md](known-security-issues.md).
 Local install: [warden-local-install.md](warden-local-install.md).
+
+Cloud main integration and publication: [integration plan](cloud-main-integration-plan.md).

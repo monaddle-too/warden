@@ -187,3 +187,7 @@ export function typingIn(target: EventTarget | null): boolean {
     !!el.isContentEditable
   );
 }
+
+export function plainPrimaryClick(event: MouseEvent): boolean {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+}

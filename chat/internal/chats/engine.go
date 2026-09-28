@@ -65,6 +65,8 @@ type Engine struct {
 	// PolicyAddress is the policy service's control endpoint (a unix:// or
 	// tls:// URL; "" leaves sharing unconfigured), dialed with PolicyTLS on
 	// tls://.
+	DocsAddress         string
+	DocsKey             string
 	PolicyAddress       string
 	PolicyTLS           *transport.TLS
 	PublicPreviewSuffix string
@@ -385,6 +387,12 @@ func (e *Engine) Create(title, shared, repository string, resources *sandbox.Res
 // CreateFrom creates a chat by actor (the requester the edge identified,
 // or the owner), recorded as its creator.
 func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, resources *sandbox.Resources, selection ...string) (string, error) {
+	return e.CreateForOrganization("", actor, title, shared, repository, resources, selection...)
+}
+
+// CreateForOrganization binds a cloud chat and its workspace to the selected
+// organization at creation. Local owner-mode chats keep an empty organization.
+func (e *Engine) CreateForOrganization(organization string, actor cv.Actor, title, shared, repository string, resources *sandbox.Resources, selection ...string) (string, error) {
 	if actor.PrincipalID == "" {
 		actor.PrincipalID = "owner"
 	}
@@ -443,6 +451,9 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 			found := false
 			for _, c := range st.Chats {
 				if c.SandboxID == shared {
+					if c.OrganizationID != organization {
+						return errors.New("workspace belongs to another organization")
+					}
 					sbxID = shared
 					repository = c.Repository
 					resources = c.Resources
@@ -457,7 +468,7 @@ func (e *Engine) CreateFrom(actor cv.Actor, title, shared, repository string, re
 			}
 		}
 		creator := actor
-		st.Chats = append(st.Chats, &Chat{ID: id, Provider: provider, Model: model, Title: title, Titled: titled, SandboxID: sbxID, Repository: repository, Resources: resources, Network: network, Jailbroken: jailbroken, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
+		st.Chats = append(st.Chats, &Chat{ID: id, OrganizationID: organization, Provider: provider, Model: model, Title: title, Titled: titled, SandboxID: sbxID, Repository: repository, Resources: resources, Network: network, Jailbroken: jailbroken, Creator: &creator, Status: "idle", Conversation: cv.Conversation{Entries: []cv.Entry{}}, Approvals: []Approval{}})
 		return nil
 	})
 	return id, err
@@ -1233,6 +1244,10 @@ func (e *Engine) run(parent context.Context, id string) {
 	params["runtimeWorkspaceRoots"] = []string{prep.Directory}
 	params["approvalsReviewer"] = "user"
 	tools := append(append(previewTools(), sharingTools()...), grantTools(e.LocalMode)...)
+	if current.OrganizationID != "" && e.DocsAddress != "" && e.DocsKey != "" {
+		tools = append(tools, pantaTools()...)
+		params["developerInstructions"] = params["developerInstructions"].(string) + pantaPrompt
+	}
 	if e.Jailbreak && current.Jailbroken {
 		// Host access (host.go): the tools travel with the session it
 		// starts; a workspace turned off later refuses each call.

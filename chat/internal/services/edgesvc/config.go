@@ -1,13 +1,16 @@
 package edgesvc
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"warden/chat/internal/cloudauth"
 	"warden/chat/internal/config"
 	"warden/chat/internal/edge"
 	"warden/chat/internal/release"
@@ -98,6 +101,24 @@ func edgeConfig(cfg config.Config) edge.Config {
 		c.OwnerEmails = strings.Join(g.Owners, ",")
 		c.DemoDomains = strings.Join(g.DemoDomains, ",")
 		c.LoginsFile = g.SignInLedger
+	}
+	if cfg.Auth.Mode == config.AuthEmail {
+		c.DocsUpstream = os.Getenv("WARDEN_DOCS_UPSTREAM")
+		c.DocsKey = strings.TrimSpace(os.Getenv("WARDEN_DOCS_SERVICE_KEY"))
+		port, _ := strconv.Atoi(os.Getenv("WARDEN_SMTP_PORT"))
+		key, _ := hex.DecodeString(os.Getenv("WARDEN_EMAIL_CODE_KEY"))
+		c.Email = &edge.EmailSettings{
+			LegacyStateDir:         cfg.EdgeState(),
+			DatabaseURL:            os.Getenv("WARDEN_DATABASE_URL"),
+			BootstrapEmail:         os.Getenv("WARDEN_BOOTSTRAP_EMAIL"),
+			LegacyOrganizationID:   os.Getenv("WARDEN_LEGACY_ORGANIZATION_ID"),
+			LegacyOrganizationName: os.Getenv("WARDEN_LEGACY_ORGANIZATION_NAME"),
+			CodeKey:                key,
+			SMTP: cloudauth.SMTP{
+				Host: os.Getenv("WARDEN_SMTP_HOST"), Port: port,
+				Username: os.Getenv("WARDEN_SMTP_USERNAME"), Password: os.Getenv("WARDEN_SMTP_PASSWORD"), From: os.Getenv("WARDEN_SMTP_FROM"),
+			},
+		}
 	}
 	// The bug-report receiver keeps its files beside the edge's other
 	// state (docs/bug-reporting-plan.md); only an enabled one is passed on.

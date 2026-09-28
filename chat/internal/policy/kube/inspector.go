@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"warden/chat/internal/durablestate"
 
 	api "warden/chat/internal/kube"
 	"warden/chat/internal/policy"
@@ -139,7 +140,7 @@ func New(o Options) (*Inspector, error) {
 	if i.now == nil {
 		i.now = time.Now
 	}
-	if raw, err := os.ReadFile(i.pinsPath); err == nil {
+	if raw, err := durablestate.ReadFile(i.pinsPath); err == nil {
 		if err := json.Unmarshal(raw, &i.pins); err != nil {
 			return nil, errors.New("kube inspector: " + pinsFile + ": " + err.Error())
 		}
@@ -237,6 +238,9 @@ func (i *Inspector) pin(name, generation, volume, pod string) error {
 }
 
 func atomicWrite(path string, data []byte) error {
+	if durablestate.IsCloud(path) {
+		return durablestate.WriteFile(path, data, 0600)
+	}
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -253,7 +257,7 @@ func atomicWrite(path string, data []byte) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	return durablestate.Rename(tmp, path)
 }
 
 // findPod returns the runtime's pod: the one pod in the namespace labelled

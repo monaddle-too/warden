@@ -14,6 +14,9 @@ func previewTools() []any {
 	return []any{map[string]any{"type": "function", "name": "preview_attach", "description": "Attach a web preview to this chat. Start its server on 0.0.0.0 inside this sandbox first. Warden chooses the loopback URL.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "path": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}}, "required": []string{"port", "path", "title"}, "additionalProperties": false}}}
 }
 func (e *Engine) tool(ctx context.Context, c *Chat, client *agent.Client, f agent.Frame) error {
+	if strings.HasPrefix(agent.String(f.Params["tool"]), "panta_") {
+		return e.pantaTool(ctx, c, client, f)
+	}
 	if agent.String(f.Params["tool"]) == "attach_image" {
 		return e.imageTool(ctx, c, client, f)
 	}

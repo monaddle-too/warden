@@ -121,22 +121,22 @@ func (w *Worker) prepareRepositoryLocked(ctx context.Context, s *managedSandbox)
 		_, err = w.Runtime.Exec(ctx, s.RuntimeName, s.Directory, "python3", "-c", repositoryResumeScript, s.Directory, s.Base)
 		return err
 	}
-	root := filepath.Join(w.Root, "repository-bundles", s.ID)
+	root := filepath.Join(w.scratchRoot(), "repository-bundles", s.ID)
 	if err = os.MkdirAll(root, 0700); err != nil {
 		return err
 	}
 	bundle := filepath.Join(root, "checkout.bundle")
-	if s.Base == "" {
+	if _, statErr := os.Stat(bundle); s.Base == "" || (w.DatabaseURL != "" && os.IsNotExist(statErr)) {
 		source := w.RepositorySource
 		if source == nil {
 			source = publicGitHubSource{}
 		}
-		base, e := source.Bundle(ctx, s.Repository, "", bundle+".tmp")
+		base, e := source.Bundle(ctx, s.Repository, s.Base, bundle+".tmp")
 		if e != nil {
 			return e
 		}
-		if !commit.MatchString(base) {
-			return errors.New("repository source returned an invalid commit")
+		if !commit.MatchString(base) || (s.Base != "" && base != s.Base) {
+			return errors.New("repository source returned an invalid or changed commit")
 		}
 		if err = os.Rename(bundle+".tmp", bundle); err != nil {
 			return err

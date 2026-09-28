@@ -72,6 +72,15 @@ export async function apiDelete(path: string): Promise<void> {
   if (!response.ok) throw await failure(response);
 }
 
+export async function apiDeleteBody(path: string, body: unknown): Promise<void> {
+  const response = await fetch("/api/" + path, {
+    method: "DELETE",
+    headers: { ...credentials(), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw await failure(response);
+}
+
 /* One file for the composer: multipart, answered with the stored record
    whose ID the message then names. */
 export async function uploadAttachment(

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+	"warden/chat/internal/durablestate"
 )
 
 const maxPublicationRequest = 8 << 20
@@ -60,12 +61,18 @@ func (w *Worker) publishPlanLocked(ctx context.Context, s *managedSandbox, r Req
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	root := filepath.Join(w.reviewRoot(r.ChatID), review.ID)
-	file, err := os.Open(filepath.Join(root, "snapshot.bundle"))
-	if err != nil {
-		return Response{}, err
+	var raw []byte
+	if w.DatabaseURL != "" {
+		raw, err = durablestate.ReadFile(filepath.Join(root, "snapshot.bundle"))
+	} else {
+		var file *os.File
+		file, err = os.Open(filepath.Join(root, "snapshot.bundle"))
+		if err != nil {
+			return Response{}, err
+		}
+		defer file.Close()
+		raw, err = io.ReadAll(io.LimitReader(file, maxReviewBundle+1))
 	}
-	defer file.Close()
-	raw, err := io.ReadAll(io.LimitReader(file, maxReviewBundle+1))
 	if err != nil {
 		return Response{}, err
 	}
@@ -73,7 +80,7 @@ func (w *Worker) publishPlanLocked(ctx context.Context, s *managedSandbox, r Req
 	if len(raw) > maxReviewBundle || hex.EncodeToString(digest[:]) != review.BundleSHA256 {
 		return Response{}, errors.New("retained review bundle does not match its recorded digest")
 	}
-	stage, err := os.MkdirTemp(w.Root, ".publish-plan-")
+	stage, err := os.MkdirTemp(w.scratchRoot(), ".publish-plan-")
 	if err != nil {
 		return Response{}, err
 	}

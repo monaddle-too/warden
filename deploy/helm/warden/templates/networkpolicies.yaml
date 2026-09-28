@@ -69,6 +69,14 @@ spec:
   egress:
     {{- $dnsEgress | toYaml | nindent 4 }}
     {{- $apiEgress | toYaml | nindent 4 }}
+    {{- if eq .Values.auth.mode "email" }}
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.auth.email.databaseCIDR }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
     # Provider egress through the gateway.
     - to:
         - ipBlock:
@@ -116,6 +124,14 @@ spec:
               kubernetes.io/metadata.name: {{ $sandboxNS }}
       ports:
         - protocol: TCP
+    {{- if eq .Values.auth.mode "email" }}
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.auth.email.databaseCIDR }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
     {{- $dnsEgress | toYaml | nindent 4 }}
     {{- $apiEgress | toYaml | nindent 4 }}
 ---
@@ -139,6 +155,13 @@ spec:
         - protocol: TCP
           port: {{ int .Values.services.chat.port }}
   egress:
+    {{- if eq .Values.auth.mode "email" }}
+    - to:
+        {{- include "warden.peer" (dict "root" . "component" "docs") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 5189
+    {{- end }}
     - to:
         {{- include "warden.peer" (dict "root" . "component" "runner") | nindent 8 }}
       ports:
@@ -151,6 +174,14 @@ spec:
       ports:
         - protocol: TCP
           port: {{ int .Values.services.policy.port }}
+    {{- if eq .Values.auth.mode "email" }}
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.auth.email.databaseCIDR }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
     {{- $dnsEgress | toYaml | nindent 4 }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -181,6 +212,28 @@ spec:
       ports:
         - protocol: TCP
           port: {{ int .Values.services.chat.port }}
+    {{- if eq .Values.auth.mode "email" }}
+    - to:
+        {{- include "warden.peer" (dict "root" . "component" "docs") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 5189
+    {{- end }}
+    {{- if and (eq .Values.auth.mode "email") .Values.recordings.enabled }}
+    # Google Speech/GCS and GKE metadata token exchange, for recording ingestion.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 80
+    {{- end }}
     {{- $dnsEgress | toYaml | nindent 4 }}
     {{- if eq .Values.auth.mode "google" }}
     # Google's ID-token signing keys.
@@ -193,4 +246,49 @@ spec:
           port: {{ int $p }}
         {{- end }}
     {{- end }}
+    {{- if eq .Values.auth.mode "email" }}
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.auth.email.databaseCIDR }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.auth.email.smtpCIDR }}
+      ports:
+        - protocol: TCP
+          port: {{ int .Values.auth.email.smtpPort }}
+    {{- end }}
+{{- if eq .Values.auth.mode "email" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: warden-docs
+  namespace: {{ $ns }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: docs
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "warden.selectorLabels" (dict "root" . "component" "docs") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "warden.peer" (dict "root" . "component" "edge") | nindent 8 }}
+        {{- include "warden.peer" (dict "root" . "component" "chat") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 5189
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.auth.email.databaseCIDR }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- $dnsEgress | toYaml | nindent 4 }}
+{{- end }}
 {{- end }}

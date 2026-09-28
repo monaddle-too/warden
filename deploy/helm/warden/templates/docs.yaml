@@ -1,0 +1,118 @@
+{{- if eq .Values.auth.mode "email" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warden-docs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: docs
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "warden.selectorLabels" (dict "root" . "component" "docs") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "warden.labels" . | nindent 8 }}
+        warden.monaddle.com/component: docs
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: docs
+          image: {{ .Values.auth.email.docsImage | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: WARDEN_ORGANIZATIONS
+              value: "1"
+            - name: WORKSPACE_DATABASE_URL_FILE
+              value: /etc/warden-docs/database.url
+            - name: WORKSPACE_DATABASE_CA_FILE
+              value: /etc/warden-docs/database-ca.pem
+            - name: PANTA_DOCS_SERVICE_KEY_FILE
+              value: /etc/warden-docs/service.key
+            - name: PANTA_DOCS_WEB_DIR
+              value: /app/docs/dist
+            - name: DOCS_BIND
+              value: 0.0.0.0
+            - name: DOCS_API_PORT
+              value: "5189"
+            - name: HOME
+              value: /tmp
+          ports:
+            - name: docs
+              containerPort: 5189
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: docs
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /readyz
+              port: docs
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: credentials
+              mountPath: /etc/warden-docs
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: credentials
+          secret:
+            secretName: {{ .Values.auth.email.secretName }}
+            defaultMode: 0440
+            items:
+              - key: database-url
+                path: database.url
+              - key: docs-service-key
+                path: service.key
+              - key: database-ca
+                path: database-ca.pem
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: warden-docs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    warden.monaddle.com/component: docs
+spec:
+  selector:
+    {{- include "warden.selectorLabels" (dict "root" . "component" "docs") | nindent 4 }}
+  ports:
+    - name: docs
+      port: 5189
+      targetPort: docs
+{{- end }}

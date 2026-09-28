@@ -47,7 +47,12 @@ Previews are <name>.localhost:{{ int .Values.edge.port }} through the same forwa
 {{- else }}
 
 Open Warden (public previews): {{ include "warden.publicURL" . }}
-Sign in with a Google account listed in auth.google.owners. Previews are
+{{- if eq .Values.auth.mode "email" }}
+Sign in with your organization email using an emailed code or a registered passkey.
+{{- else }}
+Sign in with a Google account listed in auth.google.owners.
+{{- end }}
+Previews are
 https://<name>.{{ .Values.previews.hostSuffix }} through the Ingress:
 
   kubectl -n {{ $ns }} get ingress warden-edge

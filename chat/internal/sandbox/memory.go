@@ -350,7 +350,7 @@ func (w *Worker) writeMemory(ctx context.Context, r Request) (Response, error) {
 		return Response{}, errors.New("unknown sandbox")
 	}
 	base := "warden-memory-" + randomID()
-	stage := filepath.Join(w.Root, "attachments")
+	stage := filepath.Join(w.scratchRoot(), "attachments")
 	if err = os.MkdirAll(stage, 0700); err != nil {
 		return Response{}, err
 	}

@@ -51,6 +51,7 @@ spec:
       # Provisioners hand over the state volume root-owned (local-path makes
       # it world-writable); the services refuse a state directory they do
       # not own privately, so one root step fixes ownership and mode once.
+      {{- if ne $.Values.auth.mode "email" }}
       initContainers:
         - name: own-state
           image: {{ include "warden.image" $ | quote }}
@@ -68,6 +69,7 @@ spec:
           volumeMounts:
             - name: state
               mountPath: /var/lib/warden/{{ $c.state }}
+      {{- end }}
       containers:
         - name: {{ $c.name }}
           image: {{ include "warden.image" $ | quote }}
@@ -76,6 +78,54 @@ spec:
           env:
             - name: HOME
               value: /var/lib/warden/{{ $c.state }}
+            {{- if and (or (eq $c.name "chat") (eq $c.name "runner") (eq $c.name "policy")) (eq $.Values.auth.mode "email") }}
+            - name: WARDEN_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.auth.email.secretName }}
+                  key: database-url
+            {{- end }}
+            {{- if and (eq $c.name "chat") (eq $.Values.auth.mode "email") }}
+            - name: WARDEN_DOCS_UPSTREAM
+              value: http://warden-docs:5189
+            - name: WARDEN_DOCS_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.auth.email.secretName }}
+                  key: docs-service-key
+            - name: WARDEN_LEGACY_ORGANIZATION_ID
+              value: {{ $.Values.auth.email.legacyOrganizationID | quote }}
+            {{- end }}
+            {{- if and (eq $c.name "edge") (eq $.Values.auth.mode "email") }}
+            - name: WARDEN_DOCS_UPSTREAM
+              value: http://warden-docs:5189
+            - name: WARDEN_DOCS_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.auth.email.secretName }}
+                  key: docs-service-key
+            {{- if $.Values.recordings.enabled }}
+            - name: WARDEN_RECORDINGS_BUCKET
+              value: {{ $.Values.recordings.bucket | quote }}
+            - name: WARDEN_RECORDINGS_PROJECT
+              value: {{ $.Values.recordings.project | quote }}
+            {{- end }}
+            - name: WARDEN_BOOTSTRAP_EMAIL
+              value: {{ $.Values.auth.email.bootstrapEmail | quote }}
+            - name: WARDEN_LEGACY_ORGANIZATION_ID
+              value: {{ $.Values.auth.email.legacyOrganizationID | quote }}
+            - name: WARDEN_LEGACY_ORGANIZATION_NAME
+              value: {{ $.Values.auth.email.legacyOrganizationName | quote }}
+            - name: WARDEN_SMTP_PORT
+              value: {{ $.Values.auth.email.smtpPort | quote }}
+            {{- range $name, $key := dict "WARDEN_DATABASE_URL" "database-url" "WARDEN_EMAIL_CODE_KEY" "code-key" "WARDEN_SMTP_HOST" "smtp-host" "WARDEN_SMTP_USERNAME" "smtp-username" "WARDEN_SMTP_PASSWORD" "smtp-password" "WARDEN_SMTP_FROM" "smtp-from" }}
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.auth.email.secretName }}
+                  key: {{ $key }}
+            {{- end }}
+            {{- end }}
             {{- with (index $.Values.extraEnv $c.name) }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -104,6 +154,7 @@ spec:
           volumeMounts:
             - name: state
               mountPath: /var/lib/warden/{{ $c.state }}
+              readOnly: {{ eq $.Values.auth.mode "email" }}
             - name: config
               mountPath: /etc/warden
               readOnly: true
@@ -111,8 +162,14 @@ spec:
               mountPath: /tmp
       volumes:
         - name: state
+          {{- if and (eq $.Values.auth.mode "email") (not $.Values.auth.email.importLegacyState) }}
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+          {{- else }}
           persistentVolumeClaim:
             claimName: warden-{{ $c.state }}-state
+          {{- end }}
         - name: config
           projected:
             defaultMode: 0440
@@ -133,7 +190,12 @@ spec:
                       path: tls/tls.key
         - name: tmp
           emptyDir:
+            {{- if eq $.Values.auth.mode "email" }}
+            medium: Memory
+            sizeLimit: 1Gi
+            {{- else }}
             sizeLimit: 256Mi
+            {{- end }}
       {{- with $.Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

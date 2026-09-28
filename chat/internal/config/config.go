@@ -37,6 +37,7 @@ const (
 const (
 	AuthOwner  = "owner"
 	AuthGoogle = "google"
+	AuthEmail  = "email"
 )
 
 // Runtime kinds (runtime.kind): the sandbox runtime a deployment uses.
@@ -770,7 +771,7 @@ func merge(c *Config, file Config) {
 	setString(&c.Previews.HostSuffix, file.Previews.HostSuffix)
 	setString(&c.Previews.EdgeListen, file.Previews.EdgeListen)
 	setString(&c.Auth.Mode, file.Auth.Mode)
-	if file.Auth.Mode == AuthGoogle || file.Previews.Mode == PreviewPublic {
+	if file.Auth.Mode == AuthGoogle || file.Auth.Mode == AuthEmail || file.Previews.Mode == PreviewPublic {
 		// A public deployment states its own URL; the loopback default is wrong.
 		c.Auth.PublicURL = ""
 	}
@@ -870,8 +871,8 @@ func (c Config) Validate() error {
 		if !dottedHost(c.Previews.HostSuffix) {
 			return errors.New("previews.hostSuffix must be a dotted hostname in public mode")
 		}
-		if c.Auth.Mode != AuthGoogle {
-			return errors.New("previews.mode \"public\" requires auth.mode \"google\"")
+		if c.Auth.Mode != AuthGoogle && c.Auth.Mode != AuthEmail {
+			return errors.New("previews.mode \"public\" requires auth.mode \"google\" or \"email\"")
 		}
 		if _, _, err := net.SplitHostPort(c.Previews.EdgeListen); err != nil {
 			return fmt.Errorf("previews.edgeListen: %w", err)
@@ -894,8 +895,15 @@ func (c Config) Validate() error {
 		if !strings.HasPrefix(c.Auth.PublicURL, "https://") {
 			return errors.New("auth.publicURL must be an https:// URL in google mode")
 		}
+	case AuthEmail:
+		if c.Auth.Google != nil {
+			return errors.New("auth.google is only used with auth.mode \"google\"")
+		}
+		if !strings.HasPrefix(c.Auth.PublicURL, "https://") {
+			return errors.New("auth.publicURL must be an https:// URL in email mode")
+		}
 	default:
-		return fmt.Errorf("auth.mode must be %q or %q", AuthOwner, AuthGoogle)
+		return fmt.Errorf("auth.mode must be %q, %q or %q", AuthOwner, AuthGoogle, AuthEmail)
 	}
 	if c.SBX.GuestImageDigest != "" && !digestShape(c.SBX.GuestImageDigest) {
 		return errors.New("sbx.guestImageDigest must be sha256:<64 hex>")

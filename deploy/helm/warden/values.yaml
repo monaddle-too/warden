@@ -141,6 +141,20 @@ auth:
     owners: []
     # Domains whose accounts may open demo previews.
     demoDomains: []
+  email:
+    # Mount legacy volumes read-only for the first import; disable after verification.
+    importLegacyState: true
+    # Cloud email mode: provide the administrator's address in a private
+    # values file and a pre-created Secret. Never put SMTP credentials here.
+    bootstrapEmail: ""
+    legacyOrganizationID: ""
+    legacyOrganizationName: Warden
+    secretName: ""
+    # Restrict to the database and SMTP server network where possible.
+    databaseCIDR: ""
+    smtpCIDR: ""
+    smtpPort: 587
+    docsImage: ""
 
 previews:
   # "loopback": previews are *.localhost through the forwarded edge port;
@@ -396,3 +410,8 @@ extraEnv:
   runner: []
   chat: []
   edge: []
+
+recordings:
+  enabled: false
+  bucket: ""
+  project: ""

@@ -77,7 +77,7 @@ gvisor
 {{- else if eq .Values.auth.mode "owner" -}}
 {{ printf "http://127.0.0.1:%d" (int .Values.edge.port) }}
 {{- else -}}
-{{ fail "auth.publicURL is required in google mode" }}
+{{ fail "auth.publicURL is required in public auth mode" }}
 {{- end -}}
 {{- end -}}
 
@@ -111,11 +111,11 @@ gvisor
 {{- if not (has .Values.previews.mode (list "loopback" "public")) -}}
 {{ fail (printf "previews.mode must be \"loopback\" or \"public\", not %q" .Values.previews.mode) }}
 {{- end -}}
-{{- if not (has .Values.auth.mode (list "owner" "google")) -}}
-{{ fail (printf "auth.mode must be \"owner\" or \"google\", not %q" .Values.auth.mode) }}
+{{- if not (has .Values.auth.mode (list "owner" "google" "email")) -}}
+{{ fail (printf "auth.mode must be \"owner\", \"google\", or \"email\", not %q" .Values.auth.mode) }}
 {{- end -}}
-{{- if and (eq .Values.previews.mode "public") (ne .Values.auth.mode "google") -}}
-{{ fail "previews.mode \"public\" requires auth.mode \"google\"" }}
+{{- if and (eq .Values.previews.mode "public") (eq .Values.auth.mode "owner") -}}
+{{ fail "previews.mode \"public\" requires auth.mode \"google\" or \"email\"" }}
 {{- end -}}
 {{- if and (eq .Values.previews.mode "public") (not (contains "." .Values.previews.hostSuffix)) -}}
 {{ fail "previews.hostSuffix must be a dotted hostname in public mode" }}
@@ -123,11 +123,22 @@ gvisor
 {{- if and (eq .Values.auth.mode "google") (or (not .Values.auth.google.signInClientID) (not .Values.auth.google.owners)) -}}
 {{ fail "auth.mode \"google\" requires auth.google.signInClientID and auth.google.owners" }}
 {{- end -}}
+{{- if eq .Values.auth.mode "email" -}}
+{{- if or (not .Values.auth.email.bootstrapEmail) (not .Values.auth.email.legacyOrganizationID) (not .Values.auth.email.secretName) (not .Values.auth.email.databaseCIDR) (not .Values.auth.email.smtpCIDR) (not .Values.auth.email.docsImage) -}}
+{{ fail "auth.mode \"email\" requires email.bootstrapEmail, legacyOrganizationID, secretName, databaseCIDR, smtpCIDR, and docsImage" }}
+{{- end -}}
+{{- if not (regexMatch "^[a-f0-9]{32}$" .Values.auth.email.legacyOrganizationID) -}}
+{{ fail "auth.email.legacyOrganizationID must be a 32-digit hexadecimal organization ID" }}
+{{- end -}}
+{{- if not (has (int .Values.auth.email.smtpPort) (list 465 587)) -}}
+{{ fail "auth.email.smtpPort must be 465 or 587" }}
+{{- end -}}
+{{- end -}}
 {{- if and .Values.tls.bootstrap .Values.tls.certManager.enabled -}}
 {{ fail "tls.bootstrap and tls.certManager.enabled are exclusive" }}
 {{- end -}}
-{{- if and (eq .Values.auth.mode "google") (not (hasPrefix "https://" (include "warden.publicURL" .))) -}}
-{{ fail "auth.publicURL must be an https:// URL in google mode" }}
+{{- if and (ne .Values.auth.mode "owner") (not (hasPrefix "https://" (include "warden.publicURL" .))) -}}
+{{ fail "auth.publicURL must be an https:// URL in public auth mode" }}
 {{- end -}}
 {{- if and (eq .Values.auth.mode "owner") (not (hasPrefix "http://" (include "warden.publicURL" .))) -}}
 {{ fail "auth.publicURL must be an http://127.0.0.1:<edge.port> URL in owner mode" }}
@@ -217,7 +228,7 @@ Compose file uses.
 {{- end -}}
 {{- $_ = set $cfg "auth" $auth -}}
 {{- $_ = set $cfg "edge" (dict "bugReports" (dict
-      "enabled" (eq (toString .Values.edge.bugReports.enabled) "true")
+      "enabled" (and (ne .Values.auth.mode "email") (eq (toString .Values.edge.bugReports.enabled) "true"))
       "retentionDays" (int .Values.edge.bugReports.retentionDays)
       "maxPerHour" (int .Values.edge.bugReports.maxPerHour)
       "maxPerDay" (int .Values.edge.bugReports.maxPerDay))) -}}

@@ -22,14 +22,15 @@ import (
 // A published address always maps to this exact chat, sandbox and port. IDs are
 // never recycled, including after revocation. The URL is not an access token.
 type PortBinding struct {
-	ID           string `json:"id"`
-	ChatID       string `json:"chatID"`
-	SandboxID    string `json:"sandboxID"`
-	AttachmentID string `json:"attachmentID"`
-	Port         int    `json:"port"`
-	Title        string `json:"title"`
-	URL          string `json:"url"`
-	State        string `json:"state"`
+	ID             string `json:"id"`
+	OrganizationID string `json:"organizationID,omitempty"`
+	ChatID         string `json:"chatID"`
+	SandboxID      string `json:"sandboxID"`
+	AttachmentID   string `json:"attachmentID"`
+	Port           int    `json:"port"`
+	Title          string `json:"title"`
+	URL            string `json:"url"`
+	State          string `json:"state"`
 	// Upstream is "host" for a host port a jailbroken workspace exposed
 	// (host.go), "" for a sandbox port.
 	Upstream string `json:"upstream,omitempty"`
@@ -121,7 +122,7 @@ func (e *Engine) bindPort(c *Chat, input portInput, id string) (PortBinding, err
 	if id == "" {
 		id = cv.ID()
 	}
-	p := PortBinding{ID: id, ChatID: c.ID, SandboxID: c.SandboxID, AttachmentID: a.ID, Port: input.Port, Title: input.Title, URL: e.previewURL(id, input.Path), State: "approved", Upstream: input.Upstream}
+	p := PortBinding{ID: id, OrganizationID: c.OrganizationID, ChatID: c.ID, SandboxID: c.SandboxID, AttachmentID: a.ID, Port: input.Port, Title: input.Title, URL: e.previewURL(id, input.Path), State: "approved", Upstream: input.Upstream}
 	err = e.Store.update(func(st *State) error {
 		current := st.chat(c.ID)
 		if current.Status != "running" || current.RunID != c.RunID {

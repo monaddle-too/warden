@@ -88,12 +88,18 @@ func run(args []string) error {
 		return err
 	}
 	log.Print(self, peerSummary(peers))
-	store, err := chats.Open(*root)
+	var store *chats.Store
+	if s.cfg.Auth.Mode == config.AuthEmail {
+		store, err = chats.OpenCloud(*root, os.Getenv("WARDEN_DATABASE_URL"), os.Getenv("WARDEN_LEGACY_ORGANIZATION_ID"), "main")
+	} else {
+		store, err = chats.Open(*root)
+	}
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 	handler := &chats.HTTP{Host: net.JoinHostPort(host, port), Origin: "http://" + net.JoinHostPort(host, port), WebDir: *web}
+	handler.RequireOrganization = s.cfg.Auth.Mode == config.AuthEmail
 	endpointPath := ""
 	if mutual {
 		// The edge's certificate is its authority; no capability exists and
@@ -115,6 +121,10 @@ func run(args []string) error {
 		}
 	}
 	engine := chats.NewEngine(store, &sandbox.Client{Address: s.runner, TLS: s.tls})
+	if s.cfg.Auth.Mode == config.AuthEmail {
+		engine.DocsAddress = os.Getenv("WARDEN_DOCS_UPSTREAM")
+		engine.DocsKey = os.Getenv("WARDEN_DOCS_SERVICE_KEY")
+	}
 	engine.PublicPreviewSuffix = *suffix
 	engine.PreviewScheme, engine.PreviewPort = s.previewScheme, s.previewPort
 	engine.PolicyAddress, engine.PolicyTLS = s.policy, s.tls

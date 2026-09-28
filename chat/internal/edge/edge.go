@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 	"warden/chat/internal/browserauth"
+	"warden/chat/internal/cloudauth"
 	"warden/chat/internal/transport"
 )
 
@@ -40,17 +41,31 @@ const challengeCookie = "__Host-warden-preview-challenge"
 const (
 	ModeGoogle = "google"
 	ModeOwner  = "owner"
+	ModeEmail  = "email"
 )
+
+type EmailSettings struct {
+	LegacyStateDir         string // read-only historical state imported before serving
+	DatabaseURL            string
+	BootstrapEmail         string
+	LegacyOrganizationID   string
+	LegacyOrganizationName string
+	CodeKey                []byte
+	SMTP                   cloudauth.SMTP
+}
 
 type Config struct {
 	// Mode is "google" (default) or "owner": one person identified by the
 	// launcher capability, no sign-in client.
-	Mode          string `json:"mode,omitempty"`
-	Origin        string `json:"origin"`
-	PreviewSuffix string `json:"previewSuffix"`
-	ClientID      string `json:"clientID"`
-	OwnerEmails   string `json:"ownerEmails"`
-	DemoDomains   string `json:"demoDomains"`
+	Mode          string         `json:"mode,omitempty"`
+	Origin        string         `json:"origin"`
+	PreviewSuffix string         `json:"previewSuffix"`
+	ClientID      string         `json:"clientID"`
+	OwnerEmails   string         `json:"ownerEmails"`
+	DemoDomains   string         `json:"demoDomains"`
+	Email         *EmailSettings `json:"-"`
+	DocsUpstream  string         `json:"-"`
+	DocsKey       string         `json:"-"`
 	// Upstream is the chat: http://127.0.0.1:<port>, or tls://<host>:<port>
 	// dialed with UpstreamTLS. UpstreamHost is the Host header the chat
 	// expects (its listen host:port, or the host of its tls:// address).
@@ -82,15 +97,18 @@ type Config struct {
 }
 type previewSession struct {
 	Parent, Binding string
+	Organization    string
 	Expires         time.Time
 }
 type ticket struct {
 	Parent, Binding, Challenge, Path string
+	Organization                     string
 	Expires                          time.Time
 }
 type binding struct {
-	ID    string `json:"id"`
-	State string `json:"state"`
+	ID             string `json:"id"`
+	State          string `json:"state"`
+	OrganizationID string `json:"organizationID,omitempty"`
 }
 type Authenticator interface {
 	Role(*http.Request) string
@@ -112,7 +130,8 @@ const (
 	// HeaderRole is "admin" on the owner's requests, for the decisions the
 	// chat service reserves to the owner but cannot tell apart by path (a
 	// workspace's network access chosen on POST chats).
-	HeaderRole = "X-Warden-Role"
+	HeaderRole         = "X-Warden-Role"
+	HeaderOrganization = "X-Warden-Organization"
 )
 
 type Server struct {
@@ -123,6 +142,7 @@ type Server struct {
 	previewPort string // port carried by loopback preview hosts; "" in public mode
 	secure      bool   // Secure, __Host- cookies (https only)
 	target      *url.URL
+	docsTarget  *url.URL
 	upstreamTLS *tls.Config // mutual TLS to a tls:// upstream; nil for loopback http
 	// upstream carries every proxied request: one transport, so the
 	// keep-alive connections to the chat service are pooled and reused
@@ -137,6 +157,7 @@ type Server struct {
 	sessions    map[string]previewSession
 	tickets     map[string]ticket
 	bindings    map[string]bool
+	bindingOrgs map[string]string
 	lastRefresh time.Time
 	Client      *http.Client
 	logins      *ledger
@@ -179,7 +200,14 @@ func New(c Config) (*Server, error) {
 		return nil, errors.New("upstream host and preview suffix required")
 	}
 	upstream := &http.Transport{Proxy: nil, ResponseHeaderTimeout: 30 * time.Second, TLSClientConfig: upstreamTLS, MaxIdleConns: 32, MaxIdleConnsPerHost: 32, IdleConnTimeout: 90 * time.Second}
-	s := &Server{Config: c, host: origin.Host, scheme: origin.Scheme, secure: origin.Scheme == "https", target: target, upstreamTLS: upstreamTLS, upstream: upstream, Logf: log.Printf, sessions: map[string]previewSession{}, tickets: map[string]ticket{}, bindings: map[string]bool{}, Client: &http.Client{Timeout: 5 * time.Second, Transport: upstream}}
+	s := &Server{Config: c, host: origin.Host, scheme: origin.Scheme, secure: origin.Scheme == "https", target: target, upstreamTLS: upstreamTLS, upstream: upstream, Logf: log.Printf, sessions: map[string]previewSession{}, tickets: map[string]ticket{}, bindings: map[string]bool{}, bindingOrgs: map[string]string{}, Client: &http.Client{Timeout: 5 * time.Second, Transport: upstream}}
+	if c.DocsUpstream != "" {
+		docs, err := url.Parse(c.DocsUpstream)
+		if err != nil || docs.Scheme != "http" || docs.Hostname() == "" || docs.Port() == "" || docs.Path != "" || docs.User != nil || docs.RawQuery != "" || len(c.DocsKey) < 32 {
+			return nil, errors.New("private document service and 32-character service key required")
+		}
+		s.docsTarget = docs
+	}
 	mode := c.Mode
 	if mode == "" {
 		mode = ModeGoogle
@@ -207,6 +235,34 @@ func New(c Config) (*Server, error) {
 		}
 		auth.OnLogin = logins.record
 		s.Auth, s.logins = auth, logins
+	case origin.Scheme == "https" && mode == ModeEmail:
+		if !strings.Contains(c.PreviewSuffix, ".") || c.Email == nil || c.ClientID != "" || c.DemoDomains != "" {
+			return nil, errors.New("email mode needs public previews and cloud identity settings, without Google sign-in")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		store, err := cloudauth.Open(ctx, c.Email.DatabaseURL, c.Email.BootstrapEmail)
+		if err != nil {
+			return nil, fmt.Errorf("cloud identity: %w", err)
+		}
+		if c.Email.LegacyOrganizationID != "" {
+			owner, err := store.UserByEmail(ctx, c.Email.BootstrapEmail)
+			if err == nil {
+				err = store.EnsureOrganization(ctx, owner, c.Email.LegacyOrganizationID, c.Email.LegacyOrganizationName)
+			}
+			if err != nil {
+				store.Close()
+				return nil, fmt.Errorf("initial organization: %w", err)
+			}
+		}
+		login := &cloudauth.Login{Store: store, Mailer: c.Email.SMTP, Pepper: c.Email.CodeKey}
+		if err = login.Validate(); err != nil {
+			store.Close()
+			return nil, err
+		}
+		cloudAuth := &cloudauth.Auth{Login: login, Origin: c.Origin, DocsAddress: c.DocsUpstream, DocsKey: c.DocsKey}
+		cloudAuth.StartRecordings()
+		s.Auth = cloudAuth
 	case origin.Scheme == "http" && mode == ModeOwner:
 		// Loopback mode: plain HTTP on a loopback port, previews on
 		// <binding>.localhost:<port>, the owner identified by the capability.
@@ -233,7 +289,7 @@ func New(c Config) (*Server, error) {
 		s.Auth = newOwnerAuth(s.token, false, ownerCookie+"-"+s.previewPort, instanceOf(c))
 		s.logins, _ = newLedger("")
 	default:
-		return nil, errors.New("https origins use Google sign-in; owner mode is loopback http only")
+		return nil, errors.New("https origins use Google or email sign-in; owner mode is loopback http only")
 	}
 	if c.BugReports != nil && c.BugReports.Enabled {
 		bugs, err := newBugReports(*c.BugReports, func(format string, args ...any) { s.Logf(format, args...) })
@@ -316,13 +372,16 @@ func (s *Server) Refresh(ctx context.Context) error {
 		return err
 	}
 	next := map[string]bool{}
+	orgs := map[string]string{}
 	for _, p := range ports {
-		if idPattern.MatchString(p.ID) && p.State == "approved" {
+		if idPattern.MatchString(p.ID) && p.State == "approved" && (s.Config.Mode != ModeEmail || p.OrganizationID != "") {
 			next[p.ID] = true
+			orgs[p.ID] = p.OrganizationID
 		}
 	}
 	s.mu.Lock()
 	s.bindings = next
+	s.bindingOrgs = orgs
 	s.lastRefresh = time.Now()
 	s.cleanup()
 	s.mu.Unlock()
@@ -344,6 +403,18 @@ func (s *Server) known(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.bindings[id] && time.Since(s.lastRefresh) < 10*time.Second
+}
+func (s *Server) bindingOrganization(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bindingOrgs[id]
+}
+func (s *Server) activeInOrganization(parent, org string) bool {
+	if s.Config.Mode != ModeEmail {
+		return s.Auth.ActiveSession(parent)
+	}
+	a, ok := s.Auth.(interface{ ActiveSessionInOrganization(string, string) bool })
+	return ok && a.ActiveSessionInOrganization(parent, org)
 }
 func (s *Server) cleanup() {
 	now := time.Now()
@@ -411,12 +482,28 @@ func (s *Server) main(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
 	w.Header().Set("Content-Security-Policy", s.mainCSP())
+	if external, ok := s.Auth.(*cloudauth.Auth); ok && (external.RecordingRoute(w, r) || external.ReferenceRoute(w, r) || external.ExternalRoute(w, r)) {
+		return
+	}
 	if r.URL.Path == "/auth/preview" {
 		s.authorizePreview(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/auth/") {
 		s.Auth.Handler().ServeHTTP(w, r)
+		return
+	}
+	if s.Config.Mode == ModeEmail && docsPath(r.URL.Path) {
+		if strings.HasPrefix(r.URL.Path, "/docs-app/") {
+			w.Header().Set("Content-Security-Policy", strings.Replace(s.mainCSP(), "frame-ancestors 'none'", "frame-ancestors 'self'", 1))
+		}
+		s.docsProxy(w, r)
+		return
+	}
+	if s.Config.Mode == ModeEmail && (r.URL.Path == "/connect" || r.URL.Path == "/shared-conversations" || strings.HasPrefix(r.URL.Path, "/shared-conversations/") || r.URL.Path == "/documents" || strings.HasPrefix(r.URL.Path, "/documents/") || r.URL.Path == "/designs" || strings.HasPrefix(r.URL.Path, "/designs/")) {
+		page := r.Clone(r.Context())
+		page.URL.Path, page.URL.RawPath = "/", ""
+		s.proxy("", w, page)
 		return
 	}
 	// Bug reports come from other installs, not from anyone signed in
@@ -428,6 +515,14 @@ func (s *Server) main(w http.ResponseWriter, r *http.Request) {
 		}
 		s.bugs.receive(w, r)
 		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/admin/organizations") {
+		if admin, ok := s.Auth.(interface {
+			Admin(http.ResponseWriter, *http.Request)
+		}); ok {
+			admin.Admin(w, r)
+			return
+		}
 	}
 	// The demo shares chats and grants, but provider account connections, the
 	// admin console and "unsharable with AI" tags remain owner-only.
@@ -444,6 +539,13 @@ func (s *Server) main(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") && s.Auth.Role(r) == "" {
 		http.Error(w, "Warden sign-in required", 401)
 		return
+	}
+	if s.Config.Mode == ModeEmail && strings.HasPrefix(r.URL.Path, "/api/") {
+		org, ok := s.Auth.(interface{ Organization(*http.Request) string })
+		if !ok || org.Organization(r) == "" {
+			http.Error(w, "Choose an organization before opening a workspace", http.StatusForbidden)
+			return
+		}
 	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.Method != "GET" {
 		http.Error(w, "method not allowed", 405)
@@ -524,8 +626,14 @@ func (s *Server) mainCSP() string {
 	if s.previewPort != "" {
 		frames += ":" + s.previewPort
 	}
+	if s.Config.Mode == ModeEmail {
+		frames = "'self' " + frames
+	}
 	if !s.secure {
 		return "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src " + frames + "; connect-src 'self'; img-src 'self' blob: data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	}
+	if s.Config.Mode == ModeEmail {
+		return "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src " + frames + "; connect-src 'self' wss://" + s.host + "; img-src 'self' blob: data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	}
 	return "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com; frame-src https://accounts.google.com " + frames + "; connect-src 'self' https://accounts.google.com; img-src 'self' blob: data: https://*.googleusercontent.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 }
@@ -557,6 +665,15 @@ func (s *Server) authorizePreview(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, s.Config.Origin+"/?next="+url.QueryEscape(r.URL.RequestURI()), 303)
 		return
 	}
+	organization := ""
+	if s.Config.Mode == ModeEmail {
+		a, valid := s.Auth.(interface{ Organization(*http.Request) string })
+		organization = s.bindingOrganization(id)
+		if !valid || organization == "" || a.Organization(r) != organization {
+			http.Error(w, "preview belongs to another organization", http.StatusForbidden)
+			return
+		}
+	}
 	code := random()
 	s.mu.Lock()
 	s.cleanup()
@@ -565,7 +682,7 @@ func (s *Server) authorizePreview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too many sign-ins", 429)
 		return
 	}
-	s.tickets[code] = ticket{Parent: parent, Binding: id, Challenge: challenge, Path: safePath(r.URL.Query().Get("path")), Expires: time.Now().Add(time.Minute)}
+	s.tickets[code] = ticket{Parent: parent, Binding: id, Organization: organization, Challenge: challenge, Path: safePath(r.URL.Query().Get("path")), Expires: time.Now().Add(time.Minute)}
 	s.mu.Unlock()
 	http.Redirect(w, r, s.previewOrigin(id)+"/_warden/login?code="+code, 303)
 }
@@ -588,7 +705,7 @@ func (s *Server) preview(id string, w http.ResponseWriter, r *http.Request) {
 			delete(s.tickets, code)
 		}
 		s.mu.Unlock()
-		if err != nil || !ok || t.Binding != id || t.Challenge != cookie.Value || !time.Now().Before(t.Expires) || !s.Auth.ActiveSession(t.Parent) {
+		if err != nil || !ok || t.Binding != id || t.Challenge != cookie.Value || !time.Now().Before(t.Expires) || t.Organization != s.bindingOrganization(id) || !s.activeInOrganization(t.Parent, t.Organization) {
 			http.Error(w, "Warden preview sign-in expired; reopen the preview", 401)
 			return
 		}
@@ -600,7 +717,7 @@ func (s *Server) preview(id string, w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "too many preview sessions", 429)
 			return
 		}
-		s.sessions[key] = previewSession{Parent: t.Parent, Binding: id, Expires: time.Now().Add(8 * time.Hour)}
+		s.sessions[key] = previewSession{Parent: t.Parent, Binding: id, Organization: t.Organization, Expires: time.Now().Add(8 * time.Hour)}
 		s.mu.Unlock()
 		s.setCookie(w, challengeCookie, "", -1)
 		s.setCookie(w, previewCookie, key, 8*3600)
@@ -615,7 +732,7 @@ func (s *Server) preview(id string, w http.ResponseWriter, r *http.Request) {
 		session, ok = s.sessions[cookie.Value]
 		s.mu.Unlock()
 	}
-	if !ok || session.Binding != id || !time.Now().Before(session.Expires) || !s.Auth.ActiveSession(session.Parent) {
+	if !ok || session.Binding != id || session.Organization != s.bindingOrganization(id) || !time.Now().Before(session.Expires) || !s.activeInOrganization(session.Parent, session.Organization) {
 		if r.Method != "GET" && r.Method != "HEAD" {
 			http.Error(w, "Warden sign-in required", 401)
 			return
@@ -645,16 +762,19 @@ func (s *Server) preview(id string, w http.ResponseWriter, r *http.Request) {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				if !s.Auth.ActiveSession(session.Parent) || !s.known(id) || !time.Now().Before(session.Expires) {
+				if !s.activeInOrganization(session.Parent, session.Organization) || !s.known(id) || !time.Now().Before(session.Expires) {
 					cancel()
 					return
 				}
 			}
 		}
 	}()
-	s.proxy(id, w, r.WithContext(ctx))
+	s.proxyScoped(id, session.Organization, w, r.WithContext(ctx))
 }
 func (s *Server) proxy(binding string, w http.ResponseWriter, r *http.Request) {
+	s.proxyScoped(binding, "", w, r)
+}
+func (s *Server) proxyScoped(binding, organization string, w http.ResponseWriter, r *http.Request) {
 	token, err := s.credential()
 	if err != nil {
 		http.Error(w, "Warden host unavailable", 503)
@@ -662,14 +782,25 @@ func (s *Server) proxy(binding string, w http.ResponseWriter, r *http.Request) {
 	}
 	principal, email, name, known := s.Auth.Identity(r)
 	role := s.Auth.Role(r)
+	org := ""
+	if scoped, ok := s.Auth.(interface{ Organization(*http.Request) string }); ok {
+		org = scoped.Organization(r)
+	}
+	if organization != "" {
+		org = organization
+	}
 	proxy := httputil.NewSingleHostReverseProxy(s.target)
 	proxy.Director = func(req *http.Request) {
 		req.Header.Del(HeaderPrincipal)
 		req.Header.Del(HeaderEmail)
 		req.Header.Del(HeaderName)
 		req.Header.Del(HeaderRole)
+		req.Header.Del(HeaderOrganization)
 		if role == "admin" {
 			req.Header.Set(HeaderRole, role)
+		}
+		if org != "" {
+			req.Header.Set(HeaderOrganization, org)
 		}
 		if known && principal != "" {
 			req.Header.Set(HeaderPrincipal, principal)

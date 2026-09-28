@@ -1,0 +1,367 @@
+@font-face {
+  font-family: Inter;
+  src: url("./fonts/Inter.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+/* Option A: one persistent cloud navigation and a quiet account menu. */
+html:has(.cloud-workspace) {
+  color-scheme: light;
+  --font:
+    Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial,
+    sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --surface-2: #f3f1ec;
+  --surface-3: #ebe8e1;
+  --bubble: #f0eee8;
+  --line: #e2ded6;
+  --line-strong: #c8c2b6;
+
+  --text: #1c1b18;
+  --text-2: #47443e;
+  --muted: #6b675f;
+
+  --accent: #b4531e;
+  --accent-text: #9a4316;
+  --accent-soft: #fbeee4;
+  --accent-line: #ecc9b0;
+
+  --primary: #1c1b18;
+  --primary-hover: #33312c;
+  --on-primary: #ffffff;
+
+  --success: #2e7d4f;
+  --success-soft: #e6f2ea;
+  --danger: #b42318;
+  --danger-soft: #fdecea;
+
+  --info-soft: #e8eef8;
+  --info-text: #2b4a7a;
+  --add-soft: #e3f3e8;
+  --add-text: #1f6b3a;
+  --del-soft: #fde8e6;
+  --del-text: #a12d22;
+
+  --code-comment: #6b675f;
+  --code-keyword: #7c3aad;
+  --code-string: #1f6b3a;
+  --code-number: #9a4316;
+  --code-title: #2b4a7a;
+  --code-type: #0e6b8a;
+  --code-attr: #6b5a00;
+
+  --find-soft: #fbe7a1;
+  --find-current: #f0b23c;
+
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow: 0 1px 2px rgb(28 27 24 / 0.06), 0 8px 24px rgb(28 27 24 / 0.1);
+  --ring: 0 0 0 3px rgb(180 83 30 / 0.28);
+}
+
+.cloud-workspace .chat-sidebar {
+  width: 220px;
+  min-width: 220px;
+  padding: 24px 20px 16px;
+  gap: 16px;
+  border-right: 0;
+}
+.cloud-workspace .chat-brand {
+  padding: 0;
+  font-size: 23px;
+  order: 0;
+}
+.cloud-workspace .chat-brand > svg {
+  display: none;
+}
+.cloud-workspace .warden-organization {
+  order: 1;
+  font-size: 0;
+}
+.cloud-workspace .warden-organization select {
+  height: 48px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 0 12px;
+  font-size: 13px;
+  text-overflow: ellipsis;
+}
+.cloud-workspace .chat-search {
+  order: 2;
+  margin: 8px 0 0;
+  height: 42px;
+  color: var(--muted);
+}
+.cloud-workspace .chat-search svg {
+  display: none;
+}
+.cloud-workspace .chat-search kbd {
+  border: 0;
+  padding: 0;
+}
+.cloud-workspace .cloud-primary-nav {
+  order: 3;
+  flex-shrink: 0;
+  gap: 8px;
+  overflow: visible;
+  margin: 0;
+  padding: 0;
+}
+.cloud-workspace .cloud-primary-nav > :is(button, a) {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  border-radius: 8px;
+  border: 0;
+  text-decoration: none;
+  white-space: normal;
+}
+.cloud-workspace .cloud-primary-nav a svg {
+  display: none;
+}
+.cloud-workspace .cloud-primary-nav > .selected {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.cloud-workspace .cloud-primary-nav > :is(button, a):hover {
+  background: var(--surface-3);
+}
+.cloud-workspace .chat-new-project {
+  order: 4;
+  margin-top: 8px;
+}
+.cloud-workspace .chat-section-label {
+  order: 5;
+  font-size: 10px;
+  padding: 8px 10px 0;
+}
+.cloud-workspace nav[aria-label="Chats"] {
+  order: 6;
+  min-height: 0;
+}
+.cloud-workspace nav[aria-label="Chats"] button {
+  font-size: 13px;
+}
+.cloud-workspace .chat-sidebar-footer {
+  order: 7;
+  position: relative;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.cloud-workspace .cloud-account-toggle {
+  padding: 0;
+  width: 100%;
+  gap: 9px;
+  color: var(--text);
+  font-size: 13px;
+}
+.cloud-account-toggle > span:nth-child(2) {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.cloud-initials {
+  font-size: 11px;
+}
+.cloud-account-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 240px;
+  z-index: 50;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 8px;
+  max-height: 70dvh;
+  overflow: auto;
+}
+.cloud-account-menu[hidden] {
+  display: none;
+}
+.cloud-account-menu > button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 10px;
+  height: 40px;
+  font-weight: 400;
+  color: var(--text-2);
+}
+.cloud-account-menu > button:hover {
+  background: var(--surface-2);
+}
+.cloud-account-menu .warden-account {
+  margin-top: 6px;
+  padding: 12px 10px 4px;
+}
+.cloud-account-menu .warden-account-person {
+  display: none;
+}
+.cloud-account-menu .chat-connection.live {
+  display: none;
+}
+@media (max-width: 700px) {
+  .cloud-workspace {
+    flex-direction: column;
+  }
+  .cloud-workspace .chat-sidebar {
+    width: 100%;
+    min-width: 0;
+    padding: 10px 14px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .cloud-workspace .chat-brand {
+    font-size: 18px;
+    display: flex;
+  }
+  .cloud-workspace .chat-brand span {
+    display: inline;
+  }
+  .cloud-workspace .warden-organization {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .cloud-workspace .warden-organization select {
+    height: 36px;
+    max-width: 220px;
+  }
+  .cloud-workspace .chat-search {
+    grid-column: 2;
+    grid-row: 2;
+    width: 40px;
+    margin: 0;
+    padding: 8px;
+  }
+  .cloud-workspace .chat-search svg {
+    display: block;
+  }
+  .cloud-workspace .chat-search :is(span, kbd) {
+    display: none;
+  }
+  .cloud-workspace .cloud-primary-nav {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    gap: 4px;
+  }
+  .cloud-workspace .cloud-primary-nav > :is(button, a) {
+    min-height: 36px;
+    padding: 8px 10px;
+    font-size: 12px;
+    flex: 1;
+    justify-content: center;
+  }
+  .cloud-workspace
+    :is(.chat-new-project, .chat-section-label, nav[aria-label="Chats"]) {
+    display: none;
+  }
+  .cloud-workspace .chat-sidebar-footer {
+    grid-row: 1;
+    grid-column: 2;
+    border: 0;
+    padding: 0;
+    margin: 0;
+  }
+  .cloud-workspace .cloud-account-toggle {
+    height: 28px;
+    width: auto;
+    padding: 0 4px;
+  }
+  .cloud-workspace .cloud-account-toggle span {
+    display: inline;
+  }
+  .cloud-workspace .cloud-account-toggle > span:nth-child(2) {
+    display: none;
+  }
+  .cloud-workspace .cloud-account-menu {
+    top: calc(100% + 8px);
+    bottom: auto;
+    right: 0;
+    left: auto;
+  }
+  .cloud-workspace .cloud-account-menu button span {
+    display: inline;
+  }
+  .cloud-workspace .cloud-account-menu .warden-account button {
+    display: block;
+  }
+  .cloud-workspace .chat-main {
+    min-height: 0;
+  }
+}
+
+@media (max-width: 700px) {
+  .cloud-workspace .chat-new-project {
+    display: flex;
+    grid-column: 1 / -1;
+    margin: 0;
+    height: 34px;
+  }
+}
+
+.cloud-workspace .warden-organization {
+  position: relative;
+}
+.cloud-workspace .warden-organization select {
+  padding-right: 30px;
+}
+.cloud-workspace .warden-organization > svg {
+  position: absolute;
+  right: 12px;
+  bottom: 17px;
+  pointer-events: none;
+  color: var(--muted);
+}
+@media (max-width: 700px) {
+  .cloud-workspace .warden-organization > svg {
+    bottom: 11px;
+  }
+}
+
+@media (max-width: 700px) {
+  .cloud-workspace .chat-sidebar {
+    width: 100%;
+    min-width: 0;
+  }
+  .cloud-workspace .chat-brand {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 700px) {
+  .cloud-workspace .warden-organization select {
+    max-width: none;
+  }
+}
+
+.reference-error {
+  margin: 12px 20px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.rich-text a[href*="/documents/"],
+.rich-text a[href*="/?chat="],
+.rich-text a[href*="/shared-conversations/"] {
+  text-underline-offset: 3px;
+}

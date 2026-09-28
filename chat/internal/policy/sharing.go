@@ -7,13 +7,13 @@ import (
 	"errors"
 	"net"
 	"net/url"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"warden/chat/internal/durablestate"
 )
 
 // ValueError marks validation failures whose message may be shown to the
@@ -154,7 +154,7 @@ func NewGoogleConnectionWithClient(root string, options GoogleClientOptions, clo
 	if err != nil {
 		return nil, err
 	}
-	os.Chmod(filepath.Join(root, "google.sqlite"), 0o600)
+	durablestate.Chmod(filepath.Join(root, "google.sqlite"), 0o600)
 	if _, err = db.Exec("CREATE TABLE IF NOT EXISTS credentials (id INTEGER PRIMARY KEY, data TEXT)"); err != nil {
 		db.Close()
 		return nil, err
@@ -518,14 +518,14 @@ func NewSharing(root string, google GoogleSharing, clock Clock, github GitHubCre
 	if user, ok := github.(*GitHubUserCredentials); ok && user == nil {
 		github = nil
 	}
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	if err := durablestate.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
 	db, err := openSQLite(filepath.Join(root, "sharing.sqlite"))
 	if err != nil {
 		return nil, err
 	}
-	os.Chmod(filepath.Join(root, "sharing.sqlite"), 0o600)
+	durablestate.Chmod(filepath.Join(root, "sharing.sqlite"), 0o600)
 	s := &Sharing{Clock: clock, Google: google, GitHub: github, DB: db}
 	if s.Clock == nil {
 		s.Clock = wallClock

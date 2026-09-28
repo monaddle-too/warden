@@ -1,0 +1,226 @@
+.recordings-view {
+  padding: 36px 40px;
+  overflow: auto;
+  height: 100%;
+  box-sizing: border-box;
+  color: var(--text, #292925);
+}
+.recordings-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-start;
+  margin-bottom: 32px;
+}
+.recordings-heading h1 {
+  font-size: 28px;
+  margin: 0 0 8px;
+}
+.recordings-heading p,
+.device-list p,
+.recording-list p,
+.muted {
+  color: #77776f;
+  font-size: 14px;
+}
+.recordings-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.recordings-actions a {
+  font-size: 13px;
+  color: #8b5937;
+}
+.recordings-view button {
+  border: 1px solid #dcdcd5;
+  border-radius: 7px;
+  padding: 9px 13px;
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+}
+.recordings-view button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.recordings-view input {
+  border: 1px solid #dcdcd5;
+  border-radius: 6px;
+  padding: 10px;
+  font: inherit;
+  background: #fff;
+  color: #252525;
+}
+.device-register {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.device-register label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 260px;
+}
+.device-secret,
+.device-confirm {
+  background: #f5f1e8;
+  border: 1px solid #e1d8c6;
+  border-radius: 10px;
+  padding: 22px;
+  margin: 24px 0;
+}
+.device-secret h2 {
+  margin-top: 0;
+}
+.device-secret input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: monospace;
+  margin-bottom: 12px;
+}
+.device-secret code {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.device-list article,
+.recording-list > a {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 22px 0;
+  border-bottom: 1px solid #e8e8e1;
+}
+.device-list h2,
+.recording-list h2 {
+  font-size: 16px;
+  font-weight: 550;
+  margin: 0 0 8px;
+}
+.recording-list > a {
+  text-decoration: none;
+  color: inherit;
+}
+.recording-list > a:hover {
+  background: #f8f8f3;
+}
+.recording-list > a > div:last-child {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.recording-list small {
+  color: #777;
+}
+.recordings-empty {
+  padding: 60px 20px;
+  text-align: center;
+}
+.recording-status {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+  color: #73736b;
+  font-size: 14px;
+}
+.recording-state {
+  font-size: 12px;
+  border-radius: 20px;
+  padding: 5px 10px;
+  background: #efefe8;
+  color: #606058;
+  text-transform: capitalize;
+}
+.recording-state.live {
+  background: #e6efe3;
+  color: #31642d;
+}
+.recording-state.interrupted {
+  background: #fbefd7;
+  color: #815b10;
+}
+.recordings-view audio {
+  margin: 24px 0;
+  width: min(100%, 650px);
+}
+.recording-transcript {
+  max-width: 850px;
+  margin-top: 32px;
+}
+.recording-transcript h2 {
+  font-size: 16px;
+}
+.transcript-segment {
+  display: flex;
+  gap: 24px;
+  line-height: 1.7;
+}
+.transcript-segment time {
+  font-size: 12px;
+  color: #92928a;
+  min-width: 45px;
+  padding-top: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.transcript-segment p {
+  margin: 12px 0;
+}
+.provisional p {
+  color: #888;
+}
+.provisional small {
+  display: block;
+  font-size: 11px;
+}
+.recordings-error {
+  background: #fceee9;
+  padding: 14px;
+  border-radius: 8px;
+  color: #8d3324;
+}
+@media (max-width: 750px) {
+  .recordings-view {
+    padding: 24px 18px;
+  }
+  .recordings-heading,
+  .device-register,
+  .device-list article,
+  .recording-list > a {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .device-register label {
+    min-width: 0;
+  }
+}
+
+.device-script {
+  margin: 16px 0;
+}
+.device-script summary {
+  cursor: pointer;
+}
+.device-script textarea {
+  width: 100%;
+  height: 300px;
+  box-sizing: border-box;
+  margin-top: 12px;
+  padding: 12px;
+  font: 12px/1.5 monospace;
+  white-space: pre;
+  border: 1px solid #dcdcd5;
+  border-radius: 6px;
+  background: #fff;
+  color: #252525;
+}
+.device-secret code.inline-code {
+  display: inline;
+}

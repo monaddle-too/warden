@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"warden/chat/internal/durablestate"
 
 	"warden/chat/internal/bugreport"
 	"warden/chat/internal/release"
@@ -208,7 +209,7 @@ func (r *Registry) EgressMode() (mode, source string) {
 		mode = "restricted"
 	}
 	source = "config"
-	if _, err := os.Stat(filepath.Join(r.State, egressFile)); err == nil {
+	if _, err := durablestate.Stat(filepath.Join(r.State, egressFile)); err == nil {
 		source = "console"
 	}
 	return mode, source
@@ -234,10 +235,10 @@ func (r *Registry) SetEgressMode(mode string) error {
 	}
 	r.options.EgressMode = mode
 	tmp := filepath.Join(r.State, egressFile+".tmp")
-	if err := os.WriteFile(tmp, []byte(Dumps(map[string]any{"mode": mode})+"\n"), 0o600); err != nil {
+	if err := durablestate.WriteFile(tmp, []byte(Dumps(map[string]any{"mode": mode})+"\n"), 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(r.State, egressFile))
+	return durablestate.Rename(tmp, filepath.Join(r.State, egressFile))
 }
 
 // AllowHost applies an owner-approved temporary egress grant to the sandbox
@@ -254,7 +255,7 @@ func (r *Registry) AllowHost(sandbox, host string, until float64) error {
 
 // LoadEgressMode reads a mode persisted by SetEgressMode, or "" when none.
 func LoadEgressMode(state string) (string, error) {
-	raw, err := os.ReadFile(filepath.Join(state, egressFile))
+	raw, err := durablestate.ReadFile(filepath.Join(state, egressFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
@@ -279,7 +280,7 @@ const egressOverridesFile = "egress-overrides.json"
 
 func loadEgressOverrides(state string) (map[string]string, error) {
 	out := map[string]string{}
-	raw, err := os.ReadFile(filepath.Join(state, egressOverridesFile))
+	raw, err := durablestate.ReadFile(filepath.Join(state, egressOverridesFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return out, nil
 	}
@@ -310,10 +311,10 @@ func (r *Registry) saveEgressOverridesLocked() error {
 		body[sandbox] = mode
 	}
 	tmp := filepath.Join(r.State, egressOverridesFile+".tmp")
-	if err := os.WriteFile(tmp, []byte(Dumps(body)+"\n"), 0o600); err != nil {
+	if err := durablestate.WriteFile(tmp, []byte(Dumps(body)+"\n"), 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(r.State, egressOverridesFile))
+	return durablestate.Rename(tmp, filepath.Join(r.State, egressOverridesFile))
 }
 
 // effectiveEgressLocked is the mode a sandbox's engine gets: its own when
@@ -450,10 +451,10 @@ func providerOf(value map[string]string) string {
 
 // NewRegistry opens the durable binding manifest and each engine.
 func NewRegistry(state string, options RegistryOptions) (*Registry, error) {
-	if err := os.MkdirAll(state, 0o700); err != nil {
+	if err := durablestate.MkdirAll(state, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(state, 0o700); err != nil {
+	if err := durablestate.Chmod(state, 0o700); err != nil {
 		return nil, err
 	}
 	ca := options.CA
@@ -479,7 +480,7 @@ func NewRegistry(state string, options RegistryOptions) (*Registry, error) {
 	r.egressOverrides = overrides
 	manifest := filepath.Join(state, "bindings.json")
 	saved := map[string]any{"active": []any{}, "retired": map[string]any{}}
-	if raw, err := os.ReadFile(manifest); err == nil {
+	if raw, err := durablestate.ReadFile(manifest); err == nil {
 		parsed, err := StrictJSON(raw)
 		if err != nil {
 			return nil, err
@@ -574,11 +575,14 @@ func sortBindings(active []any) {
 
 // atomicWrite writes privately, fsyncs, renames and fsyncs the directory.
 func atomicWrite(path, temporary string, data []byte) error {
+	if durablestate.IsCloud(path) {
+		return durablestate.WriteFile(path, data, 0600)
+	}
 	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	if err = os.Chmod(temporary, 0o600); err != nil {
+	if err = durablestate.Chmod(temporary, 0o600); err != nil {
 		file.Close()
 		return err
 	}
@@ -593,7 +597,7 @@ func atomicWrite(path, temporary string, data []byte) error {
 	if err = file.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(temporary, path); err != nil {
+	if err = durablestate.Rename(temporary, path); err != nil {
 		return err
 	}
 	dir, err := os.Open(filepath.Dir(path))
@@ -615,7 +619,7 @@ func (r *Registry) load(identity map[string]string) (*Binding, error) {
 		}
 	}
 	directory := filepath.Join(r.State, "sandboxes", BindingDigest(identity))
-	if err := os.MkdirAll(directory, 0o700); err != nil {
+	if err := durablestate.MkdirAll(directory, 0o700); err != nil {
 		return nil, err
 	}
 	engineOptions := EngineOptions{Operations: r.options.Operations, PolicyTemplate: r.options.PolicyTemplate, EgressMode: r.effectiveEgressLocked(sandbox)}
@@ -647,7 +651,7 @@ func (r *Registry) load(identity map[string]string) (*Binding, error) {
 		}
 	}
 	port := 0
-	if raw, err := os.ReadFile(filepath.Join(directory, "gateway-port.json")); err == nil {
+	if raw, err := durablestate.ReadFile(filepath.Join(directory, "gateway-port.json")); err == nil {
 		parsed, err := StrictJSON(raw)
 		value, ok := asInt(parsed)
 		if err != nil || !ok || value < 1024 || value > 65535 {
@@ -659,6 +663,9 @@ func (r *Registry) load(identity map[string]string) (*Binding, error) {
 			return nil, errors.New("invalid durable gateway port")
 		}
 		port = int(value)
+	} else if !os.IsNotExist(err) {
+		engine.Close()
+		return nil, err
 	}
 	b := &Binding{Identity: identityOf(identity), Engine: engine, Capability: tokenURLSafe(32), Ended: map[string]bool{}, Decisions: map[string]map[string]any{}, GatewayPort: port}
 	r.Bindings[sandbox] = b

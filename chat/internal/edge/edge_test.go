@@ -61,6 +61,21 @@ func testServer(t *testing.T, handler http.Handler) (*Server, *fakeAuth) {
 	s.lastRefresh = time.Now()
 	return s, a
 }
+
+func TestPreviewProxyForwardsVerifiedOrganizationWithoutAppCookie(t *testing.T) {
+	s, _ := testServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(HeaderOrganization); got != "org-verified" {
+			t.Errorf("upstream organization = %q", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	r := httptest.NewRequest(http.MethodGet, "https://preview.example.com/", nil)
+	w := httptest.NewRecorder()
+	s.proxyScoped(strings.Repeat("a", 32), "org-verified", w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("proxy status = %d", w.Code)
+	}
+}
 func invoke(s *Server, target string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 	r := httptest.NewRequest("GET", target, nil)
 	for _, c := range cookies {

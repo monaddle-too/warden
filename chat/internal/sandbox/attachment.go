@@ -41,7 +41,7 @@ func (w *Worker) writeAttachmentLocked(ctx context.Context, s *managedSandbox, r
 		return Response{}, errors.New("attachment must be between 1 byte and 8 MiB")
 	}
 	name := filepath.Base(r.Directory)
-	dir := filepath.Join(w.Root, "attachments")
+	dir := filepath.Join(w.scratchRoot(), "attachments")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return Response{}, err
 	}

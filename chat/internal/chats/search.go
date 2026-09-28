@@ -164,7 +164,11 @@ func lastActivity(c *Chat) float64 {
 
 // Search runs a search across every chat of the service. limit 0 is the
 // default; more than the maximum is the maximum.
-func (e *Engine) Search(query string, limit int) SearchResult {
+func (e *Engine) Search(query string, limit int, organizations ...string) SearchResult {
+	organization := ""
+	if len(organizations) > 0 {
+		organization = organizations[0]
+	}
 	if limit <= 0 {
 		limit = searchDefaultLimit
 	}
@@ -175,6 +179,15 @@ func (e *Engine) Search(query string, limit int) SearchResult {
 		return result
 	}
 	chats := e.Store.Snapshot().Chats
+	if organization != "" {
+		scoped := make([]*Chat, 0, len(chats))
+		for _, c := range chats {
+			if c.OrganizationID == organization {
+				scoped = append(scoped, c)
+			}
+		}
+		chats = scoped
+	}
 	// Live chats first, then by the time of their last entry.
 	sort.SliceStable(chats, func(i, j int) bool {
 		if chats[i].Archived != chats[j].Archived {

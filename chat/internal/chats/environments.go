@@ -103,7 +103,7 @@ func (e *Engine) Environments(ctx context.Context) ([]Environment, error) {
 		}
 	}
 	seen := map[string]bool{}
-	var out []Environment
+	out := []Environment{}
 	for _, c := range st.Chats {
 		if seen[c.SandboxID] {
 			continue

@@ -28,6 +28,7 @@ type HTTP struct {
 	Engine                      *Engine
 	Token, Host, Origin, WebDir string
 	Peer                        string
+	RequireOrganization         bool
 }
 
 // admitted reports whether the request carries the capability or, with
@@ -67,6 +68,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/published/") {
+			if h.RequireOrganization {
+				http.NotFound(w, r)
+				return
+			}
 			h.publishedHTTP(w, r)
 			return
 		}
@@ -79,6 +84,14 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/"), "/")
+	organization := strings.TrimSpace(r.Header.Get("X-Warden-Organization"))
+	if h.RequireOrganization && organization == "" && path != "ports" {
+		http.Error(w, "organization required", http.StatusForbidden)
+		return
+	}
+	if organization != "" && !h.organizationGuard(w, path, organization) {
+		return
+	}
 	if strings.HasPrefix(path, "chats/") && strings.Contains(path, "/images/") {
 		h.imageHTTP(w, r, path)
 		return
@@ -88,7 +101,11 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "GET" && path == "ports" {
-		json.NewEncoder(w).Encode(h.Engine.Store.Snapshot().Ports)
+		if organization != "" {
+			json.NewEncoder(w).Encode(organizationView(h.Engine.View(), organization).Ports)
+		} else {
+			json.NewEncoder(w).Encode(h.Engine.Store.Snapshot().Ports)
+		}
 		return
 	}
 	if strings.HasPrefix(path, "ports/") {
@@ -101,6 +118,9 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" && path == "state" {
 		data, _, _ := h.Engine.ViewJSON()
+		if organization != "" {
+			data = h.viewForOrganization(organization)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(data)
 		return
@@ -111,16 +131,28 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
 			limit = n
 		}
-		json.NewEncoder(w).Encode(h.Engine.Search(r.URL.Query().Get("q"), limit))
+		json.NewEncoder(w).Encode(h.Engine.Search(r.URL.Query().Get("q"), limit, organization))
 		return
 	}
 	if r.Method == "GET" && path == "environments" {
 		result, err := h.Engine.Environments(r.Context())
+		if organization != "" {
+			scoped := []Environment{}
+			for _, env := range result {
+				for _, c := range h.Engine.Store.Snapshot().Chats {
+					if c.SandboxID == env.ID && c.OrganizationID == organization {
+						scoped = append(scoped, env)
+						break
+					}
+				}
+			}
+			result = scoped
+		}
 		respond(w, result, err)
 		return
 	}
 	if r.Method == "GET" && path == "events" {
-		h.events(w, r)
+		h.eventsForOrganization(w, r, organization)
 		return
 	}
 	if r.Method == "GET" && (path == "cluster" || path == "cluster/logs") {
@@ -353,7 +385,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var id string
-		id, err = h.Engine.CreateFrom(requester(r), body.Title, body.SandboxID, body.Repository, body.Resources, body.Provider, body.Model)
+		id, err = h.Engine.CreateForOrganization(organization, requester(r), body.Title, body.SandboxID, body.Repository, body.Resources, body.Provider, body.Model)
 		if err == nil && body.Network != "" {
 			id, err = h.Engine.createdOnNetwork(r.Context(), id, body.Network, requester(r))
 		}
@@ -504,7 +536,8 @@ func respond(w http.ResponseWriter, value any, err error) {
 	}
 	json.NewEncoder(w).Encode(value)
 }
-func (h *HTTP) events(w http.ResponseWriter, r *http.Request) {
+func (h *HTTP) events(w http.ResponseWriter, r *http.Request) { h.eventsForOrganization(w, r, "") }
+func (h *HTTP) eventsForOrganization(w http.ResponseWriter, r *http.Request, organization string) {
 	_, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "stream unavailable", 500)
@@ -522,6 +555,9 @@ func (h *HTTP) events(w http.ResponseWriter, r *http.Request) {
 	lastWrite := time.Time{}
 	for {
 		data, key, typing := h.Engine.ViewJSON()
+		if organization != "" {
+			data = h.viewForOrganization(organization)
+		}
 		if !bytes.Equal(data, previous) || time.Since(lastWrite) >= eventsKeepalive {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {

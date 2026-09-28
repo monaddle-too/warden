@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"warden/chat/internal/durablestate"
 
 	_ "modernc.org/sqlite"
 )
@@ -78,10 +79,10 @@ var strippedRequestHeaders = stringSet("authorization", "proxy-authorization", "
 
 // NewEngine opens or initialises the engine state directory.
 func NewEngine(state string, options EngineOptions) (*Engine, error) {
-	if err := os.MkdirAll(state, 0o700); err != nil {
+	if err := durablestate.MkdirAll(state, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(state, 0o700); err != nil {
+	if err := durablestate.Chmod(state, 0o700); err != nil {
 		return nil, err
 	}
 	e := &Engine{State: state, Redactor: NewRedactor(), Operations: options.Operations, GitHubApp: options.GitHubApp,
@@ -96,8 +97,11 @@ func NewEngine(state string, options EngineOptions) (*Engine, error) {
 	e.startedWall, e.startedMono = e.clock(), e.monotonic()
 	e.Figma = NewFigmaConnection(e.Redactor, e.Now)
 	e.GoogleDocs = NewGoogleDocsConnection(e.Redactor, e.Now)
-	_, err := os.Stat(filepath.Join(state, "network-disconnected"))
-	e.networkEnabled = err != nil
+	_, err := durablestate.Stat(filepath.Join(state, "network-disconnected"))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	e.networkEnabled = os.IsNotExist(err)
 	audit, err := NewAudit(filepath.Join(state, "audit", "events.jsonl"), e.Redactor)
 	if err != nil {
 		return nil, err
@@ -113,16 +117,19 @@ func NewEngine(state string, options EngineOptions) (*Engine, error) {
 	if e.Operations == nil {
 		return fail(errors.New("operation catalog required"))
 	}
-	if _, err = os.Stat(e.policyPath); err != nil {
-		template, err := os.ReadFile(options.PolicyTemplate)
+	if _, err = durablestate.Stat(e.policyPath); err != nil {
+		if !os.IsNotExist(err) {
+			return fail(err)
+		}
+		template, err := durablestate.ReadFile(options.PolicyTemplate)
 		if err != nil {
 			return fail(err)
 		}
-		if err = os.WriteFile(e.policyPath, template, 0o600); err != nil {
+		if err = durablestate.WriteFile(e.policyPath, template, 0o600); err != nil {
 			return fail(err)
 		}
 	}
-	raw, err := os.ReadFile(e.policyPath)
+	raw, err := durablestate.ReadFile(e.policyPath)
 	if err != nil {
 		return fail(err)
 	}
@@ -179,6 +186,9 @@ func NewEngine(state string, options EngineOptions) (*Engine, error) {
 }
 
 func openSQLite(path string) (*sql.DB, error) {
+	if durablestate.IsCloud(path) {
+		return durablestate.OpenSQL(path)
+	}
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
@@ -347,10 +357,10 @@ func (e *Engine) SavePolicy(policy map[string]any) error {
 		return err
 	}
 	tmp := e.policyPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(Dumps(policy)+"\n"), 0o600); err != nil {
+	if err := durablestate.WriteFile(tmp, []byte(Dumps(policy)+"\n"), 0o600); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, e.policyPath); err != nil {
+	if err := durablestate.Rename(tmp, e.policyPath); err != nil {
 		return err
 	}
 	e.Policy = policy
@@ -387,10 +397,10 @@ func (e *Engine) SetEgressMode(mode string) error {
 		return err
 	}
 	tmp := e.policyPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(Dumps(policy)+"\n"), 0o600); err != nil {
+	if err := durablestate.WriteFile(tmp, []byte(Dumps(policy)+"\n"), 0o600); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, e.policyPath); err != nil {
+	if err := durablestate.Rename(tmp, e.policyPath); err != nil {
 		return err
 	}
 	e.Policy = policy
@@ -444,12 +454,12 @@ func (e *Engine) SetNetwork(enabled bool) error {
 	defer e.mu.Unlock()
 	flag := filepath.Join(e.State, "network-disconnected")
 	if !enabled {
-		if err := os.WriteFile(flag, []byte("disconnected\n"), 0o600); err != nil {
+		if err := durablestate.WriteFile(flag, []byte("disconnected\n"), 0o600); err != nil {
 			return err
 		}
 		e.networkEnabled = false
 	} else {
-		if err := os.Remove(flag); err != nil && !os.IsNotExist(err) {
+		if err := durablestate.Remove(flag); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		e.networkEnabled = true

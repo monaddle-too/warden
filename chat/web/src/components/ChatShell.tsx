@@ -1,3 +1,12 @@
+import { plainPrimaryClick } from "../shortcuts";
+import {
+  referenceFromURL,
+  resolveReferences,
+  seedReferences,
+} from "../references";
+import { Recordings } from "./Recordings";
+import { recordingRoute } from "../recordings";
+import { SharedConversations, sharedRoute } from "./SharedConversations";
 // Adapted from Panta ChatShell.tsx. Warden owns chats and workspace selection.
 import {
   useCallback,
@@ -29,6 +38,7 @@ import {
   Search,
   Shield,
   ShieldCheck,
+  Settings,
   TextSearch,
   Timer,
 } from "lucide-react";
@@ -41,6 +51,7 @@ import type {
   State,
 } from "../types";
 import { api, setOutputStyle, signedIn, subscribe } from "../api";
+import { DocumentsView, documentRoute } from "./DocumentsView";
 import { ForkDialog } from "./ForkDialog";
 import { useNotifications } from "./Notifications";
 import { plural, providerName } from "../export";
@@ -86,12 +97,24 @@ import { modifierKey, type FindRequest } from "./FindBar";
 
 export function ChatShell({
   account,
+  accountName,
+  organizationSwitcher,
+  organizationAdmin,
+  personalSettings,
+  platformAdmin = false,
+  docsEnabled = false,
   canConnectGoogle = true,
   admin = false,
   signIn = false,
   instance: reported,
 }: {
   account?: ReactNode;
+  accountName?: string;
+  organizationSwitcher?: ReactNode;
+  organizationAdmin?: ReactNode;
+  personalSettings?: ReactNode;
+  platformAdmin?: boolean;
+  docsEnabled?: boolean;
   canConnectGoogle?: boolean;
   admin?: boolean;
   signIn?: boolean;
@@ -100,6 +123,59 @@ export function ChatShell({
      keep naming it when the browser holds no capability at all. */
   instance?: InstanceInfo;
 }) {
+  const [accountOpen, setAccountOpen] = useState(false);
+  const accountMenu = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const close = (event: PointerEvent) => {
+      if (!accountMenu.current?.contains(event.target as Node))
+        setAccountOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (isKey(event, "dialog-close")) setAccountOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, []);
+  const [docsRoute, setDocsRoute] = useState(() =>
+    docsEnabled ? documentRoute(location.pathname) : "",
+  );
+  const [sharedPath, setSharedPath] = useState(() =>
+    docsEnabled ? sharedRoute(location.pathname) : "",
+  );
+  const [recordingPath, setRecordingPath] = useState(() =>
+    docsEnabled ? recordingRoute(location.pathname) : "",
+  );
+  const closeDocs = () => {
+    setRecordingPath("");
+    setSharedPath("");
+    setDocsRoute("");
+    if (
+      documentRoute(location.pathname) ||
+      sharedRoute(location.pathname) ||
+      recordingRoute(location.pathname)
+    )
+      history.pushState(null, "", "/");
+  };
+  useEffect(() => {
+    const pop = () => {
+      setRecordingPath(docsEnabled ? recordingRoute(location.pathname) : "");
+      setDocsRoute(docsEnabled ? documentRoute(location.pathname) : "");
+      setSharedPath(docsEnabled ? sharedRoute(location.pathname) : "");
+      const id = new URLSearchParams(location.search).get("chat");
+      if (id) {
+        setSelected(id);
+        setArchived(false);
+      }
+      setReferenceError("");
+    };
+    window.addEventListener("popstate", pop);
+    return () => window.removeEventListener("popstate", pop);
+  }, [docsEnabled]);
+  const [referenceError, setReferenceError] = useState("");
   const [state, setState] = useState<State>({ version: 1, chats: [] });
   const [live, setLive] = useState(false);
   const [selected, setSelected] = useState(
@@ -113,6 +189,8 @@ export function ChatShell({
     () => new URLSearchParams(location.search).get("new") === "1",
   );
   const [adminOpen, setAdminOpen] = useState(false);
+  const [personalSettingsOpen, setPersonalSettingsOpen] = useState(false);
+  const [organizationAdminOpen, setOrganizationAdminOpen] = useState(false);
   const [archived, setArchived] = useState(false);
   const [title, setTitle] = useState("");
   const [shared, setShared] = useState("");
@@ -185,7 +263,7 @@ export function ChatShell({
     const refresh = async () => {
       try {
         const result = await api<Environment[]>("environments");
-        if (!cancelled) setWorkspaces(result);
+        if (!cancelled) setWorkspaces(result || []);
       } catch {
         /* Retried on the next tick. */
       }
@@ -223,12 +301,90 @@ export function ChatShell({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  useEffect(() => {
+    if (docsEnabled)
+      seedReferences(
+        state.chats.map((c) => ({
+          kind: "chat",
+          id: c.id,
+          title: c.title,
+          url: "/?chat=" + c.id,
+          subtitle: "Chat",
+        })),
+      );
+  }, [state.chats, docsEnabled]);
+  const referenceChats = useRef(state.chats);
+  referenceChats.current = state.chats;
+  const referenceNavigation = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => referenceNavigation.current?.abort(), []);
+  const navigateReference = useCallback((href: string) => {
+    const target = referenceFromURL(href);
+    if (!target) return;
+    setReferenceError("");
+    referenceNavigation.current?.abort();
+    const controller = new AbortController();
+    referenceNavigation.current = controller;
+    void resolveReferences([target], controller.signal)
+      .then((items) => {
+        if (controller.signal.aborted) return;
+        const item = items[0];
+        if (!item) {
+          setReferenceError(
+            "This link is unavailable in this organization. It may have been removed.",
+          );
+          return;
+        }
+        setRecordingPath("");
+        history.pushState(null, "", item.url);
+        setDocsRoute(
+          documentRoute(new URL(item.url, location.origin).pathname),
+        );
+        setSharedPath(sharedRoute(new URL(item.url, location.origin).pathname));
+        if (item.kind === "chat") {
+          setSelected(item.id);
+          setArchived(
+            !!referenceChats.current.find((chat) => chat.id === item.id)
+              ?.archived,
+          );
+        }
+        setAdminOpen(false);
+        setPersonalSettingsOpen(false);
+        setOrganizationAdminOpen(false);
+        setCreating(false);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setReferenceError(error.message);
+      });
+  }, []);
+  useEffect(() => {
+    if (!docsEnabled) return;
+    const click = (event: MouseEvent) => {
+      if (event.defaultPrevented || !plainPrimaryClick(event))
+        return;
+      const link = (event.target as Element).closest?.("a");
+      if (!link || !referenceFromURL(link.href)) return;
+      event.preventDefault();
+      navigateReference(link.href);
+    };
+    document.addEventListener("click", click);
+    return () => document.removeEventListener("click", click);
+  }, [docsEnabled, navigateReference]);
   const chats = state.chats.filter((c) => c.archived === archived);
-  const chat = chats.find((c) => c.id === selected) || chats[0];
+  const chat =
+    chats.find((c) => c.id === selected) ||
+    (docsEnabled &&
+    selected &&
+    live &&
+    !state.chats.some((c) => c.id === selected)
+      ? undefined
+      : chats[0]);
   // Desktop notifications while the tab is hidden, and the tab's badge
   // (notify.ts); clicking one opens the chat it is about.
   const notifications = useNotifications(state.chats, (id) => {
     setAdminOpen(false);
+    setPersonalSettingsOpen(false);
+    closeDocs();
+    setOrganizationAdminOpen(false);
     setArchived(false);
     setSelected(id);
   });
@@ -238,11 +394,11 @@ export function ChatShell({
     if (find && chat?.id !== find.chatID) setFind(undefined);
   }, [chat?.id, find]);
   useEffect(() => {
-    if (chat) {
+    if (chat && !docsRoute && !sharedPath && !recordingPath) {
       sessionStorage.setItem("warden-selected-chat", chat.id);
-      history.replaceState(null, "", "?chat=" + encodeURIComponent(chat.id));
+      history.replaceState(null, "", "/?chat=" + encodeURIComponent(chat.id));
     }
-  }, [chat?.id]);
+  }, [chat?.id, docsRoute, sharedPath, recordingPath]);
   async function create(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -370,11 +526,17 @@ export function ChatShell({
     void action(`environments/${w.id}/archive`, {}).then(refresh);
   const showChat = (id: string) => {
     setAdminOpen(false);
+    setPersonalSettingsOpen(false);
+    closeDocs();
+    setOrganizationAdminOpen(false);
     setSelected(id);
   };
   // From the palette: a chat, possibly archived, and the entry to land on.
   const openFound = (target: Chat, entryID?: string, query = "") => {
     setAdminOpen(false);
+    setPersonalSettingsOpen(false);
+    closeDocs();
+    setOrganizationAdminOpen(false);
     setArchived(target.archived);
     setSelected(target.id);
     if (entryID) setFind({ chatID: target.id, query, entryID });
@@ -394,6 +556,9 @@ export function ChatShell({
       w.chats[0];
     if (!target) return;
     setAdminOpen(false);
+    setPersonalSettingsOpen(false);
+    closeDocs();
+    setOrganizationAdminOpen(false);
     setArchived(target.archived);
     setSelected(target.id);
     setPreviewOpen(false);
@@ -495,8 +660,84 @@ export function ChatShell({
     if (siblings.length)
       facts.push(`shared with ${plural(siblings.length, "other chat")}`);
   }
+  const accountActions = (
+    <>
+      {organizationAdmin && (
+        <button
+          className={organizationAdminOpen ? "selected" : ""}
+          aria-pressed={organizationAdminOpen}
+          onClick={() => {
+            setOrganizationAdminOpen(!organizationAdminOpen);
+            setAdminOpen(false);
+            setPersonalSettingsOpen(false);
+            closeDocs();
+          }}
+        >
+          <ShieldCheck size={16} />
+          <span>{platformAdmin ? "Platform admin" : "Organization admin"}</span>
+        </button>
+      )}
+      {admin && (
+        <button
+          className={adminOpen ? "selected" : ""}
+          aria-pressed={adminOpen}
+          onClick={() => {
+            setAdminOpen(!adminOpen);
+            setPersonalSettingsOpen(false);
+            closeDocs();
+            setOrganizationAdminOpen(false);
+          }}
+        >
+          <ShieldCheck size={16} />
+          <span>{platformAdmin ? "System console" : "Admin console"}</span>
+        </button>
+      )}
+      <button
+        title="Your standing instructions: the agent gets them in every chat you take part in"
+        onClick={() => setInstructionsOpen(true)}
+      >
+        <NotebookPen size={16} />
+        <span>Instructions</span>
+      </button>
+      <button
+        onClick={() => {
+          setArchived(!archived);
+          if (docsEnabled) {
+            closeDocs();
+            setAdminOpen(false);
+            setPersonalSettingsOpen(false);
+            setOrganizationAdminOpen(false);
+          }
+        }}
+      >
+        <Archive size={16} />
+        <span>{archived ? "Active chats" : "Archived chats"}</span>
+      </button>
+      <div className={`chat-connection${live ? " live" : ""}`}>
+        <span className={`status-dot${live ? " running" : ""}`} />
+        <span>{live ? "Connected" : "Reconnecting"}</span>
+      </div>
+      {personalSettings && (
+        <button
+          title="Personal settings"
+          className={personalSettingsOpen ? "selected" : ""}
+          aria-pressed={personalSettingsOpen}
+          onClick={() => {
+            closeDocs();
+            setPersonalSettingsOpen(!personalSettingsOpen);
+            setAdminOpen(false);
+            setOrganizationAdminOpen(false);
+          }}
+        >
+          <Settings size={16} />
+          <span>Personal settings</span>
+        </button>
+      )}
+      {account}
+    </>
+  );
   return (
-    <div className="chat-workspace">
+    <div className={`chat-workspace${docsEnabled ? " cloud-workspace" : ""}`}>
       <aside className="chat-sidebar">
         <div className="chat-brand">
           <Shield size={22} />
@@ -510,16 +751,109 @@ export function ChatShell({
             </span>
           )}
         </div>
-        <button
-          className="chat-new-project"
-          onClick={() => {
-            setAdminOpen(false);
-            setCreating(true);
-          }}
-        >
-          <Plus size={16} />
-          <span>New chat</span>
-        </button>
+        {organizationSwitcher}
+        {docsEnabled && (
+          <nav className="cloud-primary-nav" aria-label="Main navigation">
+            <button
+              className={
+                !docsRoute &&
+                !sharedPath &&
+                !recordingPath &&
+                !adminOpen &&
+                !organizationAdminOpen &&
+                !personalSettingsOpen
+                  ? "selected"
+                  : ""
+              }
+              onClick={() => {
+                closeDocs();
+                setAdminOpen(false);
+                setPersonalSettingsOpen(false);
+                setOrganizationAdminOpen(false);
+              }}
+            >
+              Chats
+            </button>
+            {docsEnabled && (
+              <a
+                className={`sidebar-documents-link${docsRoute ? " selected" : ""}`}
+                href="/documents"
+                aria-current={docsRoute ? "page" : undefined}
+                onClick={(event) => {
+                  event.preventDefault();
+                  setAdminOpen(false);
+                  setOrganizationAdminOpen(false);
+                  setPersonalSettingsOpen(false);
+                  setSharedPath("");
+                  setRecordingPath("");
+                  history.pushState(null, "", "/documents");
+                  setDocsRoute("/documents");
+                }}
+              >
+                <FileText size={16} />
+                <span>Documents</span>
+              </a>
+            )}
+            {docsEnabled && (
+              <a
+                className={`sidebar-documents-link${sharedPath ? " selected" : ""}`}
+                href="/shared-conversations"
+                aria-current={sharedPath ? "page" : undefined}
+                onClick={(event) => {
+                  event.preventDefault();
+                  setAdminOpen(false);
+                  setOrganizationAdminOpen(false);
+                  setPersonalSettingsOpen(false);
+                  setDocsRoute("");
+                  setRecordingPath("");
+                  history.pushState(null, "", "/shared-conversations");
+                  setSharedPath("/shared-conversations");
+                }}
+              >
+                <FileText size={16} />
+                <span>Shared conversations</span>
+              </a>
+            )}
+            <a
+              href="/recordings"
+              className={`sidebar-documents-link${recordingPath ? " selected" : ""}`}
+              aria-current={recordingPath ? "page" : undefined}
+              onClick={(event) => {
+                if (!plainPrimaryClick(event.nativeEvent)) return;
+                event.preventDefault();
+                closeDocs();
+                setAdminOpen(false);
+                setPersonalSettingsOpen(false);
+                setOrganizationAdminOpen(false);
+                history.pushState(null, "", "/recordings");
+                setRecordingPath("/recordings");
+              }}
+            >
+              Recordings
+            </a>
+          </nav>
+        )}
+        {(!docsEnabled ||
+          (!docsRoute &&
+            !sharedPath &&
+            !recordingPath &&
+            !adminOpen &&
+            !organizationAdminOpen &&
+            !personalSettingsOpen)) && (
+          <button
+            className="chat-new-project"
+            onClick={() => {
+              setAdminOpen(false);
+              setPersonalSettingsOpen(false);
+              closeDocs();
+              setOrganizationAdminOpen(false);
+              setCreating(true);
+            }}
+          >
+            <Plus size={16} />
+            <span>New chat</span>
+          </button>
+        )}
         <button
           className="chat-search"
           aria-label="Search chats"
@@ -530,65 +864,79 @@ export function ChatShell({
           <span>Search</span>
           <kbd>{modifierKey}K</kbd>
         </button>
-        <div className="chat-section-label">
-          {archived ? "ARCHIVED" : "CHATS"}
-        </div>
-        <nav aria-label="Chats">
-          {chats.map((c) => (
-            <div className="chat-row" key={c.id}>
-              <button
-                className={c.id === chat?.id && !adminOpen ? "selected" : ""}
-                onClick={() => showChat(c.id)}
-              >
-                <span
-                  className={`status-dot ${c.startup && ["running", "queued"].includes(c.status) ? "starting" : c.status}`}
-                  aria-label={
-                    ["running", "queued"].includes(c.status)
-                      ? chatStatusLabel(c)
-                      : undefined
-                  }
-                  title={
-                    ["running", "queued"].includes(c.status)
-                      ? chatStatusLabel(c)
-                      : undefined
-                  }
-                />
-                <span>{c.title}</span>
-                {c.jailbroken && (
-                  <span
-                    className="jailbroken-badge"
-                    title="This workspace has host access: its agent can run commands on this computer as you"
-                  >
-                    JAILBROKEN
-                  </span>
-                )}
-              </button>
-              <button
-                className="chat-row-action"
-                aria-label={`${c.archived ? "Restore" : "Archive"} chat ${c.title}`}
-                title={c.archived ? "Restore chat" : "Archive chat"}
-                disabled={
-                  ["running", "queued", "stopping"].includes(c.status) ||
-                  (c.archived &&
-                    workspaces.some((w) => w.id === c.sandboxID && w.deleted))
-                }
-                onClick={() =>
-                  void action(`chats/${c.id}/edit`, {
-                    title: c.title,
-                    archived: !c.archived,
-                  }).then(refresh)
-                }
-              >
-                {c.archived ? (
-                  <ArchiveRestore size={14} />
-                ) : (
-                  <Archive size={14} />
-                )}
-              </button>
+        {(!docsEnabled ||
+          (!docsRoute &&
+            !sharedPath &&
+            !recordingPath &&
+            !adminOpen &&
+            !organizationAdminOpen &&
+            !personalSettingsOpen)) && (
+          <>
+            <div className="chat-section-label">
+              {archived ? "ARCHIVED" : "CHATS"}
             </div>
-          ))}
-        </nav>
-        {visibleWorkspaces.length > 0 && (
+            <nav aria-label="Chats">
+              {chats.map((c) => (
+                <div className="chat-row" key={c.id}>
+                  <button
+                    className={
+                      c.id === chat?.id && !adminOpen ? "selected" : ""
+                    }
+                    onClick={() => showChat(c.id)}
+                  >
+                    <span
+                      className={`status-dot ${c.startup && ["running", "queued"].includes(c.status) ? "starting" : c.status}`}
+                      aria-label={
+                        ["running", "queued"].includes(c.status)
+                          ? chatStatusLabel(c)
+                          : undefined
+                      }
+                      title={
+                        ["running", "queued"].includes(c.status)
+                          ? chatStatusLabel(c)
+                          : undefined
+                      }
+                    />
+                    <span>{c.title}</span>
+                    {c.jailbroken && (
+                      <span
+                        className="jailbroken-badge"
+                        title="This workspace has host access: its agent can run commands on this computer as you"
+                      >
+                        JAILBROKEN
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    className="chat-row-action"
+                    aria-label={`${c.archived ? "Restore" : "Archive"} chat ${c.title}`}
+                    title={c.archived ? "Restore chat" : "Archive chat"}
+                    disabled={
+                      ["running", "queued", "stopping"].includes(c.status) ||
+                      (c.archived &&
+                        workspaces.some(
+                          (w) => w.id === c.sandboxID && w.deleted,
+                        ))
+                    }
+                    onClick={() =>
+                      void action(`chats/${c.id}/edit`, {
+                        title: c.title,
+                        archived: !c.archived,
+                      }).then(refresh)
+                    }
+                  >
+                    {c.archived ? (
+                      <ArchiveRestore size={14} />
+                    ) : (
+                      <Archive size={14} />
+                    )}
+                  </button>
+                </div>
+              ))}
+            </nav>
+          </>
+        )}
+        {!docsEnabled && visibleWorkspaces.length > 0 && (
           <>
             <div className="chat-section-label">
               {archived ? "ARCHIVED WORKSPACES" : "WORKSPACES"}
@@ -630,40 +978,77 @@ export function ChatShell({
             </nav>
           </>
         )}
-        <div className="chat-sidebar-footer">
-          {admin && (
+        <div className="chat-sidebar-footer" ref={accountMenu}>
+          {docsEnabled && (
             <button
-              className={adminOpen ? "selected" : ""}
-              aria-pressed={adminOpen}
-              onClick={() => setAdminOpen(!adminOpen)}
+              className="cloud-account-toggle"
+              aria-label="Account menu"
+              aria-expanded={accountOpen}
+              aria-controls="cloud-account-menu"
+              onClick={() => setAccountOpen(!accountOpen)}
             >
-              <ShieldCheck size={16} />
-              <span>Admin console</span>
+              <span className="cloud-initials">
+                {(accountName || "Account")
+                  .split(/\s+/)
+                  .map((part) => part[0])
+                  .slice(0, 2)
+                  .join("")}
+              </span>
+              <span>{accountName || "Account"}</span>
+              <span aria-hidden="true">⌄</span>
             </button>
           )}
-          <button
-            title="Your standing instructions: the agent gets them in every chat you take part in"
-            onClick={() => setInstructionsOpen(true)}
-          >
-            <NotebookPen size={16} />
-            <span>Instructions</span>
-          </button>
-          <button onClick={() => setArchived(!archived)}>
-            <Archive size={16} />
-            <span>{archived ? "Active chats" : "Archived chats"}</span>
-          </button>
-          <div className={`chat-connection${live ? " live" : ""}`}>
-            <span className={`status-dot${live ? " running" : ""}`} />
-            <span>{live ? "Connected" : "Reconnecting"}</span>
-          </div>
-          {account}
+          {docsEnabled ? (
+            <div
+              id="cloud-account-menu"
+              className="cloud-account-menu"
+              hidden={!accountOpen}
+              onClick={(event) => {
+                if ((event.target as Element).closest("button"))
+                  setAccountOpen(false);
+              }}
+            >
+              {accountActions}
+            </div>
+          ) : (
+            accountActions
+          )}
         </div>
       </aside>
       {instructionsOpen && (
         <InstructionsDialog onClose={() => setInstructionsOpen(false)} />
       )}
       <main className="chat-main">
-        {adminOpen && admin ? (
+        {(referenceError ||
+          (docsEnabled &&
+          live &&
+          selected &&
+          !chat &&
+          !docsRoute &&
+          !sharedPath &&
+          !recordingPath
+            ? "This chat is unavailable in this organization."
+            : "")) && (
+          <p className="reference-error" role="alert">
+            {referenceError || "This chat is unavailable in this organization."}{" "}
+            <button onClick={() => setReferenceError("")}>Dismiss</button>
+          </p>
+        )}
+        {recordingPath ? (
+          <Recordings path={recordingPath} onNavigate={setRecordingPath} />
+        ) : sharedPath ? (
+          <SharedConversations path={sharedPath} onNavigate={setSharedPath} />
+        ) : docsRoute ? (
+          <DocumentsView
+            path={docsRoute}
+            onNavigate={setDocsRoute}
+            onReference={navigateReference}
+          />
+        ) : personalSettingsOpen && personalSettings ? (
+          personalSettings
+        ) : organizationAdminOpen && organizationAdmin ? (
+          organizationAdmin
+        ) : adminOpen && admin ? (
           <AdminConsole signIn={signIn} />
         ) : chat ? (
           <>

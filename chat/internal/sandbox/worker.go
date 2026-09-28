@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"warden/chat/internal/durablestate"
 	"warden/chat/internal/hoststats"
 )
 
@@ -48,6 +49,8 @@ type Worker struct {
 	// are the pinned SBX executable and guest template; only the SBX runtime
 	// driver reads them.
 	Root, Executable, Template string
+	// DatabaseURL stores cloud runner inventory in PostgreSQL when set.
+	DatabaseURL string
 	// Instance is the Warden instance these sandboxes belong to
 	// (sandboxes.namePrefix): every runtime name carries it, so instances
 	// sharing one SBX namespace keep out of each other's inventory
@@ -214,6 +217,13 @@ func command(ctx context.Context, name string, args ...string) *exec.Cmd {
 	return cmd
 }
 func atomicJSON(path string, v any) error {
+	if durablestate.IsCloud(path) {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		return durablestate.WriteFile(path, b, 0600)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -262,3 +272,12 @@ try:
  finally:os.close(image)
 finally:os.close(fd)
 `
+
+// scratchRoot holds disposable transfers, never authoritative state. The cloud
+// chart mounts /tmp as memory; local installations retain their existing path.
+func (w *Worker) scratchRoot() string {
+	if w.DatabaseURL != "" {
+		return filepath.Join(os.TempDir(), "warden-runner")
+	}
+	return w.Root
+}

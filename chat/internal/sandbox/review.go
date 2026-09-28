@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+	"warden/chat/internal/durablestate"
 )
 
 const maxReviewBundle = 64 << 20
@@ -44,7 +45,7 @@ func (w *Worker) readReviewLocked(s *managedSandbox, r Request, id string) (*Rep
 	if !validIdentity(id) {
 		return nil, errors.New("invalid review identity")
 	}
-	raw, err := os.ReadFile(filepath.Join(w.reviewRoot(r.ChatID), id, "review.json"))
+	raw, err := durablestate.ReadFile(filepath.Join(w.reviewRoot(r.ChatID), id, "review.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +56,7 @@ func (w *Worker) readReviewLocked(s *managedSandbox, r Request, id string) (*Rep
 	return &review, nil
 }
 func (w *Worker) latestReviewLocked(s *managedSandbox, r Request) (Response, error) {
-	raw, err := os.ReadFile(filepath.Join(w.reviewRoot(r.ChatID), "latest.json"))
+	raw, err := durablestate.ReadFile(filepath.Join(w.reviewRoot(r.ChatID), "latest.json"))
 	if os.IsNotExist(err) {
 		return Response{}, nil
 	}
@@ -139,6 +140,9 @@ func (w *Worker) captureReviewLocked(ctx context.Context, s *managedSandbox, r R
 			return RepositoryReview{}, errors.New("invalid review transfer or bundle exceeds 64 MiB")
 		}
 		root := w.reviewRoot(r.ChatID)
+		if w.DatabaseURL != "" {
+			root = w.scratchRoot()
+		}
 		if err = os.MkdirAll(root, 0700); err != nil {
 			return RepositoryReview{}, err
 		}
@@ -192,7 +196,23 @@ func (w *Worker) captureReviewLocked(ctx context.Context, s *managedSandbox, r R
 	if err = atomicJSON(filepath.Join(stage, "review.json"), review); err != nil {
 		return Response{}, err
 	}
-	if err = os.Rename(stage, filepath.Join(w.reviewRoot(r.ChatID), r.CallID)); err != nil {
+	if w.DatabaseURL != "" {
+		metadata, readErr := os.ReadFile(filepath.Join(stage, "review.json"))
+		if readErr != nil {
+			return Response{}, readErr
+		}
+		bundle, readErr := os.ReadFile(filepath.Join(stage, "snapshot.bundle"))
+		if readErr != nil {
+			return Response{}, readErr
+		}
+		err = durablestate.WriteBatch(map[string][]byte{
+			filepath.Join(w.reviewRoot(r.ChatID), r.CallID, "review.json"):     metadata,
+			filepath.Join(w.reviewRoot(r.ChatID), r.CallID, "snapshot.bundle"): bundle,
+		})
+	} else {
+		err = os.Rename(stage, filepath.Join(w.reviewRoot(r.ChatID), r.CallID))
+	}
+	if err != nil {
 		return Response{}, err
 	}
 	if err = w.advanceLatestReviewLocked(s, r, &review); err != nil {
@@ -209,7 +229,7 @@ func (w *Worker) captureReviewLocked(ctx context.Context, s *managedSandbox, r R
 // preparations discard their import bundle, so recover the exact pinned commit
 // on the first capture. Later captures need transfer only changed Git objects.
 func (w *Worker) reviewBaseBundle(ctx context.Context, s managedSandbox) (string, error) {
-	root := filepath.Join(w.Root, "repository-bundles", s.ID)
+	root := filepath.Join(w.scratchRoot(), "repository-bundles", s.ID)
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return "", err
 	}

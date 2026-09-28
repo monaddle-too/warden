@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"warden/chat/internal/durablestate"
 )
 
 // UUID4 returns a random RFC 4122 version 4 identifier.
@@ -38,12 +39,14 @@ func sha256Hex(data []byte) string {
 }
 
 // Audit appends hash-chained, redacted JSON events. Emission is synchronous
-// and durable: no permit is returned before the record is on disk.
+// and durable: no permit is returned before the record is committed to durable storage.
 type Audit struct {
 	Path     string
 	redactor *Redactor
 	mu       sync.Mutex
 	file     *os.File
+	cloud    bool
+	closed   bool
 	instance string
 	seq      int64
 	previous string
@@ -52,6 +55,9 @@ type Audit struct {
 }
 
 func NewAudit(path string, redactor *Redactor) (*Audit, error) {
+	if durablestate.IsCloud(path) {
+		return &Audit{Path: path, redactor: redactor, cloud: true, instance: UUID4(), previous: strings.Repeat("0", 64)}, nil
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
@@ -65,6 +71,7 @@ func NewAudit(path string, redactor *Redactor) (*Audit, error) {
 func (a *Audit) Close() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.closed = true
 	if a.file == nil {
 		return nil
 	}
@@ -85,7 +92,7 @@ func (a *Audit) EmitSeverity(eventType, severity string, fields map[string]any) 
 	if a.failWith != nil {
 		return nil, a.failWith
 	}
-	if a.file == nil {
+	if a.closed || (!a.cloud && a.file == nil) {
 		return nil, errors.New("audit closed")
 	}
 	event := map[string]any{
@@ -111,11 +118,17 @@ func (a *Audit) EmitSeverity(eventType, severity string, fields map[string]any) 
 	if err != nil {
 		return nil, err
 	}
-	if _, err = a.file.WriteString(line + "\n"); err != nil {
-		return nil, err
-	}
-	if err = a.file.Sync(); err != nil {
-		return nil, err
+	if a.cloud {
+		if err = durablestate.AppendAudit(a.Path, line); err != nil {
+			return nil, err
+		}
+	} else {
+		if _, err = a.file.WriteString(line + "\n"); err != nil {
+			return nil, err
+		}
+		if err = a.file.Sync(); err != nil {
+			return nil, err
+		}
 	}
 	a.seq++
 	a.previous = event["event_hash"].(string)

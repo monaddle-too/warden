@@ -13,6 +13,7 @@ import (
 	"time"
 	"warden/chat/internal/bugreport"
 	"warden/chat/internal/config"
+	"warden/chat/internal/durablestate"
 	"warden/chat/internal/edge"
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/services"
@@ -36,6 +37,13 @@ func run(args []string) error {
 	c, err := loadEdgeConfig(*file)
 	if err != nil {
 		return err
+	}
+	if c.Mode == edge.ModeEmail && c.Email != nil && c.Email.LegacyStateDir != "" {
+		state, err := durablestate.Open(c.Email.LegacyStateDir, c.Email.DatabaseURL, "edge")
+		if err != nil {
+			return err
+		}
+		defer state.Close()
 	}
 	handler, err := edge.New(c)
 	if err != nil {

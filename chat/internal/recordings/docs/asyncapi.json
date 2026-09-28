@@ -1,0 +1,294 @@
+{
+  "asyncapi": "3.0.0",
+  "info": {
+    "title": "Warden PCM streaming",
+    "version": "1.0.0"
+  },
+  "servers": {
+    "cloud": {
+      "host": "{host}",
+      "protocol": "wss",
+      "variables": {
+        "host": {
+          "default": "your-warden-host.example"
+        }
+      },
+      "security": [
+        {
+          "$ref": "#/components/securitySchemes/deviceKey"
+        }
+      ]
+    }
+  },
+  "channels": {
+    "recording": {
+      "address": "/v1/recordings/{id}/stream",
+      "parameters": {
+        "id": {
+          "description": "Recording ID returned by HTTP create"
+        }
+      },
+      "messages": {
+        "audio": {
+          "$ref": "#/components/messages/audio"
+        },
+        "finish": {
+          "$ref": "#/components/messages/finish"
+        },
+        "ack": {
+          "$ref": "#/components/messages/ack"
+        },
+        "status": {
+          "$ref": "#/components/messages/status"
+        },
+        "error": {
+          "$ref": "#/components/messages/error"
+        }
+      }
+    }
+  },
+  "operations": {
+    "receive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/recording"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/recording/messages/audio"
+        },
+        {
+          "$ref": "#/channels/recording/messages/finish"
+        }
+      ]
+    },
+    "send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/recording"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/recording/messages/ack"
+        },
+        {
+          "$ref": "#/channels/recording/messages/status"
+        },
+        {
+          "$ref": "#/channels/recording/messages/error"
+        }
+      ]
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "deviceKey": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "messages": {
+      "audio": {
+        "name": "AudioChunk",
+        "contentType": "application/octet-stream",
+        "description": "Binary uint64 big-endian sequence, followed by 2\u201332000 bytes PCM16 little-endian mono 16000 Hz; 3200 recommended. Retain until ack. Resume from status recording.nextSeq and recording.bytes.",
+        "payload": {
+          "type": "string",
+          "format": "binary"
+        }
+      },
+      "finish": {
+        "name": "Finish",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "finish"
+            },
+            "nextSeq": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "nextSeq"
+          ],
+          "additionalProperties": false
+        },
+        "contentType": "application/json"
+      },
+      "ack": {
+        "name": "Acknowledgement",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ack"
+            },
+            "nextSeq": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "nextSeq"
+          ],
+          "additionalProperties": false
+        },
+        "contentType": "application/json"
+      },
+      "status": {
+        "name": "Status",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "status"
+            },
+            "recording": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "deviceId": {
+                  "type": "string"
+                },
+                "deviceName": {
+                  "type": "string"
+                },
+                "language": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string"
+                },
+                "provisional": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "live",
+                    "uploading",
+                    "interrupted",
+                    "finished"
+                  ]
+                },
+                "transcription": {
+                  "enum": [
+                    "waiting",
+                    "transcribing",
+                    "complete",
+                    "failed"
+                  ]
+                },
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "nextSeq": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "archivedBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "segments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "offsetBytes": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "size": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "enum": [
+                          "waiting",
+                          "complete",
+                          "failed"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "offsetBytes",
+                      "size",
+                      "text",
+                      "state"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "title",
+                "status",
+                "transcription",
+                "bytes",
+                "nextSeq",
+                "archivedBytes"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "type",
+            "recording"
+          ],
+          "additionalProperties": false
+        },
+        "contentType": "application/json"
+      },
+      "error": {
+        "name": "Error",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "error"
+            },
+            "status": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "status",
+            "error"
+          ],
+          "additionalProperties": false
+        },
+        "contentType": "application/json"
+      }
+    }
+  }
+}

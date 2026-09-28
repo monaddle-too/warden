@@ -36,9 +36,11 @@ var runnerSchema = []string{
 
 // runnerStore is the open database and the shadow of each table.
 type runnerStore struct {
-	mu     sync.Mutex
-	db     *sql.DB
-	shadow [managedTables]map[string]string
+	mu          sync.Mutex
+	db          *sql.DB
+	cloud       bool
+	cloudShadow string
+	shadow      [managedTables]map[string]string
 }
 
 const (
@@ -80,6 +82,10 @@ func (w *Worker) tables() [managedTables]rowstore.Table {
 // goroutine; the worker's other locks are not needed.
 func (w *Worker) openStore() (*runnerStore, error) {
 	w.storeOnce.Do(func() {
+		if w.DatabaseURL != "" {
+			w.store, w.storeErr = w.openCloudStore()
+			return
+		}
 		if err := os.MkdirAll(w.Root, 0o700); err != nil {
 			w.storeErr = err
 			return
@@ -113,6 +119,9 @@ func (w *Worker) loadManagedLocked() error {
 	st, err := w.openStore()
 	if err != nil {
 		return err
+	}
+	if st.cloud {
+		return w.loadManagedCloud(st)
 	}
 	legacy := filepath.Join(w.Root, "managed-v2.json")
 	var n int
@@ -198,6 +207,9 @@ func (w *Worker) writeManagedLocked() error {
 	if err != nil {
 		return err
 	}
+	if st.cloud {
+		return w.writeManagedCloud(st)
+	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	current := [managedTables]map[string]string{
@@ -246,6 +258,10 @@ func (w *Worker) recordCancelledRun(hash string) error {
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if st.cloud {
+		_, err = st.db.Exec(`INSERT INTO warden_cloud.runner_cancelled_runs(instance,hash) VALUES($1,$2) ON CONFLICT DO NOTHING`, w.cloudStoreID(), hash)
+		return err
+	}
 	_, err = st.db.Exec(`INSERT OR IGNORE INTO cancelled_runs (hash) VALUES (?)`, hash)
 	return err
 }
@@ -259,6 +275,12 @@ func (w *Worker) cancelledRunRecorded(hash string) (bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	var n int
+	if st.cloud {
+		if err = st.db.QueryRow(`SELECT count(*) FROM warden_cloud.runner_cancelled_runs WHERE instance=$1 AND hash=$2`, w.cloudStoreID(), hash).Scan(&n); err != nil {
+			return false, err
+		}
+		return n > 0, nil
+	}
 	if err = st.db.QueryRow(`SELECT count(*) FROM cancelled_runs WHERE hash = ?`, hash).Scan(&n); err != nil {
 		return false, err
 	}

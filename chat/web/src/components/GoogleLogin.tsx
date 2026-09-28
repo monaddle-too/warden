@@ -5,9 +5,16 @@ import type { InstanceInfo } from "../types";
 export type BrowserSession = {
   user: { sub: string; email: string; role: string; name?: string };
   csrf: string;
+  mode?: "email" | "google";
+  fullAdmin?: boolean;
+  offerPasskey?: boolean;
+  organizationId?: string;
+  organizationRole?: "admin" | "user";
+  organizations?: { id: string; name: string }[];
 };
 export type AuthState = Partial<BrowserSession> & {
   enabled: boolean;
+  mode?: "email" | "google";
   client_id?: string;
   nonce?: string;
   /* Which Warden is asking (instance.ts): a loopback owner install names

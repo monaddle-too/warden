@@ -27,12 +27,13 @@ type Approval struct {
 	State  string          `json:"state"`
 }
 type Chat struct {
-	Provider   string `json:"provider"`
-	Model      string `json:"model"`
-	ID         string `json:"id"`
-	Title      string `json:"title"`
-	SandboxID  string `json:"sandboxID"`
-	Repository string `json:"repository"`
+	OrganizationID string `json:"organizationID,omitempty"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	ID             string `json:"id"`
+	Title          string `json:"title"`
+	SandboxID      string `json:"sandboxID"`
+	Repository     string `json:"repository"`
 	// Resources is the size the workspace was created with, chosen by
 	// whoever started its first chat; nil is the runner's default. The
 	// runner's record is the current size (a grant or the owner may have
@@ -222,12 +223,15 @@ type State struct {
 // update / updateChat (durable before it returns) or stream / streamChat
 // (written within saveDelay together with what streams meanwhile).
 type Store struct {
-	mu     sync.Mutex
-	root   string
-	db     *sql.DB
-	state  State
-	failed error
-	unlock func()
+	mu            sync.Mutex
+	root          string
+	db            *sql.DB
+	cloud         bool
+	cloudShadow   string
+	cloudInstance string
+	state         State
+	failed        error
+	unlock        func()
 	// shadow is what the database holds, as the encodings the rows were
 	// written from, so a mutation writes the rows whose encoding changed.
 	shadow shadow
@@ -311,6 +315,19 @@ func Open(root string) (*Store, error) {
 	} else if err = s.load(); err != nil {
 		return fail(err)
 	}
+	s.reconcileOnOpen()
+	if _, err = s.writeLocked(scopeAll); err != nil {
+		return fail(err)
+	}
+	if imported {
+		if err = os.Rename(legacy, legacy+".migrated"); err != nil {
+			return fail(err)
+		}
+	}
+	return s, nil
+}
+
+func (s *Store) reconcileOnOpen() {
 	s.state.Version = 1
 	// A restart never replays a message whose delivery might have reached the agent.
 	for _, c := range s.state.Chats {
@@ -338,15 +355,6 @@ func Open(root string) (*Store, error) {
 			}
 		}
 	}
-	if _, err = s.writeLocked(scopeAll); err != nil {
-		return fail(err)
-	}
-	if imported {
-		if err = os.Rename(legacy, legacy+".migrated"); err != nil {
-			return fail(err)
-		}
-	}
-	return s, nil
 }
 
 // Close writes what stream left in memory, then releases the database and
@@ -461,7 +469,13 @@ func (s *Store) writeLocked(scope string) (bool, error) {
 			scopes[id] = true
 		}
 	}
-	changed, err := s.persist(scopes)
+	var changed bool
+	var err error
+	if s.cloud {
+		changed, err = s.persistCloud(scopes)
+	} else {
+		changed, err = s.persist(scopes)
+	}
 	if err != nil {
 		log.Printf("chat store: write failed; the store is read-only until a restart: %v", err)
 		s.failed = err

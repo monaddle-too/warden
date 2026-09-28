@@ -286,6 +286,118 @@ time {
 .signin .google-button[hidden] {
   display: none;
 }
+.email-login,
+.organization-admin form {
+  display: grid;
+  gap: 10px;
+  text-align: left;
+  margin: 20px 0;
+}
+.email-login label,
+.organization-admin label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.email-login input,
+.organization-admin input,
+.organization-admin select,
+.signin > select,
+.warden-account select {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface);
+}
+.organization-admin {
+  padding: 28px;
+  width: 100%;
+  overflow: auto;
+}
+.organization-admin > header {
+  margin-bottom: 24px;
+}
+.organization-admin p {
+  color: var(--text-2);
+}
+.organization-admin-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(300px, 2fr);
+  gap: 24px;
+  max-width: 1000px;
+  align-items: start;
+}
+.organization-card {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 20px;
+  min-width: 0;
+}
+.organization-admin h2 {
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+.organization-admin h3 {
+  font-size: 16px;
+}
+.organization-admin ul {
+  list-style: none;
+  padding: 0;
+}
+.organization-list button {
+  width: 100%;
+  text-align: left;
+  height: auto;
+  white-space: normal;
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+.organization-list button[aria-pressed="true"] {
+  background: var(--surface-2);
+  outline: 1px solid var(--primary);
+}
+.organization-list li {
+  margin: 6px 0;
+}
+.organization-list small {
+  color: var(--text-2);
+  font-weight: normal;
+}
+.organization-members li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.organization-members li > div {
+  display: grid;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.organization-members span,
+.organization-members small {
+  color: var(--text-2);
+}
+.organization-status {
+  padding: 12px 16px;
+  border: 1px solid var(--success);
+  border-radius: 8px;
+  max-width: 1000px;
+}
+@media (max-width: 850px) {
+  .organization-admin-grid {
+    grid-template-columns: 1fr;
+  }
+  .organization-admin {
+    padding: 16px;
+  }
+}
 
 /* Dialogs: the "New chat" modal and the native <dialog> elements. */
 .modal-backdrop {
@@ -308,6 +420,8 @@ dialog {
 }
 .modal {
   width: min(480px, 100%);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
 }
 .modal h2,
 dialog h2 {
@@ -745,4 +859,90 @@ dialog::backdrop {
   right: 12px;
   background: var(--surface);
   color: var(--text);
+}
+
+/* Personal profile and device credentials. */
+.personal-settings {
+  padding: 28px;
+  overflow: auto;
+  width: 100%;
+}
+.personal-settings > header,
+.settings-card {
+  max-width: 720px;
+  margin-bottom: 24px;
+}
+.personal-settings p {
+  color: var(--text-2);
+}
+.settings-card {
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.settings-card h2 {
+  font-size: 20px;
+}
+.settings-card form {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+}
+.settings-card label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.settings-card input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.settings-card button {
+  justify-self: start;
+}
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.settings-passkeys {
+  list-style: none;
+  padding: 0;
+}
+.settings-passkeys li {
+  border-bottom: 1px solid var(--line);
+  padding: 0 0 16px;
+}
+.settings-hint {
+  font-size: 12px;
+}
+.settings-status {
+  padding: 12px;
+  border: 1px solid var(--success);
+  border-radius: 8px;
+  max-width: 720px;
+}
+.passkey-invitation {
+  max-width: 480px;
+  margin: auto;
+}
+.passkey-invitation h1 {
+  margin-bottom: 20px;
+}
+.passkey-invitation .settings-actions {
+  justify-content: center;
+  margin-bottom: 20px;
+}
+@media (max-width: 650px) {
+  .personal-settings {
+    padding: 16px;
+  }
+  .settings-card {
+    padding: 16px;
+  }
 }

@@ -1,3 +1,9 @@
+import {
+  referenceTrigger,
+  referenceMarkdown,
+  referencesEnabled,
+} from "../references";
+import { useReferences } from "../useReferences";
 // Panta's transcript/composer layout adapted to Warden's standalone API.
 import {
   Fragment,
@@ -526,10 +532,10 @@ export function Conversation({
     return () => window.removeEventListener("keydown", onKey);
   }, [chat.id]);
   // How long a side question holds the composer before it is freed (a
-// refusal arrives well within it).
-const ASIDE_RELEASE_MS = 1500;
+  // refusal arrives well within it).
+  const ASIDE_RELEASE_MS = 1500;
 
-// When Escape was last pressed in the composer, for Esc-Esc (rewind.ts).
+  // When Escape was last pressed in the composer, for Esc-Esc (rewind.ts).
   const lastEscape = useRef(0);
   // The composer's current contents, for the transcript's edit action,
   // which is a stable callback and cannot close over state.
@@ -622,17 +628,14 @@ const ASIDE_RELEASE_MS = 1500;
     setError("");
     setQueuedEdit({ id: entry.id, text: entry.text });
   }, []);
-  const overtaken = useCallback(
-    (draft: string) => {
-      setQueuedEdit(null);
-      if (draft.trim())
-        setText((text) => (text.trim() ? text + "\n" : "") + draft);
-      setError(
-        "The agent got the message before your edit was saved; the edit is in the composer to send as a new message",
-      );
-    },
-    [],
-  );
+  const overtaken = useCallback((draft: string) => {
+    setQueuedEdit(null);
+    if (draft.trim())
+      setText((text) => (text.trim() ? text + "\n" : "") + draft);
+    setError(
+      "The agent got the message before your edit was saved; the edit is in the composer to send as a new message",
+    );
+  }, []);
   const saveQueued = useCallback(
     async (entry: Entry, text: string, attachments: string[]) => {
       try {
@@ -718,7 +721,17 @@ const ASIDE_RELEASE_MS = 1500;
   const [focused, setFocused] = useState(false);
   const [dismissed, setDismissed] = useState("");
   const [active, setActive] = useState(0);
-  const trigger = useMemo(() => triggerAt(text, caret), [text, caret]);
+  const reference = useMemo(
+    () =>
+      referencesEnabled() && !text.startsWith("/")
+        ? referenceTrigger(text, caret)
+        : undefined,
+    [text, caret],
+  );
+  const trigger = useMemo(
+    () => reference || triggerAt(text, caret),
+    [reference, text, caret],
+  );
   const triggerKey = trigger ? `${trigger.kind}:${trigger.start}` : "";
   const open =
     !!trigger && focused && !chat.archived && dismissed !== triggerKey;
@@ -749,7 +762,11 @@ const ASIDE_RELEASE_MS = 1500;
         : [],
     [open, trigger, models, agentCommands],
   );
-  const mentionOpen = open && trigger.kind === "path";
+  const referenceOpen = open && !!reference;
+  const referenceResults = useReferences(
+    referenceOpen ? reference.query : undefined,
+  );
+  const mentionOpen = open && !referenceOpen && trigger.kind === "path";
   // Files from this computer (composer.ts, chats/localfiles.go): a local
   // mention's prefix and an /attach word complete against this machine,
   // on a local install; elsewhere the list says why they cannot.
@@ -757,9 +774,7 @@ const ASIDE_RELEASE_MS = 1500;
   const localMention = mentionOpen && isLocalPath(trigger.query);
   const attachArg = useMemo(
     () =>
-      open && trigger.kind === "command"
-        ? attachQuery(text, caret)
-        : undefined,
+      open && trigger.kind === "command" ? attachQuery(text, caret) : undefined,
     [open, trigger, text, caret],
   );
   const localQuery = localMention
@@ -830,6 +845,16 @@ const ASIDE_RELEASE_MS = 1500;
     note?: string;
   } => {
     if (!open) return { items: [] };
+    if (referenceOpen)
+      return {
+        items: referenceResults.items.map((item) => ({
+          id: "reference:" + item.kind + ":" + item.id,
+          label: item.title,
+          hint: item.subtitle,
+          icon: <FileText size={15} />,
+        })),
+        note: referenceResults.note,
+      };
     if (trigger.kind === "command") {
       // "/attach …": the paths on this computer, as typed at the caret.
       if (attachArg) return localRows("attach");
@@ -868,45 +893,45 @@ const ASIDE_RELEASE_MS = 1500;
                   icon: <ShieldCheck size={15} />,
                   disabled: !modes || chat.archived,
                 }
-            : item.kind === "style"
-              ? {
-                  id: "style:" + (item.style.value || "default"),
-                  label: item.style.label,
-                  hint: item.style.hint,
-                  icon: <SlidersHorizontal size={15} />,
-                  disabled: !styles || chat.archived,
-                }
-              : item.kind === "thinking"
+              : item.kind === "style"
                 ? {
-                    id: "thinking:" + item.thinking.value,
-                    label: item.thinking.label,
-                    hint: item.thinking.hint,
-                    icon: <Brain size={15} />,
-                    disabled: !settings || chat.archived,
+                    id: "style:" + (item.style.value || "default"),
+                    label: item.style.label,
+                    hint: item.style.hint,
+                    icon: <SlidersHorizontal size={15} />,
+                    disabled: !styles || chat.archived,
                   }
-                : item.kind === "effort"
+                : item.kind === "thinking"
                   ? {
-                      id: "effort:" + item.effort.value,
-                      label: item.effort.label,
-                      hint: item.effort.hint,
-                      icon: <Gauge size={15} />,
+                      id: "thinking:" + item.thinking.value,
+                      label: item.thinking.label,
+                      hint: item.thinking.hint,
+                      icon: <Brain size={15} />,
                       disabled: !settings || chat.archived,
                     }
-                  : item.kind === "model"
+                  : item.kind === "effort"
                     ? {
-                        id: "model:" + item.model.value,
-                        label: item.model.label,
-                        hint: item.model.hint || item.model.value,
-                        icon: <Cpu size={15} />,
-                        disabled: modelLocked || item.model.disabled,
+                        id: "effort:" + item.effort.value,
+                        label: item.effort.label,
+                        hint: item.effort.hint,
+                        icon: <Gauge size={15} />,
+                        disabled: !settings || chat.archived,
                       }
-                    : {
-                        id: "agent:" + item.command.name,
-                        label: "/" + item.command.name,
-                        hint: agentHint(item.command),
-                        icon: <Slash size={15} />,
-                        group: agentGroup,
-                      },
+                    : item.kind === "model"
+                      ? {
+                          id: "model:" + item.model.value,
+                          label: item.model.label,
+                          hint: item.model.hint || item.model.value,
+                          icon: <Cpu size={15} />,
+                          disabled: modelLocked || item.model.disabled,
+                        }
+                      : {
+                          id: "agent:" + item.command.name,
+                          label: "/" + item.command.name,
+                          hint: agentHint(item.command),
+                          icon: <Slash size={15} />,
+                          group: agentGroup,
+                        },
       );
       if (items.length) return { items };
       if (/^bug(\s|$)/i.test(trigger.query.trimStart()))
@@ -998,6 +1023,8 @@ const ASIDE_RELEASE_MS = 1500;
     };
   }, [
     open,
+    referenceOpen,
+    referenceResults,
     trigger,
     commands,
     agentCommands,
@@ -1264,6 +1291,14 @@ const ASIDE_RELEASE_MS = 1500;
   }
   function pick(item: Suggestion) {
     if (!trigger || item.disabled) return;
+    if (item.id.startsWith("reference:")) {
+      const target = referenceResults.items.find(
+        (r) => "reference:" + r.kind + ":" + r.id === item.id,
+      );
+      if (target)
+        place(replaceTrigger(text, trigger, referenceMarkdown(target)));
+      return;
+    }
     if (trigger.kind === "path") {
       const row = resourceRows.find(
         (r) => "resource:" + r.kind + ":" + r.name === item.id,
@@ -1287,7 +1322,8 @@ const ASIDE_RELEASE_MS = 1500;
       // A path on an "/attach" line: the word at the caret becomes it.
       const insert = attachInsert(item.id.slice(6));
       place({
-        text: text.slice(0, attachArg.start) + insert + text.slice(attachArg.end),
+        text:
+          text.slice(0, attachArg.start) + insert + text.slice(attachArg.end),
         caret: attachArg.start + insert.length,
       });
       return;
@@ -1527,12 +1563,7 @@ const ASIDE_RELEASE_MS = 1500;
         return;
       }
     }
-    const message = messageAttempt(
-      attempted.current,
-      body,
-      newID,
-      attachments,
-    );
+    const message = messageAttempt(attempted.current, body, newID, attachments);
     attempted.current = message;
     try {
       localStorage.setItem(key + ":attempt", JSON.stringify(message));
@@ -1904,6 +1935,7 @@ const ASIDE_RELEASE_MS = 1500;
             disabled={busy || chat.archived}
             rows={3}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return;
               // Every key here is a row of shortcuts.ts (the `?` overlay
               // lists the same table).
               if (open) {
@@ -2139,28 +2171,28 @@ const ASIDE_RELEASE_MS = 1500;
             )}
           </span>
           <span className="composer-hint-text">
-          {!live
-            ? "Reconnecting · your draft is preserved"
-            : prefix?.kind === "shell"
-              ? heldHint(chat, "shell") ||
-                "Runs as a shell command in the workspace, by you — the agent sees it only if you send the result to it"
-              : prefix?.kind === "memory"
-                ? heldHint(chat, "memory") ||
-                  (chat.provider === "codex"
-                    ? "Appends a note to CLAUDE.md in the workspace (Codex reads AGENTS.md, not CLAUDE.md)"
-                    : "Appends a note to CLAUDE.md in the workspace — the agent reads it only once the workspace's settings are loaded")
-                : question !== undefined
-                  ? asides
-                    ? "Asks a copy of the agent's session, from this chat's context — the agent never sees the question or the answer"
-                    : "Side questions are a Claude chat's"
-                  : editing
-                    ? "Sending rewinds the conversation to before the message and sends this in its place · Esc cancels"
-                    : queueHint(chat, me) ||
-                      (chat.status === "running"
-                        ? chat.provider === "claude"
-                          ? "Queued for the next turn — edit or withdraw it from the transcript until then"
-                          : "Send to steer the current run"
-                        : "")}
+            {!live
+              ? "Reconnecting · your draft is preserved"
+              : prefix?.kind === "shell"
+                ? heldHint(chat, "shell") ||
+                  "Runs as a shell command in the workspace, by you — the agent sees it only if you send the result to it"
+                : prefix?.kind === "memory"
+                  ? heldHint(chat, "memory") ||
+                    (chat.provider === "codex"
+                      ? "Appends a note to CLAUDE.md in the workspace (Codex reads AGENTS.md, not CLAUDE.md)"
+                      : "Appends a note to CLAUDE.md in the workspace — the agent reads it only once the workspace's settings are loaded")
+                  : question !== undefined
+                    ? asides
+                      ? "Asks a copy of the agent's session, from this chat's context — the agent never sees the question or the answer"
+                      : "Side questions are a Claude chat's"
+                    : editing
+                      ? "Sending rewinds the conversation to before the message and sends this in its place · Esc cancels"
+                      : queueHint(chat, me) ||
+                        (chat.status === "running"
+                          ? chat.provider === "claude"
+                            ? "Queued for the next turn — edit or withdraw it from the transcript until then"
+                            : "Send to steer the current run"
+                          : "")}
           </span>
           <span className="composer-meters">
             {chat.conversation.context && (

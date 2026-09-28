@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"warden/chat/internal/durablestate"
 )
 
 // GatewayCA signs per-host leaf certificates for inspected TLS. It reuses a
@@ -79,21 +80,25 @@ func PrepareGatewayCA(state string, maxAge time.Duration, now time.Time) (*Gatew
 func RotateGatewayCA(state string, now time.Time) (*GatewayCA, error) {
 	dir := filepath.Join(state, HostCADir)
 	next := dir + ".next"
-	if err := os.RemoveAll(next); err != nil {
+	if err := durablestate.RemoveAll(next); err != nil {
 		return nil, err
 	}
 	ca, err := LoadOrCreateGatewayCA(next)
 	if err != nil {
 		return nil, err
 	}
-	if _, err = os.Stat(dir); err == nil {
-		if err = os.Rename(dir, dir+".retired-"+now.UTC().Format("20060102T150405Z")); err != nil {
+	if durablestate.IsCloud(dir) {
+		err = durablestate.Rotate(dir, next, dir+".retired-"+now.UTC().Format("20060102T150405.000000000Z"))
+		return ca, err
+	}
+	if _, err = durablestate.Stat(dir); err == nil {
+		if err = durablestate.Rename(dir, dir+".retired-"+now.UTC().Format("20060102T150405Z")); err != nil {
 			return nil, err
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	if err = os.Rename(next, dir); err != nil {
+	if err = durablestate.Rename(next, dir); err != nil {
 		return nil, err
 	}
 	return ca, nil
@@ -101,23 +106,28 @@ func RotateGatewayCA(state string, now time.Time) (*GatewayCA, error) {
 
 // LoadOrCreateGatewayCA prepares the CA inside dir (created 0700).
 func LoadOrCreateGatewayCA(dir string) (*GatewayCA, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := durablestate.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := durablestate.Chmod(dir, 0o700); err != nil {
 		return nil, err
 	}
-	if raw, err := os.ReadFile(filepath.Join(dir, caKeyFile)); err == nil {
+	if raw, err := durablestate.ReadFile(filepath.Join(dir, caKeyFile)); err == nil {
 		ca, err := parseCA(raw)
 		if err == nil {
 			ca.CertPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.cert.Raw})
-			if _, statErr := os.Stat(filepath.Join(dir, caCertFile)); statErr != nil {
-				if err = os.WriteFile(filepath.Join(dir, caCertFile), ca.CertPEM, 0o600); err != nil {
+			if _, statErr := durablestate.Stat(filepath.Join(dir, caCertFile)); statErr != nil {
+				if err = durablestate.WriteFile(filepath.Join(dir, caCertFile), ca.CertPEM, 0o600); err != nil {
 					return nil, err
 				}
 			}
 			return ca, nil
 		}
+		if durablestate.IsCloud(dir) {
+			return nil, err
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -153,10 +163,20 @@ func LoadOrCreateGatewayCA(dir string) (*GatewayCA, error) {
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-	if err = os.WriteFile(filepath.Join(dir, caKeyFile), append(keyPEM, certPEM...), 0o600); err != nil {
+	if durablestate.IsCloud(dir) {
+		err = durablestate.WriteBatch(map[string][]byte{
+			filepath.Join(dir, caKeyFile):  append(keyPEM, certPEM...),
+			filepath.Join(dir, caCertFile): certPEM,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &GatewayCA{cert: cert, key: key, leaves: map[string]*tls.Certificate{}, CertPEM: certPEM}, nil
+	}
+	if err = durablestate.WriteFile(filepath.Join(dir, caKeyFile), append(keyPEM, certPEM...), 0o600); err != nil {
 		return nil, err
 	}
-	if err = os.WriteFile(filepath.Join(dir, caCertFile), certPEM, 0o600); err != nil {
+	if err = durablestate.WriteFile(filepath.Join(dir, caCertFile), certPEM, 0o600); err != nil {
 		return nil, err
 	}
 	return &GatewayCA{cert: cert, key: key, leaves: map[string]*tls.Certificate{}, CertPEM: certPEM}, nil

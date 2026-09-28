@@ -85,7 +85,7 @@ func (e *Engine) Fork(ctx context.Context, id, turnID string, copyWorkspace bool
 		}
 	}
 	kept := copyEntries(c.Conversation.Entries[:cut])
-	fork := &Chat{ID: cv.ID(), Provider: c.Provider, Model: c.Model, Title: forkTitle(c.Title), SandboxID: c.SandboxID, Repository: c.Repository, Resources: c.Resources, Network: c.Network, Jailbroken: c.Jailbroken, Mode: c.Mode, Rules: append([]Rule(nil), c.Rules...), OutputStyle: c.OutputStyle, Status: "idle", Approvals: []Approval{}, Commands: append([]Command(nil), c.Commands...)}
+	fork := &Chat{ID: cv.ID(), OrganizationID: c.OrganizationID, Provider: c.Provider, Model: c.Model, Title: forkTitle(c.Title), SandboxID: c.SandboxID, Repository: c.Repository, Resources: c.Resources, Network: c.Network, Jailbroken: c.Jailbroken, Mode: c.Mode, Rules: append([]Rule(nil), c.Rules...), OutputStyle: c.OutputStyle, Status: "idle", Approvals: []Approval{}, Commands: append([]Command(nil), c.Commands...)}
 	fork.Conversation = cv.Conversation{Entries: kept, Turns: keptTurns(c.Conversation.Turns, kept), Context: c.Conversation.Context}
 	if c.Session != nil {
 		session := *c.Session
@@ -269,6 +269,21 @@ func lastSent(entries []cv.Entry) string {
 // copyAttachments gives the fork its own copies of the stored files the
 // kept messages carry (the transcript route reads them per chat).
 func (e *Engine) copyAttachments(from, to string, kept []cv.Entry) error {
+	if e.Store.cloud {
+		seen := map[string]bool{}
+		for _, v := range kept {
+			for _, a := range v.Attachments {
+				if !attachmentID.MatchString(a.ID) || seen[a.ID] {
+					continue
+				}
+				seen[a.ID] = true
+				if _, err := e.Store.db.Exec(`INSERT INTO warden_cloud.chat_attachments(organization_id,chat_id,id,metadata,data,created_at) SELECT organization_id,$1,id,metadata,data,created_at FROM warden_cloud.chat_attachments WHERE chat_id=$2 AND id=$3 ON CONFLICT DO NOTHING`, to, from, a.ID); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
 	src, dst := e.attachmentDir(from), e.attachmentDir(to)
 	for _, v := range kept {
 		for _, a := range v.Attachments {

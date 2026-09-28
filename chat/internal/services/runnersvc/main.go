@@ -17,6 +17,7 @@ import (
 	"time"
 	"warden/chat/internal/bugreport"
 	"warden/chat/internal/config"
+	"warden/chat/internal/durablestate"
 	"warden/chat/internal/handshake"
 	"warden/chat/internal/hostinfo"
 	"warden/chat/internal/kube"
@@ -88,7 +89,17 @@ func run(args []string) error {
 		slog.Error("configuration", "error", err)
 		return services.ExitCode(1)
 	}
-	unlock, lockErr := sandbox.LockRoot(*root)
+	var unlock func()
+	var lockErr error
+	if s.cfg.Auth.Mode == config.AuthEmail {
+		var state *durablestate.Store
+		state, lockErr = durablestate.Open(*root, os.Getenv("WARDEN_DATABASE_URL"), "runner")
+		if lockErr == nil {
+			unlock = func() { _ = state.Close() }
+		}
+	} else {
+		unlock, lockErr = sandbox.LockRoot(*root)
+	}
 	if lockErr != nil {
 		slog.Error("worker root lock", "error", lockErr)
 		return services.ExitCode(1)
@@ -123,6 +134,12 @@ func run(args []string) error {
 		return services.ExitCode(1)
 	}
 	w := sandbox.NewWorker(*root, *sbx, *template)
+	if s.cfg.Auth.Mode == config.AuthEmail {
+		w.DatabaseURL = os.Getenv("WARDEN_DATABASE_URL")
+		if w.DatabaseURL == "" {
+			return errors.New("cloud runner requires WARDEN_DATABASE_URL")
+		}
+	}
 	if s.previewListen != "" {
 		// The shared preview server (services.runner.previews): the chat
 		// dials it as https://<address host>/<publication ID> with its
