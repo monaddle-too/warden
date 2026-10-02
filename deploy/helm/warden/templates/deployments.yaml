@@ -35,7 +35,7 @@ spec:
         warden.monaddle.com/component: {{ $c.name }}
       annotations:
         checksum/config: {{ $config | sha256sum }}
-        {{- if eq $c.name "edge" }}
+        {{- if and (eq $c.name "edge") $.Values.recordings.enabled $.Values.recordings.serviceAccountEmail }}
         checksum/recording-identity: {{ default "" $.Values.recordings.serviceAccountEmail | sha256sum }}
         {{- end }}
     spec:

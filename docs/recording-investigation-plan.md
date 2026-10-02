@@ -23,3 +23,12 @@ Configure keyless IAM service-account impersonation on the edge KSA using record
 - Retried seven failed segments across the three non-empty recordings. Browser shows all complete; inspected transcript and played audio (30-second duration, playback progressed without error). Audio had been preserved throughout.
 - Separately, the invited user’s chat failed because all four retained workspace slots were occupied. Increase the cloud retention limit to eight, preserving maxRunning=2 and existing workspaces.
 - Add a pod-template identity checksum so future service account changes automatically restart edge and refresh cached tokens.
+
+## Verification and release
+2026-10-01: Helm revision 54 is healthy (five services ready). Binary image unchanged; fix is chart/IAM configuration. Cloud retention now 8, max running remains 2. All three non-empty recordings completed after retry; seven transcript segments recovered. No re-upload or device-key replacement needed. Browser playback advanced without a media error.
+
+Helm lint passes. Targeted rendering verifies disabled/unconfigured cases emit no identity annotation, while enabled/configured applies IAM annotation only to edge and includes its rollout checksum. Existing chart golden tests have unrelated drift from the previously landed cloud changes (`readOnly: false` on service state mounts); no new default-template drift introduced.
+
+Reference: https://docs.cloud.google.com/iam/docs/federated-identity-supported-services#speech-to-text (only v2 supports direct federation); use IAM service-account impersonation for v1.
+
+The invited user’s failed chat was not automatically resent; its workspace-capacity blocker is removed and Retry is available. Device ingestion is evidenced by the existing successful uploads; no new hardware credential was created during this investigation.
