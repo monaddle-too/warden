@@ -35,6 +35,9 @@ spec:
         warden.monaddle.com/component: {{ $c.name }}
       annotations:
         checksum/config: {{ $config | sha256sum }}
+        {{- if eq $c.name "edge" }}
+        checksum/recording-identity: {{ default "" $.Values.recordings.serviceAccountEmail | sha256sum }}
+        {{- end }}
     spec:
       serviceAccountName: warden-{{ $c.name }}
       automountServiceAccountToken: {{ $c.token }}
