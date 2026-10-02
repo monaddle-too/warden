@@ -12,6 +12,10 @@ kind: ServiceAccount
 metadata:
   name: warden-{{ $sa }}
   namespace: {{ $.Release.Namespace }}
+  {{- if and (eq $sa "edge") $.Values.recordings.enabled $.Values.recordings.serviceAccountEmail }}
+  annotations:
+    iam.gke.io/gcp-service-account: {{ $.Values.recordings.serviceAccountEmail | quote }}
+  {{- end }}
   labels:
     {{- include "warden.labels" $ | nindent 4 }}
     warden.monaddle.com/component: {{ $sa }}

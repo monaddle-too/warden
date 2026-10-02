@@ -226,3 +226,5 @@ and what would close it: [known-security-issues.md](known-security-issues.md).
 Local install: [warden-local-install.md](warden-local-install.md).
 
 Cloud main integration and publication: [integration plan](cloud-main-integration-plan.md).
+
+Recording cloud authentication: Helm `recordings.serviceAccountEmail` annotates the edge KSA for IAM service-account impersonation required by Speech v1; [investigation](recording-investigation-plan.md).

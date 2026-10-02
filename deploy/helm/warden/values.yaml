@@ -415,3 +415,7 @@ recordings:
   enabled: false
   bucket: ""
   project: ""
+  # Speech v1 requires an IAM service-account OAuth token, not a direct federated token.
+  # Grant this account speech.client, serviceusage.serviceUsageConsumer, bucket objectUser,
+  # and allow the edge Kubernetes service account to impersonate it via workloadIdentityUser.
+  serviceAccountEmail: ""
